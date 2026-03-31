@@ -139,7 +139,7 @@ fn applyField(self: *Config, allocator: Allocator, key: []const u8, value: []con
     } else if (std.mem.eql(u8, key, "scrollback_lines")) {
         self.scrollback_lines = std.fmt.parseInt(u32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "prefix_key")) {
-        self.prefix_key = std.fmt.parseInt(u8, value, 10) catch return;
+        self.prefix_key = parsePrefixKey(value) orelse return;
     } else if (std.mem.eql(u8, key, "initial_width")) {
         self.initial_width = std.fmt.parseInt(u32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "initial_height")) {
@@ -175,7 +175,61 @@ pub fn parseHexColor(value: []const u8) ?u32 {
     return 0xFF000000 | @as(u32, rgb);
 }
 
+/// Parse a prefix key string like "ctrl+space", "ctrl+a", "ctrl+b".
+/// Returns the byte value the key produces (Ctrl+A = 1, Ctrl+B = 2, etc.).
+/// Ctrl+Space = 0 (NUL byte).
+pub fn parsePrefixKey(value: []const u8) ?u8 {
+    // Normalize: skip whitespace, lowercase compare
+    const trimmed = std.mem.trim(u8, value, " \t");
+    if (trimmed.len == 0) return null;
+
+    // Check for "ctrl+" prefix (case-insensitive)
+    if (trimmed.len > 5) {
+        const has_ctrl = (trimmed[0] == 'c' or trimmed[0] == 'C') and
+            (trimmed[1] == 't' or trimmed[1] == 'T') and
+            (trimmed[2] == 'r' or trimmed[2] == 'R') and
+            (trimmed[3] == 'l' or trimmed[3] == 'L') and
+            trimmed[4] == '+';
+
+        if (has_ctrl) {
+            const rest = trimmed[5..];
+            // ctrl+space
+            if (rest.len == 5 and
+                (rest[0] == 's' or rest[0] == 'S') and
+                (rest[1] == 'p' or rest[1] == 'P') and
+                (rest[2] == 'a' or rest[2] == 'A') and
+                (rest[3] == 'c' or rest[3] == 'C') and
+                (rest[4] == 'e' or rest[4] == 'E'))
+            {
+                return 0; // NUL
+            }
+            // ctrl+a through ctrl+z
+            if (rest.len == 1) {
+                const ch = rest[0];
+                if (ch >= 'a' and ch <= 'z') return ch - 'a' + 1;
+                if (ch >= 'A' and ch <= 'Z') return ch - 'A' + 1;
+            }
+        }
+    }
+
+    // Raw integer fallback (0-31)
+    return std.fmt.parseInt(u8, trimmed, 10) catch null;
+}
+
 // ── Tests ─────────────────────────────────────────────────────────
+
+test "parsePrefixKey" {
+    try std.testing.expectEqual(@as(?u8, 0), parsePrefixKey("ctrl+space"));
+    try std.testing.expectEqual(@as(?u8, 0), parsePrefixKey("Ctrl+Space"));
+    try std.testing.expectEqual(@as(?u8, 1), parsePrefixKey("ctrl+a"));
+    try std.testing.expectEqual(@as(?u8, 2), parsePrefixKey("ctrl+b"));
+    try std.testing.expectEqual(@as(?u8, 2), parsePrefixKey("Ctrl+B"));
+    try std.testing.expectEqual(@as(?u8, 26), parsePrefixKey("ctrl+z"));
+    try std.testing.expectEqual(@as(?u8, 0), parsePrefixKey("0")); // raw integer
+    try std.testing.expectEqual(@as(?u8, 2), parsePrefixKey("2")); // raw integer
+    try std.testing.expectEqual(@as(?u8, null), parsePrefixKey(""));
+    try std.testing.expectEqual(@as(?u8, null), parsePrefixKey("invalid"));
+}
 
 test "parseHexColor valid" {
     try std.testing.expectEqual(@as(?u32, 0xFF1D1D23), parseHexColor("#1D1D23"));

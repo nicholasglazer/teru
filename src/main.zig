@@ -387,9 +387,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             var key_buf: [32]u8 = undefined;
                             const len = kb.processKey(key.keycode, true, &key_buf);
 
-                            // Check for Ctrl+Space (prefix key)
-                            if (len == 1 and key_buf[0] == 0) {
-                                // NUL byte = Ctrl+Space
+                            // Check for prefix key (default: Ctrl+Space = NUL)
+                            if (len == 1 and key_buf[0] == config.prefix_key) {
                                 prefix.activate();
                                 continue;
                             }
@@ -397,7 +396,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             if (prefix.awaiting) {
                                 prefix.reset();
                                 if (len > 0) {
-                                    const action = KeyHandler.handleMuxCommand(key_buf[0], &mux, &graph, &hooks, &running, grid_rows, grid_cols, io);
+                                    const action = KeyHandler.handleMuxCommand(key_buf[0], &mux, &graph, &hooks, &running, grid_rows, grid_cols, io, config.prefix_key);
                                     if (action == .enter_search) search_mode = true;
                                     continue;
                                 }
@@ -428,7 +427,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         if (prefix.awaiting) {
                             prefix.reset();
                             if (key.keycode < 128) {
-                                const action = KeyHandler.handleMuxCommand(@truncate(key.keycode), &mux, &graph, &hooks, &running, grid_rows, grid_cols, io);
+                                const action = KeyHandler.handleMuxCommand(@truncate(key.keycode), &mux, &graph, &hooks, &running, grid_rows, grid_cols, io, config.prefix_key);
                                 if (action == .enter_search) search_mode = true;
                                 continue;
                             }

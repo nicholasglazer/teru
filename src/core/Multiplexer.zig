@@ -168,6 +168,30 @@ pub fn cycleLayout(self: *Multiplexer) void {
     };
 }
 
+/// Toggle zoom: switch between current layout and monocle.
+/// If already monocle, restore the previous layout.
+pub fn toggleZoom(self: *Multiplexer) void {
+    const ws = &self.layout_engine.workspaces[self.active_workspace];
+    if (ws.layout == .monocle) {
+        // Restore previous layout (default to master_stack)
+        ws.layout = if (ws.prev_layout) |prev| prev else .master_stack;
+        ws.prev_layout = null;
+    } else {
+        ws.prev_layout = ws.layout;
+        ws.layout = .monocle;
+    }
+}
+
+/// Resize the active pane by adjusting the master ratio.
+/// dx > 0 grows width, dx < 0 shrinks. dy is reserved for future use.
+pub fn resizeActive(self: *Multiplexer, dx: i8, dy: i8) void {
+    _ = dy;
+    const ws = &self.layout_engine.workspaces[self.active_workspace];
+    if (ws.layout != .master_stack) return; // only master-stack supports ratio
+    const step: f32 = @as(f32, @floatFromInt(dx)) * 0.02;
+    ws.master_ratio = @min(0.85, @max(0.15, ws.master_ratio + step));
+}
+
 // ── PTY polling ────────────────────────────────────────────────
 
 /// Read from all PTYs. Returns true if any had output.

@@ -61,6 +61,7 @@ pub fn handleMuxCommand(
     grid_rows: u16,
     grid_cols: u16,
     io: Io,
+    prefix_byte: u8,
 ) MuxAction {
     switch (cmd) {
         'c' => {
@@ -110,11 +111,19 @@ pub fn handleMuxCommand(
             // Switch workspace (1-based → 0-based)
             mux.switchWorkspace(cmd - '1');
         },
+        'z' => {
+            // Zoom: toggle active pane between current layout and monocle
+            mux.toggleZoom();
+        },
+        'H' => mux.resizeActive(-2, 0),   // shrink width
+        'L' => mux.resizeActive(2, 0),    // grow width
+        'K' => mux.resizeActive(0, -2),   // shrink height
+        'J' => mux.resizeActive(0, 2),    // grow height
         else => {
             // Unknown command; forward the prefix + key to active pane
             if (mux.getActivePane()) |pane| {
-                const nul = [1]u8{0}; // Ctrl+Space = NUL
-                _ = pane.pty.write(&nul) catch {};
+                const pfx = [1]u8{prefix_byte};
+                _ = pane.pty.write(&pfx) catch {};
                 const byte = [1]u8{cmd};
                 _ = pane.pty.write(&byte) catch {};
             }
