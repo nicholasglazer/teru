@@ -45,9 +45,12 @@ pub fn build(b: *std.Build) void {
     exe_mod.addOptions("build_options", build_options);
 
     // System dependencies: link only the enabled backends
+    // xkbcommon is needed for both X11 and Wayland keyboard translation
+    if (enable_x11 or enable_wayland) {
+        exe_mod.linkSystemLibrary("xkbcommon", .{});
+    }
     if (enable_x11) {
         exe_mod.linkSystemLibrary("xcb", .{});
-        exe_mod.linkSystemLibrary("xkbcommon", .{});
     }
     if (enable_wayland) {
         exe_mod.linkSystemLibrary("wayland-client", .{});

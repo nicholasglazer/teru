@@ -10,16 +10,18 @@
   <img src="https://img.shields.io/badge/zig-0.16-orange" alt="Zig 0.16">
   <img src="https://img.shields.io/badge/tests-250-blue" alt="Tests">
   <img src="https://img.shields.io/badge/binary-1.3MB-brightgreen" alt="Binary Size">
+  <a href="https://aur.archlinux.org/packages/teru"><img src="https://img.shields.io/aur/version/teru" alt="AUR"></a>
 </p>
 
 <p>
-  <a href="#quick-start">Quick Start</a> &middot;
+  <a href="#installation">Installation</a> &middot;
   <a href="#features">Features</a> &middot;
   <a href="#architecture">Architecture</a> &middot;
   <a href="#keybindings">Keybindings</a> &middot;
   <a href="#configuration">Configuration</a> &middot;
   <a href="#ai-integration">AI Integration</a> &middot;
-  <a href="#development">Development</a>
+  <a href="#development">Development</a> &middot;
+  <a href="#contributing">Contributing</a>
 </p>
 
 </div>
@@ -42,26 +44,68 @@
 
 ---
 
-## Quick Start
+## Installation
+
+### Arch Linux (AUR)
 
 ```bash
-# Build from source (requires Zig 0.16+)
-git clone https://github.com/nicholasglazer/teru.git
-cd teru
-zig build -Doptimize=ReleaseSafe
-strip zig-out/bin/teru
+# Install Zig 0.16 (required — teru uses Zig 0.16 APIs)
+paru -S zig-master-bin
 
-# Run
-./zig-out/bin/teru              # windowed mode (X11/Wayland)
-./zig-out/bin/teru --raw        # TTY mode (over SSH, like tmux)
-./zig-out/bin/teru --attach     # restore saved session layout
+# Install teru
+paru -S teru
 ```
 
-### Arch Linux
+Optional clipboard support:
 
 ```bash
-# AUR (coming soon)
-paru -S teru
+# X11
+paru -S xclip
+
+# Wayland
+paru -S wl-clipboard
+```
+
+### Build from source
+
+Requires **Zig 0.16+** and system libraries.
+
+**Dependencies:**
+
+| Package | Arch Linux | Debian/Ubuntu | Fedora |
+|---------|------------|---------------|--------|
+| Zig 0.16 | `zig-master-bin` (AUR) | [ziglang.org/download](https://ziglang.org/download/) | [ziglang.org/download](https://ziglang.org/download/) |
+| libxcb | `libxcb` | `libxcb1-dev` | `libxcb-devel` |
+| libxkbcommon | `libxkbcommon` | `libxkbcommon-dev` | `libxkbcommon-devel` |
+| wayland | `wayland` | `libwayland-dev` | `wayland-devel` |
+
+```bash
+git clone https://github.com/nicholasglazer/teru.git
+cd teru
+
+# Release build (recommended)
+make release              # 1.3MB binary at zig-out/bin/teru
+
+# Install system-wide
+sudo make install         # installs to /usr/local/bin/teru
+
+# Or copy manually
+cp zig-out/bin/teru ~/.local/bin/
+```
+
+**Minimal builds** (fewer dependencies):
+
+```bash
+make release-x11          # X11-only (no wayland-client dep)
+make release-wayland      # Wayland-only (no libxcb dep)
+```
+
+### Run
+
+```bash
+teru                      # windowed mode (X11/Wayland auto-detected)
+teru --raw                # TTY mode (over SSH, like tmux)
+teru --attach             # restore saved session layout
 ```
 
 ---
@@ -96,7 +140,7 @@ paru -S teru
 - **Session save/restore** — binary serialization, resume layout with `--attach`
 - **Unicode fonts** — ASCII, Latin-1, box-drawing, block elements (351 glyphs via stb_truetype)
 - **Keyboard** — xkbcommon, any layout (dvorak, colemak, etc.), reads live X11 keymap
-- **Mouse** — selection, clipboard (xclip), Ctrl+click opens URLs
+- **Mouse** — selection, clipboard (X11 via xclip, Wayland via wl-clipboard), Ctrl+click opens URLs
 - **Search** — `Ctrl+Space, /` highlights matches in visible grid
 - **Scrollback browsing** — `Shift+PageUp/Down`, visual indicator
 - **Config file** — `~/.config/teru/teru.conf`, 14 keys, hex colors
@@ -230,7 +274,7 @@ src/
 │   ├── Multiplexer.zig     Multi-pane orchestrator + rendering
 │   ├── KeyHandler.zig      Prefix key dispatch
 │   ├── Selection.zig       Text selection state machine
-│   ├── Clipboard.zig       Copy/paste via xclip
+│   ├── Clipboard.zig       Display-aware clipboard (xclip / wl-clipboard)
 │   ├── Terminal.zig        Raw TTY mode, poll-based I/O
 │   └── UrlDetector.zig     URL detection (regex-free)
 ├── agent/
@@ -267,8 +311,12 @@ src/
 
 **Runtime** (system libraries):
 - `libxcb` — X11 protocol
-- `libxkbcommon` — keyboard translation
+- `libxkbcommon` — keyboard translation (X11 + Wayland)
 - `libwayland-client` — Wayland protocol
+
+**Clipboard** (optional, exec'd at runtime):
+- `xclip` — X11 clipboard
+- `wl-clipboard` — Wayland clipboard (`wl-copy` / `wl-paste`)
 
 **Vendored** (compiled into binary):
 - `stb_truetype.h` — font rasterization (5KB, public domain)
@@ -277,7 +325,7 @@ src/
 No FreeType. No fontconfig. No OpenGL. No EGL. No GTK.
 
 Build with `-Dwayland=false` for X11-only (drops wayland-client dep).
-Build with `-Dx11=false` for Wayland-only (drops xcb + xkbcommon deps).
+Build with `-Dx11=false` for Wayland-only (drops xcb dep).
 
 ---
 
@@ -288,14 +336,66 @@ git clone https://github.com/nicholasglazer/teru.git
 cd teru
 
 # Requires Zig 0.16-dev
-zig build test              # 250 tests
-zig build                   # debug build
-zig build run               # run windowed
-zig build run -- --raw      # run TTY mode
-zig build -Doptimize=ReleaseSafe  # release build
+make dev                  # debug build (~4MB, full safety + debug symbols)
+make test                 # 250 tests
+make run                  # build and run
+make release              # release build (1.3MB)
+make deps                 # check runtime dependencies
+make size                 # compare build profiles
+make help                 # list all targets
+```
+
+Or use `zig build` directly:
+
+```bash
+zig build test                           # run tests
+zig build                                # debug build
+zig build run                            # run windowed
+zig build run -- --raw                   # run TTY mode
+zig build -Doptimize=ReleaseSafe         # release build
+zig build -Doptimize=ReleaseSafe -Dwayland=false  # X11-only release
 ```
 
 250 tests covering: VT parser, grid, tiling engine, scrollback compression, session serialization, agent protocol, process graph, URL detection, font atlas, software renderer.
+
+---
+
+## Contributing
+
+Contributions are welcome. teru is written in Zig 0.16-dev — make sure you have the right version installed.
+
+### Getting started
+
+1. Fork and clone the repo
+2. Install Zig 0.16-dev ([ziglang.org/download](https://ziglang.org/download/) or `paru -S zig-master-bin` on Arch)
+3. Install system deps: `libxcb`, `libxkbcommon`, `wayland` (dev packages)
+4. Run `make test` to verify your setup
+5. Make your changes and ensure all tests pass
+
+### Guidelines
+
+- Run `make test` before submitting
+- Keep new code covered by inline tests where practical
+- Follow existing code style (4-space indent, Zig conventions)
+- One concern per commit, clear commit messages
+
+### Areas looking for help
+
+- **Full Unicode**: CJK characters, emoji (COLR/CPAL), font fallback chains
+- **Shell integration**: bash/zsh/fish scripts for OSC 133 command blocks
+- **Detach/attach**: daemon mode for persistent sessions across terminal restarts
+- **Wayland keyboard**: proper xkbcommon keymap from compositor FD (currently raw passthrough)
+- **macOS**: fix AppKit backend for Zig 0.16, PTY via forkpty, keyboard via Carbon
+- **Windows**: ConPTY implementation, Win32 keyboard translation
+- **Testing**: integration tests for platform backends
+
+### Reporting issues
+
+- Include your OS, display server (X11/Wayland), Zig version, and shell
+- For rendering bugs, a screenshot or terminal recording helps
+- For crashes, the stack trace from a debug build (`make dev && zig-out/bin/teru`)
+
+---
 
 ## License
 

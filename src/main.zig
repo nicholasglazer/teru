@@ -18,7 +18,7 @@ const Clipboard = @import("core/Clipboard.zig");
 const KeyHandler = @import("core/KeyHandler.zig");
 const Grid = @import("core/Grid.zig");
 const Scrollback = @import("persist/Scrollback.zig");
-const Keyboard = if (builtin.os.tag == .linux and build_options.enable_x11)
+const Keyboard = if (builtin.os.tag == .linux and (build_options.enable_x11 or build_options.enable_wayland))
     @import("platform/linux/keyboard.zig").Keyboard
 else
     void;
@@ -28,7 +28,7 @@ const UrlDetector = @import("core/UrlDetector.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
-const version = "0.1.0";
+const version = "0.1.1";
 
 const session_path = "/tmp/teru-session.bin";
 

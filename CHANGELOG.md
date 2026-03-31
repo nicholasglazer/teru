@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.1 (2026-03-31)
+
+### Fixes
+- Clipboard: auto-detect display server — use `wl-copy`/`wl-paste` on Wayland, `xclip` on X11
+- Build: link `libxkbcommon` for Wayland-only builds (keyboard was broken with `-Dx11=false`)
+- Keyboard: enable xkbcommon translation for both X11 and Wayland backends
+
+### Packaging
+- AUR package live: `paru -S teru`
+- Added Makefile with build profiles (`make dev`, `make release`, `make install`)
+- Added `optdepends` for clipboard tools in PKGBUILD
+
 ## 0.1.0 (2026-03-31)
 
 Initial release.
