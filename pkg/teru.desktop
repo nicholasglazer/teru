@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=teru
+Comment=AI-first terminal emulator, multiplexer, and tiling manager
+Exec=teru
+Icon=utilities-terminal
+Terminal=false
+Type=Application
+Categories=System;TerminalEmulator;
+Keywords=terminal;multiplexer;ai;zig;tiling;
+StartupWMClass=teru

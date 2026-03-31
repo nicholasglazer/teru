@@ -1,0 +1,34 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0-dev.3039+b490412cd
+      - name: Install deps
+        run: sudo apt-get install -y libxcb1-dev libxkbcommon-dev libwayland-dev
+      - run: zig build test
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0-dev.3039+b490412cd
+      - name: Install deps
+        run: sudo apt-get install -y libxcb1-dev libxkbcommon-dev libwayland-dev
+      - run: zig build -Doptimize=ReleaseSafe
+      - run: strip zig-out/bin/teru
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teru-linux-x86_64
+          path: zig-out/bin/teru

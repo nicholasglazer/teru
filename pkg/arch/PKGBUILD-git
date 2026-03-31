@@ -1,0 +1,43 @@
+# Maintainer: Nicholas Glazer <nicholasglazer at protonmail dot com>
+pkgname=teru-git
+pkgver=r0.0000000
+pkgrel=1
+pkgdesc="AI-first terminal emulator, multiplexer, and tiling manager (git)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/nicholasglazer/teru"
+license=('MIT')
+depends=('libxcb' 'libxkbcommon' 'wayland')
+makedepends=('zig>=0.16' 'git')
+provides=('teru')
+conflicts=('teru')
+source=("git+https://github.com/nicholasglazer/teru.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd teru
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+    cd teru
+    zig build -Doptimize=ReleaseSafe
+}
+
+package() {
+    cd teru
+    install -Dm755 zig-out/bin/teru "$pkgdir/usr/bin/teru"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/${pkgname%-git}/LICENSE"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/${pkgname%-git}/README.md"
+
+    install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/teru.desktop" << EOF
+[Desktop Entry]
+Name=teru
+Comment=AI-first terminal emulator
+Exec=teru
+Icon=utilities-terminal
+Terminal=false
+Type=Application
+Categories=System;TerminalEmulator;
+Keywords=terminal;multiplexer;ai;zig;
+EOF
+}

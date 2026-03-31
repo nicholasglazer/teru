@@ -1,0 +1,398 @@
+//! macOS platform backend using Cocoa (AppKit) via Objective-C runtime.
+//!
+//! Pure C function calls from Zig — no Swift, no Objective-C compiler.
+//! Creates an NSApplication + NSWindow, blits CPU framebuffer via
+//! NSBitmapImageRep, polls events via nextEventMatchingMask.
+
+const std = @import("std");
+
+const c = @cImport({
+    @cInclude("objc/runtime.h");
+    @cInclude("objc/message.h");
+    @cInclude("CoreGraphics/CGGeometry.h");
+});
+
+// ── Objective-C runtime helpers ─────────────────────────────────────
+
+const id = *anyopaque;
+
+// objc_msgSend has variable calling convention depending on return type.
+// We cast the function pointer to the signature we need at each call site.
+const objc_msgSend_fn = c.objc_msgSend;
+const objc_msgSend_stret_fn = c.objc_msgSend_stret;
+
+fn sel(name: [*:0]const u8) c.SEL {
+    return c.sel_registerName(name);
+}
+
+fn cls(name: [*:0]const u8) id {
+    return @ptrCast(c.objc_getClass(name) orelse unreachable);
+}
+
+/// Send a message returning an object pointer.
+fn msgSend(target: id, selector: c.SEL, args: anytype) id {
+    const FnType = MsgSendType(id, @TypeOf(args));
+    const func: *const FnType = @ptrCast(&objc_msgSend_fn);
+    return @call(.auto, func, .{target, selector} ++ args);
+}
+
+/// Send a message returning void.
+fn msgSendVoid(target: id, selector: c.SEL, args: anytype) void {
+    const FnType = MsgSendType(void, @TypeOf(args));
+    const func: *const FnType = @ptrCast(&objc_msgSend_fn);
+    @call(.auto, func, .{target, selector} ++ args);
+}
+
+/// Send a message returning a boolean (BOOL is i8 on Apple platforms).
+fn msgSendBool(target: id, selector: c.SEL, args: anytype) bool {
+    const FnType = MsgSendType(i8, @TypeOf(args));
+    const func: *const FnType = @ptrCast(&objc_msgSend_fn);
+    return @call(.auto, func, .{target, selector} ++ args) != 0;
+}
+
+/// Send a message returning u64 (NSUInteger).
+fn msgSendU64(target: id, selector: c.SEL, args: anytype) u64 {
+    const FnType = MsgSendType(u64, @TypeOf(args));
+    const func: *const FnType = @ptrCast(&objc_msgSend_fn);
+    return @call(.auto, func, .{target, selector} ++ args);
+}
+
+/// Send a message returning i64 (NSInteger).
+fn msgSendI64(target: id, selector: c.SEL, args: anytype) i64 {
+    const FnType = MsgSendType(i64, @TypeOf(args));
+    const func: *const FnType = @ptrCast(&objc_msgSend_fn);
+    return @call(.auto, func, .{target, selector} ++ args);
+}
+
+/// Send a message returning u16.
+fn msgSendU16(target: id, selector: c.SEL, args: anytype) u16 {
+    const FnType = MsgSendType(u16, @TypeOf(args));
+    const func: *const FnType = @ptrCast(&objc_msgSend_fn);
+    return @call(.auto, func, .{target, selector} ++ args);
+}
+
+/// Send a message returning f64 (CGFloat on 64-bit).
+fn msgSendF64(target: id, selector: c.SEL, args: anytype) f64 {
+    const FnType = MsgSendType(f64, @TypeOf(args));
+    const func: *const FnType = @ptrCast(&objc_msgSend_fn);
+    return @call(.auto, func, .{target, selector} ++ args);
+}
+
+/// Construct the function type for objc_msgSend with a given return and args tuple.
+fn MsgSendType(comptime Ret: type, comptime ArgsTuple: type) type {
+    const args_info = @typeInfo(ArgsTuple).@"struct".fields;
+    // Build parameter list: (id, SEL, ...extra_args)
+    const base_count = 2; // self + _cmd
+    const total = base_count + args_info.len;
+    var params: [total]std.builtin.Type.Fn.Param = undefined;
+    params[0] = .{ .is_generic = false, .is_noalias = false, .type = id };
+    params[1] = .{ .is_generic = false, .is_noalias = false, .type = c.SEL };
+    for (args_info, 0..) |field, i| {
+        params[base_count + i] = .{ .is_generic = false, .is_noalias = false, .type = field.type };
+    }
+    // @Type was removed in Zig 0.16 — this code is macOS-only and
+    // will be updated when @Type's replacement is stabilized.
+    // On non-macOS, this function is never called.
+    _ = &params;
+    _ = Ret;
+    @compileError("macOS platform backend requires @Type builtin (removed in Zig 0.16)");
+}
+
+// ── Cocoa constants ─────────────────────────────────────────────────
+
+/// NSWindowStyleMask values
+const NSWindowStyleMaskTitled: u64 = 1 << 0;
+const NSWindowStyleMaskClosable: u64 = 1 << 1;
+const NSWindowStyleMaskMiniaturizable: u64 = 1 << 2;
+const NSWindowStyleMaskResizable: u64 = 1 << 3;
+
+/// NSBackingStoreType
+const NSBackingStoreBuffered: u64 = 2;
+
+/// NSEventMask: NSEventMaskAny = max u64
+const NSEventMaskAny: u64 = std.math.maxInt(u64);
+
+/// NSEvent types
+const NSEventTypeKeyDown: u64 = 10;
+const NSEventTypeKeyUp: u64 = 11;
+const NSEventTypeFlagsChanged: u64 = 12;
+const NSEventTypeAppKitDefined: u64 = 13;
+
+/// CGRect (x, y, width, height) as a packed struct for objc_msgSend_stret
+const CGRect = extern struct {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+};
+
+// ── Shared types (from platform/types.zig) ──────────────────────────
+
+const types = @import("../types.zig");
+pub const KeyEvent = types.KeyEvent;
+pub const Event = types.Event;
+pub const Size = types.Size;
+
+// ── macOS window ────────────────────────────────────────────────────
+
+pub const MacosWindow = struct {
+    ns_app: id,
+    ns_window: id,
+    ns_view: id,
+    width: u32,
+    height: u32,
+    is_open: bool,
+
+    pub fn init(width: u32, height: u32, title: []const u8) !MacosWindow {
+        // 1. [NSApplication sharedApplication]
+        const NSApplication = cls("NSApplication");
+        const app = msgSend(NSApplication, sel("sharedApplication"), .{});
+
+        // 2. Set activation policy to regular (foreground app)
+        //    [app setActivationPolicy:NSApplicationActivationPolicyRegular]
+        msgSendVoid(app, sel("setActivationPolicy:"), .{@as(i64, 0)});
+
+        // 3. Create NSWindow
+        const NSWindow = cls("NSWindow");
+        const alloc_window = msgSend(NSWindow, sel("alloc"), .{});
+
+        const rect = CGRect{
+            .x = 100.0,
+            .y = 100.0,
+            .width = @floatFromInt(width),
+            .height = @floatFromInt(height),
+        };
+        const style_mask = NSWindowStyleMaskTitled |
+            NSWindowStyleMaskClosable |
+            NSWindowStyleMaskMiniaturizable |
+            NSWindowStyleMaskResizable;
+
+        // initWithContentRect:styleMask:backing:defer:
+        const window = msgSend(alloc_window, sel("initWithContentRect:styleMask:backing:defer:"), .{
+            rect,
+            style_mask,
+            NSBackingStoreBuffered,
+            @as(i8, 0), // defer: NO
+        });
+
+        // 4. Set title
+        const NSString = cls("NSString");
+        const title_str = msgSend(NSString, sel("stringWithUTF8String:"), .{
+            @as([*:0]const u8, @ptrCast(title.ptr)),
+        });
+        msgSendVoid(window, sel("setTitle:"), .{title_str});
+
+        // 5. Get content view (default NSView)
+        const view = msgSend(window, sel("contentView"), .{});
+
+        // 6. Make window visible
+        msgSendVoid(window, sel("makeKeyAndOrderFront:"), .{@as(?id, null)});
+
+        // 7. Activate the app
+        msgSendVoid(app, sel("activateIgnoringOtherApps:"), .{@as(i8, 1)});
+
+        // 8. Finish launching
+        msgSendVoid(app, sel("finishLaunching"), .{});
+
+        return MacosWindow{
+            .ns_app = app,
+            .ns_window = window,
+            .ns_view = view,
+            .width = width,
+            .height = height,
+            .is_open = true,
+        };
+    }
+
+    pub fn deinit(self: *MacosWindow) void {
+        msgSendVoid(self.ns_window, sel("close"), .{});
+        self.is_open = false;
+    }
+
+    pub fn pollEvents(self: *MacosWindow) ?Event {
+        // [NSApp nextEventMatchingMask:untilDate:inMode:dequeue:]
+        const NSDefaultRunLoopMode = msgSend(cls("NSString"), sel("stringWithUTF8String:"), .{
+            @as([*:0]const u8, "kCFRunLoopDefaultMode"),
+        });
+
+        const event = msgSend(self.ns_app, sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), .{
+            NSEventMaskAny,
+            @as(?id, null), // untilDate: nil (don't block)
+            NSDefaultRunLoopMode,
+            @as(i8, 1), // dequeue: YES
+        });
+
+        // Check if event is nil (objc nil = null pointer)
+        const event_ptr: ?*anyopaque = event;
+        if (event_ptr == null) return null;
+
+        // Get event type: [event type]
+        const event_type = msgSendU64(event, sel("type"), .{});
+
+        // Check for window resize by querying current frame
+        const view_frame = self.getViewFrame();
+        const new_w: u32 = @intFromFloat(view_frame.width);
+        const new_h: u32 = @intFromFloat(view_frame.height);
+        if (new_w != self.width or new_h != self.height) {
+            self.width = new_w;
+            self.height = new_h;
+            // Still forward the event to the app so Cocoa handles it
+            msgSendVoid(self.ns_app, sel("sendEvent:"), .{event});
+            return .{ .resize = .{ .width = new_w, .height = new_h } };
+        }
+
+        switch (event_type) {
+            NSEventTypeKeyDown => {
+                const keycode = msgSendU16(event, sel("keyCode"), .{});
+                const modflags = msgSendU64(event, sel("modifierFlags"), .{});
+                msgSendVoid(self.ns_app, sel("sendEvent:"), .{event});
+                return .{ .key_press = .{
+                    .keycode = @intCast(keycode),
+                    .modifiers = @truncate(modflags),
+                } };
+            },
+            NSEventTypeKeyUp => {
+                const keycode = msgSendU16(event, sel("keyCode"), .{});
+                const modflags = msgSendU64(event, sel("modifierFlags"), .{});
+                msgSendVoid(self.ns_app, sel("sendEvent:"), .{event});
+                return .{ .key_release = .{
+                    .keycode = @intCast(keycode),
+                    .modifiers = @truncate(modflags),
+                } };
+            },
+            else => {
+                // Forward unhandled events to the application
+                msgSendVoid(self.ns_app, sel("sendEvent:"), .{event});
+
+                // Check if window was closed
+                if (!msgSendBool(self.ns_window, sel("isVisible"), .{})) {
+                    self.is_open = false;
+                    return .close;
+                }
+
+                return .none;
+            },
+        }
+    }
+
+    pub fn putFramebuffer(self: *MacosWindow, pixels: []const u32, fb_width: u32, fb_height: u32) void {
+        const blit_w = @min(fb_width, self.width);
+        const blit_h = @min(fb_height, self.height);
+        if (blit_w == 0 or blit_h == 0) return;
+
+        // Create NSBitmapImageRep with the pixel data.
+        // Pixels are ARGB (u32 = 0xAARRGGBB), 8 bits per component, 32 bits per pixel.
+        const NSBitmapImageRep = cls("NSBitmapImageRep");
+        const alloc_rep = msgSend(NSBitmapImageRep, sel("alloc"), .{});
+
+        // initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:
+        //   samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:
+        //   bytesPerRow:bitsPerPixel:
+        const NSDeviceRGBColorSpace = msgSend(cls("NSString"), sel("stringWithUTF8String:"), .{
+            @as([*:0]const u8, "NSDeviceRGBColorSpace"),
+        });
+        const data_ptr: [*]const u8 = @ptrCast(pixels.ptr);
+        var planes: [1][*]const u8 = .{data_ptr};
+
+        const bitmap = msgSend(alloc_rep, sel("initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bytesPerRow:bitsPerPixel:"), .{
+            @as([*][*]const u8, &planes), // planes
+            @as(i64, @intCast(blit_w)), // pixelsWide
+            @as(i64, @intCast(blit_h)), // pixelsHigh
+            @as(i64, 8), // bitsPerSample
+            @as(i64, 4), // samplesPerPixel (RGBA)
+            @as(i8, 1), // hasAlpha: YES
+            @as(i8, 0), // isPlanar: NO
+            NSDeviceRGBColorSpace,
+            @as(i64, @intCast(fb_width * 4)), // bytesPerRow
+            @as(i64, 32), // bitsPerPixel
+        });
+
+        // Create NSImage and add the rep
+        const NSImage = cls("NSImage");
+        const alloc_image = msgSend(NSImage, sel("alloc"), .{});
+        const size = CGRect{ .x = 0, .y = 0, .width = @floatFromInt(blit_w), .height = @floatFromInt(blit_h) };
+        _ = size;
+
+        // Use initWithSize: then addRepresentation:
+        const img_size_sel = sel("initWithSize:");
+        const NSSize = extern struct { width: f64, height: f64 };
+        const img_size = NSSize{ .width = @floatFromInt(blit_w), .height = @floatFromInt(blit_h) };
+
+        const FnInitSize = *const fn (id, c.SEL, NSSize) callconv(.c) id;
+        const init_size_fn: FnInitSize = @ptrCast(&objc_msgSend_fn);
+        const image = init_size_fn(alloc_image, img_size_sel, img_size);
+
+        msgSendVoid(image, sel("addRepresentation:"), .{bitmap});
+
+        // Draw to the view: lock focus, composite, unlock
+        msgSendVoid(self.ns_view, sel("lockFocus"), .{});
+
+        // [image drawAtPoint:NSZeroPoint fromRect:NSZeroRect
+        //         operation:NSCompositingOperationCopy fraction:1.0]
+        const NSPoint = extern struct { x: f64, y: f64 };
+        const zero_point = NSPoint{ .x = 0.0, .y = 0.0 };
+        const zero_rect = CGRect{ .x = 0.0, .y = 0.0, .width = 0.0, .height = 0.0 };
+
+        const FnDraw = *const fn (id, c.SEL, NSPoint, CGRect, u64, f64) callconv(.c) void;
+        const draw_fn: FnDraw = @ptrCast(&objc_msgSend_fn);
+        draw_fn(image, sel("drawAtPoint:fromRect:operation:fraction:"), zero_point, zero_rect, 1, // NSCompositingOperationCopy
+            1.0);
+
+        msgSendVoid(self.ns_view, sel("unlockFocus"), .{});
+
+        // Flush the window
+        msgSendVoid(self.ns_window, sel("flushWindow"), .{});
+
+        // Release
+        msgSendVoid(bitmap, sel("release"), .{});
+        msgSendVoid(image, sel("release"), .{});
+    }
+
+    pub fn getSize(self: *const MacosWindow) Size {
+        return .{ .width = self.width, .height = self.height };
+    }
+
+    // ── Internal helpers ────────────────────────────────────────────
+
+    fn getViewFrame(self: *MacosWindow) CGRect {
+        // [self.ns_view frame] returns CGRect — a large struct, needs stret on x86_64.
+        // On arm64 (Apple Silicon), stret is not used.
+        const FnFrame = *const fn (id, c.SEL) callconv(.c) CGRect;
+        const frame_fn: FnFrame = @ptrCast(&objc_msgSend_stret_fn);
+        return frame_fn(self.ns_view, sel("frame"));
+    }
+};
+
+// ── Platform wrapper (single-backend, matches linux Platform shape) ─
+
+pub const Platform = union(enum) {
+    macos: MacosWindow,
+
+    pub fn init(width: u32, height: u32, title: []const u8) !Platform {
+        return .{ .macos = try MacosWindow.init(width, height, title) };
+    }
+
+    pub fn deinit(self: *Platform) void {
+        switch (self.*) {
+            .macos => |*w| w.deinit(),
+        }
+    }
+
+    pub fn pollEvents(self: *Platform) ?Event {
+        return switch (self.*) {
+            .macos => |*w| w.pollEvents(),
+        };
+    }
+
+    pub fn putFramebuffer(self: *Platform, pixels: []const u32, width: u32, height: u32) void {
+        switch (self.*) {
+            .macos => |*w| w.putFramebuffer(pixels, width, height),
+        }
+    }
+
+    pub fn getSize(self: *const Platform) Size {
+        return switch (self.*) {
+            .macos => |*w| .{ .width = w.width, .height = w.height },
+        };
+    }
+};
