@@ -25,6 +25,8 @@ else
 
 const Session = @import("persist/Session.zig");
 const UrlDetector = @import("core/UrlDetector.zig");
+const HookListener = @import("agent/HookListener.zig");
+const HookHandler = @import("agent/HookHandler.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
@@ -149,12 +151,22 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     var pane_backend = PaneBackend.init(allocator, &mux, &graph) catch null;
     defer if (pane_backend) |*pb| pb.deinit();
 
-    // Set env var so Claude Code instances know about the pane backend
+    // Hook listener: receives Claude Code lifecycle events over Unix socket
+    var hook_listener = HookListener.init(allocator) catch null;
+    defer if (hook_listener) |*hl| hl.deinit();
+
+    // Set env vars so Claude Code instances know about teru's sockets
     if (pane_backend) |*pb| {
         const path = pb.getSocketPath();
         var env_buf: [128:0]u8 = [_:0]u8{0} ** 128;
         @memcpy(env_buf[0..path.len], path);
         _ = setenv("CLAUDE_PANE_BACKEND_SOCKET", &env_buf, 1);
+    }
+    if (hook_listener) |*hl| {
+        const path = hl.getSocketPath();
+        var env_buf: [128:0]u8 = [_:0]u8{0} ** 128;
+        @memcpy(env_buf[0..path.len], path);
+        _ = setenv("TERU_HOOK_SOCKET", &env_buf, 1);
     }
 
     // Spawn panes (restore or fresh)
@@ -539,6 +551,14 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
         if (pane_backend) |*pb| {
             pb.poll();
             pb.checkExits();
+        }
+
+        // Poll hook listener for Claude Code lifecycle events
+        if (hook_listener) |*hl| {
+            hl.poll();
+            while (hl.nextEvent()) |ev| {
+                processHookEvent(&graph, &hooks, ev, allocator);
+            }
         }
 
         // Check for agent protocol events on all panes
@@ -1036,6 +1056,101 @@ fn markAgentFinished(graph: *ProcessGraph, name: []const u8, exit_status: ?[]con
 fn updateAgentStatusByName(graph: *ProcessGraph, name: []const u8, task: ?[]const u8, progress: ?f32) void {
     const node_id = graph.findAgentByName(name) orelse return;
     graph.updateAgentStatus(node_id, task, progress);
+}
+
+/// Process a Claude Code hook event: update ProcessGraph and fire hooks.
+fn processHookEvent(
+    graph: *ProcessGraph,
+    hooks: *Hooks,
+    ev: HookListener.QueuedEvent,
+    allocator: std.mem.Allocator,
+) void {
+    defer {
+        var event = ev.event;
+        HookHandler.freeHookEvent(&event, allocator);
+        if (ev.session_id) |s| allocator.free(s);
+        if (ev.tool_name) |s| allocator.free(s);
+        if (ev.tool_input) |s| allocator.free(s);
+    }
+
+    switch (ev.event) {
+        .subagent_start => |e| {
+            _ = graph.spawn(.{
+                .name = e.agent_type,
+                .kind = .agent,
+                .pid = null,
+                .agent = .{
+                    .group = "claude-code",
+                    .role = e.agent_type,
+                },
+            }) catch return;
+            hooks.fire(.agent_start);
+        },
+        .subagent_stop => |e| {
+            markAgentFinished(graph, e.agent_id, null);
+        },
+        .teammate_idle => |e| {
+            // Mark agent as paused (idle)
+            if (graph.findAgentByName(e.agent_id)) |node_id| {
+                if (graph.nodes.getPtr(node_id)) |node| {
+                    node.state = .paused;
+                }
+            }
+        },
+        .task_created => |e| {
+            // Find the most recent agent and update its task description
+            updateLatestAgentTask(graph, e.description);
+        },
+        .task_completed => {
+            // Task done — no graph update needed (agent stop handles lifecycle)
+        },
+        .pre_tool_use => |e| {
+            // Update the most recent running agent's task to show tool activity
+            updateLatestAgentTask(graph, e.tool_name);
+        },
+        .post_tool_use => {
+            // Clear tool activity (agent returns to default task)
+        },
+        .post_tool_use_failure => {
+            // Could mark agent border red briefly — for now, just clear
+        },
+        .session_start => {
+            // Could show session indicator in status bar
+        },
+        .session_end => {
+            // Could clean up session-related graph nodes
+        },
+        .stop => {
+            // Agent finished a turn — mark as paused (waiting for input)
+        },
+        .stop_failure => {
+            // Rate limit or billing error — could show in status bar
+        },
+        .notification => {
+            // Permission prompt or idle notification — future: inline approval widget
+        },
+        .pre_compact, .post_compact => {
+            // Future: context gauge in status bar
+        },
+        .unknown => {},
+    }
+}
+
+/// Update the most recently spawned running agent's task description.
+fn updateLatestAgentTask(graph: *ProcessGraph, task: []const u8) void {
+    var latest_id: ?ProcessGraph.NodeId = null;
+    var latest_time: i128 = 0;
+    var it = graph.nodes.iterator();
+    while (it.next()) |entry| {
+        const node = entry.value_ptr;
+        if (node.kind == .agent and node.state == .running and node.started_at > latest_time) {
+            latest_time = node.started_at;
+            latest_id = node.id;
+        }
+    }
+    if (latest_id) |id| {
+        graph.updateAgentStatus(id, task, null);
+    }
 }
 
 fn runRawMode(allocator: std.mem.Allocator, io: std.Io) !void {

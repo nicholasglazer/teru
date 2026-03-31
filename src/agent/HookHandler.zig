@@ -21,11 +21,33 @@ const std = @import("std");
 /// ```
 
 pub const HookEvent = union(enum) {
+    // Agent lifecycle
     subagent_start: SubagentStart,
     subagent_stop: SubagentStop,
+    teammate_idle: TeammateIdle,
+
+    // Task management
     task_created: TaskCreated,
     task_completed: TaskCompleted,
-    teammate_idle: TeammateIdle,
+
+    // Tool activity
+    pre_tool_use: PreToolUse,
+    post_tool_use: PostToolUse,
+    post_tool_use_failure: PostToolUseFailure,
+
+    // Session lifecycle
+    session_start: SessionStart,
+    session_end,
+    stop: Stop,
+    stop_failure: StopFailure,
+
+    // Notifications
+    notification: Notification,
+
+    // Context management
+    pre_compact,
+    post_compact,
+
     unknown,
 
     pub const SubagentStart = struct {
@@ -48,6 +70,35 @@ pub const HookEvent = union(enum) {
 
     pub const TeammateIdle = struct {
         agent_id: []const u8,
+    };
+
+    pub const PreToolUse = struct {
+        tool_name: []const u8,
+    };
+
+    pub const PostToolUse = struct {
+        tool_name: []const u8,
+    };
+
+    pub const PostToolUseFailure = struct {
+        tool_name: []const u8,
+        error_msg: []const u8,
+    };
+
+    pub const SessionStart = struct {
+        session_id: []const u8,
+    };
+
+    pub const Stop = struct {
+        reason: []const u8,
+    };
+
+    pub const StopFailure = struct {
+        error_class: []const u8,
+    };
+
+    pub const Notification = struct {
+        notification_type: []const u8,
     };
 };
 
@@ -118,6 +169,64 @@ pub fn parseHookEvent(json: []const u8, allocator: std.mem.Allocator) !HookEvent
         } };
     }
 
+    if (std.mem.eql(u8, event_name, "PreToolUse")) {
+        const tool_name = getStr(obj, "tool_name") catch "unknown";
+        return .{ .pre_tool_use = .{
+            .tool_name = try allocator.dupe(u8, tool_name),
+        } };
+    }
+
+    if (std.mem.eql(u8, event_name, "PostToolUse")) {
+        const tool_name = getStr(obj, "tool_name") catch "unknown";
+        return .{ .post_tool_use = .{
+            .tool_name = try allocator.dupe(u8, tool_name),
+        } };
+    }
+
+    if (std.mem.eql(u8, event_name, "PostToolUseFailure")) {
+        const tool_name = getStr(obj, "tool_name") catch "unknown";
+        const error_msg = getStr(obj, "error") catch "unknown error";
+        return .{ .post_tool_use_failure = .{
+            .tool_name = try allocator.dupe(u8, tool_name),
+            .error_msg = try allocator.dupe(u8, error_msg),
+        } };
+    }
+
+    if (std.mem.eql(u8, event_name, "SessionStart")) {
+        const session_id = getStr(obj, "session_id") catch "unknown";
+        return .{ .session_start = .{
+            .session_id = try allocator.dupe(u8, session_id),
+        } };
+    }
+
+    if (std.mem.eql(u8, event_name, "SessionEnd")) {
+        return .session_end;
+    }
+
+    if (std.mem.eql(u8, event_name, "Stop")) {
+        const reason = getStr(obj, "stop_reason") catch "end_turn";
+        return .{ .stop = .{
+            .reason = try allocator.dupe(u8, reason),
+        } };
+    }
+
+    if (std.mem.eql(u8, event_name, "StopFailure")) {
+        const error_class = getStr(obj, "error_class") catch "unknown";
+        return .{ .stop_failure = .{
+            .error_class = try allocator.dupe(u8, error_class),
+        } };
+    }
+
+    if (std.mem.eql(u8, event_name, "Notification")) {
+        const ntype = getStr(obj, "notification_type") catch "unknown";
+        return .{ .notification = .{
+            .notification_type = try allocator.dupe(u8, ntype),
+        } };
+    }
+
+    if (std.mem.eql(u8, event_name, "PreCompact")) return .pre_compact;
+    if (std.mem.eql(u8, event_name, "PostCompact")) return .post_compact;
+
     return .unknown;
 }
 
@@ -143,7 +252,17 @@ pub fn freeHookEvent(event: *const HookEvent, allocator: std.mem.Allocator) void
         },
         .task_completed => |e| allocator.free(e.task_id),
         .teammate_idle => |e| allocator.free(e.agent_id),
-        .unknown => {},
+        .pre_tool_use => |e| allocator.free(e.tool_name),
+        .post_tool_use => |e| allocator.free(e.tool_name),
+        .post_tool_use_failure => |e| {
+            allocator.free(e.tool_name);
+            allocator.free(e.error_msg);
+        },
+        .session_start => |e| allocator.free(e.session_id),
+        .stop => |e| allocator.free(e.reason),
+        .stop_failure => |e| allocator.free(e.error_class),
+        .notification => |e| allocator.free(e.notification_type),
+        .session_end, .pre_compact, .post_compact, .unknown => {},
     }
 }
 
