@@ -193,6 +193,18 @@ pub const SoftwareRenderer = struct {
                         );
                     }
                 }
+
+                // Underline: attrs.underline OR hyperlinked cell
+                if (cell.attrs.underline or cell.hyperlink_id != 0) {
+                    const ul_color = if (cell.hyperlink_id != 0) 0xFF5599DD else fg;
+                    const ul_y = if (ch >= 2) screen_y + ch - 1 else screen_y;
+                    if (ul_y < fb_h) {
+                        const row_start = ul_y * fb_w;
+                        const ul_end = @min(row_start + max_x, self.framebuffer.len);
+                        const ul_start = @min(row_start + screen_x, ul_end);
+                        @memset(self.framebuffer[ul_start..ul_end], ul_color);
+                    }
+                }
             }
         }
 

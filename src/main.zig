@@ -456,10 +456,19 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             const row: u16 = @intCast(@min(mouse.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
 
                             // Ctrl+click: open URL under cursor
+                            // Prefer OSC 8 hyperlink (explicit), fall back to regex detection
                             const CTRL_MASK: u32 = 4; // XCB ControlMask
                             if (mouse.modifiers & CTRL_MASK != 0) {
                                 if (mux.getActivePane()) |pane| {
-                                    if (UrlDetector.findUrlAt(&pane.grid, row, col)) |match| {
+                                    const cell = pane.grid.cellAtConst(row, col);
+                                    if (cell.hyperlink_id != 0) {
+                                        // OSC 8 hyperlink — use explicit URI
+                                        const entry = &pane.grid.hyperlinks[cell.hyperlink_id];
+                                        if (entry.uri_len > 0) {
+                                            UrlDetector.openUrl(entry.uri[0..entry.uri_len]);
+                                        }
+                                    } else if (UrlDetector.findUrlAt(&pane.grid, row, col)) |match| {
+                                        // Regex-free URL detection fallback
                                         const row_start = @as(usize, match.row) * @as(usize, pane.grid.cols);
                                         const row_cells = pane.grid.cells[row_start..][0..pane.grid.cols];
                                         var url_buf: [2048]u8 = undefined;

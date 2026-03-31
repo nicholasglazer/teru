@@ -28,6 +28,7 @@ pub const Cell = struct {
     fg: Color = .default,
     bg: Color = .default,
     attrs: Attrs = .{},
+    hyperlink_id: u8 = 0, // 0 = no link, 1-255 = index into hyperlink table
 
     pub fn blank() Cell {
         return .{};
@@ -43,6 +44,13 @@ pub const PromptMark = enum {
     input_start, // B: user is typing
     output_start, // C: command executing, output begins
     output_end, // D: command finished
+};
+
+/// OSC 8 hyperlink storage. Max URI length 256 bytes.
+pub const HyperlinkEntry = struct {
+    uri: [256]u8 = [_]u8{0} ** 256,
+    uri_len: u16 = 0,
+    active: bool = false,
 };
 
 /// Per-row metadata for shell integration (OSC 133).
@@ -70,6 +78,14 @@ scrollback: ?*Scrollback = null,
 pen_fg: Color = .default,
 pen_bg: Color = .default,
 pen_attrs: Attrs = .{},
+
+/// Active hyperlink ID (0 = none). Set by OSC 8; applied to new cells.
+pen_hyperlink_id: u8 = 0,
+
+/// Hyperlink URI table. Index 0 is unused (means "no link").
+/// Slots are reused when a link is closed (OSC 8;; with empty URI).
+hyperlinks: [256]HyperlinkEntry = [_]HyperlinkEntry{.{}} ** 256,
+hyperlink_next_id: u8 = 1,
 
 /// Saved cursor state (ESC 7 / ESC[s).
 saved_cursor_row: u16 = 0,

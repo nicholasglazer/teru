@@ -182,6 +182,7 @@ fn writeGroundBatch(self: *VtParser, run: []const u8) void {
         cell.fg = grid.pen_fg;
         cell.bg = grid.pen_bg;
         cell.attrs = grid.pen_attrs;
+        cell.hyperlink_id = grid.pen_hyperlink_id;
         grid.cursor_col += 1;
     }
     if (run.len > 0) {
@@ -519,6 +520,28 @@ fn finishOsc(self: *VtParser) void {
                 if (payload.len == 1 and payload[0] == '?') {
                     // Respond with default background (black)
                     self.sendResponse("\x1b]11;rgb:00/00/00\x1b\\");
+                }
+            },
+            8 => {
+                // Hyperlink (OSC 8). Format: "params;uri" to start, ";;" to end.
+                // params are key=value pairs (id=...) — we skip them for now.
+                if (std.mem.indexOf(u8, payload, ";")) |sep| {
+                    const uri = payload[sep + 1 ..];
+                    if (uri.len == 0) {
+                        // End hyperlink
+                        self.grid.pen_hyperlink_id = 0;
+                    } else {
+                        // Start hyperlink — allocate a slot
+                        const id = self.grid.hyperlink_next_id;
+                        var entry = &self.grid.hyperlinks[id];
+                        const copy_len = @min(uri.len, entry.uri.len);
+                        @memcpy(entry.uri[0..copy_len], uri[0..copy_len]);
+                        entry.uri_len = @intCast(copy_len);
+                        entry.active = true;
+                        self.grid.pen_hyperlink_id = id;
+                        self.grid.hyperlink_next_id +%= 1;
+                        if (self.grid.hyperlink_next_id == 0) self.grid.hyperlink_next_id = 1;
+                    }
                 }
             },
             52 => {
