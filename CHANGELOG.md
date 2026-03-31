@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.3 (2026-04-01)
+
+### Features
+- Configurable prefix key: `prefix_key = ctrl+b` in teru.conf (accepts ctrl+a through ctrl+z, ctrl+space, raw integers)
+- Pane zoom: `Ctrl+Space, z` toggles between current layout and monocle, restores on second press
+- Pane resize: `Ctrl+Space, H/L` adjusts master ratio in master-stack layout (15%-85%)
+
+## 0.1.2 (2026-04-01)
+
+### Features
+- Claude Code hook listener: Unix socket HTTP server accepts lifecycle events (16 event types)
+- Three-layer AI integration fully wired: PaneBackend + HookListener + MCP Server
+- HookHandler expanded from 5 to 16 event types (PreToolUse, PostToolUse, SessionStart/End, Stop, Notification, PreCompact/PostCompact)
+- processHookEvent dispatches to ProcessGraph (agent spawn/stop/pause, tool activity)
+- Full project roadmap added (docs/plans/2026-03-31-roadmap.md)
+
 ## 0.1.1 (2026-03-31)
 
 ### Fixes

@@ -191,7 +191,7 @@ fn setChildEnv(cols: u16, rows: u16) void {
     _ = setenv("TERM", "xterm-256color", 1);
     _ = setenv("COLORTERM", "truecolor", 1);
     _ = setenv("TERM_PROGRAM", "teru", 1);
-    _ = setenv("TERM_PROGRAM_VERSION", "0.1.1", 1);
+    _ = setenv("TERM_PROGRAM_VERSION", "0.1.3", 1);
 
     var cols_buf: [8:0]u8 = [_:0]u8{0} ** 8;
     var rows_buf: [8:0]u8 = [_:0]u8{0} ** 8;
