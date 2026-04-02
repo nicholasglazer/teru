@@ -18,7 +18,7 @@ pub const PrefixState = struct {
     awaiting: bool = false,
     timestamp_ns: i128 = 0,
 
-    const TIMEOUT_NS: i128 = 1_000_000_000; // 1 second
+    const TIMEOUT_NS: i128 = 500_000_000; // 500ms — short enough to not get stuck
 
     pub fn activate(self: *PrefixState) void {
         self.awaiting = true;

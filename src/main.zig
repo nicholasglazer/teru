@@ -7,8 +7,10 @@ const ProcessGraph = @import("graph/ProcessGraph.zig");
 const Terminal = @import("core/Terminal.zig");
 const platform = @import("platform/platform.zig");
 const render = @import("render/render.zig");
+const Ui = @import("render/Ui.zig");
 const protocol = @import("agent/protocol.zig");
 const McpServer = @import("agent/McpServer.zig");
+const McpBridge = @import("agent/McpBridge.zig");
 const PaneBackend = @import("agent/PaneBackend.zig");
 const build_options = @import("build_options");
 const Config = @import("config/Config.zig");
@@ -27,6 +29,7 @@ const Session = @import("persist/Session.zig");
 const UrlDetector = @import("core/UrlDetector.zig");
 const HookListener = @import("agent/HookListener.zig");
 const HookHandler = @import("agent/HookHandler.zig");
+const SignalManager = @import("core/SignalManager.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
@@ -59,7 +62,7 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, arg, "--help")) {
-            out("teru — AI-first terminal emulator\n\nUsage: teru [options]\n\nOptions:\n  --help       Show this help\n  --version    Show version\n  --raw        Raw passthrough mode (no window)\n  --attach     Restore session from last detach\n\nMultiplexer keys (prefix: Ctrl+Space):\n  c     Spawn new pane\n  x     Close active pane\n  n     Focus next pane\n  p     Focus prev pane\n  1-9   Switch workspace\n  Space Cycle layout\n  d     Detach (save session, exit)\n  /     Search visible grid\n\nScrollback:\n  Shift+PageUp    Scroll up one page\n  Shift+PageDown  Scroll down one page\n  Any key         Exit scroll mode\n\nURL detection:\n  Ctrl+click on a URL to open in browser\n\n");
+            out("teru — AI-first terminal emulator\n\nUsage: teru [options]\n\nOptions:\n  --help        Show this help\n  --version     Show version\n  --raw         Raw passthrough mode (no window)\n  --attach      Restore session from last detach\n  --mcp-bridge  MCP stdio bridge (stdin/stdout <-> teru socket)\n\nMultiplexer keys (prefix: Ctrl+Space):\n  c     Spawn new pane\n  x     Close active pane\n  n     Focus next pane\n  p     Focus prev pane\n  1-9   Switch workspace\n  Space Cycle layout\n  d     Detach (save session, exit)\n  /     Search visible grid\n\nScrollback:\n  Shift+PageUp    Scroll up one page\n  Shift+PageDown  Scroll down one page\n  Any key         Exit scroll mode\n\nURL detection:\n  Ctrl+click on a URL to open in browser\n\n");
             return;
         }
         if (std.mem.eql(u8, arg, "--attach")) {
@@ -67,6 +70,9 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, arg, "--raw")) {
             return runRawMode(allocator, io);
+        }
+        if (std.mem.eql(u8, arg, "--mcp-bridge")) {
+            return McpBridge.run(io);
         }
     }
 
@@ -129,9 +135,10 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     defer renderer.deinit();
     renderer.updateAtlas(atlas.atlas_data, atlas.atlas_width, atlas.atlas_height);
 
-    const padding: u32 = 4; // must match SoftwareRenderer.padding
+    const padding: u32 = 8; // must match SoftwareRenderer.padding
+    const status_bar_h: u32 = atlas.cell_height + 4; // must match renderTextStatusBar
     var grid_cols: u16 = @intCast((config.initial_width -| padding * 2) / atlas.cell_width);
-    var grid_rows: u16 = @intCast((config.initial_height -| padding * 2) / atlas.cell_height);
+    var grid_rows: u16 = @intCast((config.initial_height -| padding * 2 -| status_bar_h) / atlas.cell_height);
 
     // Multiplexer: manages all panes (linked to process graph for agent rendering)
     var mux = Multiplexer.init(allocator);
@@ -144,7 +151,11 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     loadHooks(&config, &hooks);
 
     // MCP server: exposes pane/graph state to Claude Code over Unix socket
-    var mcp = McpServer.init(allocator, &mux, &graph) catch null;
+    var mcp = McpServer.init(allocator, &mux, &graph) catch |err| blk: {
+        var err_buf: [128]u8 = undefined;
+        outFmt(&err_buf, "[teru] MCP server init failed: {s}\n", .{@errorName(err)});
+        break :blk null;
+    };
     defer if (mcp) |*m| m.deinit();
 
     // PaneBackend: Claude Code agent team protocol (NDJSON over Unix socket)
@@ -167,6 +178,12 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
         var env_buf: [128:0]u8 = [_:0]u8{0} ** 128;
         @memcpy(env_buf[0..path.len], path);
         _ = setenv("TERU_HOOK_SOCKET", &env_buf, 1);
+    }
+    if (mcp) |*m| {
+        const path = m.getSocketPath();
+        var env_buf: [128:0]u8 = [_:0]u8{0} ** 128;
+        @memcpy(env_buf[0..path.len], path);
+        _ = setenv("TERU_MCP_SOCKET", &env_buf, 1);
     }
 
     // Spawn panes (restore or fresh)
@@ -207,10 +224,13 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     var pty_buf: [8192]u8 = undefined;
     var running = true;
 
-    // Scrollback browsing state
-    var scroll_offset: u32 = 0;
-    var saved_cells: ?[]Grid.Cell = null;
-    defer if (saved_cells) |sc| allocator.free(sc);
+    // Key repeat tracking: debounce rapid repeats of the same keycode
+    var last_keycode: u32 = 0;
+    var last_key_time: i128 = 0;
+    const KEY_REPEAT_MIN_NS: i128 = 33_000_000; // 33ms (~30Hz) minimum between same-key repeats
+
+    // Scrollback state lives on mux (accessible from McpServer for teru_scroll)
+    // No saved_cells needed — scroll is non-destructive (renders overlay on framebuffer)
 
     // Search mode state (Feature 9)
     var search_mode = false;
@@ -240,7 +260,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
 
                     // Recalculate grid dimensions
                     const new_cols: u16 = @intCast((sz.width -| padding * 2) / atlas.cell_width);
-                    const new_rows: u16 = @intCast((sz.height -| padding * 2) / atlas.cell_height);
+                    const new_rows: u16 = @intCast((sz.height -| padding * 2 -| status_bar_h) / atlas.cell_height);
                     grid_cols = new_cols;
                     grid_rows = new_rows;
 
@@ -289,15 +309,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         }
                     }
 
-                    // Exit scroll mode on resize — grid dimensions changed,
-                    // saved_cells is stale. PTY output will refresh the grid.
-                    if (scroll_offset > 0) {
-                        scroll_offset = 0;
-                        if (saved_cells) |sc| {
-                            allocator.free(sc);
-                            saved_cells = null;
-                        }
-                    }
+                    // Exit scroll on resize
+                    mux.scroll_offset = 0;
                 },
                 .key_press => |key| {
                     const XKB_KEY_Page_Up: u32 = 0xff55;
@@ -350,7 +363,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                     else
                                         0;
                                     if (max_offset > 0) {
-                                        scroll_offset = @min(scroll_offset + grid_rows, max_offset);
+                                        mux.scroll_offset = @min(mux.scroll_offset + grid_rows, max_offset);
                                         if (mux.getActivePane()) |pane| pane.grid.dirty = true;
                                     }
                                     // Update xkb state without forwarding to PTY
@@ -358,8 +371,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                     _ = kb.processKey(key.keycode, true, &dummy);
                                     continue;
                                 } else if (keysym == XKB_KEY_Page_Down) {
-                                    if (scroll_offset > 0) {
-                                        scroll_offset -|= grid_rows;
+                                    if (mux.scroll_offset > 0) {
+                                        mux.scroll_offset -|= grid_rows;
                                         if (mux.getActivePane()) |pane| pane.grid.dirty = true;
                                     }
                                     var dummy: [32]u8 = undefined;
@@ -369,19 +382,9 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             }
 
                             // Any other key while in scroll mode: exit scroll mode
-                            if (scroll_offset > 0) {
-                                scroll_offset = 0;
-                                // Restore saved cells
-                                if (saved_cells) |sc| {
-                                    if (mux.getActivePane()) |pane| {
-                                        if (sc.len == pane.grid.cells.len) {
-                                            @memcpy(pane.grid.cells, sc);
-                                        }
-                                        pane.grid.dirty = true;
-                                    }
-                                    allocator.free(sc);
-                                    saved_cells = null;
-                                }
+                            if (mux.scroll_offset > 0) {
+                                mux.scroll_offset = 0;
+                                if (mux.getActivePane()) |pane| pane.grid.dirty = true;
                             }
 
                             var key_buf: [32]u8 = undefined;
@@ -404,6 +407,16 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
 
                             // Normal key — forward to active pane's PTY
                             if (len > 0) {
+                                // Debounce rapid repeats of the same key (prevents
+                                // Enter/Backspace runaway when held and released)
+                                var ts: std.os.linux.timespec = undefined;
+                                _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+                                const now: i128 = @as(i128, ts.sec) * 1_000_000_000 + ts.nsec;
+                                const is_repeat = key.keycode == last_keycode and (now - last_key_time) < KEY_REPEAT_MIN_NS;
+                                last_keycode = key.keycode;
+                                last_key_time = now;
+                                if (is_repeat) continue;
+
                                 if (mux.getActivePane()) |pane| {
                                     _ = pane.pty.write(key_buf[0..len]) catch {};
                                 }
@@ -411,18 +424,9 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         }
                     } else {
                         // Fallback: raw keycode passthrough (no xkbcommon)
-                        if (scroll_offset > 0) {
-                            scroll_offset = 0;
-                            if (saved_cells) |sc| {
-                                if (mux.getActivePane()) |pane| {
-                                    if (sc.len == pane.grid.cells.len) {
-                                        @memcpy(pane.grid.cells, sc);
-                                    }
-                                    pane.grid.dirty = true;
-                                }
-                                allocator.free(sc);
-                                saved_cells = null;
-                            }
+                        if (mux.scroll_offset > 0) {
+                            mux.scroll_offset = 0;
+                            if (mux.getActivePane()) |pane| pane.grid.dirty = true;
                         }
                         if (prefix.awaiting) {
                             prefix.reset();
@@ -441,6 +445,11 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     }
                 },
                 .key_release => |key| {
+                    // Clear repeat tracking so next press isn't debounced
+                    if (key.keycode == last_keycode) {
+                        last_keycode = 0;
+                        last_key_time = 0;
+                    }
                     // Update xkbcommon modifier state on key release
                     if (Keyboard != void) {
                         if (keyboard) |*kb| {
@@ -499,10 +508,25 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             }
                         },
                         .scroll_up => {
-                            // Scroll up (future: scrollback navigation)
+                            // Mouse wheel up: scroll into scrollback history
+                            const scroll_lines: u32 = 3; // lines per wheel tick
+                            // Max offset = scrollback lines + screen lines - one screenful
+                            // (so oldest scrollback line appears at top of screen)
+                            const max_offset = if (mux.getActivePane()) |pane|
+                                if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
+                            else
+                                0;
+                            if (max_offset > 0) {
+                                mux.scroll_offset = @min(mux.scroll_offset + scroll_lines, max_offset);
+                                if (mux.getActivePane()) |pane| pane.grid.dirty = true;
+                            }
                         },
                         .scroll_down => {
-                            // Scroll down (future: scrollback navigation)
+                            // Mouse wheel down: scroll back toward live terminal
+                            if (mux.scroll_offset > 0) {
+                                mux.scroll_offset -|= 3;
+                                if (mux.getActivePane()) |pane| pane.grid.dirty = true;
+                            }
                         },
                         else => {},
                     }
@@ -549,7 +573,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
             }
         }
 
-        // Poll all PTYs
+        // Poll all PTYs (grid is never modified by scroll — no save/restore needed)
         const had_output = mux.pollPtys(&pty_buf);
 
         // Poll MCP server for incoming connections
@@ -636,7 +660,18 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
             }
         }
 
-        if (any_dirty) {
+        // Synchronized output (DEC 2026): defer rendering while an app is
+        // sending a batch of screen updates. Prevents flickering in TUI apps
+        // like Claude Code that rapidly rewrite the screen.
+        var sync_active = false;
+        for (mux.panes.items) |*pane| {
+            if (pane.vt.sync_output) {
+                sync_active = true;
+                break;
+            }
+        }
+
+        if (any_dirty and !sync_active) {
             // Visual bell: invert framebuffer for one frame when BEL received
             for (mux.panes.items) |*pane| {
                 if (pane.grid.bell) {
@@ -652,20 +687,6 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                 }
             }
 
-            // Scrollback overlay: temporarily replace grid cells with scrollback text
-            if (scroll_offset > 0) {
-                if (mux.getActivePane()) |pane| {
-                    if (pane.grid.scrollback) |sb| {
-                        // Save original cells on first entry
-                        if (saved_cells == null) {
-                            saved_cells = allocator.dupe(Grid.Cell, pane.grid.cells) catch null;
-                        }
-                        // Fill grid with scrollback content
-                        fillGridWithScrollback(&pane.grid, sb, scroll_offset);
-                    }
-                }
-            }
-
             // Get the underlying SoftwareRenderer for multi-pane rendering
             switch (renderer) {
                 .cpu => |*cpu| {
@@ -676,12 +697,21 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     // Search overlay: highlight matches + draw search bar
                     if (search_mode or search_len > 0) {
                         if (mux.getActivePane()) |pane| {
-                            renderSearchOverlay(cpu, &pane.grid, search_query[0..search_len], search_mode, atlas.cell_width, atlas.cell_height);
+                            Ui.renderSearchOverlay(cpu, &pane.grid, search_query[0..search_len], search_mode, atlas.cell_width, atlas.cell_height);
+                        }
+                    }
+
+                    // Scroll overlay: render scrollback lines onto framebuffer (non-destructive)
+                    if (mux.scroll_offset > 0) {
+                        if (mux.getActivePane()) |pane| {
+                            if (pane.grid.scrollback) |sb| {
+                                Ui.renderScrollOverlay(cpu, sb, mux.scroll_offset, atlas.cell_width, atlas.cell_height);
+                            }
                         }
                     }
 
                     // Status bar with text (Feature 10)
-                    renderTextStatusBar(cpu, &mux, grid_cols, grid_rows, atlas.cell_width, atlas.cell_height);
+                    Ui.renderTextStatusBar(cpu, &mux, grid_cols, grid_rows, atlas.cell_width, atlas.cell_height, prefix.awaiting);
 
                     win.putFramebuffer(cpu.getFramebuffer(), sz.width, sz.height);
                 },
@@ -698,323 +728,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     }
 }
 
-// ── Search overlay rendering (Feature 9) ─────────────────────────
-
-/// Render search highlights on matching cells and draw search input bar.
-fn renderSearchOverlay(
-    cpu: *render.SoftwareRenderer,
-    grid: *const Grid,
-    query: []const u8,
-    active: bool,
-    cell_width: u32,
-    cell_height: u32,
-) void {
-    const fb_w: usize = cpu.width;
-    const fb_h: usize = cpu.height;
-    const cw: usize = cell_width;
-    const ch: usize = cell_height;
-
-    // Highlight matching cells with a yellow tint
-    if (query.len > 0) {
-        for (0..grid.rows) |row| {
-            var col: usize = 0;
-            while (col + query.len <= grid.cols) {
-                var match = true;
-                for (query, 0..) |qch, qi| {
-                    const cell = grid.cellAtConst(@intCast(row), @intCast(col + qi));
-                    const cell_lower: u8 = if (cell.char >= 'A' and cell.char <= 'Z') @intCast(cell.char + 32) else if (cell.char < 128) @intCast(cell.char) else 0;
-                    const q_lower: u8 = if (qch >= 'A' and qch <= 'Z') qch + 32 else qch;
-                    if (cell_lower != q_lower) {
-                        match = false;
-                        break;
-                    }
-                }
-
-                if (match) {
-                    for (0..query.len) |qi| {
-                        const sx = (col + qi) * cw;
-                        const sy = row * ch;
-                        for (sy..@min(sy + ch, fb_h)) |py| {
-                            for (sx..@min(sx + cw, fb_w)) |px| {
-                                const idx = py * fb_w + px;
-                                if (idx < cpu.framebuffer.len) {
-                                    const orig = cpu.framebuffer[idx];
-                                    const r: u32 = (orig >> 16) & 0xFF;
-                                    const g: u32 = (orig >> 8) & 0xFF;
-                                    const b: u32 = orig & 0xFF;
-                                    const nr: u32 = @min(255, (r * 6 + 255 * 4) / 10);
-                                    const ng: u32 = @min(255, (g * 6 + 204 * 4) / 10);
-                                    const nb: u32 = b * 6 / 10;
-                                    cpu.framebuffer[idx] = (@as(u32, 0xFF) << 24) | (nr << 16) | (ng << 8) | nb;
-                                }
-                            }
-                        }
-                    }
-                    col += query.len;
-                } else {
-                    col += 1;
-                }
-            }
-        }
-    }
-
-    // Draw search bar at the bottom if actively searching
-    if (active) {
-        const bar_h: usize = ch + 4;
-        if (fb_h < bar_h + 10) return;
-        const bar_y = fb_h - bar_h;
-        const bar_bg: u32 = 0xFF2A2A36;
-
-        for (bar_y..fb_h) |y| {
-            if (y >= fb_h) break;
-            const row_start = y * fb_w;
-            const end = @min(row_start + fb_w, cpu.framebuffer.len);
-            if (row_start < end) {
-                @memset(cpu.framebuffer[row_start..end], bar_bg);
-            }
-        }
-
-        // Orange separator line
-        if (bar_y > 0) {
-            const sep_start = bar_y * fb_w;
-            const sep_end = @min(sep_start + fb_w, cpu.framebuffer.len);
-            if (sep_start < sep_end) {
-                @memset(cpu.framebuffer[sep_start..sep_end], 0xFFFF9922);
-            }
-        }
-
-        // Render prompt and query text
-        const text_y = bar_y + 2;
-        var text_x: usize = 4;
-
-        blitCharAt(cpu, '/', text_x, text_y, 0xFFFF9922);
-        text_x += cw;
-
-        for (query) |qch| {
-            blitCharAt(cpu, qch, text_x, text_y, 0xFFFAF8FB);
-            text_x += cw;
-        }
-
-        // Cursor line
-        for (text_y..@min(text_y + ch, fb_h)) |py| {
-            if (text_x < fb_w) {
-                const idx = py * fb_w + text_x;
-                if (idx < cpu.framebuffer.len) {
-                    cpu.framebuffer[idx] = 0xFFFAF8FB;
-                }
-            }
-        }
-    }
-}
-
-// ── Text status bar rendering (Feature 10) ───────────────────────
-
-/// Render a text status bar at the very bottom of the framebuffer.
-fn renderTextStatusBar(
-    cpu: *render.SoftwareRenderer,
-    mux: *const Multiplexer,
-    grid_cols: u16,
-    grid_rows: u16,
-    cell_width: u32,
-    cell_height: u32,
-) void {
-    const fb_w: usize = cpu.width;
-    const fb_h: usize = cpu.height;
-    const ch: usize = cell_height;
-    const cw: usize = cell_width;
-
-    const bar_h: usize = ch + 4;
-    if (fb_h < bar_h + ch) return;
-    const bar_y = fb_h - bar_h;
-    const bar_bg: u32 = 0xFF1D1D23;
-
-    for (bar_y..fb_h) |y| {
-        if (y >= fb_h) break;
-        const row_start = y * fb_w;
-        const end = @min(row_start + fb_w, cpu.framebuffer.len);
-        if (row_start < end) {
-            @memset(cpu.framebuffer[row_start..end], bar_bg);
-        }
-    }
-
-    // Top separator
-    if (bar_y > 0 and bar_y < fb_h) {
-        const sep_start = bar_y * fb_w;
-        const sep_end = @min(sep_start + fb_w, cpu.framebuffer.len);
-        if (sep_start < sep_end) {
-            @memset(cpu.framebuffer[sep_start..sep_end], 0xFF38384C);
-        }
-    }
-
-    const text_y = bar_y + 2;
-
-    // Left: workspace + pane info
-    var left_buf: [64]u8 = undefined;
-    const ws_num = mux.active_workspace + 1;
-    const active_idx = blk: {
-        const ws = &mux.layout_engine.workspaces[mux.active_workspace];
-        break :blk ws.active_index + 1;
-    };
-    const total_panes = mux.panes.items.len;
-    const left_text = std.fmt.bufPrint(&left_buf, " [{d}] {d}/{d}", .{ ws_num, active_idx, total_panes }) catch " [?]";
-
-    var x: usize = 0;
-    for (left_text) |ch_byte| {
-        if (ch_byte == '[' or ch_byte == ']') {
-            blitCharAt(cpu, ch_byte, x, text_y, 0xFFFF9922);
-        } else if (ch_byte >= '0' and ch_byte <= '9') {
-            blitCharAt(cpu, ch_byte, x, text_y, 0xFF2DD9F0);
-        } else {
-            blitCharAt(cpu, ch_byte, x, text_y, 0xFF64647E);
-        }
-        x += cw;
-    }
-
-    // Separator
-    x += cw;
-    blitCharAt(cpu, '|', x, text_y, 0xFF38384C);
-    x += cw * 2;
-
-    // Center: label
-    const center_text = "shell";
-    for (center_text) |ch_byte| {
-        blitCharAt(cpu, ch_byte, x, text_y, 0xFFC9CBD7);
-        x += cw;
-    }
-
-    // Right: dimensions + help hint
-    var right_buf: [64]u8 = undefined;
-    const right_text = std.fmt.bufPrint(&right_buf, "{d}x{d}  C-Space ?", .{ grid_cols, grid_rows }) catch "";
-    const right_start = if (fb_w > right_text.len * cw + cw) fb_w - right_text.len * cw - cw else 0;
-    var rx = right_start;
-    for (right_text) |ch_byte| {
-        if (ch_byte >= '0' and ch_byte <= '9') {
-            blitCharAt(cpu, ch_byte, rx, text_y, 0xFF8683FF);
-        } else {
-            blitCharAt(cpu, ch_byte, rx, text_y, 0xFF64647E);
-        }
-        rx += cw;
-    }
-}
-
-/// Blit a single character at a pixel position using the atlas.
-fn blitCharAt(cpu: *render.SoftwareRenderer, char: u8, screen_x: usize, screen_y: usize, fg: u32) void {
-    if (char < 32 or char >= 127) return;
-    if (cpu.atlas_width == 0 or cpu.glyph_atlas.len == 0) return;
-
-    const cw: usize = cpu.cell_width;
-    const ch: usize = cpu.cell_height;
-    const aw: usize = cpu.atlas_width;
-    const fb_w: usize = cpu.width;
-    const fb_h: usize = cpu.height;
-
-    const glyph_index: usize = char - 32;
-    const glyphs_per_row = if (aw >= cw) aw / cw else return;
-    const glyph_row = glyph_index / glyphs_per_row;
-    const glyph_col = glyph_index % glyphs_per_row;
-    const atlas_x = glyph_col * cw;
-    const atlas_y = glyph_row * ch;
-
-    const fg_r: u16 = @truncate((fg >> 16) & 0xFF);
-    const fg_g: u16 = @truncate((fg >> 8) & 0xFF);
-    const fg_b: u16 = @truncate(fg & 0xFF);
-
-    for (0..ch) |dy| {
-        if (screen_y + dy >= fb_h) break;
-        if (atlas_y + dy >= cpu.atlas_height) break;
-        const atlas_row_offset = (atlas_y + dy) * aw + atlas_x;
-        if (atlas_row_offset + cw > cpu.glyph_atlas.len) break;
-
-        for (0..cw) |dx| {
-            if (screen_x + dx >= fb_w) break;
-            const alpha: u16 = cpu.glyph_atlas[atlas_row_offset + dx];
-            if (alpha == 0) continue;
-
-            const fb_idx = (screen_y + dy) * fb_w + (screen_x + dx);
-            if (fb_idx >= cpu.framebuffer.len) continue;
-
-            if (alpha == 255) {
-                cpu.framebuffer[fb_idx] = fg;
-            } else {
-                const bg = cpu.framebuffer[fb_idx];
-                const bg_r: u16 = @truncate((bg >> 16) & 0xFF);
-                const bg_g: u16 = @truncate((bg >> 8) & 0xFF);
-                const bg_b: u16 = @truncate(bg & 0xFF);
-                const inv: u16 = 255 - alpha;
-                const r = (fg_r * alpha + bg_r * inv) / 255;
-                const g = (fg_g * alpha + bg_g * inv) / 255;
-                const b = (fg_b * alpha + bg_b * inv) / 255;
-                cpu.framebuffer[fb_idx] = (0xFF << 24) | (@as(u32, r) << 16) | (@as(u32, g) << 8) | @as(u32, b);
-            }
-        }
-    }
-}
-
-/// Fill the grid with scrollback text for browsing mode.
-/// scroll_offset is the number of lines from the bottom of scrollback.
-/// The last row shows a "[SCROLL +N]" indicator.
-fn fillGridWithScrollback(grid: *Grid, sb: *const Scrollback, scroll_offset: u32) void {
-    const rows = grid.rows;
-    const cols = grid.cols;
-
-    // Clear entire grid
-    for (grid.cells) |*c| c.* = Grid.Cell.blank();
-
-    // Reserve last row for scroll indicator
-    const content_rows: u16 = if (rows > 1) rows - 1 else rows;
-
-    // scroll_offset=1 means show the most recent scrollback line at the bottom.
-    // We want to show lines [offset - content_rows, offset) from the end,
-    // where offset 0 is the most recent line.
-    // Line at offset (scroll_offset - 1) is the bottom content line.
-    // Line at offset (scroll_offset - 1 + content_rows - 1) is the top content line.
-
-    var row: u16 = 0;
-    while (row < content_rows) : (row += 1) {
-        // Which scrollback line to show on this grid row?
-        // Top row = furthest back, bottom row = most recent in this view
-        const lines_from_bottom = scroll_offset -| 1 + (content_rows - 1 - row);
-        const text = sb.getLineByOffset(lines_from_bottom) orelse continue;
-
-        // Write text into grid row
-        var col: u16 = 0;
-        for (text) |byte| {
-            if (col >= cols) break;
-            grid.cellAt(row, col).char = byte;
-            grid.cellAt(row, col).fg = .default;
-            col += 1;
-        }
-    }
-
-    // Draw scroll indicator on the last row
-    if (rows > 0) {
-        const indicator_row = rows - 1;
-        var buf: [64]u8 = undefined;
-        const indicator = std.fmt.bufPrint(&buf, "[SCROLL +{d}]", .{scroll_offset}) catch "[SCROLL]";
-
-        var col: u16 = 0;
-        for (indicator) |byte| {
-            if (col >= cols) break;
-            const cell = grid.cellAt(indicator_row, col);
-            cell.char = byte;
-            cell.fg = .{ .indexed = 208 }; // orange
-            cell.attrs.bold = true;
-            col += 1;
-        }
-
-        // Show total lines available
-        const total = sb.lineCount();
-        const info = std.fmt.bufPrint(buf[indicator.len..], " ({d} lines)", .{total}) catch "";
-        for (info) |byte| {
-            if (col >= cols) break;
-            const cell = grid.cellAt(indicator_row, col);
-            cell.char = byte;
-            cell.fg = .{ .indexed = 245 }; // gray
-            col += 1;
-        }
-    }
-}
-
+/// Fill the grid with scrollback + saved screen content for browsing mode.
+/// The virtual viewport is: [scrollback lines] ++ [saved screen lines].
 /// Transfer hook commands from Config into the Hooks struct.
 fn loadHooks(config: *const Config, hooks: *Hooks) void {
     if (config.hook_on_spawn) |cmd| hooks.setHook(.spawn, cmd);
@@ -1179,15 +894,8 @@ fn runRawMode(allocator: std.mem.Allocator, io: std.Io) !void {
 
     const node_id = try graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pty_inst.child_pid });
 
-    const SA_RESTART = 0x10000000; // linux/signal.h: restart interrupted syscalls
-    const sa = posix.Sigaction{
-        .handler = .{ .handler = handleSigwinch },
-        .mask = posix.sigemptyset(),
-        .flags = SA_RESTART,
-    };
-    posix.sigaction(posix.SIG.WINCH, &sa, null);
-    g_pty_master_fd = pty_inst.master;
-    g_host_fd = terminal.host_fd;
+    var sig = SignalManager.init(pty_inst.master, terminal.host_fd);
+    sig.registerWinch();
 
     try terminal.enterRawMode();
     out("\x1b[2J\x1b[H");
@@ -1201,13 +909,4 @@ fn runRawMode(allocator: std.mem.Allocator, io: std.Io) !void {
     outFmt(&buf, "\n\x1b[38;5;208m[teru]\x1b[0m session ended · {d} node(s)\n", .{graph.nodeCount()});
 }
 
-var g_pty_master_fd: posix.fd_t = -1;
-var g_host_fd: posix.fd_t = posix.STDIN_FILENO;
-
-fn handleSigwinch(_: posix.SIG) callconv(.c) void {
-    if (g_pty_master_fd < 0) return;
-    var ws: posix.winsize = undefined;
-    if (posix.system.ioctl(g_host_fd, posix.T.IOCGWINSZ, @intFromPtr(&ws)) != 0) return;
-    _ = posix.system.ioctl(g_pty_master_fd, posix.T.IOCSWINSZ, @intFromPtr(&ws));
-}
 

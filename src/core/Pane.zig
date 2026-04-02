@@ -4,8 +4,9 @@ const posix = std.posix;
 const Pty = @import("../pty/Pty.zig");
 const Grid = @import("Grid.zig");
 const VtParser = @import("VtParser.zig");
+const Scrollback = @import("../persist/Scrollback.zig");
 
-/// A Pane bundles a PTY + Grid + VtParser into a single manageable unit.
+/// A Pane bundles a PTY + Grid + VtParser + Scrollback into a single manageable unit.
 /// Each pane is an independent terminal session with its own shell process.
 const Pane = @This();
 
@@ -13,10 +14,14 @@ pty: Pty,
 grid: Grid,
 vt: VtParser,
 id: u64,
+scrollback: Scrollback,
 
 pub fn init(allocator: Allocator, rows: u16, cols: u16, id: u64) !Pane {
     var grid = try Grid.init(allocator, rows, cols);
     errdefer grid.deinit(allocator);
+
+    var sb = Scrollback.init(allocator, .{ .keyframe_interval = 100 });
+    grid.scrollback = &sb; // will be re-linked in linkVt after move
 
     var pty = try Pty.spawn(.{ .rows = rows, .cols = cols });
     errdefer pty.deinit();
@@ -35,6 +40,7 @@ pub fn init(allocator: Allocator, rows: u16, cols: u16, id: u64) !Pane {
         .grid = grid,
         .vt = VtParser.initEmpty(),
         .id = id,
+        .scrollback = sb,
     };
 }
 
@@ -45,10 +51,14 @@ pub fn linkVt(self: *Pane, allocator: Allocator) void {
     self.vt.grid = &self.grid;
     self.vt.allocator = allocator;
     self.vt.response_fd = self.pty.master;
+    // Re-link scrollback pointer after Pane was moved by ArrayList
+    self.grid.scrollback = &self.scrollback;
 }
 
 pub fn deinit(self: *Pane, allocator: Allocator) void {
     self.pty.deinit();
+    self.grid.scrollback = null; // detach before freeing
+    self.scrollback.deinit();
     self.grid.deinit(allocator);
 }
 
