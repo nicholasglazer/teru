@@ -22,6 +22,7 @@ extern "xkbcommon" fn xkb_state_unref(state: *xkb_state) callconv(.c) void;
 extern "xkbcommon" fn xkb_state_key_get_utf8(state: *xkb_state, key: xkb_keycode_t, buf: [*]u8, size: usize) callconv(.c) c_int;
 extern "xkbcommon" fn xkb_state_key_get_one_sym(state: *xkb_state, key: xkb_keycode_t) callconv(.c) xkb_keysym_t;
 extern "xkbcommon" fn xkb_state_update_key(state: *xkb_state, key: xkb_keycode_t, direction: u32) callconv(.c) u32;
+extern "xkbcommon" fn xkb_state_update_mask(state: *xkb_state, depressed_mods: u32, latched_mods: u32, locked_mods: u32, depressed_layout: u32, latched_layout: u32, locked_layout: u32) callconv(.c) u32;
 
 const XkbRuleNames = extern struct {
     rules: ?[*:0]const u8 = null,
@@ -133,6 +134,18 @@ pub const Keyboard = struct {
     /// Safe because xkb_state_key_get_one_sym is a pure query.
     pub fn getKeysym(self: *Keyboard, keycode: u32) u32 {
         return xkb_state_key_get_one_sym(self.state, keycode);
+    }
+
+    /// Sync xkbcommon state with X11 modifier/group state.
+    /// Call this with the XCB key event's `state` field before processKey
+    /// to keep the layout group (e.g., us vs ua) in sync with the X server.
+    pub fn updateModifiers(self: *Keyboard, x11_state: u32) void {
+        // X11 state field layout:
+        // bits 0-7: base modifiers (Shift, Lock, Control, Mod1-5)
+        // bits 13-14: group index (0-3)
+        const base_mods = x11_state & 0xFF;
+        const group: u32 = (x11_state >> 13) & 0x3;
+        _ = xkb_state_update_mask(self.state, base_mods, 0, 0, group, 0, 0);
     }
 
     /// Translate a raw XCB keycode to bytes for the PTY.

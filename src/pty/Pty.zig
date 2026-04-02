@@ -69,18 +69,9 @@ pub fn spawn(opts: SpawnOptions) !Pty {
         // Set window size on the slave side (via stdin which now points to the PTY)
         _ = posix.system.ioctl(posix.STDIN_FILENO, posix.T.IOCSWINSZ, @intFromPtr(&ws));
 
-        // Disable ECHO on the slave PTY. Without this, bytes written to
-        // the master fd (like DA1 responses) get echoed back to master by
-        // the PTY layer, causing the terminal to render response bytes as text.
-        // The shell (fish/bash/zsh) sets its own termios on startup.
-        if (posix.tcgetattr(posix.STDIN_FILENO)) |attrs| {
-            var child_termios = attrs;
-            child_termios.lflag.ECHO = false;
-            child_termios.lflag.ECHOE = false;
-            child_termios.lflag.ECHOK = false;
-            child_termios.lflag.ECHONL = false;
-            posix.tcsetattr(posix.STDIN_FILENO, .FLUSH, child_termios) catch {};
-        } else |_| {}
+        // Note: Do NOT disable ECHO here. The shell (bash/fish/zsh) sets
+        // its own termios on startup including ECHO. Disabling it before
+        // execve races with the shell's init and can leave ECHO permanently off.
 
         // Set environment
         setChildEnv(opts.cols, opts.rows);
@@ -107,21 +98,10 @@ pub fn spawn(opts: SpawnOptions) !Pty {
     }
 
     // ── Parent process ───────────────────────────────────────────
-
-    // Disable ECHO on the slave's termios from the master side.
-    // tcsetattr(master) controls the slave's line discipline settings.
-    // This prevents DA1/DSR response bytes written to master from being
-    // echoed back by the PTY layer. The shell will re-enable ECHO when
-    // it sets up its own line editing, but by that time the initial
-    // device-attribute exchange has already completed.
-    if (posix.tcgetattr(master)) |attrs| {
-        var parent_attrs = attrs;
-        parent_attrs.lflag.ECHO = false;
-        parent_attrs.lflag.ECHOE = false;
-        parent_attrs.lflag.ECHOK = false;
-        parent_attrs.lflag.ECHONL = false;
-        posix.tcsetattr(master, .NOW, parent_attrs) catch {};
-    } else |_| {}
+    // Note: ECHO is disabled on the child (slave) side before execve,
+    // which is sufficient for the DA1/DSR exchange. Do NOT disable ECHO
+    // from the parent (master) side — it races with the shell's termios
+    // init and can leave ECHO permanently off.
 
     return Pty{
         .master = master,

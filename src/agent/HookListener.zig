@@ -57,9 +57,8 @@ pub fn init(allocator: std.mem.Allocator) !HookListener {
 
     const uid_str = compat.getenv("XDG_RUNTIME_DIR");
     if (uid_str) |runtime_dir| {
-        const dir_len = std.mem.len(runtime_dir);
         path_len = (std.fmt.bufPrint(&path_buf, "{s}/teru-hooks-{d}.sock", .{
-            runtime_dir[0..dir_len],
+            runtime_dir,
             std.os.linux.getpid(),
         }) catch return error.PathTooLong).len;
     } else {
@@ -72,10 +71,10 @@ pub fn init(allocator: std.mem.Allocator) !HookListener {
     _ = posix.system.unlink(@ptrCast(&path_buf));
 
     // Create Unix stream socket
-    const fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.NONBLOCK | posix.SOCK.CLOEXEC, 0) catch {
-        return error.SocketFailed;
-    };
-    errdefer posix.system.close(fd);
+    const raw_fd = std.c.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.NONBLOCK | posix.SOCK.CLOEXEC, 0);
+    if (raw_fd < 0) return error.SocketFailed;
+    const fd: posix.fd_t = @intCast(raw_fd);
+    errdefer _ = posix.system.close(fd);
 
     // Bind
     var addr: posix.sockaddr.un = std.mem.zeroes(posix.sockaddr.un);
@@ -98,7 +97,7 @@ pub fn init(allocator: std.mem.Allocator) !HookListener {
 }
 
 pub fn deinit(self: *HookListener) void {
-    posix.system.close(self.server_fd);
+    _ = posix.system.close(self.server_fd);
     _ = posix.system.unlink(@ptrCast(&self.socket_path));
 
     // Free any queued events
@@ -128,15 +127,16 @@ pub fn poll(self: *HookListener) void {
         null,
         posix.SOCK.NONBLOCK | posix.SOCK.CLOEXEC,
     );
-    if (@as(isize, @bitCast(client_fd)) < 0) return; // No pending connection
-    defer posix.system.close(client_fd);
+    if (client_fd < 0) return; // No pending connection
+    defer _ = posix.system.close(client_fd);
 
     // Read HTTP request (small — hook payloads are typically <2KB)
     var buf: [RECV_BUF_SIZE]u8 = undefined;
     var total: usize = 0;
     while (total < buf.len) {
-        const n = posix.system.read(client_fd, @ptrCast(buf[total..].ptr), buf.len - total);
-        if (@as(isize, @bitCast(n)) <= 0) break;
+        const n_raw = posix.system.read(client_fd, @ptrCast(buf[total..].ptr), buf.len - total);
+        if (n_raw <= 0) break;
+        const n: usize = @intCast(n_raw);
         total += n;
     }
     if (total == 0) return;

@@ -146,30 +146,38 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
         const glyph_w: u32 = @intCast(@max(0, ix1 - ix0));
         const glyph_h: u32 = @intCast(@max(0, iy1 - iy0));
 
-        if (glyph_w > 0 and glyph_h > 0 and glyph_w <= cell_w and glyph_h <= cell_h) {
-            // Render glyph into atlas
+        if (glyph_w > 0 and glyph_h > 0) {
+            // Render glyph into atlas, clipping to cell boundaries.
+            // Box drawing and block elements intentionally exceed cell_h
+            // to fill the entire cell including line spacing.
             const offset_y: u32 = @intCast(@max(0, baseline + iy0));
             const offset_x: u32 = @intCast(@max(0, ix0));
             const dst_x = atlas_x + @min(offset_x, cell_w - 1);
             const dst_y = atlas_y + @min(offset_y, cell_h - 1);
 
-            stbtt.stbtt_MakeCodepointBitmap(
-                &font_info,
-                atlas_data.ptr + dst_y * atlas_w + dst_x,
-                @intCast(@min(glyph_w, atlas_w - dst_x)),
-                @intCast(@min(glyph_h, atlas_h - dst_y)),
-                @intCast(atlas_w),
-                scale,
-                scale,
-                @intCast(entry.cp),
-            );
+            // Clip render dimensions to cell bounds
+            const render_w = @min(glyph_w, cell_w -| @min(offset_x, cell_w - 1));
+            const render_h = @min(glyph_h, cell_h -| @min(offset_y, cell_h - 1));
+
+            if (render_w > 0 and render_h > 0) {
+                stbtt.stbtt_MakeCodepointBitmap(
+                    &font_info,
+                    atlas_data.ptr + dst_y * atlas_w + dst_x,
+                    @intCast(@min(render_w, atlas_w - dst_x)),
+                    @intCast(@min(render_h, atlas_h - dst_y)),
+                    @intCast(atlas_w),
+                    scale,
+                    scale,
+                    @intCast(entry.cp),
+                );
+            }
         }
 
         const info = GlyphInfo{
             .atlas_x = @intCast(atlas_x),
             .atlas_y = @intCast(atlas_y),
-            .width = @intCast(glyph_w),
-            .height = @intCast(glyph_h),
+            .width = @intCast(@min(glyph_w, cell_w)),
+            .height = @intCast(@min(glyph_h, cell_h)),
             .bearing_x = @intCast(ix0),
             .bearing_y = @intCast(iy0),
             .advance = @intCast(@as(u32, @intFromFloat(@ceil(@as(f32, @floatFromInt(advance_c)) * scale)))),

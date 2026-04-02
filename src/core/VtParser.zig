@@ -76,6 +76,10 @@ app_cursor_keys: bool = false,
 /// Auto-wrap mode (ESC[?7h/l — DECAWM), on by default
 auto_wrap: bool = true,
 
+/// Synchronized output (ESC[?2026h/l) — when true, defer rendering until
+/// the app sends ESC[?2026l. Prevents flickering during rapid screen updates.
+sync_output: bool = false,
+
 /// Agent protocol: last OSC 9999 payload for external consumption
 agent_event_buf: [512]u8 = undefined,
 agent_event_len: usize = 0,
@@ -471,9 +475,11 @@ fn handleOscString(self: *VtParser, byte: u8) void {
             self.state = .ground;
         },
         0x1B => {
-            // Might be ST (ESC \) — for simplicity, treat ESC in OSC as terminator
+            // ESC inside OSC — could be ST (ESC \) or a new escape sequence.
+            // Finish the OSC and transition to escape state so the next byte
+            // (e.g., '\') is handled as part of the escape, not printed literally.
             self.finishOsc();
-            self.state = .ground;
+            self.state = .escape;
         },
         else => {
             if (self.osc_len < MAX_OSC_LEN) {
@@ -787,6 +793,7 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
                     }
                 },
                 2004 => self.bracketed_paste = true,
+                2026 => self.sync_output = true, // synchronized output — defer rendering
                 1006 => {}, // SGR mouse mode — accepted, no effect yet
                 else => {},
             }
@@ -804,6 +811,10 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
                     }
                 },
                 2004 => self.bracketed_paste = false,
+                2026 => { // synchronized output end — mark dirty to trigger render
+                    self.sync_output = false;
+                    self.grid.dirty = true;
+                },
                 1006 => {}, // SGR mouse mode off — accepted
                 else => {},
             }
