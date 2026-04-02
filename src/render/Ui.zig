@@ -190,11 +190,33 @@ pub fn renderTextStatusBar(
     blitCharAt(cpu, '|', x, text_y, s.selection_bg);
     x += cw * 2;
 
-    // Center: label (or PREFIX indicator when prefix key is active)
-    if (prefix_active) {
+    // Center: notification > PREFIX > "shell"
+    // Check if notification is active (auto-clear after 2 seconds)
+    const has_notification = blk: {
+        if (mux.notification_len > 0) {
+            var ts_now: std.os.linux.timespec = undefined;
+            _ = std.os.linux.clock_gettime(.MONOTONIC, &ts_now);
+            const now: i128 = @as(i128, ts_now.sec) * 1_000_000_000 + ts_now.nsec;
+            if (now - mux.notification_time < 5_000_000_000) {
+                break :blk true;
+            }
+            // Expired — clear it (cast away const for this transient state)
+            const mux_mut: *Multiplexer = @constCast(mux);
+            mux_mut.notification_len = 0;
+        }
+        break :blk false;
+    };
+
+    if (has_notification) {
+        const notif = mux.notification[0..mux.notification_len];
+        for (notif) |ch_byte| {
+            blitCharAt(cpu, ch_byte, x, text_y, s.ansi[2]); // green
+            x += cw;
+        }
+    } else if (prefix_active) {
         const prefix_text = "PREFIX";
         for (prefix_text) |ch_byte| {
-            blitCharAt(cpu, ch_byte, x, text_y, s.cursor); // bright accent color
+            blitCharAt(cpu, ch_byte, x, text_y, s.cursor);
             x += cw;
         }
     } else {

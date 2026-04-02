@@ -417,6 +417,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                             const copy_len = selection.getText(&pane.grid, &sel_buf);
                                             if (copy_len > 0) {
                                                 Clipboard.copy(sel_buf[0..copy_len]);
+                                                mux.notify("Copied to clipboard");
                                             }
                                         }
                                     }
@@ -625,6 +626,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 const len = selection.getText(&pane.grid, &sel_buf);
                                 if (len > 0) {
                                     Clipboard.copy(sel_buf[0..len]);
+                                    mux.notify("Copied to clipboard");
                                 }
                             }
                         } else {

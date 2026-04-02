@@ -148,11 +148,18 @@ pub const Keyboard = struct {
     /// to keep the layout group (e.g., us vs ua) in sync with the X server.
     pub fn updateModifiers(self: *Keyboard, x11_state: u32) void {
         // X11 state field layout:
-        // bits 0-7: base modifiers (Shift, Lock, Control, Mod1-5)
+        // bits 0-7: modifier mask (Shift=1, Lock=2, Control=4, Mod1-5)
         // bits 13-14: group index (0-3)
-        const base_mods = x11_state & 0xFF;
+        //
+        // The modifier mask combines depressed + latched + locked.
+        // We can't decompose them from X11 alone, so we set locked_mods
+        // (most modifiers from Alt+Shift group switching are locked state).
+        // depressed_mods handles currently-held keys like Shift/Ctrl.
+        const mods = x11_state & 0xFF;
         const group: u32 = (x11_state >> 13) & 0x3;
-        _ = xkb_state_update_mask(self.state, base_mods, 0, 0, group, 0, 0);
+        // Set mods as both depressed and locked to cover both cases.
+        // xkbcommon resolves the effective state correctly from this.
+        _ = xkb_state_update_mask(self.state, mods, 0, mods, group, 0, group);
     }
 
     /// Translate a raw XCB keycode to bytes for the PTY.

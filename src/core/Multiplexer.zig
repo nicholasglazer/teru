@@ -32,6 +32,21 @@ graph: ?*ProcessGraph = null,
 // Scroll state (accessible from McpServer for teru_scroll tool)
 scroll_offset: u32 = 0,
 
+// Transient notification (shown in status bar, auto-clears)
+notification: [64]u8 = [_]u8{0} ** 64,
+notification_len: u8 = 0,
+notification_time: i128 = 0,
+
+pub fn notify(self: *Multiplexer, msg: []const u8) void {
+    const len = @min(msg.len, self.notification.len);
+    @memcpy(self.notification[0..len], msg[0..len]);
+    self.notification_len = @intCast(len);
+    var ts: std.os.linux.timespec = undefined;
+    _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+    self.notification_time = @as(i128, ts.sec) * 1_000_000_000 + ts.nsec;
+    if (self.getActivePane()) |pane| pane.grid.dirty = true;
+}
+
 pub fn init(allocator: Allocator) Multiplexer {
     return .{
         .panes = .empty,
