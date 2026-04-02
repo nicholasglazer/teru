@@ -338,7 +338,11 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
 
                     if (Keyboard != void) {
                         if (keyboard) |*kb| {
-                            // Peek keysym before processKey updates state
+                            // Sync xkb modifier/group state from X11 before
+                            // any key processing. This ensures layout switches
+                            // (e.g., Alt+Shift) are reflected immediately.
+                            kb.updateModifiers(key.modifiers);
+
                             const keysym = kb.getKeysym(key.keycode);
 
                             // Search mode: intercept all keys for the search query
@@ -466,11 +470,10 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         last_keycode = 0;
                         last_key_time = 0;
                     }
-                    // Update xkbcommon modifier state on key release
+                    // Sync xkb modifier/group state from X11 on release
                     if (Keyboard != void) {
                         if (keyboard) |*kb| {
-                            var dummy: [1]u8 = undefined;
-                            _ = kb.processKey(key.keycode, false, &dummy);
+                            kb.updateModifiers(key.modifiers);
                         }
                     }
                 },

@@ -156,13 +156,11 @@ pub const Keyboard = struct {
     }
 
     /// Translate a raw XCB keycode to bytes for the PTY.
+    /// State is synced via updateModifiers() before this call — do NOT
+    /// call xkb_state_update_key here (mixing update_key and update_mask
+    /// causes xkbcommon to lose track of the modifier/group state).
     pub fn processKey(self: *Keyboard, keycode: u32, pressed: bool, buf: []u8) usize {
-        if (pressed) {
-            _ = xkb_state_update_key(self.state, keycode, XKB_KEY_DOWN);
-        } else {
-            _ = xkb_state_update_key(self.state, keycode, XKB_KEY_UP);
-            return 0;
-        }
+        if (!pressed) return 0;
 
         const keysym = xkb_state_key_get_one_sym(self.state, keycode);
         const special = keysymToEscape(keysym);
@@ -252,7 +250,75 @@ fn queryX11Layout(conn_opaque: *anyopaque, root: u32, buf: []u8) ?XkbRuleNames {
         }
     }
 
+    // Deduplicate options (some WMs repeat options like
+    // "grp:alt_shift_toggle,caps:escape,grp:alt_shift_toggle,...").
+    // xkbcommon can reject malformed/repeated option strings.
+    if (names.options) |opts| {
+        const deduped = deduplicateOptions(buf, start, opts);
+        if (deduped) |d| {
+            names.options = d;
+        }
+    }
+
     return names;
+}
+
+/// Deduplicate comma-separated XKB options in-place in `buf` starting
+/// at `write_pos`. Returns a pointer to the deduplicated null-terminated
+/// string, or null if the input was empty or already clean and short.
+fn deduplicateOptions(buf: []u8, write_start: usize, opts: [*:0]const u8) ?[*:0]const u8 {
+    // Measure input length
+    var opts_len: usize = 0;
+    while (opts[opts_len] != 0) : (opts_len += 1) {}
+    if (opts_len == 0) return null;
+
+    // Split on commas, keep only first occurrence of each option.
+    // We collect unique options and write them into buf[write_start..].
+    const max_opts = 32;
+    var seen: [max_opts][]const u8 = undefined;
+    var seen_count: usize = 0;
+
+    var pos: usize = write_start;
+    var src: usize = 0;
+    while (src < opts_len) {
+        // Find end of this option
+        var end = src;
+        while (end < opts_len and opts[end] != ',') : (end += 1) {}
+        const opt = opts[src..end];
+
+        // Check if already seen
+        var is_dup = false;
+        for (seen[0..seen_count]) |s| {
+            if (s.len == opt.len and std.mem.eql(u8, s, opt)) {
+                is_dup = true;
+                break;
+            }
+        }
+
+        if (!is_dup and opt.len > 0) {
+            // Add comma separator if not first
+            if (seen_count > 0 and pos < buf.len) {
+                buf[pos] = ',';
+                pos += 1;
+            }
+            // Copy option
+            if (pos + opt.len < buf.len) {
+                @memcpy(buf[pos..][0..opt.len], opt);
+                // Record as seen (pointing into the buf copy)
+                if (seen_count < max_opts) {
+                    seen[seen_count] = buf[pos..][0..opt.len];
+                    seen_count += 1;
+                }
+                pos += opt.len;
+            }
+        }
+
+        src = end + 1; // skip comma
+    }
+
+    if (pos >= buf.len or seen_count == 0) return null;
+    buf[pos] = 0;
+    return @ptrCast(buf[write_start..].ptr);
 }
 
 fn keysymToEscape(keysym: u32) []const u8 {
