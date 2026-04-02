@@ -129,6 +129,13 @@ pub const Keyboard = struct {
         xkb_context_unref(self.ctx);
     }
 
+    /// Reset all modifier/group state. Call on focus-in to clear stuck
+    /// modifiers when a WM intercepts key combos (e.g., screenshot shortcuts).
+    pub fn resetState(self: *Keyboard) void {
+        xkb_state_unref(self.state);
+        self.state = xkb_state_new(self.keymap) orelse return;
+    }
+
     /// Get the keysym for a keycode without updating key state.
     /// Use this to peek at the keysym before processKey() consumes it.
     /// Safe because xkb_state_key_get_one_sym is a pure query.

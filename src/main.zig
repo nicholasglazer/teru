@@ -254,6 +254,22 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     // Force full redraw to prevent black fragments
                     for (mux.panes.items) |*pane| pane.grid.dirty = true;
                 },
+                .focus_in => {
+                    // Reset keyboard modifier state on focus regain.
+                    // When a WM intercepts keys (e.g., screenshot shortcut),
+                    // the key_release never reaches us, leaving modifiers stuck.
+                    // Reinitializing xkb state clears all held modifiers.
+                    if (Keyboard != void) {
+                        if (keyboard) |*kb| {
+                            kb.resetState();
+                        }
+                    }
+                    // Also reset prefix key in case it was stuck
+                    prefix.reset();
+                    // Reset key repeat tracking
+                    last_keycode = 0;
+                    last_key_time = 0;
+                },
                 .resize => |sz| {
                     // Resize renderer
                     renderer.resize(sz.width, sz.height);
