@@ -490,6 +490,36 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 continue;
                             }
 
+                            // Click-to-focus: switch active pane if click lands in another pane's rect
+                            const ClickRect = @import("tiling/LayoutEngine.zig").Rect;
+                            const click_ws = &mux.layout_engine.workspaces[mux.active_workspace];
+                            const click_node_ids = click_ws.node_ids.items;
+                            if (click_node_ids.len > 1) {
+                                const sz = win.getSize();
+                                const click_screen = ClickRect{
+                                    .x = @intCast(padding),
+                                    .y = @intCast(padding),
+                                    .width = @intCast(@min(sz.width -| padding * 2, std.math.maxInt(u16))),
+                                    .height = @intCast(@min(sz.height -| padding * 2, std.math.maxInt(u16))),
+                                };
+                                if (mux.layout_engine.calculate(mux.active_workspace, click_screen)) |click_rects| {
+                                    defer allocator.free(click_rects);
+                                    for (click_rects, 0..) |cr, ci| {
+                                        if (ci >= click_node_ids.len) break;
+                                        if (mouse.x >= cr.x and mouse.x < @as(u32, cr.x) + cr.width and
+                                            mouse.y >= cr.y and mouse.y < @as(u32, cr.y) + cr.height)
+                                        {
+                                            if (ci != click_ws.active_index) {
+                                                mux.layout_engine.workspaces[mux.active_workspace].active_index = ci;
+                                                // Mark all panes dirty to redraw borders
+                                                for (mux.panes.items) |*p| p.grid.dirty = true;
+                                            }
+                                            break;
+                                        }
+                                    }
+                                } else |_| {}
+                            }
+
                             // Clear any existing selection on click
                             if (selection.active) {
                                 selection.clear();

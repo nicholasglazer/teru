@@ -142,17 +142,24 @@ pub fn blitGlyphInRect(
     const atlas_x = glyph_col * cw;
     const atlas_y = glyph_row * ch;
 
-    const render_h = max_y - screen_y;
-    const render_w = max_x - screen_x;
+    const render_h = if (max_y > screen_y) max_y - screen_y else return;
+    const render_w = if (max_x > screen_x) max_x - screen_x else return;
 
     for (0..@min(render_h, ch)) |dy| {
+        const py = screen_y + dy;
+        if (py >= renderer.height) break;
+
         const atlas_row_offset = (atlas_y + dy) * aw + atlas_x;
         if (atlas_y + dy >= renderer.atlas_height) break;
         if (atlas_row_offset + cw > renderer.glyph_atlas.len) break;
 
         const alpha_row = renderer.glyph_atlas[atlas_row_offset..][0..cw];
-        const fb_row_start = (screen_y + dy) * fb_w + screen_x;
-        const dst = renderer.framebuffer[fb_row_start..][0..render_w];
+        const fb_row_start = py * fb_w + screen_x;
+        const fb_row_end = fb_row_start + render_w;
+        if (fb_row_end > renderer.framebuffer.len) break;
+        // Ensure we don't cross the framebuffer row boundary
+        if (screen_x + render_w > fb_w) break;
+        const dst = renderer.framebuffer[fb_row_start..fb_row_end];
 
         for (0..@min(render_w, cw)) |px| {
             const alpha: u16 = alpha_row[px];
