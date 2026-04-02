@@ -25,7 +25,7 @@ Read `src/core/Grid.zig` to understand what the parser can drive.
 ## Step 2: Run existing tests
 
 ```bash
-cd /home/ng/prod/teru && zig build test 2>&1
+cd /home/ng/code/foss/teru && zig build test 2>&1
 ```
 
 Count passing tests. Note any failures.

@@ -6,3 +6,10 @@ zig-cache/
 *.so
 *.dylib
 zig-socket-test*
+
+# Claude Code local settings (not shared)
+.claude/settings.local.json
+.claude/worktrees/
+
+# Internal docs (plans, roadmap, drafts, specs)
+docs/.internal/
