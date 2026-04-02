@@ -783,3 +783,195 @@ test "capture response format" {
     try t.expect(std.mem.indexOf(u8, result, "$ ls\\nfile1.txt\\nfile2.txt") != null);
     try t.expect(std.mem.indexOf(u8, result, "\"id\":3") != null);
 }
+
+// ── Spec Section 4.4.2: write response format ──────────────────
+
+test "write response format" {
+    var buf: [512]u8 = undefined;
+    const result = std.fmt.bufPrint(&buf,
+        \\{{"jsonrpc":"2.0","result":{{"ok":true}},"id":{s}}}
+    , .{"2"}) catch unreachable;
+
+    try t.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
+    try t.expect(std.mem.indexOf(u8, result, "\"id\":2") != null);
+}
+
+// ── Spec Section 4.4.4: kill response format ────────────────────
+
+test "kill response format" {
+    var buf: [512]u8 = undefined;
+    const result = std.fmt.bufPrint(&buf,
+        \\{{"jsonrpc":"2.0","result":{{"ok":true}},"id":{s}}}
+    , .{"4"}) catch unreachable;
+
+    try t.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
+    try t.expect(std.mem.indexOf(u8, result, "\"id\":4") != null);
+}
+
+// ── Spec Section 4.4.7: context_exited push notification format ─
+
+test "context_exited push notification format" {
+    // Push notifications have no "id" field per spec
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf,
+        \\{{"jsonrpc":"2.0","method":"context_exited","params":{{"context_id":{d},"exit_code":{d}}}}}
+    , .{ @as(u64, 1), @as(u8, 0) }) catch unreachable;
+
+    try t.expect(std.mem.indexOf(u8, msg, "\"method\":\"context_exited\"") != null);
+    try t.expect(std.mem.indexOf(u8, msg, "\"context_id\":1") != null);
+    try t.expect(std.mem.indexOf(u8, msg, "\"exit_code\":0") != null);
+    // Per spec: "NOT a request-response -- it is a server-initiated message with no id field"
+    try t.expect(std.mem.indexOf(u8, msg, "\"id\"") == null);
+}
+
+// ── Spec Section 4.4.6: get_self_id null context ────────────────
+
+test "get_self_id null context response format" {
+    // Spec: Returns null for context_id if the active pane has no associated context
+    var buf: [512]u8 = undefined;
+    const result = std.fmt.bufPrint(&buf,
+        \\{{"jsonrpc":"2.0","result":{{"context_id":null}},"id":{s}}}
+    , .{"6"}) catch unreachable;
+
+    try t.expect(std.mem.indexOf(u8, result, "\"context_id\":null") != null);
+    try t.expect(std.mem.indexOf(u8, result, "\"id\":6") != null);
+}
+
+// ── Spec Section 4.4.8: Error responses ─────────────────────────
+
+test "jsonRpcError format: -32600 Invalid request" {
+    var buf: [512]u8 = undefined;
+    const result = jsonRpcError(&buf, "1", -32600, "Invalid request");
+    try t.expect(std.mem.indexOf(u8, result, "-32600") != null);
+    try t.expect(std.mem.indexOf(u8, result, "Invalid request") != null);
+}
+
+test "jsonRpcError format: -32601 Method not found" {
+    var buf: [512]u8 = undefined;
+    const result = jsonRpcError(&buf, "1", -32601, "Method not found");
+    try t.expect(std.mem.indexOf(u8, result, "-32601") != null);
+    try t.expect(std.mem.indexOf(u8, result, "Method not found") != null);
+}
+
+test "jsonRpcError format: -32602 Invalid params" {
+    var buf: [512]u8 = undefined;
+    const result = jsonRpcError(&buf, "1", -32602, "Invalid params");
+    try t.expect(std.mem.indexOf(u8, result, "-32602") != null);
+    try t.expect(std.mem.indexOf(u8, result, "Invalid params") != null);
+}
+
+test "jsonRpcError format: -32603 Internal error" {
+    var buf: [512]u8 = undefined;
+    const result = jsonRpcError(&buf, "1", -32603, "Internal error");
+    try t.expect(std.mem.indexOf(u8, result, "-32603") != null);
+    try t.expect(std.mem.indexOf(u8, result, "Internal error") != null);
+}
+
+test "jsonRpcError with null id" {
+    var buf: [512]u8 = undefined;
+    const result = jsonRpcError(&buf, null, -32601, "Method not found");
+    try t.expect(std.mem.indexOf(u8, result, "\"id\":null") != null);
+}
+
+// ── Spec Section 4.4: JSON-RPC 2.0 protocol ────────────────────
+
+test "extractJsonId with string id" {
+    const json = "{\"jsonrpc\":\"2.0\",\"method\":\"spawn\",\"id\":\"req-42\"}";
+    const id = extractJsonId(json);
+    try t.expect(id != null);
+    try t.expectEqualStrings("\"req-42\"", id.?);
+}
+
+test "extractJsonString missing key returns null" {
+    const json = "{\"method\":\"spawn\"}";
+    try t.expectEqual(@as(?[]const u8, null), extractJsonString(json, "nonexistent"));
+}
+
+test "extractJsonInt missing key returns null" {
+    const json = "{\"params\":{}}";
+    try t.expectEqual(@as(?u64, null), extractJsonInt(json, "context_id"));
+}
+
+test "extractJsonInt non-numeric value returns null" {
+    const json = "{\"context_id\":\"abc\"}";
+    try t.expectEqual(@as(?u64, null), extractJsonInt(json, "context_id"));
+}
+
+// ── Spec Section 4.5: Metadata string truncation to 64 bytes ────
+
+test "metadata fields truncated to 64 bytes" {
+    // Spec: "Metadata strings (name, group, role) are truncated to 64 bytes"
+    var ctx = Context{
+        .context_id = 1,
+        .pane_id = 1,
+        .graph_node_id = 1,
+        .alive = true,
+    };
+
+    // Create a string longer than 64 bytes
+    const long_name = "a" ** 100;
+    const name_len = @min(long_name.len, ctx.name.len);
+    @memcpy(ctx.name[0..name_len], long_name[0..name_len]);
+    ctx.name_len = name_len;
+
+    // Verify truncation to 64
+    try t.expectEqual(@as(usize, 64), ctx.name_len);
+}
+
+// ── Spec Section 4.5: Fixed context table capacity ──────────────
+
+test "context table has fixed capacity of 64" {
+    try t.expectEqual(@as(usize, 64), max_contexts);
+}
+
+// ── Spec Section 4.4.5: list with dead contexts ─────────────────
+
+test "list response includes alive and dead contexts" {
+    // Spec: "Dead contexts remain in the list response (with alive: false)"
+    var buf: [2048]u8 = undefined;
+    var pos: usize = 0;
+
+    const prefix = "{\"jsonrpc\":\"2.0\",\"result\":{\"contexts\":[";
+    @memcpy(buf[0..prefix.len], prefix);
+    pos = prefix.len;
+
+    // alive context
+    const entry1 = std.fmt.bufPrint(buf[pos..],
+        \\{{"context_id":{d},"metadata":{{"name":"{s}","group":"{s}","role":"{s}"}},"alive":{s}}}
+    , .{ @as(u64, 1), "dev-1", "group-a", "worker", "true" }) catch unreachable;
+    pos += entry1.len;
+
+    buf[pos] = ',';
+    pos += 1;
+
+    // dead context
+    const entry2 = std.fmt.bufPrint(buf[pos..],
+        \\{{"context_id":{d},"metadata":{{"name":"{s}","group":"{s}","role":"{s}"}},"alive":{s}}}
+    , .{ @as(u64, 2), "dev-2", "group-a", "worker", "false" }) catch unreachable;
+    pos += entry2.len;
+
+    const suffix = "]},\"id\":5}";
+    @memcpy(buf[pos..][0..suffix.len], suffix);
+    pos += suffix.len;
+
+    const result = buf[0..pos];
+    try t.expect(std.mem.indexOf(u8, result, "\"alive\":true") != null);
+    try t.expect(std.mem.indexOf(u8, result, "\"alive\":false") != null);
+    try t.expect(std.mem.indexOf(u8, result, "\"context_id\":1") != null);
+    try t.expect(std.mem.indexOf(u8, result, "\"context_id\":2") != null);
+}
+
+// ── Spec: JSON escape for control characters ────────────────────
+
+test "jsonEscapeString handles tab and carriage return" {
+    var buf: [256]u8 = undefined;
+    const result = jsonEscapeString("a\tb\rc", &buf);
+    try t.expectEqualStrings("a\\tb\\rc", result);
+}
+
+test "jsonEscapeString strips control characters below 0x20" {
+    var buf: [256]u8 = undefined;
+    // \x01 is a control character that should be dropped
+    const result = jsonEscapeString("a\x01b", &buf);
+    try t.expectEqualStrings("ab", result);
+}

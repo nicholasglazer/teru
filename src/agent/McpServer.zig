@@ -91,6 +91,10 @@ pub fn init(allocator: Allocator, mux: *Multiplexer, graph: *ProcessGraph) !McpS
     return server;
 }
 
+pub fn getSocketPath(self: *const McpServer) []const u8 {
+    return self.socket_path[0..self.socket_path_len];
+}
+
 pub fn deinit(self: *McpServer) void {
     _ = posix.system.close(self.socket_fd);
 
@@ -173,6 +177,11 @@ fn dispatch(self: *McpServer, body: []const u8, resp_buf: []u8) []const u8 {
         return self.handleToolsCall(body, resp_buf, id);
     } else if (std.mem.eql(u8, method, "initialize")) {
         return self.handleInitialize(resp_buf, id);
+    } else if (std.mem.startsWith(u8, method, "notifications/")) {
+        // MCP notifications (initialized, progress, cancelled) — acknowledge silently
+        return std.fmt.bufPrint(resp_buf,
+            \\{{"jsonrpc":"2.0","result":{{}},"id":{s}}}
+        , .{id orelse "null"}) catch "{}";
     } else {
         return jsonRpcError(resp_buf, id, -32601, "Method not found");
     }
@@ -184,7 +193,7 @@ fn handleInitialize(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
     _ = self;
     const id_str = id orelse "null";
     return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"protocolVersion":"2024-11-05","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"teru","version":"0.1.4"}}}},"id":{s}}}
+        \\{{"jsonrpc":"2.0","result":{{"protocolVersion":"2025-03-26","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"teru","version":"0.1.4"}}}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
 }
@@ -200,7 +209,14 @@ fn handleToolsList(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teru_get_graph","description":"Get the process graph as JSON","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
         \\{{"name":"teru_send_input","description":"Write text to a pane PTY stdin","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"text":{{"type":"string"}}}},"required":["pane_id","text"]}}}},
         \\{{"name":"teru_create_pane","description":"Spawn a new pane in a workspace","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer","default":0}}}},"required":[]}}}},
-        \\{{"name":"teru_broadcast","description":"Send text to all panes in a workspace","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer"}},"text":{{"type":"string"}}}},"required":["workspace","text"]}}}}
+        \\{{"name":"teru_broadcast","description":"Send text to all panes in a workspace","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer"}},"text":{{"type":"string"}}}},"required":["workspace","text"]}}}},
+        \\{{"name":"teru_send_keys","description":"Send named keystrokes to a pane (e.g. enter, ctrl+c, up, f1)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"keys":{{"type":"array","items":{{"type":"string"}}}}}},"required":["pane_id","keys"]}}}},
+        \\{{"name":"teru_get_state","description":"Query terminal state for a pane (cursor, size, modes, title)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}}}},"required":["pane_id"]}}}},
+        \\{{"name":"teru_focus_pane","description":"Focus a specific pane by ID","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}}}},"required":["pane_id"]}}}},
+        \\{{"name":"teru_close_pane","description":"Close a pane by ID","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}}}},"required":["pane_id"]}}}},
+        \\{{"name":"teru_switch_workspace","description":"Switch the active workspace (0-8)","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer"}}}},"required":["workspace"]}}}},
+        \\{{"name":"teru_scroll","description":"Scroll a pane's scrollback (up/down/bottom)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"direction":{{"type":"string","enum":["up","down","bottom"]}},"lines":{{"type":"integer","default":10}}}},"required":["pane_id","direction"]}}}},
+        \\{{"name":"teru_wait_for","description":"Check if text pattern exists in pane output (non-blocking)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"pattern":{{"type":"string"}},"lines":{{"type":"integer","default":20}}}},"required":["pane_id","pattern"]}}}}
         \\]}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
@@ -239,6 +255,39 @@ fn handleToolsCall(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u
         const text = extractNestedJsonString(params_body, "text") orelse
             return jsonRpcError(buf, id, -32602, "Missing text");
         return self.toolBroadcast(@intCast(workspace), text, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teru_send_keys")) {
+        const pane_id = extractNestedJsonInt(params_body, "pane_id") orelse
+            return jsonRpcError(buf, id, -32602, "Missing pane_id");
+        return self.toolSendKeys(pane_id, params_body, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teru_get_state")) {
+        const pane_id = extractNestedJsonInt(params_body, "pane_id") orelse
+            return jsonRpcError(buf, id, -32602, "Missing pane_id");
+        return self.toolGetState(pane_id, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teru_focus_pane")) {
+        const pane_id = extractNestedJsonInt(params_body, "pane_id") orelse
+            return jsonRpcError(buf, id, -32602, "Missing pane_id");
+        return self.toolFocusPane(pane_id, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teru_close_pane")) {
+        const pane_id = extractNestedJsonInt(params_body, "pane_id") orelse
+            return jsonRpcError(buf, id, -32602, "Missing pane_id");
+        return self.toolClosePane(pane_id, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teru_switch_workspace")) {
+        const workspace = extractNestedJsonInt(params_body, "workspace") orelse
+            return jsonRpcError(buf, id, -32602, "Missing workspace");
+        return self.toolSwitchWorkspace(@intCast(workspace), buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teru_scroll")) {
+        const pane_id = extractNestedJsonInt(params_body, "pane_id") orelse
+            return jsonRpcError(buf, id, -32602, "Missing pane_id");
+        const direction = extractNestedJsonString(params_body, "direction") orelse "up";
+        const lines = extractNestedJsonInt(params_body, "lines") orelse 10;
+        return self.toolScroll(@intCast(pane_id), direction, @intCast(lines), buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teru_wait_for")) {
+        const pane_id = extractNestedJsonInt(params_body, "pane_id") orelse
+            return jsonRpcError(buf, id, -32602, "Missing pane_id");
+        const pattern = extractNestedJsonString(params_body, "pattern") orelse
+            return jsonRpcError(buf, id, -32602, "Missing pattern");
+        const lines = extractNestedJsonInt(params_body, "lines") orelse 20;
+        return self.toolWaitFor(@intCast(pane_id), pattern, @intCast(lines), buf, id);
     } else {
         return jsonRpcError(buf, id, -32602, "Unknown tool");
     }
@@ -462,6 +511,352 @@ fn toolBroadcast(self: *McpServer, workspace: u8, text: []const u8, buf: []u8, i
     , .{ sent, id_str }) catch
         jsonRpcError(buf, id, -32603, "Internal error");
 }
+
+fn toolSendKeys(self: *McpServer, pane_id: u64, params_body: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+
+    const pane = self.multiplexer.getPaneById(pane_id) orelse
+        return jsonRpcError(buf, id, -32602, "Pane not found");
+
+    const app_cursor = pane.vt.app_cursor_keys;
+
+    // Find the "keys" array in the arguments
+    const keys_json = extractNestedJsonArray(params_body, "keys") orelse
+        return jsonRpcError(buf, id, -32602, "Missing keys array");
+
+    // Iterate over string elements in the JSON array
+    var sent: u32 = 0;
+    var iter = JsonArrayIterator.init(keys_json);
+    while (iter.next()) |key_name| {
+        const seq = resolveKey(key_name, app_cursor);
+        _ = pane.pty.write(seq) catch continue;
+        sent += 1;
+    }
+
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"sent {d} keys"}}]}},"id":{s}}}
+    , .{ sent, id_str }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolGetState(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+
+    const pane = self.multiplexer.getPaneById(pane_id) orelse
+        return jsonRpcError(buf, id, -32602, "Pane not found");
+
+    const grid = &pane.grid;
+    const vt = &pane.vt;
+
+    // JSON-escape the title
+    var title_escaped_buf: [512]u8 = undefined;
+    const title_escaped = jsonEscapeString(vt.title[0..vt.title_len], &title_escaped_buf);
+
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{"cursor_row":{d},"cursor_col":{d},"cursor_visible":{s},"rows":{d},"cols":{d},"alt_screen":{s},"bracketed_paste":{s},"app_cursor_keys":{s},"title":\"{s}\","scroll_top":{d},"scroll_bottom":{d}}}"}}]}},"id":{s}}}
+    , .{
+        grid.cursor_row,
+        grid.cursor_col,
+        if (vt.cursor_visible) "true" else "false",
+        grid.rows,
+        grid.cols,
+        if (vt.alt_screen) "true" else "false",
+        if (vt.bracketed_paste) "true" else "false",
+        if (vt.app_cursor_keys) "true" else "false",
+        title_escaped,
+        grid.scroll_top,
+        grid.scroll_bottom,
+        id_str,
+    }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolFocusPane(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+
+    // Search all workspaces for the pane
+    for (&self.multiplexer.layout_engine.workspaces, 0..) |*ws, ws_idx| {
+        for (ws.node_ids.items, 0..) |node_id, node_idx| {
+            if (node_id == pane_id) {
+                ws.active_index = node_idx;
+                self.multiplexer.active_workspace = @intCast(ws_idx);
+                return std.fmt.bufPrint(buf,
+                    \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
+                , .{id_str}) catch
+                    jsonRpcError(buf, id, -32603, "Internal error");
+            }
+        }
+    }
+
+    return jsonRpcError(buf, id, -32602, "Pane not found");
+}
+
+fn toolClosePane(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+
+    // Verify pane exists before closing
+    if (self.multiplexer.getPaneById(pane_id) == null)
+        return jsonRpcError(buf, id, -32602, "Pane not found");
+
+    self.multiplexer.closePane(pane_id);
+
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
+    , .{id_str}) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolSwitchWorkspace(self: *McpServer, workspace: u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+
+    if (workspace > 8)
+        return jsonRpcError(buf, id, -32602, "Workspace must be 0-8");
+
+    self.multiplexer.switchWorkspace(workspace);
+
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
+    , .{id_str}) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolScroll(self: *McpServer, pane_id: u64, direction: []const u8, lines: u32, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+    _ = self.multiplexer.getPaneById(pane_id) orelse
+        return jsonRpcError(buf, id, -32602, "Pane not found");
+
+    if (std.mem.eql(u8, direction, "up")) {
+        // Scroll up into history
+        const pane = self.multiplexer.getPaneById(pane_id).?;
+        const max_offset: u32 = if (pane.grid.scrollback) |sb|
+            @as(u32, @intCast(sb.lineCount())) + pane.grid.rows -| 1
+        else
+            0;
+        self.multiplexer.scroll_offset = @min(self.multiplexer.scroll_offset + lines, max_offset);
+    } else if (std.mem.eql(u8, direction, "down")) {
+        self.multiplexer.scroll_offset -|= lines;
+    } else if (std.mem.eql(u8, direction, "bottom")) {
+        self.multiplexer.scroll_offset = 0;
+    } else {
+        return jsonRpcError(buf, id, -32602, "direction must be up/down/bottom");
+    }
+
+    // Mark grid dirty so the render loop picks up the change
+    if (self.multiplexer.getActivePane()) |pane| pane.grid.dirty = true;
+
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"scroll_offset={d}"}}]}},"id":{s}}}
+    , .{ self.multiplexer.scroll_offset, id_str }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolWaitFor(self: *McpServer, pane_id: u64, pattern: []const u8, lines: u32, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+    const pane = self.multiplexer.getPaneById(pane_id) orelse
+        return jsonRpcError(buf, id, -32602, "Pane not found");
+
+    const grid = &pane.grid;
+
+    // Retry up to 10 times with 50ms sleeps (500ms total) to let PTY output arrive
+    var attempt: u32 = 0;
+    while (attempt < 10) : (attempt += 1) {
+        // Force a PTY read so the grid is up-to-date
+        var pty_buf: [8192]u8 = undefined;
+        _ = pane.readAndProcess(&pty_buf) catch 0;
+
+        const cells = grid.cells; // grid is never modified by scroll — always real content
+        const check_rows = @min(lines, grid.rows);
+        const start_row = grid.rows - check_rows;
+
+        var row: u16 = start_row;
+        while (row < grid.rows) : (row += 1) {
+            var line_buf: [512]u8 = undefined;
+            var col: u16 = 0;
+            var len: usize = 0;
+            while (col < grid.cols and len < line_buf.len) : (col += 1) {
+                const cell_idx = @as(usize, row) * @as(usize, grid.cols) + col;
+                const ch = if (cell_idx < cells.len) cells[cell_idx].char else @as(u21, ' ');
+                if (ch < 128) {
+                    line_buf[len] = @intCast(ch);
+                    len += 1;
+                }
+            }
+            while (len > 0 and line_buf[len - 1] == ' ') len -= 1;
+
+            if (len > 0 and std.mem.indexOf(u8, line_buf[0..len], pattern) != null) {
+            // Found — return the matching line
+            // JSON-escape the line content
+            var escaped: [1024]u8 = undefined;
+            var elen: usize = 0;
+            for (line_buf[0..len]) |c| {
+                if (elen + 2 > escaped.len) break;
+                if (c == '"' or c == '\\') {
+                    escaped[elen] = '\\';
+                    elen += 1;
+                }
+                escaped[elen] = c;
+                elen += 1;
+            }
+            return std.fmt.bufPrint(buf,
+                \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{"matched\":true,\"line\":\"{s}\"}}"}}]}},"id":{s}}}
+            , .{ escaped[0..elen], id_str }) catch
+                jsonRpcError(buf, id, -32603, "Internal error");
+            }
+        }
+
+        // Not found this attempt — sleep 50ms and retry
+        var ts = std.os.linux.timespec{ .sec = 0, .nsec = 50_000_000 };
+        _ = std.os.linux.nanosleep(&ts, null);
+    }
+
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{"matched\":false}}"}}]}},"id":{s}}}
+    , .{id_str}) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+// ── Key mapping for teru_send_keys ────────────────────────────
+
+const KeyMapping = struct {
+    name: []const u8,
+    /// Normal mode sequence
+    seq: []const u8,
+    /// App cursor mode sequence (null = same as normal)
+    app_seq: ?[]const u8 = null,
+};
+
+const key_mappings = [_]KeyMapping{
+    .{ .name = "enter", .seq = "\r" },
+    .{ .name = "tab", .seq = "\t" },
+    .{ .name = "escape", .seq = "\x1b" },
+    .{ .name = "backspace", .seq = "\x7f" },
+    .{ .name = "delete", .seq = "\x1b[3~" },
+    .{ .name = "up", .seq = "\x1b[A", .app_seq = "\x1bOA" },
+    .{ .name = "down", .seq = "\x1b[B", .app_seq = "\x1bOB" },
+    .{ .name = "right", .seq = "\x1b[C", .app_seq = "\x1bOC" },
+    .{ .name = "left", .seq = "\x1b[D", .app_seq = "\x1bOD" },
+    .{ .name = "home", .seq = "\x1b[H" },
+    .{ .name = "end", .seq = "\x1b[F" },
+    .{ .name = "pageup", .seq = "\x1b[5~" },
+    .{ .name = "pagedown", .seq = "\x1b[6~" },
+    .{ .name = "insert", .seq = "\x1b[2~" },
+    .{ .name = "f1", .seq = "\x1bOP" },
+    .{ .name = "f2", .seq = "\x1bOQ" },
+    .{ .name = "f3", .seq = "\x1bOR" },
+    .{ .name = "f4", .seq = "\x1bOS" },
+    .{ .name = "f5", .seq = "\x1b[15~" },
+    .{ .name = "f6", .seq = "\x1b[17~" },
+    .{ .name = "f7", .seq = "\x1b[18~" },
+    .{ .name = "f8", .seq = "\x1b[19~" },
+    .{ .name = "f9", .seq = "\x1b[20~" },
+    .{ .name = "f10", .seq = "\x1b[21~" },
+    .{ .name = "f11", .seq = "\x1b[23~" },
+    .{ .name = "f12", .seq = "\x1b[24~" },
+};
+
+/// Resolve a key name to its escape sequence.
+/// Handles named keys, ctrl+letter combinations, and literal pass-through.
+fn resolveKey(name: []const u8, app_cursor: bool) []const u8 {
+    // Check named key mappings
+    for (&key_mappings) |*km| {
+        if (std.mem.eql(u8, name, km.name)) {
+            if (app_cursor) {
+                return km.app_seq orelse km.seq;
+            }
+            return km.seq;
+        }
+    }
+
+    // Check ctrl+letter pattern
+    if (name.len >= 6 and std.mem.eql(u8, name[0..5], "ctrl+")) {
+        const letter = name[5];
+        if (letter >= 'a' and letter <= 'z') {
+            return &ctrl_byte_table[letter - 'a'];
+        }
+    }
+
+    // Fallback: pass through as literal bytes
+    return name;
+}
+
+/// Comptime table: ctrl_byte_table['a'-'a'] = 0x01, ..., ctrl_byte_table['z'-'a'] = 0x1a
+const ctrl_byte_table = blk: {
+    var table: [26][1]u8 = undefined;
+    for (0..26) |i| {
+        table[i] = .{@intCast(i + 1)};
+    }
+    break :blk table;
+};
+
+// ── JSON array helpers ────────────────────────────────────────
+
+/// Extract the raw content of a JSON array value for a given key within "arguments".
+/// Returns the slice between [ and ] (exclusive of brackets).
+fn extractNestedJsonArray(json: []const u8, key: []const u8) ?[]const u8 {
+    var needle_buf: [64]u8 = undefined;
+    const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\":", .{key}) catch return null;
+
+    // Search in "arguments" first, then top-level
+    const search_start = if (std.mem.indexOf(u8, json, "\"arguments\"")) |ap| ap else 0;
+    const key_pos = std.mem.indexOf(u8, json[search_start..], needle) orelse
+        std.mem.indexOf(u8, json, needle) orelse return null;
+
+    const after_key = search_start + key_pos + needle.len;
+
+    var i = after_key;
+    while (i < json.len and (json[i] == ' ' or json[i] == '\t')) : (i += 1) {}
+
+    if (i >= json.len or json[i] != '[') return null;
+    i += 1; // skip '['
+
+    const start = i;
+    // Find matching ']' (handles nested brackets)
+    var depth: u32 = 1;
+    while (i < json.len and depth > 0) : (i += 1) {
+        switch (json[i]) {
+            '[' => depth += 1,
+            ']' => depth -= 1,
+            '"' => {
+                // Skip string contents
+                i += 1;
+                while (i < json.len and json[i] != '"') : (i += 1) {
+                    if (json[i] == '\\') i += 1;
+                }
+            },
+            else => {},
+        }
+    }
+    if (depth != 0) return null;
+    // i is now one past the closing ']'
+    return json[start .. i - 1];
+}
+
+/// Iterator over string elements in a JSON array body (content between [ and ]).
+const JsonArrayIterator = struct {
+    data: []const u8,
+    pos: usize = 0,
+
+    fn init(data: []const u8) JsonArrayIterator {
+        return .{ .data = data };
+    }
+
+    fn next(self: *JsonArrayIterator) ?[]const u8 {
+        // Skip to next opening quote
+        while (self.pos < self.data.len and self.data[self.pos] != '"') : (self.pos += 1) {}
+        if (self.pos >= self.data.len) return null;
+        self.pos += 1; // skip opening quote
+
+        const start = self.pos;
+        while (self.pos < self.data.len and self.data[self.pos] != '"') : (self.pos += 1) {
+            if (self.data[self.pos] == '\\') self.pos += 1;
+        }
+        if (self.pos >= self.data.len) return null;
+
+        const result = self.data[start..self.pos];
+        self.pos += 1; // skip closing quote
+        return result;
+    }
+};
 
 // ── Helpers ────────────────────────────────────────────────────
 
@@ -755,4 +1150,97 @@ test "handleInitialize returns valid JSON" {
     try t.expect(std.mem.indexOf(u8, result, "protocolVersion") != null);
     try t.expect(std.mem.indexOf(u8, result, "teru") != null);
     try t.expect(std.mem.indexOf(u8, result, "\"id\":1") != null);
+}
+
+test "resolveKey named keys" {
+    try t.expectEqualStrings("\r", resolveKey("enter", false));
+    try t.expectEqualStrings("\t", resolveKey("tab", false));
+    try t.expectEqualStrings("\x1b", resolveKey("escape", false));
+    try t.expectEqualStrings("\x7f", resolveKey("backspace", false));
+    try t.expectEqualStrings("\x1b[3~", resolveKey("delete", false));
+    try t.expectEqualStrings("\x1b[H", resolveKey("home", false));
+    try t.expectEqualStrings("\x1b[F", resolveKey("end", false));
+    try t.expectEqualStrings("\x1b[5~", resolveKey("pageup", false));
+    try t.expectEqualStrings("\x1b[6~", resolveKey("pagedown", false));
+    try t.expectEqualStrings("\x1b[2~", resolveKey("insert", false));
+}
+
+test "resolveKey arrow keys normal vs app cursor" {
+    // Normal mode
+    try t.expectEqualStrings("\x1b[A", resolveKey("up", false));
+    try t.expectEqualStrings("\x1b[B", resolveKey("down", false));
+    try t.expectEqualStrings("\x1b[C", resolveKey("right", false));
+    try t.expectEqualStrings("\x1b[D", resolveKey("left", false));
+
+    // App cursor mode
+    try t.expectEqualStrings("\x1bOA", resolveKey("up", true));
+    try t.expectEqualStrings("\x1bOB", resolveKey("down", true));
+    try t.expectEqualStrings("\x1bOC", resolveKey("right", true));
+    try t.expectEqualStrings("\x1bOD", resolveKey("left", true));
+}
+
+test "resolveKey function keys" {
+    try t.expectEqualStrings("\x1bOP", resolveKey("f1", false));
+    try t.expectEqualStrings("\x1bOQ", resolveKey("f2", false));
+    try t.expectEqualStrings("\x1bOR", resolveKey("f3", false));
+    try t.expectEqualStrings("\x1bOS", resolveKey("f4", false));
+    try t.expectEqualStrings("\x1b[15~", resolveKey("f5", false));
+    try t.expectEqualStrings("\x1b[17~", resolveKey("f6", false));
+    try t.expectEqualStrings("\x1b[18~", resolveKey("f7", false));
+    try t.expectEqualStrings("\x1b[19~", resolveKey("f8", false));
+    try t.expectEqualStrings("\x1b[20~", resolveKey("f9", false));
+    try t.expectEqualStrings("\x1b[21~", resolveKey("f10", false));
+    try t.expectEqualStrings("\x1b[23~", resolveKey("f11", false));
+    try t.expectEqualStrings("\x1b[24~", resolveKey("f12", false));
+}
+
+test "resolveKey ctrl+letter" {
+    try t.expectEqualStrings("\x01", resolveKey("ctrl+a", false));
+    try t.expectEqualStrings("\x03", resolveKey("ctrl+c", false));
+    try t.expectEqualStrings("\x04", resolveKey("ctrl+d", false));
+    try t.expectEqualStrings("\x0c", resolveKey("ctrl+l", false));
+    try t.expectEqualStrings("\x1a", resolveKey("ctrl+z", false));
+}
+
+test "resolveKey literal fallback" {
+    try t.expectEqualStrings("hello", resolveKey("hello", false));
+    try t.expectEqualStrings("x", resolveKey("x", false));
+}
+
+test "extractNestedJsonArray" {
+    const json = "{\"params\":{\"name\":\"teru_send_keys\",\"arguments\":{\"pane_id\":1,\"keys\":[\"ctrl+c\",\"enter\"]}}}";
+    const arr = extractNestedJsonArray(json, "keys");
+    try t.expect(arr != null);
+    try t.expectEqualStrings("\"ctrl+c\",\"enter\"", arr.?);
+}
+
+test "extractNestedJsonArray empty" {
+    const json = "{\"params\":{\"name\":\"test\",\"arguments\":{\"keys\":[]}}}";
+    const arr = extractNestedJsonArray(json, "keys");
+    try t.expect(arr != null);
+    try t.expectEqualStrings("", arr.?);
+}
+
+test "JsonArrayIterator" {
+    const data = "\"ctrl+c\",\"enter\",\"up\"";
+    var iter = JsonArrayIterator.init(data);
+
+    const k1 = iter.next();
+    try t.expect(k1 != null);
+    try t.expectEqualStrings("ctrl+c", k1.?);
+
+    const k2 = iter.next();
+    try t.expect(k2 != null);
+    try t.expectEqualStrings("enter", k2.?);
+
+    const k3 = iter.next();
+    try t.expect(k3 != null);
+    try t.expectEqualStrings("up", k3.?);
+
+    try t.expectEqual(@as(?[]const u8, null), iter.next());
+}
+
+test "JsonArrayIterator empty" {
+    var iter = JsonArrayIterator.init("");
+    try t.expectEqual(@as(?[]const u8, null), iter.next());
 }

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "teru": {
+      "command": "/home/ng/code/foss/teru/zig-out/bin/teru",
+      "args": ["--mcp-bridge"]
+    }
+  }
+}

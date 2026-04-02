@@ -256,3 +256,142 @@ test "ESC backslash ST terminator" {
     try std.testing.expectEqual(AgentCommand.stop, events[0].command);
     try std.testing.expectEqualStrings("success", events[0].exit_status.?);
 }
+
+// ── Spec Section 5.1: OSC 9999 command coverage ─────────────────
+
+test "parse agent:stop with exit and summary" {
+    const input = "\x1b]9999;agent:stop;exit=success;summary=API implementation complete\x07";
+    var events: [4]AgentEvent = undefined;
+    var passthrough: [256]u8 = undefined;
+
+    const result = scanForAgentSequences(input, &events, &passthrough);
+
+    try std.testing.expectEqual(@as(usize, 1), result.events);
+    try std.testing.expectEqual(AgentCommand.stop, events[0].command);
+    try std.testing.expectEqualStrings("success", events[0].exit_status.?);
+    try std.testing.expectEqualStrings("API implementation complete", events[0].summary.?);
+}
+
+test "parse agent:task command" {
+    const input = "\x1b]9999;agent:task;name=backend-dev;task=Building REST handlers\x07";
+    var events: [4]AgentEvent = undefined;
+    var passthrough: [256]u8 = undefined;
+
+    const result = scanForAgentSequences(input, &events, &passthrough);
+
+    try std.testing.expectEqual(@as(usize, 1), result.events);
+    try std.testing.expectEqual(AgentCommand.task, events[0].command);
+    try std.testing.expectEqualStrings("backend-dev", events[0].name.?);
+    try std.testing.expectEqualStrings("Building REST handlers", events[0].task_desc.?);
+}
+
+test "parse agent:group command" {
+    const input = "\x1b]9999;agent:group;name=frontend-dev;group=team-temporal\x07";
+    var events: [4]AgentEvent = undefined;
+    var passthrough: [256]u8 = undefined;
+
+    const result = scanForAgentSequences(input, &events, &passthrough);
+
+    try std.testing.expectEqual(@as(usize, 1), result.events);
+    try std.testing.expectEqual(AgentCommand.group, events[0].command);
+    try std.testing.expectEqualStrings("frontend-dev", events[0].name.?);
+    try std.testing.expectEqualStrings("team-temporal", events[0].group.?);
+}
+
+test "parse agent:meta command" {
+    const input = "\x1b]9999;agent:meta;name=test-agent\x07";
+    var events: [4]AgentEvent = undefined;
+    var passthrough: [256]u8 = undefined;
+
+    const result = scanForAgentSequences(input, &events, &passthrough);
+
+    try std.testing.expectEqual(@as(usize, 1), result.events);
+    try std.testing.expectEqual(AgentCommand.meta, events[0].command);
+    try std.testing.expectEqualStrings("test-agent", events[0].name.?);
+}
+
+test "unknown command returns null (silently ignored)" {
+    // Spec: "Unknown commands return null (silently ignored)"
+    const payload = "agent:unknown_future;name=x";
+    const result = parsePayload(payload);
+    try std.testing.expect(result == null);
+}
+
+test "unknown key-value pairs are silently ignored (forward-compatible)" {
+    // Spec: "Unknown key-value pairs are silently ignored"
+    const payload = "agent:start;name=dev;unknown_key=unknown_value;group=g1";
+    const event = parsePayload(payload).?;
+    try std.testing.expectEqual(AgentCommand.start, event.command);
+    try std.testing.expectEqualStrings("dev", event.name.?);
+    try std.testing.expectEqualStrings("g1", event.group.?);
+}
+
+test "multiple events in a single PTY read buffer" {
+    // Spec: "Multiple events can appear in a single PTY read buffer"
+    const input = "\x1b]9999;agent:start;name=a1\x07" ++
+        "some text between" ++
+        "\x1b]9999;agent:status;state=working;progress=0.5\x07" ++
+        "\x1b]9999;agent:stop;exit=success\x07";
+    var events: [8]AgentEvent = undefined;
+    var passthrough: [256]u8 = undefined;
+
+    const result = scanForAgentSequences(input, &events, &passthrough);
+
+    try std.testing.expectEqual(@as(usize, 3), result.events);
+    try std.testing.expectEqual(AgentCommand.start, events[0].command);
+    try std.testing.expectEqual(AgentCommand.status, events[1].command);
+    try std.testing.expectEqual(AgentCommand.stop, events[2].command);
+    // Passthrough should contain "some text between"
+    try std.testing.expectEqualStrings("some text between", passthrough[0..result.passthrough]);
+}
+
+test "non-OSC-9999 sequences pass through unchanged" {
+    // OSC 8 (hyperlinks) should be passed through, not consumed
+    const input = "\x1b]8;;http://example.com\x07click\x1b]8;;\x07";
+    var events: [4]AgentEvent = undefined;
+    var passthrough: [512]u8 = undefined;
+
+    const result = scanForAgentSequences(input, &events, &passthrough);
+
+    try std.testing.expectEqual(@as(usize, 0), result.events);
+    // The non-9999 OSC should be passed through
+    try std.testing.expect(result.passthrough > 0);
+}
+
+test "empty payload returns null" {
+    const result = parsePayload("");
+    try std.testing.expect(result == null);
+}
+
+test "agent:start with all key-value fields" {
+    // From spec: name, group, role are the expected fields for start
+    const payload = "agent:start;name=backend-dev;group=team-temporal;role=implementer";
+    const event = parsePayload(payload).?;
+
+    try std.testing.expectEqual(AgentCommand.start, event.command);
+    try std.testing.expectEqualStrings("backend-dev", event.name.?);
+    try std.testing.expectEqualStrings("team-temporal", event.group.?);
+    try std.testing.expectEqualStrings("implementer", event.role.?);
+    // Fields not set should be null
+    try std.testing.expect(event.state == null);
+    try std.testing.expect(event.progress == null);
+    try std.testing.expect(event.task_desc == null);
+    try std.testing.expect(event.exit_status == null);
+    try std.testing.expect(event.summary == null);
+}
+
+test "agent:status progress clamped to float 0.0 to 1.0" {
+    const payload = "agent:status;progress=0.0;state=idle";
+    const event = parsePayload(payload).?;
+    try std.testing.expect(event.progress.? >= 0.0 and event.progress.? <= 0.01);
+
+    const payload2 = "agent:status;progress=1.0;state=done";
+    const event2 = parsePayload(payload2).?;
+    try std.testing.expect(event2.progress.? >= 0.99 and event2.progress.? <= 1.01);
+}
+
+test "invalid progress value parsed as null" {
+    const payload = "agent:status;progress=abc";
+    const event = parsePayload(payload).?;
+    try std.testing.expect(event.progress == null);
+}
