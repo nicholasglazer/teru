@@ -15,6 +15,7 @@ grid: Grid,
 vt: VtParser,
 id: u64,
 scrollback: Scrollback,
+scroll_offset: u32 = 0,
 
 pub fn init(allocator: Allocator, rows: u16, cols: u16, id: u64) !Pane {
     var grid = try Grid.init(allocator, rows, cols);

@@ -33,7 +33,7 @@ const SignalManager = @import("core/SignalManager.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
-const version = "0.1.10";
+const version = "0.1.15";
 
 const session_path = "/tmp/teru-session.bin";
 
@@ -326,7 +326,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     }
 
                     // Exit scroll on resize
-                    mux.scroll_offset = 0;
+                    mux.setScrollOffset(0);
                 },
                 .key_press => |key| {
                     const XKB_KEY_Page_Up: u32 = 0xff55;
@@ -383,7 +383,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                     else
                                         0;
                                     if (max_offset > 0) {
-                                        mux.scroll_offset = @min(mux.scroll_offset + grid_rows, max_offset);
+                                        mux.setScrollOffset(@min(mux.getScrollOffset() + grid_rows, max_offset));
                                         if (mux.getActivePane()) |pane| pane.grid.dirty = true;
                                     }
                                     // Update xkb state without forwarding to PTY
@@ -391,8 +391,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                     _ = kb.processKey(key.keycode, true, &dummy);
                                     continue;
                                 } else if (keysym == XKB_KEY_Page_Down) {
-                                    if (mux.scroll_offset > 0) {
-                                        mux.scroll_offset -|= grid_rows;
+                                    if (mux.getScrollOffset() > 0) {
+                                        { const so = mux.getScrollOffset(); mux.setScrollOffset(so -| grid_rows); }
                                         if (mux.getActivePane()) |pane| pane.grid.dirty = true;
                                     }
                                     var dummy: [32]u8 = undefined;
@@ -433,8 +433,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             }
 
                             // Any other key while in scroll mode: exit scroll mode
-                            if (mux.scroll_offset > 0) {
-                                mux.scroll_offset = 0;
+                            if (mux.getScrollOffset() > 0) {
+                                mux.setScrollOffset(0);
                                 if (mux.getActivePane()) |pane| pane.grid.dirty = true;
                             }
 
@@ -475,8 +475,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         }
                     } else {
                         // Fallback: raw keycode passthrough (no xkbcommon)
-                        if (mux.scroll_offset > 0) {
-                            mux.scroll_offset = 0;
+                        if (mux.getScrollOffset() > 0) {
+                            mux.setScrollOffset(0);
                             if (mux.getActivePane()) |pane| pane.grid.dirty = true;
                         }
                         if (prefix.awaiting) {
@@ -597,14 +597,14 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             else
                                 0;
                             if (max_offset > 0) {
-                                mux.scroll_offset = @min(mux.scroll_offset + scroll_lines, max_offset);
+                                mux.setScrollOffset(@min(mux.getScrollOffset() + scroll_lines, max_offset));
                                 if (mux.getActivePane()) |pane| pane.grid.dirty = true;
                             }
                         },
                         .scroll_down => {
                             // Mouse wheel down: scroll back toward live terminal
-                            if (mux.scroll_offset > 0) {
-                                mux.scroll_offset -|= 3;
+                            if (mux.getScrollOffset() > 0) {
+                                { const so = mux.getScrollOffset(); mux.setScrollOffset(so -| 3); }
                                 if (mux.getActivePane()) |pane| pane.grid.dirty = true;
                             }
                         },
@@ -783,10 +783,10 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     }
 
                     // Scroll overlay: render scrollback lines onto framebuffer (non-destructive)
-                    if (mux.scroll_offset > 0) {
+                    if (mux.getScrollOffset() > 0) {
                         if (mux.getActivePane()) |pane| {
                             if (pane.grid.scrollback) |sb| {
-                                Ui.renderScrollOverlay(cpu, sb, mux.scroll_offset, atlas.cell_width, atlas.cell_height);
+                                Ui.renderScrollOverlay(cpu, sb, mux.getScrollOffset(), atlas.cell_width, atlas.cell_height);
                             }
                         }
                     }

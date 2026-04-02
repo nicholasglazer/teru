@@ -29,14 +29,38 @@ scrollback: ?Scrollback,
 next_pane_id: u64,
 graph: ?*ProcessGraph = null,
 
-// Scroll state (accessible from McpServer for teru_scroll tool)
-scroll_offset: u32 = 0,
-
 // Transient notification (shown in status bar, auto-clears)
 notification: [64]u8 = [_]u8{0} ** 64,
 notification_len: u8 = 0,
 notification_time: i128 = 0,
 
+// --- Methods ---
+
+/// Get scroll offset for the active pane.
+pub fn getScrollOffset(self: *const Multiplexer) u32 {
+    const ws = &self.layout_engine.workspaces[self.active_workspace];
+    const active_id = ws.getActiveNodeId() orelse return 0;
+    for (self.panes.items) |*pane| {
+        if (pane.id == active_id) return pane.scroll_offset;
+    }
+    return 0;
+}
+
+/// Set scroll offset for the active pane.
+pub fn setScrollOffset(self: *Multiplexer, offset: u32) void {
+    if (self.getActivePaneMut()) |pane| {
+        pane.scroll_offset = offset;
+        pane.grid.dirty = true;
+    }
+}
+
+pub fn getActivePaneMut(self: *Multiplexer) ?*Pane {
+    const ws = &self.layout_engine.workspaces[self.active_workspace];
+    const active_id = ws.getActiveNodeId() orelse return null;
+    return self.getPaneById(active_id);
+}
+
+/// Show a transient notification in the status bar (auto-clears after 5s).
 pub fn notify(self: *Multiplexer, msg: []const u8) void {
     const len = @min(msg.len, self.notification.len);
     @memcpy(self.notification[0..len], msg[0..len]);

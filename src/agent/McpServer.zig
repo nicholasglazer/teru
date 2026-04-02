@@ -193,7 +193,7 @@ fn handleInitialize(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
     _ = self;
     const id_str = id orelse "null";
     return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"protocolVersion":"2025-03-26","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"teru","version":"0.1.10"}}}},"id":{s}}}
+        \\{{"jsonrpc":"2.0","result":{{"protocolVersion":"2025-03-26","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"teru","version":"0.1.15"}}}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
 }
@@ -622,31 +622,28 @@ fn toolSwitchWorkspace(self: *McpServer, workspace: u8, buf: []u8, id: ?[]const 
 
 fn toolScroll(self: *McpServer, pane_id: u64, direction: []const u8, lines: u32, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
-    _ = self.multiplexer.getPaneById(pane_id) orelse
+    const pane = self.multiplexer.getPaneById(pane_id) orelse
         return jsonRpcError(buf, id, -32602, "Pane not found");
 
     if (std.mem.eql(u8, direction, "up")) {
-        // Scroll up into history
-        const pane = self.multiplexer.getPaneById(pane_id).?;
         const max_offset: u32 = if (pane.grid.scrollback) |sb|
-            @as(u32, @intCast(sb.lineCount())) + pane.grid.rows -| 1
+            @as(u32, @intCast(sb.lineCount()))
         else
             0;
-        self.multiplexer.scroll_offset = @min(self.multiplexer.scroll_offset + lines, max_offset);
+        pane.scroll_offset = @min(pane.scroll_offset + lines, max_offset);
     } else if (std.mem.eql(u8, direction, "down")) {
-        self.multiplexer.scroll_offset -|= lines;
+        pane.scroll_offset -|= lines;
     } else if (std.mem.eql(u8, direction, "bottom")) {
-        self.multiplexer.scroll_offset = 0;
+        pane.scroll_offset = 0;
     } else {
         return jsonRpcError(buf, id, -32602, "direction must be up/down/bottom");
     }
 
-    // Mark grid dirty so the render loop picks up the change
-    if (self.multiplexer.getActivePane()) |pane| pane.grid.dirty = true;
+    pane.grid.dirty = true;
 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"scroll_offset={d}"}}]}},"id":{s}}}
-    , .{ self.multiplexer.scroll_offset, id_str }) catch
+    , .{ pane.scroll_offset, id_str }) catch
         jsonRpcError(buf, id, -32603, "Internal error");
 }
 

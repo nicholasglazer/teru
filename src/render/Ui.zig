@@ -229,8 +229,9 @@ pub fn renderTextStatusBar(
 
     // Right: scroll indicator + dimensions + help hint
     var right_buf: [96]u8 = undefined;
-    const right_text = if (mux.scroll_offset > 0)
-        std.fmt.bufPrint(&right_buf, "\xe2\x86\x91{d}  {d}x{d}  C-Space ?", .{ mux.scroll_offset, grid_cols, grid_rows }) catch ""
+    const active_scroll = mux.getScrollOffset();
+    const right_text = if (active_scroll > 0)
+        std.fmt.bufPrint(&right_buf, "\xe2\x86\x91{d}  {d}x{d}  C-Space ?", .{ active_scroll, grid_cols, grid_rows }) catch ""
     else
         std.fmt.bufPrint(&right_buf, "{d}x{d}  C-Space ?", .{ grid_cols, grid_rows }) catch "";
     const right_start = if (fb_w > right_text.len * cw + cw + pad) fb_w - right_text.len * cw - cw - pad else 0;
@@ -322,8 +323,10 @@ pub fn renderScrollOverlay(
     const sb_lines: u32 = @intCast(sb.lineCount());
     if (sb_lines == 0) return;
 
-    // How many scrollback lines to render at the top of the screen
-    const lines_to_show = @min(scroll_offset, sb_lines);
+    // How many scrollback lines to render at the top of the screen.
+    // Cap at screen rows so we never shift the entire framebuffer off-screen.
+    const screen_rows = if (ch > 0) @as(u32, @intCast(fb_h / ch)) else 1;
+    const lines_to_show = @min(scroll_offset, @min(sb_lines, screen_rows -| 1));
 
     // Shift the existing framebuffer content DOWN by (lines_to_show * ch) pixels.
     // We do this by copying rows bottom-to-top to avoid overlap corruption.
