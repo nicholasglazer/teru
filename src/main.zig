@@ -401,6 +401,36 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 }
                             }
 
+                            // Ctrl+Shift+C: copy selection to clipboard
+                            const CTRL_MASK: u32 = 4;
+                            const SHIFT_MASK_COPY: u32 = 1;
+                            if (key.modifiers & CTRL_MASK != 0 and key.modifiers & SHIFT_MASK_COPY != 0) {
+                                const XKB_KEY_C: u32 = 0x0043;
+                                const XKB_KEY_c: u32 = 0x0063;
+                                const XKB_KEY_V: u32 = 0x0056;
+                                const XKB_KEY_v: u32 = 0x0076;
+                                if (keysym == XKB_KEY_C or keysym == XKB_KEY_c) {
+                                    // Copy selection
+                                    if (selection.active) {
+                                        if (mux.getActivePane()) |pane| {
+                                            var sel_buf: [8192]u8 = undefined;
+                                            const copy_len = selection.getText(&pane.grid, &sel_buf);
+                                            if (copy_len > 0) {
+                                                Clipboard.copy(sel_buf[0..copy_len]);
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+                                if (keysym == XKB_KEY_V or keysym == XKB_KEY_v) {
+                                    // Paste
+                                    if (mux.getActivePane()) |pane| {
+                                        Clipboard.paste(&pane.pty);
+                                    }
+                                    continue;
+                                }
+                            }
+
                             // Any other key while in scroll mode: exit scroll mode
                             if (mux.scroll_offset > 0) {
                                 mux.scroll_offset = 0;
