@@ -18,19 +18,105 @@ const File = Io.File;
 const compat = @import("../compat.zig");
 const Config = @This();
 
+// ── ColorScheme ──────────────────────────────────────────────────
+
+/// Full base16 color scheme: 16 ANSI colors + semantic colors.
+/// Built from Config fields. Passed to the renderer and multiplexer
+/// so every color reference in the codebase comes from one place.
+pub const ColorScheme = struct {
+    /// ANSI colors 0-15 (indexed palette entries)
+    ansi: [16]u32 = default_ansi,
+
+    // Semantic colors (used for UI elements, not palette lookups)
+    bg: u32 = 0xFF232733, // default background
+    fg: u32 = 0xFFD0D2DB, // default foreground
+    cursor: u32 = 0xFFFF9837, // cursor block color
+    selection_bg: u32 = 0xFF3E4359, // selection highlight
+    border_active: u32 = 0xFFFF9837, // active pane border
+    border_inactive: u32 = 0xFF3E4359, // inactive pane border
+
+    /// Miozu theme defaults for ANSI 0-15.
+    pub const default_ansi = [16]u32{
+        0xFF232733, // 0  black       (miozu00)
+        0xFFEB3137, // 1  red
+        0xFF6DD672, // 2  green
+        0xFFE8D176, // 3  yellow
+        0xFF83D2FC, // 4  blue
+        0xFFC974E6, // 5  magenta
+        0xFF40FFE2, // 6  cyan
+        0xFFD0D2DB, // 7  white       (miozu05)
+        0xFF565E78, // 8  bright black (miozu03 - comments)
+        0xFFEB3137, // 9  bright red
+        0xFF6DD672, // 10 bright green
+        0xFFE8D176, // 11 bright yellow
+        0xFF83D2FC, // 12 bright blue
+        0xFFC974E6, // 13 bright magenta
+        0xFF40FFE2, // 14 bright cyan
+        0xFFF3F4F7, // 15 bright white (miozu06)
+    };
+
+    /// Resolve a Grid.Color to a packed ARGB u32, using this scheme's
+    /// palette for indexed colors and default fg/bg.
+    pub fn resolve(self: *const ColorScheme, color: @import("../core/Grid.zig").Color, is_fg: bool) u32 {
+        return switch (color) {
+            .default => if (is_fg) self.fg else self.bg,
+            .indexed => |idx| self.indexed256(idx),
+            .rgb => |c| packArgb(c.r, c.g, c.b),
+        };
+    }
+
+    /// Look up a 256-color index. 0-15 come from the scheme's ansi table,
+    /// 16-231 are the 6x6x6 color cube, 232-255 are the grayscale ramp.
+    pub fn indexed256(self: *const ColorScheme, idx: u8) u32 {
+        if (idx < 16) return self.ansi[idx];
+        if (idx >= 232) {
+            const v: u32 = @as(u32, idx - 232) * 10 + 8;
+            return 0xFF000000 | (v << 16) | (v << 8) | v;
+        }
+        // 16-231: 6x6x6 color cube
+        const i = @as(u32, idx) - 16;
+        const b_val = i % 6;
+        const g_val = (i / 6) % 6;
+        const r_val = i / 36;
+        const r: u32 = if (r_val == 0) 0 else r_val * 40 + 55;
+        const g: u32 = if (g_val == 0) 0 else g_val * 40 + 55;
+        const b: u32 = if (b_val == 0) 0 else b_val * 40 + 55;
+        return 0xFF000000 | (r << 16) | (g << 8) | b;
+    }
+
+    /// Dim a color by halving R, G, B channels (preserve alpha).
+    pub fn dimColor(_: *const ColorScheme, argb: u32) u32 {
+        const r = ((argb >> 16) & 0xFF) >> 1;
+        const g = ((argb >> 8) & 0xFF) >> 1;
+        const b = (argb & 0xFF) >> 1;
+        return (0xFF << 24) | (r << 16) | (g << 8) | b;
+    }
+};
+
+/// Pack R, G, B bytes into an ARGB u32 with full alpha.
+pub fn packArgb(r: u8, g: u8, b: u8) u32 {
+    return (0xFF << 24) |
+        (@as(u32, r) << 16) |
+        (@as(u32, g) << 8) |
+        @as(u32, b);
+}
+
 // ── Fields ────────────────────────────────────────────────────────
 
 // Appearance
 font_path: ?[]const u8 = null, // path to .ttf font
 font_size: u16 = 16,
 
-// Colors (miozu theme defaults)
-bg: u32 = 0xFF1D1D23, // dark background
-fg: u32 = 0xFFFAF8FB, // light foreground
-cursor_color: u32 = 0xFFFF9922, // orange accent
-selection_bg: u32 = 0xFF38384C, // selection highlight
-border_active: u32 = 0xFFFF9922, // active pane border
-border_inactive: u32 = 0xFF38384C, // inactive pane border
+// Colors (miozu theme defaults — matches alacritty/ghostty miozu config)
+bg: u32 = 0xFF232733, // miozu00 - darkest background
+fg: u32 = 0xFFD0D2DB, // miozu05 - default foreground
+cursor_color: u32 = 0xFFFF9837, // orange accent
+selection_bg: u32 = 0xFF3E4359, // miozu02 - selection
+border_active: u32 = 0xFFFF9837, // active pane border
+border_inactive: u32 = 0xFF3E4359, // inactive pane border
+
+// ANSI palette overrides (color0-color15). null = use default from ColorScheme.
+ansi_colors: [16]?u32 = .{null} ** 16,
 
 // Terminal
 scrollback_lines: u32 = 10000,
@@ -95,6 +181,25 @@ pub fn deinit(self: *Config) void {
     self.hook_on_session_save = null;
 }
 
+/// Build a ColorScheme from the current config fields.
+/// ANSI colors 0-15 are overridden by color0-color15 if set.
+pub fn colorScheme(self: *const Config) ColorScheme {
+    var scheme = ColorScheme{
+        .bg = self.bg,
+        .fg = self.fg,
+        .cursor = self.cursor_color,
+        .selection_bg = self.selection_bg,
+        .border_active = self.border_active,
+        .border_inactive = self.border_inactive,
+    };
+    for (self.ansi_colors, 0..) |maybe_color, i| {
+        if (maybe_color) |color| {
+            scheme.ansi[i] = color;
+        }
+    }
+    return scheme;
+}
+
 // ── Parsing ───────────────────────────────────────────────────────
 
 fn parse(self: *Config, allocator: Allocator, content: []const u8) void {
@@ -152,6 +257,11 @@ fn applyField(self: *Config, allocator: Allocator, key: []const u8, value: []con
         self.setString(allocator, &self.hook_on_agent_start, value);
     } else if (std.mem.eql(u8, key, "hook_on_session_save")) {
         self.setString(allocator, &self.hook_on_session_save, value);
+    } else if (key.len >= 6 and key.len <= 7 and std.mem.startsWith(u8, key, "color")) {
+        // color0 through color15
+        const idx = std.fmt.parseInt(u8, key[5..], 10) catch return;
+        if (idx > 15) return;
+        self.ansi_colors[idx] = parseHexColor(value) orelse return;
     }
     // Unknown keys are silently ignored (forward-compatibility)
 }
@@ -336,7 +446,7 @@ test "parse ignores malformed lines" {
 
     // All should remain at defaults since values are invalid
     try std.testing.expectEqual(@as(u16, 16), config.font_size);
-    try std.testing.expectEqual(@as(u32, 0xFF1D1D23), config.bg);
+    try std.testing.expectEqual(@as(u32, 0xFF232733), config.bg);
 }
 
 test "missing config file returns defaults" {
@@ -347,9 +457,9 @@ test "missing config file returns defaults" {
     defer config.deinit();
 
     try std.testing.expectEqual(@as(u16, 16), config.font_size);
-    try std.testing.expectEqual(@as(u32, 0xFF1D1D23), config.bg);
-    try std.testing.expectEqual(@as(u32, 0xFFFAF8FB), config.fg);
-    try std.testing.expectEqual(@as(u32, 0xFFFF9922), config.cursor_color);
+    try std.testing.expectEqual(@as(u32, 0xFF232733), config.bg);
+    try std.testing.expectEqual(@as(u32, 0xFFD0D2DB), config.fg);
+    try std.testing.expectEqual(@as(u32, 0xFFFF9837), config.cursor_color);
     try std.testing.expectEqual(@as(u32, 10000), config.scrollback_lines);
     try std.testing.expectEqual(@as(u32, 960), config.initial_width);
     try std.testing.expectEqual(@as(u32, 640), config.initial_height);
@@ -388,4 +498,90 @@ test "string fields can be overwritten" {
     defer config.deinit();
 
     try std.testing.expectEqualStrings("/second/path.ttf", config.font_path.?);
+}
+
+test "colorScheme returns defaults" {
+    const allocator = std.testing.allocator;
+    const config = Config{ .allocator = allocator };
+    const scheme = config.colorScheme();
+
+    try std.testing.expectEqual(@as(u32, 0xFF232733), scheme.bg);
+    try std.testing.expectEqual(@as(u32, 0xFFD0D2DB), scheme.fg);
+    try std.testing.expectEqual(@as(u32, 0xFFFF9837), scheme.cursor);
+    try std.testing.expectEqual(@as(u32, 0xFF3E4359), scheme.selection_bg);
+    try std.testing.expectEqual(@as(u32, 0xFF232733), scheme.ansi[0]); // black
+    try std.testing.expectEqual(@as(u32, 0xFFEB3137), scheme.ansi[1]); // red
+    try std.testing.expectEqual(@as(u32, 0xFFF3F4F7), scheme.ansi[15]); // bright white
+}
+
+test "colorScheme with color overrides" {
+    const allocator = std.testing.allocator;
+
+    const content =
+        \\color0 = #000000
+        \\color1 = #FF0000
+        \\color15 = #FFFFFF
+        \\bg = #111111
+        \\fg = #EEEEEE
+    ;
+
+    var config = Config{ .allocator = allocator };
+    config.parse(allocator, content);
+    const scheme = config.colorScheme();
+
+    try std.testing.expectEqual(@as(u32, 0xFF000000), scheme.ansi[0]);
+    try std.testing.expectEqual(@as(u32, 0xFFFF0000), scheme.ansi[1]);
+    try std.testing.expectEqual(@as(u32, 0xFFFFFFFF), scheme.ansi[15]);
+    try std.testing.expectEqual(@as(u32, 0xFF111111), scheme.bg);
+    try std.testing.expectEqual(@as(u32, 0xFFEEEEEE), scheme.fg);
+    // Non-overridden colors stay at default
+    try std.testing.expectEqual(@as(u32, 0xFF6DD672), scheme.ansi[2]); // green
+}
+
+test "colorScheme resolve" {
+    const allocator = std.testing.allocator;
+    const config = Config{ .allocator = allocator };
+    const scheme = config.colorScheme();
+    const Grid = @import("../core/Grid.zig");
+
+    // Default colors
+    try std.testing.expectEqual(scheme.fg, scheme.resolve(.default, true));
+    try std.testing.expectEqual(scheme.bg, scheme.resolve(.default, false));
+
+    // Indexed color
+    try std.testing.expectEqual(scheme.ansi[1], scheme.resolve(.{ .indexed = 1 }, true));
+
+    // RGB passthrough
+    try std.testing.expectEqual(packArgb(128, 64, 255), scheme.resolve(.{ .rgb = .{ .r = 128, .g = 64, .b = 255 } }, true));
+
+    // 256-color cube
+    const idx232 = scheme.indexed256(232);
+    try std.testing.expectEqual(packArgb(8, 8, 8), idx232);
+
+    // Dim
+    const bright = packArgb(200, 100, 50);
+    try std.testing.expectEqual(packArgb(100, 50, 25), scheme.dimColor(bright));
+
+    _ = Grid;
+}
+
+test "parse color0-color15 keys" {
+    const allocator = std.testing.allocator;
+
+    const content =
+        \\color0 = #000000
+        \\color7 = #BBBBBB
+        \\color15 = #FFFFFF
+        \\color16 = #ABCDEF
+    ;
+
+    var config = Config{ .allocator = allocator };
+    config.parse(allocator, content);
+
+    try std.testing.expectEqual(@as(?u32, 0xFF000000), config.ansi_colors[0]);
+    try std.testing.expectEqual(@as(?u32, 0xFFBBBBBB), config.ansi_colors[7]);
+    try std.testing.expectEqual(@as(?u32, 0xFFFFFFFF), config.ansi_colors[15]);
+    // color16 should be ignored (out of range)
+    // Check that no other ansi_colors were set
+    try std.testing.expectEqual(@as(?u32, null), config.ansi_colors[1]);
 }

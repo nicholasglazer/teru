@@ -15,6 +15,7 @@
 const std = @import("std");
 const Grid = @import("../core/Grid.zig");
 const FontAtlas = @import("FontAtlas.zig");
+pub const ColorScheme = @import("../config/Config.zig").ColorScheme;
 
 // ── SIMD types ─────────────────────────────────────────────────────
 // Process 4 pixels at a time (128-bit — works on SSE2, NEON, and
@@ -24,52 +25,6 @@ const FontAtlas = @import("FontAtlas.zig");
 
 const Vec4u32 = @Vector(4, u32);
 const Vec4u16 = @Vector(4, u16);
-
-// ── Full 256-color palette (comptime) ─────────────────────────────────
-// 0-15: standard SGR named colors (matches opengl.zig exactly)
-// 16-231: 6x6x6 color cube
-// 232-255: 24-step grayscale ramp (8, 18, ..., 238)
-
-const palette_256 = blk: {
-    var table: [256]u32 = undefined;
-
-    // 0-15: miozu base16 color scheme
-    table[0] = 0xFF1D1D23; // black   (miozu00)
-    table[1] = 0xFFF4517D; // red     (miozu0E)
-    table[2] = 0xFF7DB359; // green   (miozu0B)
-    table[3] = 0xFFFF9922; // yellow  (miozu0A)
-    table[4] = 0xFF8683FF; // blue    (miozu08)
-    table[5] = 0xFFCF8DFF; // magenta (miozu0D)
-    table[6] = 0xFF2DD9F0; // cyan    (miozu0C)
-    table[7] = 0xFFC9CBD7; // white   (miozu05)
-    table[8] = 0xFF64647E; // bright black   (miozu03)
-    table[9] = 0xFFC43444; // bright red     (miozu0F)
-    table[10] = 0xFF7DB359; // bright green   (miozu0B)
-    table[11] = 0xFFFF9922; // bright yellow  (miozu0A)
-    table[12] = 0xFF4385E7; // bright blue    (miozu09)
-    table[13] = 0xFFCF8DFF; // bright magenta (miozu0D)
-    table[14] = 0xFF2DD9F0; // bright cyan    (miozu0C)
-    table[15] = 0xFFFAF8FB; // bright white   (miozu07)
-
-    // 16-231: 6x6x6 color cube
-    for (0..216) |i| {
-        const b_val: u16 = @intCast(i % 6);
-        const g_val: u16 = @intCast((i / 6) % 6);
-        const r_val: u16 = @intCast(i / 36);
-        const r: u32 = if (r_val == 0) 0 else r_val * 40 + 55;
-        const g: u32 = if (g_val == 0) 0 else g_val * 40 + 55;
-        const b: u32 = if (b_val == 0) 0 else b_val * 40 + 55;
-        table[i + 16] = 0xFF000000 | (r << 16) | (g << 8) | b;
-    }
-
-    // 232-255: grayscale ramp (8, 18, 28, ..., 238)
-    for (0..24) |i| {
-        const v: u32 = @as(u32, @intCast(i)) * 10 + 8;
-        table[i + 232] = 0xFF000000 | (v << 16) | (v << 8) | v;
-    }
-
-    break :blk table;
-};
 
 // ── SoftwareRenderer ───────────────────────────────────────────────
 
@@ -84,8 +39,10 @@ pub const SoftwareRenderer = struct {
     atlas_height: u32,
     cursor_color: u32, // configurable cursor block color (ARGB)
     padding: u32, // pixels of padding around content
+    scheme: ColorScheme, // runtime color scheme (palette + semantic colors)
     allocator: std.mem.Allocator,
 
+    /// Init with default color scheme and cursor color.
     pub fn init(
         allocator: std.mem.Allocator,
         width: u32,
@@ -93,10 +50,10 @@ pub const SoftwareRenderer = struct {
         cell_width: u32,
         cell_height: u32,
     ) !SoftwareRenderer {
-        return initWithCursor(allocator, width, height, cell_width, cell_height, 0xFFFF9922);
+        return initWithScheme(allocator, width, height, cell_width, cell_height, .{});
     }
 
-    /// Init with a configurable cursor color (ARGB u32).
+    /// Init with a configurable cursor color (ARGB u32), default scheme otherwise.
     pub fn initWithCursor(
         allocator: std.mem.Allocator,
         width: u32,
@@ -105,11 +62,23 @@ pub const SoftwareRenderer = struct {
         cell_height: u32,
         cursor_color: u32,
     ) !SoftwareRenderer {
+        var s = ColorScheme{};
+        s.cursor = cursor_color;
+        return initWithScheme(allocator, width, height, cell_width, cell_height, s);
+    }
+
+    /// Init with a full color scheme from config.
+    pub fn initWithScheme(
+        allocator: std.mem.Allocator,
+        width: u32,
+        height: u32,
+        cell_width: u32,
+        cell_height: u32,
+        scheme: ColorScheme,
+    ) !SoftwareRenderer {
         const pixel_count = @as(usize, width) * @as(usize, height);
         const fb = try allocator.alloc(u32, pixel_count);
-        // Clear to default background
-        const bg = resolveColorArgb(.default, false);
-        @memset(fb, bg);
+        @memset(fb, scheme.bg);
 
         return .{
             .framebuffer = fb,
@@ -120,8 +89,9 @@ pub const SoftwareRenderer = struct {
             .glyph_atlas = &.{},
             .atlas_width = 0,
             .atlas_height = 0,
-            .cursor_color = cursor_color,
-            .padding = 4, // 4px content padding
+            .cursor_color = scheme.cursor,
+            .padding = 8, // 8px content padding (standard terminal padding)
+            .scheme = scheme,
             .allocator = allocator,
         };
     }
@@ -151,8 +121,8 @@ pub const SoftwareRenderer = struct {
                 const cell = grid.cellAtConst(@intCast(row), @intCast(col));
 
                 // Resolve colors (handling inverse, dim, hidden)
-                var fg = resolveColorArgb(cell.fg, true);
-                var bg = resolveColorArgb(cell.bg, false);
+                var fg = self.scheme.resolve(cell.fg, true);
+                var bg = self.scheme.resolve(cell.bg, false);
 
                 if (cell.attrs.inverse) {
                     const tmp = fg;
@@ -161,7 +131,7 @@ pub const SoftwareRenderer = struct {
                 }
 
                 if (cell.attrs.dim) {
-                    fg = dimColor(fg);
+                    fg = self.scheme.dimColor(fg);
                 }
 
                 if (cell.attrs.hidden) {
@@ -196,7 +166,7 @@ pub const SoftwareRenderer = struct {
 
                 // Underline: attrs.underline OR hyperlinked cell
                 if (cell.attrs.underline or cell.hyperlink_id != 0) {
-                    const ul_color = if (cell.hyperlink_id != 0) 0xFF5599DD else fg;
+                    const ul_color = if (cell.hyperlink_id != 0) self.scheme.ansi[4] else fg;
                     const ul_y = if (ch >= 2) screen_y + ch - 1 else screen_y;
                     if (ul_y < fb_h) {
                         const row_start = ul_y * fb_w;
@@ -295,8 +265,7 @@ pub const SoftwareRenderer = struct {
         self.framebuffer = try self.allocator.alloc(u32, pixel_count);
         self.width = width;
         self.height = height;
-        const bg = resolveColorArgb(.default, false);
-        @memset(self.framebuffer, bg);
+        @memset(self.framebuffer, self.scheme.bg);
     }
 
     /// Update the glyph atlas data. The atlas is a single-channel grayscale
@@ -389,39 +358,11 @@ fn blitGlyphRow(dst: []u32, glyph_alpha: []const u8, fg: u32, bg: u32, width: us
     }
 }
 
-// ── Color resolution (matches opengl.zig exactly) ──────────────────
-
-/// Convert a Grid.Color to a packed ARGB u32.
-fn resolveColorArgb(color: Grid.Color, is_fg: bool) u32 {
-    return switch (color) {
-        .default => if (is_fg)
-            0xFFFAF8FB // miozu07: light foreground
-        else
-            0xFF1D1D23, // miozu00: dark background
-        .indexed => |idx| indexed256Argb(idx),
-        .rgb => |c| packArgb(c.r, c.g, c.b),
-    };
-}
+// ── Color helpers (standalone, used by tests) ─────────────────────
 
 /// Pack R, G, B bytes into an ARGB u32 with full alpha.
-fn packArgb(r: u8, g: u8, b: u8) u32 {
-    return (0xFF << 24) |
-        (@as(u32, r) << 16) |
-        (@as(u32, g) << 8) |
-        @as(u32, b);
-}
-
-/// Convert a 256-color index to packed ARGB (comptime table lookup).
-fn indexed256Argb(idx: u8) u32 {
-    return palette_256[idx];
-}
-
-/// Dim a color by halving R, G, B channels (preserve alpha).
-fn dimColor(argb: u32) u32 {
-    const r = ((argb >> 16) & 0xFF) >> 1;
-    const g = ((argb >> 8) & 0xFF) >> 1;
-    const b = (argb & 0xFF) >> 1;
-    return (0xFF << 24) | (r << 16) | (g << 8) | b;
+pub fn packArgb(r: u8, g: u8, b: u8) u32 {
+    return @import("../config/Config.zig").packArgb(r, g, b);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -439,8 +380,9 @@ test "render empty grid" {
 
     // Non-cursor pixels should be the default background color.
     // Cursor is at (0,0) so the first cell_width*cell_height pixels are cursor_color.
-    const bg = resolveColorArgb(.default, false);
-    const cursor_color: u32 = 0xFFFF9922;
+    const scheme = ColorScheme{};
+    const bg = scheme.bg;
+    const cursor_color = scheme.cursor;
     const cw: usize = renderer.cell_width;
     const ch: usize = renderer.cell_height;
     const fb_w: usize = renderer.width;
@@ -493,7 +435,7 @@ test "render single character" {
     renderer.render(&grid);
 
     // All 4 pixels should be the default foreground color (glyph alpha = 255)
-    const fg = resolveColorArgb(.default, true);
+    const fg = renderer.scheme.fg;
     try std.testing.expectEqual(fg, renderer.framebuffer[0]);
     try std.testing.expectEqual(fg, renderer.framebuffer[1]);
     try std.testing.expectEqual(fg, renderer.framebuffer[2]);
@@ -604,32 +546,34 @@ test "performance: 5000 cells" {
     // (debug builds ~ms, release builds ~us for 640K pixels).
     renderer.render(&grid);
 
-    // Verify render actually ran: cursor at (0,0) draws orange, last pixel is bg
-    const bg = resolveColorArgb(.default, false);
-    const cursor_color: u32 = 0xFFFF9922;
-    try std.testing.expectEqual(cursor_color, renderer.framebuffer[0]); // cursor at (0,0)
-    try std.testing.expectEqual(bg, renderer.framebuffer[renderer.framebuffer.len - 1]);
+    // Verify render actually ran: cursor at (0,0) draws cursor color, last pixel is bg
+    const scheme = ColorScheme{};
+    try std.testing.expectEqual(scheme.cursor, renderer.framebuffer[0]); // cursor at (0,0)
+    try std.testing.expectEqual(scheme.bg, renderer.framebuffer[renderer.framebuffer.len - 1]);
 }
 
 test "color resolution: indexed 256 palette" {
+    const scheme = ColorScheme{};
     // Index 0 = miozu black
-    try std.testing.expectEqual(@as(u32, 0xFF1D1D23), indexed256Argb(0));
-    // Index 15 = miozu bright white (FAF8FB)
-    try std.testing.expectEqual(@as(u32, 0xFFFAF8FB), indexed256Argb(15));
+    try std.testing.expectEqual(@as(u32, 0xFF232733), scheme.indexed256(0));
+    // Index 15 = miozu bright white
+    try std.testing.expectEqual(@as(u32, 0xFFF3F4F7), scheme.indexed256(15));
     // Index 232 = very dark gray (level = 8)
-    try std.testing.expectEqual(packArgb(8, 8, 8), indexed256Argb(232));
+    try std.testing.expectEqual(packArgb(8, 8, 8), scheme.indexed256(232));
     // Index 255 = near-white (level = 238)
-    try std.testing.expectEqual(packArgb(238, 238, 238), indexed256Argb(255));
+    try std.testing.expectEqual(packArgb(238, 238, 238), scheme.indexed256(255));
 }
 
 test "color resolution: RGB passthrough" {
+    const scheme = ColorScheme{};
     const color: Grid.Color = .{ .rgb = .{ .r = 128, .g = 64, .b = 255 } };
-    try std.testing.expectEqual(packArgb(128, 64, 255), resolveColorArgb(color, true));
+    try std.testing.expectEqual(packArgb(128, 64, 255), scheme.resolve(color, true));
 }
 
 test "dimColor halves channels" {
+    const scheme = ColorScheme{};
     const bright = packArgb(200, 100, 50);
-    const dimmed = dimColor(bright);
+    const dimmed = scheme.dimColor(bright);
     try std.testing.expectEqual(packArgb(100, 50, 25), dimmed);
 }
 
@@ -651,7 +595,7 @@ test "cursor rendered as block at cursor position" {
     renderer.render(&grid);
 
     // Cursor block at (col=2, row=1) -> pixel (4,2) to (5,3)
-    const cursor_color: u32 = 0xFFFF9922;
+    const cursor_color = renderer.scheme.cursor;
     const fb_w = 4 * cw;
 
     // Pixels inside cursor block should be cursor_color
@@ -661,7 +605,7 @@ test "cursor rendered as block at cursor position" {
     try std.testing.expectEqual(cursor_color, renderer.framebuffer[3 * fb_w + 5]); // (5, 3)
 
     // Pixel outside cursor should be default background
-    const bg = resolveColorArgb(.default, false);
+    const bg = renderer.scheme.bg;
     try std.testing.expectEqual(bg, renderer.framebuffer[0]); // (0, 0)
     try std.testing.expectEqual(bg, renderer.framebuffer[2 * fb_w + 0]); // (0, 2)
 }
@@ -709,8 +653,8 @@ test "cursor rendered as underline" {
 
     renderer.render(&grid);
 
-    const cursor_color: u32 = 0xFFFF9922;
-    const bg = resolveColorArgb(.default, false);
+    const cursor_color = renderer.scheme.cursor;
+    const bg = renderer.scheme.bg;
 
     // Top rows should be background (not cursor)
     try std.testing.expectEqual(bg, renderer.framebuffer[0]); // row 0
@@ -739,8 +683,8 @@ test "cursor rendered as bar" {
 
     renderer.render(&grid);
 
-    const cursor_color: u32 = 0xFFFF9922;
-    const bg = resolveColorArgb(.default, false);
+    const cursor_color = renderer.scheme.cursor;
+    const bg = renderer.scheme.bg;
 
     // Left 2 columns of each row should be cursor color
     try std.testing.expectEqual(cursor_color, renderer.framebuffer[0]); // row 0, col 0
