@@ -21,6 +21,8 @@ src/
 
   render/
     software.zig         CPU SIMD renderer (@Vector(4, u32) pixel blitting)
+    Compositor.zig       Pane rendering, borders, glyph blitting
+    Ui.zig               Search bar, status bar, scroll overlay
     FontAtlas.zig        stb_truetype glyph rasterization
 
   pty/
