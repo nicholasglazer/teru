@@ -1,3 +1,8 @@
+//! Tiling layout engine for pane arrangement.
+//!
+//! Supports four layouts: master-stack, grid, monocle, and floating.
+//! Each workspace tracks its own layout, master ratio, and node list.
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 

@@ -1,3 +1,8 @@
+//! Binary session serialization and restore.
+//!
+//! Saves and loads the full terminal state (process graph, workspace layout)
+//! to a compact binary format. Used by --attach and detach (prefix+d).
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
