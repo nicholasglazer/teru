@@ -157,6 +157,9 @@ const XCB_ATOM_NONE: xcb_atom_t = 0;
 
 const XCB_IMAGE_FORMAT_Z_PIXMAP: u8 = 2;
 
+// ── XCB-SHM types ───────────────────────────────────────────────────
+const xcb_shm_seg_t = u32;
+
 // ── XCB extern functions ──────────────────────────────────────────────
 
 extern "xcb" fn xcb_connect(display: ?[*:0]const u8, screen: ?*c_int) callconv(.c) ?*xcb_connection_t;
@@ -178,6 +181,11 @@ extern "xcb" fn xcb_put_image(conn: *xcb_connection_t, format: u8, drawable: xcb
 extern "xcb" fn xcb_intern_atom(conn: *xcb_connection_t, only_if_exists: u8, name_len: u16, name: [*]const u8) callconv(.c) xcb_intern_atom_cookie_t;
 extern "xcb" fn xcb_intern_atom_reply(conn: *xcb_connection_t, cookie: xcb_intern_atom_cookie_t, err: ?*?*anyopaque) callconv(.c) ?*xcb_intern_atom_reply_t;
 
+// ── XCB-SHM extern functions ──────────────────────────────────────────
+extern "xcb-shm" fn xcb_shm_attach(conn: *xcb_connection_t, shmseg: xcb_shm_seg_t, shmid: u32, read_only: u8) callconv(.c) xcb_void_cookie_t;
+extern "xcb-shm" fn xcb_shm_detach(conn: *xcb_connection_t, shmseg: xcb_shm_seg_t) callconv(.c) xcb_void_cookie_t;
+extern "xcb-shm" fn xcb_shm_put_image(conn: *xcb_connection_t, drawable: xcb_window_t, gc: xcb_gcontext_t, total_width: u16, total_height: u16, src_x: u16, src_y: u16, src_width: u16, src_height: u16, dst_x: i16, dst_y: i16, depth: u8, format: u8, send_event: u8, shmseg: xcb_shm_seg_t, offset: u32) callconv(.c) xcb_void_cookie_t;
+
 // ── X11Window ─────────────────────────────────────────────────────────
 
 pub const X11Window = struct {
@@ -190,6 +198,15 @@ pub const X11Window = struct {
     is_open: bool,
     wm_delete_window: xcb_atom_t,
     depth: u8,
+
+    // SHM state (zero-copy framebuffer)
+    shm_seg: xcb_shm_seg_t = 0,
+    shm_id: c_int = -1,
+    shm_ptr: ?[*]u32 = null,
+    shm_size: usize = 0,
+    shm_width: u32 = 0,
+    shm_height: u32 = 0,
+    use_shm: bool = false,
 
     pub fn init(width: u32, height: u32, title: []const u8) !X11Window {
         // Connect to X server (pure XCB, no Xlib)
@@ -250,7 +267,7 @@ pub const X11Window = struct {
         _ = xcb_map_window(connection, win_id);
         _ = xcb_flush(connection);
 
-        return X11Window{
+        var self = X11Window{
             .connection = connection,
             .window = win_id,
             .screen = screen,
@@ -261,9 +278,15 @@ pub const X11Window = struct {
             .wm_delete_window = wm_delete,
             .depth = screen.root_depth,
         };
+
+        // Try to set up SHM for zero-copy framebuffer
+        self.setupShm(width, height);
+
+        return self;
     }
 
     pub fn deinit(self: *X11Window) void {
+        self.teardownShm();
         _ = xcb_free_gc(self.connection, self.gc);
         _ = xcb_destroy_window(self.connection, self.window);
         _ = xcb_flush(self.connection);
@@ -350,11 +373,109 @@ pub const X11Window = struct {
         const blit_h = @min(fb_height, self.height);
         if (blit_w == 0 or blit_h == 0) return;
 
+        if (self.use_shm) {
+            // Reallocate SHM if size changed
+            if (fb_width != self.shm_width or fb_height != self.shm_height) {
+                self.teardownShm();
+                self.setupShm(fb_width, fb_height);
+            }
+
+            if (self.use_shm) {
+                // Copy pixels into SHM buffer then blit (zero-copy X server side)
+                const dst = self.shm_ptr.?;
+                const copy_len = @as(usize, fb_width) * fb_height;
+                if (copy_len <= self.shm_size / 4) {
+                    @memcpy(dst[0..copy_len], pixels[0..copy_len]);
+                }
+
+                _ = xcb_shm_put_image(
+                    self.connection,
+                    self.window,
+                    self.gc,
+                    @intCast(fb_width),
+                    @intCast(fb_height),
+                    0,
+                    0,
+                    @intCast(blit_w),
+                    @intCast(blit_h),
+                    0,
+                    0,
+                    self.depth,
+                    XCB_IMAGE_FORMAT_Z_PIXMAP,
+                    0, // send_event
+                    self.shm_seg,
+                    0, // offset
+                );
+                _ = xcb_flush(self.connection);
+                return;
+            }
+        }
+
+        // Fallback: send pixels over the socket (slow)
         const data: [*]const u8 = @ptrCast(pixels.ptr);
         const row_bytes = fb_width * 4;
-
         _ = xcb_put_image(self.connection, XCB_IMAGE_FORMAT_Z_PIXMAP, self.window, self.gc, @intCast(blit_w), @intCast(blit_h), 0, 0, 0, self.depth, blit_h * row_bytes, data);
         _ = xcb_flush(self.connection);
+    }
+
+    // ── SHM helpers ───────────────────────────────────────────────────
+
+    const IPC_CREAT = 0o1000;
+    const IPC_RMID = 0;
+
+    // System V SHM (not in std.c)
+    const shmid_ds = opaque {};
+    extern "c" fn shmget(key: c_int, size: usize, shmflg: c_int) callconv(.c) c_int;
+    extern "c" fn shmat(shmid: c_int, shmaddr: ?*const anyopaque, shmflg: c_int) callconv(.c) ?*anyopaque;
+    extern "c" fn shmdt(shmaddr: *const anyopaque) callconv(.c) c_int;
+    extern "c" fn shmctl(shmid: c_int, cmd: c_int, buf: ?*shmid_ds) callconv(.c) c_int;
+
+    fn setupShm(self: *X11Window, width: u32, height: u32) void {
+        const size = @as(usize, width) * height * 4;
+        if (size == 0) return;
+
+        // Create System V shared memory segment
+        const shmid_val = shmget(0, size, IPC_CREAT | 0o600);
+        if (shmid_val < 0) return;
+
+        // Attach to our address space
+        const ptr = shmat(shmid_val, null, 0);
+        if (ptr == null) {
+            _ = shmctl(shmid_val, IPC_RMID, null);
+            return;
+        }
+
+        // Mark for deletion when all processes detach
+        _ = shmctl(shmid_val, IPC_RMID, null);
+
+        // Attach to X server
+        const seg = xcb_generate_id(self.connection);
+        _ = xcb_shm_attach(self.connection, seg, @bitCast(shmid_val), 0);
+        _ = xcb_flush(self.connection);
+
+        self.shm_seg = seg;
+        self.shm_id = shmid_val;
+        self.shm_ptr = @ptrCast(@alignCast(ptr));
+        self.shm_size = size;
+        self.shm_width = width;
+        self.shm_height = height;
+        self.use_shm = true;
+    }
+
+    fn teardownShm(self: *X11Window) void {
+        if (!self.use_shm) return;
+        _ = xcb_shm_detach(self.connection, self.shm_seg);
+        _ = xcb_flush(self.connection);
+        if (self.shm_ptr) |p| {
+            _ = shmdt(@ptrCast(p));
+        }
+        self.shm_ptr = null;
+        self.shm_size = 0;
+        self.shm_width = 0;
+        self.shm_height = 0;
+        self.shm_seg = 0;
+        self.shm_id = -1;
+        self.use_shm = false;
     }
 
     pub fn setTitle(self: *X11Window, title: []const u8) void {
