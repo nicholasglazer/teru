@@ -11,10 +11,10 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-linux
-            deps: libxcb1-dev libxkbcommon-dev libwayland-dev
+            deps: libxcb1-dev libxcb-shm0-dev libxkbcommon-dev libwayland-dev
           - os: ubuntu-latest
             target: aarch64-linux
-            deps: libxcb1-dev libxkbcommon-dev libwayland-dev
+            deps: libxcb1-dev libxcb-shm0-dev libxkbcommon-dev libwayland-dev
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
