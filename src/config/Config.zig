@@ -16,7 +16,12 @@ const Io = std.Io;
 const Dir = Io.Dir;
 const File = Io.File;
 const compat = @import("../compat.zig");
+const Grid = @import("../core/Grid.zig");
+const LayoutEngine = @import("../tiling/LayoutEngine.zig");
+const themes = @import("themes.zig");
 const Config = @This();
+
+pub const Bell = enum { visual, none };
 
 // ── ColorScheme ──────────────────────────────────────────────────
 
@@ -34,6 +39,7 @@ pub const ColorScheme = struct {
     selection_bg: u32 = 0xFF3E4359, // selection highlight
     border_active: u32 = 0xFFFF9837, // active pane border
     border_inactive: u32 = 0xFF3E4359, // inactive pane border
+    bold_is_bright: bool = false, // shift ANSI 0-7 to bright 8-15 when bold
 
     /// Miozu theme defaults for ANSI 0-15.
     pub const default_ansi = [16]u32{
@@ -135,6 +141,31 @@ hook_on_close: ?[]const u8 = null,
 hook_on_agent_start: ?[]const u8 = null,
 hook_on_session_save: ?[]const u8 = null,
 
+// Appearance
+padding: u32 = 8,
+opacity: f32 = 1.0,
+cursor_shape: Grid.CursorShape = .block,
+cursor_blink: bool = false,
+bold_is_bright: bool = false,
+
+// Terminal
+term: ?[]const u8 = null,
+scroll_speed: u32 = 3,
+copy_on_select: bool = false,
+bell: Bell = .visual,
+
+// Timing
+prefix_timeout_ms: u32 = 500,
+notification_duration_ms: u32 = 5000,
+
+// Theme
+theme: ?[]const u8 = null,
+
+// Per-workspace config (9 workspaces, 1-indexed in config, 0-indexed in array)
+workspace_layouts: [9]?LayoutEngine.Layout = .{null} ** 9,
+workspace_ratios: [9]?f32 = .{null} ** 9,
+workspace_names: [9]?[]const u8 = .{null} ** 9,
+
 allocator: Allocator,
 
 // ── Public API ────────────────────────────────────────────────────
@@ -173,12 +204,20 @@ pub fn deinit(self: *Config) void {
     if (self.hook_on_close) |s| self.allocator.free(s);
     if (self.hook_on_agent_start) |s| self.allocator.free(s);
     if (self.hook_on_session_save) |s| self.allocator.free(s);
+    if (self.term) |s| self.allocator.free(s);
+    if (self.theme) |s| self.allocator.free(s);
+    for (&self.workspace_names) |*name| {
+        if (name.*) |s| self.allocator.free(s);
+        name.* = null;
+    }
     self.font_path = null;
     self.shell = null;
     self.hook_on_spawn = null;
     self.hook_on_close = null;
     self.hook_on_agent_start = null;
     self.hook_on_session_save = null;
+    self.term = null;
+    self.theme = null;
 }
 
 /// Build a ColorScheme from the current config fields.
@@ -191,6 +230,7 @@ pub fn colorScheme(self: *const Config) ColorScheme {
         .selection_bg = self.selection_bg,
         .border_active = self.border_active,
         .border_inactive = self.border_inactive,
+        .bold_is_bright = self.bold_is_bright,
     };
     for (self.ansi_colors, 0..) |maybe_color, i| {
         if (maybe_color) |color| {
@@ -203,6 +243,7 @@ pub fn colorScheme(self: *const Config) ColorScheme {
 // ── Parsing ───────────────────────────────────────────────────────
 
 fn parse(self: *Config, allocator: Allocator, content: []const u8) void {
+    var current_section: ?[]const u8 = null;
     var line_iter = std.mem.splitScalar(u8, content, '\n');
     while (line_iter.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, &std.ascii.whitespace);
@@ -211,6 +252,14 @@ fn parse(self: *Config, allocator: Allocator, content: []const u8) void {
         if (line.len == 0) continue;
         if (line[0] == '#') continue;
 
+        // Section header: [section_name]
+        if (line[0] == '[') {
+            if (std.mem.indexOfScalar(u8, line, ']')) |end| {
+                current_section = line[1..end];
+            }
+            continue;
+        }
+
         // Split on first '='
         const eq_pos = std.mem.indexOfScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq_pos], &std.ascii.whitespace);
@@ -218,11 +267,22 @@ fn parse(self: *Config, allocator: Allocator, content: []const u8) void {
 
         if (key.len == 0 or value.len == 0) continue;
 
-        self.applyField(allocator, key, value);
+        self.applyField(allocator, current_section, key, value);
     }
 }
 
-fn applyField(self: *Config, allocator: Allocator, key: []const u8, value: []const u8) void {
+fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []const u8, value: []const u8) void {
+    // Delegate workspace section keys
+    if (section) |sec| {
+        if (std.mem.startsWith(u8, sec, "workspace.")) {
+            const idx_str = sec["workspace.".len..];
+            const ws_idx_1 = std.fmt.parseInt(usize, idx_str, 10) catch return;
+            if (ws_idx_1 < 1 or ws_idx_1 > 9) return;
+            self.applyWorkspaceField(allocator, ws_idx_1 - 1, key, value);
+            return;
+        }
+    }
+
     if (std.mem.eql(u8, key, "font_size")) {
         self.font_size = std.fmt.parseInt(u16, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "font_path")) {
@@ -257,6 +317,41 @@ fn applyField(self: *Config, allocator: Allocator, key: []const u8, value: []con
         self.setString(allocator, &self.hook_on_agent_start, value);
     } else if (std.mem.eql(u8, key, "hook_on_session_save")) {
         self.setString(allocator, &self.hook_on_session_save, value);
+    } else if (std.mem.eql(u8, key, "padding")) {
+        self.padding = std.fmt.parseInt(u32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "opacity")) {
+        self.opacity = parseFloat(value) orelse return;
+    } else if (std.mem.eql(u8, key, "cursor_shape")) {
+        self.cursor_shape = parseCursorShape(value) orelse return;
+    } else if (std.mem.eql(u8, key, "cursor_blink")) {
+        self.cursor_blink = parseBool(value) orelse return;
+    } else if (std.mem.eql(u8, key, "bold_is_bright")) {
+        self.bold_is_bright = parseBool(value) orelse return;
+    } else if (std.mem.eql(u8, key, "term")) {
+        self.setString(allocator, &self.term, value);
+    } else if (std.mem.eql(u8, key, "scroll_speed")) {
+        self.scroll_speed = std.fmt.parseInt(u32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "copy_on_select")) {
+        self.copy_on_select = parseBool(value) orelse return;
+    } else if (std.mem.eql(u8, key, "bell")) {
+        self.bell = parseBell(value) orelse return;
+    } else if (std.mem.eql(u8, key, "prefix_timeout_ms")) {
+        self.prefix_timeout_ms = std.fmt.parseInt(u32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "notification_duration_ms")) {
+        self.notification_duration_ms = std.fmt.parseInt(u32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "theme")) {
+        self.setString(allocator, &self.theme, value);
+        // Apply theme colors immediately — subsequent color keys override
+        if (themes.getBuiltin(value)) |scheme| {
+            self.bg = scheme.bg;
+            self.fg = scheme.fg;
+            self.cursor_color = scheme.cursor;
+            self.selection_bg = scheme.selection_bg;
+            self.border_active = scheme.border_active;
+            self.border_inactive = scheme.border_inactive;
+            self.ansi_colors = [_]?u32{null} ** 16;
+            for (scheme.ansi, 0..) |c, i| self.ansi_colors[i] = c;
+        }
     } else if (key.len >= 6 and key.len <= 7 and std.mem.startsWith(u8, key, "color")) {
         // color0 through color15
         const idx = std.fmt.parseInt(u8, key[5..], 10) catch return;
@@ -264,6 +359,19 @@ fn applyField(self: *Config, allocator: Allocator, key: []const u8, value: []con
         self.ansi_colors[idx] = parseHexColor(value) orelse return;
     }
     // Unknown keys are silently ignored (forward-compatibility)
+}
+
+fn applyWorkspaceField(self: *Config, allocator: Allocator, ws_idx: usize, key: []const u8, value: []const u8) void {
+    if (ws_idx >= 9) return;
+    if (std.mem.eql(u8, key, "layout")) {
+        self.workspace_layouts[ws_idx] = parseLayout(value);
+    } else if (std.mem.eql(u8, key, "master_ratio")) {
+        self.workspace_ratios[ws_idx] = parseFloat(value);
+    } else if (std.mem.eql(u8, key, "name")) {
+        // Free any previous name
+        if (self.workspace_names[ws_idx]) |prev| allocator.free(prev);
+        self.workspace_names[ws_idx] = allocator.dupe(u8, value) catch null;
+    }
 }
 
 fn setString(self: *Config, allocator: Allocator, field: *?[]const u8, value: []const u8) void {
@@ -324,6 +432,39 @@ pub fn parsePrefixKey(value: []const u8) ?u8 {
 
     // Raw integer fallback (0-31)
     return std.fmt.parseInt(u8, trimmed, 10) catch null;
+}
+
+// ── Value parsers ────────────────────────────────────────────────
+
+fn parseBool(value: []const u8) ?bool {
+    if (std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "yes") or std.mem.eql(u8, value, "1")) return true;
+    if (std.mem.eql(u8, value, "false") or std.mem.eql(u8, value, "no") or std.mem.eql(u8, value, "0")) return false;
+    return null;
+}
+
+fn parseFloat(value: []const u8) ?f32 {
+    return std.fmt.parseFloat(f32, value) catch return null;
+}
+
+fn parseLayout(value: []const u8) ?LayoutEngine.Layout {
+    if (std.mem.eql(u8, value, "master-stack") or std.mem.eql(u8, value, "master_stack")) return .master_stack;
+    if (std.mem.eql(u8, value, "grid")) return .grid;
+    if (std.mem.eql(u8, value, "monocle")) return .monocle;
+    if (std.mem.eql(u8, value, "floating")) return .floating;
+    return null;
+}
+
+fn parseCursorShape(value: []const u8) ?Grid.CursorShape {
+    if (std.mem.eql(u8, value, "block")) return .block;
+    if (std.mem.eql(u8, value, "underline")) return .underline;
+    if (std.mem.eql(u8, value, "bar")) return .bar;
+    return null;
+}
+
+fn parseBell(value: []const u8) ?Bell {
+    if (std.mem.eql(u8, value, "visual")) return .visual;
+    if (std.mem.eql(u8, value, "none")) return .none;
+    return null;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────
@@ -542,7 +683,6 @@ test "colorScheme resolve" {
     const allocator = std.testing.allocator;
     const config = Config{ .allocator = allocator };
     const scheme = config.colorScheme();
-    const Grid = @import("../core/Grid.zig");
 
     // Default colors
     try std.testing.expectEqual(scheme.fg, scheme.resolve(.default, true));
@@ -561,8 +701,6 @@ test "colorScheme resolve" {
     // Dim
     const bright = packArgb(200, 100, 50);
     try std.testing.expectEqual(packArgb(150, 75, 37), scheme.dimColor(bright));
-
-    _ = Grid;
 }
 
 test "parse color0-color15 keys" {
@@ -584,4 +722,214 @@ test "parse color0-color15 keys" {
     // color16 should be ignored (out of range)
     // Check that no other ansi_colors were set
     try std.testing.expectEqual(@as(?u32, null), config.ansi_colors[1]);
+}
+
+test "parse new flat fields" {
+    const allocator = std.testing.allocator;
+
+    const content =
+        \\padding = 12
+        \\opacity = 0.85
+        \\cursor_shape = bar
+        \\cursor_blink = true
+        \\bold_is_bright = yes
+        \\term = xterm-256color
+        \\scroll_speed = 5
+        \\copy_on_select = 1
+        \\bell = none
+        \\prefix_timeout_ms = 1000
+        \\notification_duration_ms = 3000
+        \\theme = dracula
+    ;
+
+    var config = Config{ .allocator = allocator };
+    config.parse(allocator, content);
+    defer config.deinit();
+
+    try std.testing.expectEqual(@as(u32, 12), config.padding);
+    try std.testing.expect(@abs(config.opacity - 0.85) < 0.001);
+    try std.testing.expectEqual(Grid.CursorShape.bar, config.cursor_shape);
+    try std.testing.expect(config.cursor_blink);
+    try std.testing.expect(config.bold_is_bright);
+    try std.testing.expectEqualStrings("xterm-256color", config.term.?);
+    try std.testing.expectEqual(@as(u32, 5), config.scroll_speed);
+    try std.testing.expect(config.copy_on_select);
+    try std.testing.expectEqual(Bell.none, config.bell);
+    try std.testing.expectEqual(@as(u32, 1000), config.prefix_timeout_ms);
+    try std.testing.expectEqual(@as(u32, 3000), config.notification_duration_ms);
+    try std.testing.expectEqualStrings("dracula", config.theme.?);
+}
+
+test "parse workspace sections" {
+    const allocator = std.testing.allocator;
+
+    const content =
+        \\font_size = 14
+        \\
+        \\[workspace.1]
+        \\layout = master-stack
+        \\master_ratio = 0.6
+        \\name = code
+        \\
+        \\[workspace.3]
+        \\layout = grid
+        \\name = monitoring
+        \\
+        \\[workspace.9]
+        \\layout = monocle
+    ;
+
+    var config = Config{ .allocator = allocator };
+    config.parse(allocator, content);
+    defer config.deinit();
+
+    // Global field still works
+    try std.testing.expectEqual(@as(u16, 14), config.font_size);
+
+    // Workspace 1 (index 0)
+    try std.testing.expectEqual(LayoutEngine.Layout.master_stack, config.workspace_layouts[0].?);
+    try std.testing.expect(@abs(config.workspace_ratios[0].? - 0.6) < 0.001);
+    try std.testing.expectEqualStrings("code", config.workspace_names[0].?);
+
+    // Workspace 2 (index 1) — not set
+    try std.testing.expectEqual(@as(?LayoutEngine.Layout, null), config.workspace_layouts[1]);
+    try std.testing.expectEqual(@as(?f32, null), config.workspace_ratios[1]);
+    try std.testing.expectEqual(@as(?[]const u8, null), config.workspace_names[1]);
+
+    // Workspace 3 (index 2)
+    try std.testing.expectEqual(LayoutEngine.Layout.grid, config.workspace_layouts[2].?);
+    try std.testing.expectEqualStrings("monitoring", config.workspace_names[2].?);
+
+    // Workspace 9 (index 8)
+    try std.testing.expectEqual(LayoutEngine.Layout.monocle, config.workspace_layouts[8].?);
+}
+
+test "parseBool" {
+    try std.testing.expectEqual(@as(?bool, true), parseBool("true"));
+    try std.testing.expectEqual(@as(?bool, true), parseBool("yes"));
+    try std.testing.expectEqual(@as(?bool, true), parseBool("1"));
+    try std.testing.expectEqual(@as(?bool, false), parseBool("false"));
+    try std.testing.expectEqual(@as(?bool, false), parseBool("no"));
+    try std.testing.expectEqual(@as(?bool, false), parseBool("0"));
+    try std.testing.expectEqual(@as(?bool, null), parseBool("maybe"));
+    try std.testing.expectEqual(@as(?bool, null), parseBool(""));
+}
+
+test "parseFloat" {
+    const v1 = parseFloat("0.5");
+    try std.testing.expect(v1 != null);
+    try std.testing.expect(@abs(v1.? - 0.5) < 0.001);
+
+    const v2 = parseFloat("1.0");
+    try std.testing.expect(v2 != null);
+    try std.testing.expect(@abs(v2.? - 1.0) < 0.001);
+
+    try std.testing.expectEqual(@as(?f32, null), parseFloat("abc"));
+    try std.testing.expectEqual(@as(?f32, null), parseFloat(""));
+}
+
+test "parseLayout" {
+    try std.testing.expectEqual(@as(?LayoutEngine.Layout, .master_stack), parseLayout("master-stack"));
+    try std.testing.expectEqual(@as(?LayoutEngine.Layout, .master_stack), parseLayout("master_stack"));
+    try std.testing.expectEqual(@as(?LayoutEngine.Layout, .grid), parseLayout("grid"));
+    try std.testing.expectEqual(@as(?LayoutEngine.Layout, .monocle), parseLayout("monocle"));
+    try std.testing.expectEqual(@as(?LayoutEngine.Layout, .floating), parseLayout("floating"));
+    try std.testing.expectEqual(@as(?LayoutEngine.Layout, null), parseLayout("unknown"));
+}
+
+test "parseCursorShape" {
+    try std.testing.expectEqual(@as(?Grid.CursorShape, .block), parseCursorShape("block"));
+    try std.testing.expectEqual(@as(?Grid.CursorShape, .underline), parseCursorShape("underline"));
+    try std.testing.expectEqual(@as(?Grid.CursorShape, .bar), parseCursorShape("bar"));
+    try std.testing.expectEqual(@as(?Grid.CursorShape, null), parseCursorShape("invalid"));
+}
+
+test "parseBell" {
+    try std.testing.expectEqual(@as(?Bell, .visual), parseBell("visual"));
+    try std.testing.expectEqual(@as(?Bell, .none), parseBell("none"));
+    try std.testing.expectEqual(@as(?Bell, null), parseBell("audible"));
+}
+
+test "theme = dracula applies dracula colors" {
+    const allocator = std.testing.allocator;
+
+    const content =
+        \\theme = dracula
+    ;
+
+    var config = Config{ .allocator = allocator };
+    config.parse(allocator, content);
+    defer config.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0xFF282A36), config.bg);
+    try std.testing.expectEqual(@as(u32, 0xFFF8F8F2), config.fg);
+    try std.testing.expectEqual(@as(u32, 0xFFBD93F9), config.cursor_color);
+    try std.testing.expectEqual(@as(u32, 0xFF44475A), config.selection_bg);
+    try std.testing.expectEqual(@as(?u32, 0xFFFF5555), config.ansi_colors[1]); // red
+    try std.testing.expectEqual(@as(?u32, 0xFF50FA7B), config.ansi_colors[2]); // green
+
+    // colorScheme() should also reflect theme
+    const scheme = config.colorScheme();
+    try std.testing.expectEqual(@as(u32, 0xFF282A36), scheme.bg);
+    try std.testing.expectEqual(@as(u32, 0xFFFF5555), scheme.ansi[1]);
+}
+
+test "theme colors can be overridden by subsequent keys" {
+    const allocator = std.testing.allocator;
+
+    const content =
+        \\theme = dracula
+        \\bg = #000000
+        \\color1 = #FF0000
+    ;
+
+    var config = Config{ .allocator = allocator };
+    config.parse(allocator, content);
+    defer config.deinit();
+
+    // bg overridden after theme
+    try std.testing.expectEqual(@as(u32, 0xFF000000), config.bg);
+    // color1 overridden after theme
+    try std.testing.expectEqual(@as(?u32, 0xFFFF0000), config.ansi_colors[1]);
+    // fg still from dracula
+    try std.testing.expectEqual(@as(u32, 0xFFF8F8F2), config.fg);
+}
+
+test "unknown theme name leaves defaults" {
+    const allocator = std.testing.allocator;
+
+    const content =
+        \\theme = nonexistent
+    ;
+
+    var config = Config{ .allocator = allocator };
+    config.parse(allocator, content);
+    defer config.deinit();
+
+    // Should remain at defaults since theme name is unknown
+    try std.testing.expectEqual(@as(u32, 0xFF232733), config.bg);
+    try std.testing.expectEqual(@as(u32, 0xFFD0D2DB), config.fg);
+    try std.testing.expectEqualStrings("nonexistent", config.theme.?);
+}
+
+test "deinit frees workspace names" {
+    const allocator = std.testing.allocator;
+
+    const content =
+        \\[workspace.1]
+        \\name = dev
+        \\[workspace.5]
+        \\name = chat
+    ;
+
+    var config = Config{ .allocator = allocator };
+    config.parse(allocator, content);
+
+    try std.testing.expectEqualStrings("dev", config.workspace_names[0].?);
+    try std.testing.expectEqualStrings("chat", config.workspace_names[4].?);
+
+    config.deinit();
+
+    try std.testing.expectEqual(@as(?[]const u8, null), config.workspace_names[0]);
+    try std.testing.expectEqual(@as(?[]const u8, null), config.workspace_names[4]);
 }
