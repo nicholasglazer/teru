@@ -15,6 +15,13 @@ const Grid = @import("Grid.zig");
 ///   Control:  CR, LF, BS, TAB, BEL
 const VtParser = @This();
 
+pub const MouseMode = enum {
+    none, // no mouse reporting
+    normal, // 1000: press + release
+    button_event, // 1002: + motion while button held
+    any_event, // 1003: + all motion
+};
+
 pub const State = enum {
     ground,
     escape, // saw ESC
@@ -75,6 +82,10 @@ app_cursor_keys: bool = false,
 
 /// Auto-wrap mode (ESC[?7h/l — DECAWM), on by default
 auto_wrap: bool = true,
+
+/// Mouse tracking modes (ESC[?1000h..1003h, ESC[?1006h)
+mouse_tracking: MouseMode = .none,
+mouse_sgr: bool = false, // SGR extended format (mode 1006)
 
 /// Synchronized output (ESC[?2026h/l) — when true, defer rendering until
 /// the app sends ESC[?2026l. Prevents flickering during rapid screen updates.
@@ -793,9 +804,12 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
                         self.grid.switchToAltScreen(self.allocator) catch {};
                     }
                 },
+                1000 => self.mouse_tracking = .normal,
+                1002 => self.mouse_tracking = .button_event,
+                1003 => self.mouse_tracking = .any_event,
+                1006 => self.mouse_sgr = true,
                 2004 => self.bracketed_paste = true,
-                2026 => self.sync_output = true, // synchronized output — defer rendering
-                1006 => {}, // SGR mouse mode — accepted, no effect yet
+                2026 => self.sync_output = true,
                 else => {},
             }
         },
@@ -811,12 +825,13 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
                         self.grid.switchToMainScreen();
                     }
                 },
+                1000, 1002, 1003 => self.mouse_tracking = .none,
+                1006 => self.mouse_sgr = false,
                 2004 => self.bracketed_paste = false,
-                2026 => { // synchronized output end — mark dirty to trigger render
+                2026 => {
                     self.sync_output = false;
                     self.grid.dirty = true;
                 },
-                1006 => {}, // SGR mouse mode off — accepted
                 else => {},
             }
         },

@@ -589,6 +589,38 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     }
                 },
                 .mouse_press => |mouse| {
+                    // Mouse reporting to PTY (modes 1000/1002/1003)
+                    if (mux.getActivePaneMut()) |pane| {
+                        if (pane.vt.mouse_tracking != .none) {
+                            const mcol: u16 = @intCast(@min(mouse.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
+                            const mrow: u16 = @intCast(@min(mouse.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
+                            const btn: u8 = switch (mouse.button) {
+                                .left => 0,
+                                .middle => 1,
+                                .right => 2,
+                                .scroll_up => 64,
+                                .scroll_down => 65,
+                            };
+                            var mbuf: [32]u8 = undefined;
+                            if (pane.vt.mouse_sgr) {
+                                const mlen = std.fmt.bufPrint(&mbuf, "\x1b[<{d};{d};{d}M", .{ btn, mcol + 1, mrow + 1 }) catch continue;
+                                _ = pane.pty.write(mlen) catch {};
+                            } else {
+                                // X10 legacy encoding
+                                if (mcol + 33 < 256 and mrow + 33 < 256) {
+                                    mbuf[0] = 0x1b;
+                                    mbuf[1] = '[';
+                                    mbuf[2] = 'M';
+                                    mbuf[3] = @intCast(btn + 32);
+                                    mbuf[4] = @intCast(mcol + 33);
+                                    mbuf[5] = @intCast(mrow + 33);
+                                    _ = pane.pty.write(mbuf[0..6]) catch {};
+                                }
+                            }
+                            // Scroll events: don't consume, let teru handle them too
+                            if (mouse.button != .scroll_up and mouse.button != .scroll_down) continue;
+                        }
+                    }
                     switch (mouse.button) {
                         .left => {
                             const col: u16 = @intCast(@min(mouse.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
@@ -724,6 +756,34 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     }
                 },
                 .mouse_release => |mouse| {
+                    // Mouse release reporting to PTY
+                    if (mux.getActivePaneMut()) |pane| {
+                        if (pane.vt.mouse_tracking != .none) {
+                            const mcol: u16 = @intCast(@min(mouse.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
+                            const mrow: u16 = @intCast(@min(mouse.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
+                            var mbuf: [32]u8 = undefined;
+                            if (pane.vt.mouse_sgr) {
+                                const btn: u8 = switch (mouse.button) {
+                                    .left => 0,
+                                    .middle => 1,
+                                    .right => 2,
+                                    else => 0,
+                                };
+                                const mlen = std.fmt.bufPrint(&mbuf, "\x1b[<{d};{d};{d}m", .{ btn, mcol + 1, mrow + 1 }) catch continue;
+                                _ = pane.pty.write(mlen) catch {};
+                            } else {
+                                if (mcol + 33 < 256 and mrow + 33 < 256) {
+                                    mbuf[0] = 0x1b;
+                                    mbuf[1] = '[';
+                                    mbuf[2] = 'M';
+                                    mbuf[3] = 35; // release = button 3
+                                    mbuf[4] = @intCast(mcol + 33);
+                                    mbuf[5] = @intCast(mrow + 33);
+                                    _ = pane.pty.write(mbuf[0..6]) catch {};
+                                }
+                            }
+                        }
+                    }
                     if (mouse.button == .left and mouse_down) {
                         mouse_down = false;
                         const col: u16 = @intCast(@min(mouse.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
@@ -754,6 +814,34 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     if (mouse_cursor_hidden) {
                         win.showCursor();
                         mouse_cursor_hidden = false;
+                    }
+                    // Mouse motion reporting to PTY (modes 1002/1003)
+                    if (mux.getActivePaneMut()) |pane| {
+                        const report_motion = switch (pane.vt.mouse_tracking) {
+                            .any_event => true,
+                            .button_event => mouse_down,
+                            else => false,
+                        };
+                        if (report_motion) {
+                            const mcol: u16 = @intCast(@min(motion.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
+                            const mrow: u16 = @intCast(@min(motion.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
+                            var mbuf: [32]u8 = undefined;
+                            if (pane.vt.mouse_sgr) {
+                                const btn: u8 = if (mouse_down) 32 else 35; // 32 = motion + left button
+                                const mlen = std.fmt.bufPrint(&mbuf, "\x1b[<{d};{d};{d}M", .{ btn, mcol + 1, mrow + 1 }) catch continue;
+                                _ = pane.pty.write(mlen) catch {};
+                            } else {
+                                if (mcol + 33 < 256 and mrow + 33 < 256) {
+                                    mbuf[0] = 0x1b;
+                                    mbuf[1] = '[';
+                                    mbuf[2] = 'M';
+                                    mbuf[3] = if (mouse_down) 64 else 67; // motion flag + button
+                                    mbuf[4] = @intCast(mcol + 33);
+                                    mbuf[5] = @intCast(mrow + 33);
+                                    _ = pane.pty.write(mbuf[0..6]) catch {};
+                                }
+                            }
+                        }
                     }
                     if (mouse_down) {
                         const col: u16 = @intCast(@min(motion.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
