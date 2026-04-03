@@ -19,18 +19,17 @@ wd: i32, // watch descriptor
 pub fn init() ?ConfigWatcher {
     const home = compat.getenv("HOME") orelse return null;
 
-    var path_buf: [512]u8 = undefined;
-    const path = std.fmt.bufPrint(&path_buf, "{s}/.config/teru/teru.conf", .{home}) catch return null;
-
-    // Null-terminate for inotify_add_watch
-    if (path.len >= path_buf.len) return null;
-    path_buf[path.len] = 0;
-    const path_z: [*:0]const u8 = @ptrCast(path_buf[0..path.len :0]);
+    // Watch the DIRECTORY so we detect file creation, not just modification
+    var dir_buf: [512]u8 = undefined;
+    const dir_path = std.fmt.bufPrint(&dir_buf, "{s}/.config/teru", .{home}) catch return null;
+    if (dir_path.len >= dir_buf.len) return null;
+    dir_buf[dir_path.len] = 0;
+    const dir_z: [*:0]const u8 = @ptrCast(dir_buf[0..dir_path.len :0]);
 
     const fd = linux.inotify_init1(linux.IN.NONBLOCK | linux.IN.CLOEXEC);
     if (@as(isize, @bitCast(fd)) < 0) return null;
 
-    const wd = linux.inotify_add_watch(@intCast(fd), path_z, linux.IN.MODIFY | linux.IN.CLOSE_WRITE);
+    const wd = linux.inotify_add_watch(@intCast(fd), dir_z, linux.IN.MODIFY | linux.IN.CLOSE_WRITE | linux.IN.CREATE | linux.IN.MOVED_TO);
     if (@as(isize, @bitCast(wd)) < 0) {
         _ = posix.system.close(@intCast(fd));
         return null;
@@ -42,16 +41,36 @@ pub fn init() ?ConfigWatcher {
     };
 }
 
-/// Check if the config file has been modified (non-blocking).
-/// Returns true if a modification was detected.
+/// Check if teru.conf was modified (non-blocking).
+/// Filters directory events to only match "teru.conf".
 pub fn poll(self: *ConfigWatcher) bool {
-    var buf: [256]u8 = undefined;
+    var buf: [4096]u8 = undefined;
     const n = posix.read(self.fd, &buf) catch |err| switch (err) {
         error.WouldBlock => return false,
         else => return false,
     };
-    // Any data means the file was modified
-    return n > 0;
+    if (n == 0) return false;
+
+    // Parse inotify events to check if "teru.conf" was the file
+    const target = "teru.conf";
+    var offset: usize = 0;
+    while (offset + @sizeOf(linux.inotify_event) <= n) {
+        const event: *const linux.inotify_event = @ptrCast(@alignCast(buf[offset..].ptr));
+        const name_len = event.len;
+        if (name_len > 0) {
+            const name_start = offset + @sizeOf(linux.inotify_event);
+            const name_end = @min(name_start + name_len, n);
+            const name_bytes = buf[name_start..name_end];
+            // Find null terminator
+            const name = if (std.mem.indexOfScalar(u8, name_bytes, 0)) |nul|
+                name_bytes[0..nul]
+            else
+                name_bytes;
+            if (std.mem.eql(u8, name, target)) return true;
+        }
+        offset += @sizeOf(linux.inotify_event) + name_len;
+    }
+    return false;
 }
 
 pub fn deinit(self: *ConfigWatcher) void {
