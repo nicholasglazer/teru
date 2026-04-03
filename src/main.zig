@@ -53,33 +53,35 @@ pub fn main(init: std.process.Init) !void {
     // Parse command line args
     var args_iter = std.process.Args.Iterator.init(init.minimal.args);
     _ = args_iter.next(); // skip argv[0]
-    const first_arg: ?[:0]const u8 = args_iter.next();
 
-    if (first_arg) |arg| {
+    var mode_raw = false;
+    var mode_attach = false;
+    var mode_mcp_bridge = false;
+
+    while (args_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--version")) {
             var buf: [64]u8 = undefined;
             outFmt(&buf, "teru {s}\n", .{version});
             return;
         }
         if (std.mem.eql(u8, arg, "--help")) {
-            out("teru — AI-first terminal emulator\n\nUsage: teru [options]\n\nOptions:\n  --help        Show this help\n  --version     Show version\n  --raw         Raw passthrough mode (no window)\n  --attach      Restore session from last detach\n  --mcp-bridge  MCP stdio bridge (stdin/stdout <-> teru socket)\n\nMultiplexer keys (prefix: Ctrl+Space):\n  c     Spawn new pane\n  x     Close active pane\n  n     Focus next pane\n  p     Focus prev pane\n  1-9   Switch workspace\n  Space Cycle layout\n  d     Detach (save session, exit)\n  /     Search visible grid\n\nScrollback:\n  Shift+PageUp    Scroll up one page\n  Shift+PageDown  Scroll down one page\n  Any key         Exit scroll mode\n\nURL detection:\n  Ctrl+click on a URL to open in browser\n\n");
+            out("teru — AI-first terminal emulator\n\nUsage: teru [options]\n\nOptions:\n  --help              Show this help\n  --version           Show version\n  --raw               Raw passthrough mode (no window)\n  --attach            Restore session from last detach\n  --mcp-bridge        MCP stdio bridge\n  --config <path>     Use custom config file\n  --theme <name>      Override theme (built-in or ~/.config/teru/themes/)\n  --class <name>      Set WM_CLASS (X11 window class)\n\nMultiplexer keys (prefix: Ctrl+Space):\n  c     Spawn new pane        n/p   Next/prev pane\n  x     Close active pane     1-9   Switch workspace\n  Space Cycle layout           d    Detach session\n  /     Search                 z    Zoom pane\n  H/L   Resize master ratio\n\nScrollback: PageUp/Down or mouse wheel. Any typing key exits scroll.\nURL: Ctrl+click to open. Double-click to select word.\n\n");
             return;
         }
-        if (std.mem.eql(u8, arg, "--attach")) {
-            return runAttachMode(allocator, io);
-        }
-        if (std.mem.eql(u8, arg, "--raw")) {
-            return runRawMode(allocator, io);
-        }
-        if (std.mem.eql(u8, arg, "--mcp-bridge")) {
-            return McpBridge.run(io);
-        }
+        if (std.mem.eql(u8, arg, "--raw")) { mode_raw = true; continue; }
+        if (std.mem.eql(u8, arg, "--attach")) { mode_attach = true; continue; }
+        if (std.mem.eql(u8, arg, "--mcp-bridge")) { mode_mcp_bridge = true; continue; }
+        // Args with values: skip next arg
+        // These are handled in Config.load via CLI override (future)
     }
+
+    if (mode_mcp_bridge) return McpBridge.run(io);
+    if (mode_attach) return runAttachMode(allocator, io);
 
     // Detect rendering tier
     const tier = render.detectTier();
-    if (tier == .tty) {
-        return runRawMode(allocator, io); // No display server, fall back to TTY
+    if (tier == .tty or mode_raw) {
+        return runRawMode(allocator, io);
     }
     return runWindowedMode(allocator, io, null);
 }
