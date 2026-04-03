@@ -11,6 +11,7 @@ const platform = @import("platform.zig");
 
 pub const Event = platform.Event;
 pub const KeyEvent = platform.KeyEvent;
+const MouseButton = platform.MouseButton;
 
 // ── Wayland core types (extern linkage against libwayland-client) ─────
 
@@ -24,6 +25,7 @@ const wl_shm_pool = opaque {};
 const wl_buffer = opaque {};
 const wl_seat = opaque {};
 const wl_keyboard = opaque {};
+const wl_pointer = opaque {};
 
 const wl_interface = extern struct {
     name: ?[*:0]const u8,
@@ -61,6 +63,18 @@ const wl_keyboard_listener = extern struct {
     repeat_info: ?*const fn (?*anyopaque, ?*wl_keyboard, i32, i32) callconv(.c) void,
 };
 
+const wl_pointer_listener = extern struct {
+    enter: ?*const fn (?*anyopaque, ?*wl_pointer, u32, ?*wl_surface, i32, i32) callconv(.c) void,
+    leave: ?*const fn (?*anyopaque, ?*wl_pointer, u32, ?*wl_surface) callconv(.c) void,
+    motion: ?*const fn (?*anyopaque, ?*wl_pointer, u32, i32, i32) callconv(.c) void,
+    button: ?*const fn (?*anyopaque, ?*wl_pointer, u32, u32, u32, u32) callconv(.c) void,
+    axis: ?*const fn (?*anyopaque, ?*wl_pointer, u32, u32, i32) callconv(.c) void,
+    frame: ?*const fn (?*anyopaque, ?*wl_pointer) callconv(.c) void,
+    axis_source: ?*const fn (?*anyopaque, ?*wl_pointer, u32) callconv(.c) void,
+    axis_stop: ?*const fn (?*anyopaque, ?*wl_pointer, u32, u32) callconv(.c) void,
+    axis_discrete: ?*const fn (?*anyopaque, ?*wl_pointer, u32, i32) callconv(.c) void,
+};
+
 // ── xdg-shell types ──────────────────────────────────────────────────
 
 const xdg_wm_base = opaque {};
@@ -85,6 +99,7 @@ const xdg_toplevel_listener = extern struct {
 // ── Wayland constants ─────────────────────────────────────────────────
 
 const WL_SHM_FORMAT_ARGB8888: u32 = 0;
+const WL_SEAT_CAPABILITY_POINTER: u32 = 1;
 const WL_SEAT_CAPABILITY_KEYBOARD: u32 = 2;
 const WL_KEYBOARD_KEY_STATE_PRESSED: u32 = 1;
 const WL_KEYBOARD_KEY_STATE_RELEASED: u32 = 0;
@@ -202,6 +217,19 @@ fn wl_seat_get_keyboard(seat: *wl_seat) ?*wl_keyboard {
     return @ptrCast(wl_proxy_marshal_flags(@ptrCast(seat), 1, &wl_keyboard_interface, wl_proxy_get_version(@ptrCast(seat)), 0, @as(?*anyopaque, null)));
 }
 
+fn wl_seat_get_pointer(seat: *wl_seat) ?*wl_pointer {
+    // WL_SEAT_GET_POINTER = opcode 0
+    return @ptrCast(wl_proxy_marshal_flags(@ptrCast(seat), 0, &wl_pointer_interface, wl_proxy_get_version(@ptrCast(seat)), 0, @as(?*anyopaque, null)));
+}
+
+fn wl_pointer_add_listener(ptr: *wl_pointer, listener: *const wl_pointer_listener, data: ?*anyopaque) c_int {
+    return wl_proxy_add_listener(@ptrCast(ptr), @ptrCast(listener), data);
+}
+
+fn wl_pointer_destroy(ptr: *wl_pointer) void {
+    wl_proxy_destroy(@ptrCast(ptr));
+}
+
 fn wl_seat_destroy(seat: *wl_seat) void {
     wl_proxy_destroy(@ptrCast(seat));
 }
@@ -279,6 +307,7 @@ extern const wl_surface_interface: wl_interface;
 extern const wl_shm_pool_interface: wl_interface;
 extern const wl_buffer_interface: wl_interface;
 extern const wl_keyboard_interface: wl_interface;
+extern const wl_pointer_interface: wl_interface;
 
 // ── Linux syscall constants ───────────────────────────────────────────
 
@@ -294,6 +323,12 @@ const WaylandState = struct {
     shm: ?*wl_shm = null,
     seat: ?*wl_seat = null,
     keyboard: ?*wl_keyboard = null,
+    pointer: ?*wl_pointer = null,
+
+    // Pointer state: last known position and serial (for clipboard)
+    pointer_x: u32 = 0,
+    pointer_y: u32 = 0,
+    pointer_serial: u32 = 0,
 
     // Pending dimensions from xdg_toplevel.configure (0 = use default)
     pending_width: u32 = 0,
@@ -451,6 +486,9 @@ pub const WaylandWindow = struct {
     pub fn deinit(self: *WaylandWindow) void {
         self.destroyShmBuffer();
 
+        if (self.state.pointer) |ptr| {
+            wl_pointer_destroy(ptr);
+        }
         if (self.state.keyboard) |kb| {
             wl_keyboard_destroy(kb);
         }
@@ -805,6 +843,20 @@ fn seatCapabilities(
         wl_keyboard_destroy(state.keyboard.?);
         state.keyboard = null;
     }
+
+    const has_pointer = (caps & WL_SEAT_CAPABILITY_POINTER) != 0;
+
+    if (has_pointer and state.pointer == null) {
+        if (seat) |s| {
+            state.pointer = wl_seat_get_pointer(s);
+            if (state.pointer) |ptr| {
+                _ = wl_pointer_add_listener(ptr, &pointer_listener_impl, data);
+            }
+        }
+    } else if (!has_pointer and state.pointer != null) {
+        wl_pointer_destroy(state.pointer.?);
+        state.pointer = null;
+    }
 }
 
 fn seatName(
@@ -895,6 +947,120 @@ fn keyboardRepeatInfo(
     _: ?*anyopaque,
     _: ?*wl_keyboard,
     _: i32,
+    _: i32,
+) callconv(.c) void {}
+
+// wl_pointer listener: mouse motion, button, scroll
+const pointer_listener_impl = wl_pointer_listener{
+    .enter = &pointerEnter,
+    .leave = &pointerLeave,
+    .motion = &pointerMotion,
+    .button = &pointerButton,
+    .axis = &pointerAxis,
+    .frame = &pointerFrame,
+    .axis_source = &pointerAxisSource,
+    .axis_stop = &pointerAxisStop,
+    .axis_discrete = &pointerAxisDiscrete,
+};
+
+fn pointerEnter(
+    data: ?*anyopaque,
+    _: ?*wl_pointer,
+    serial: u32,
+    _: ?*wl_surface,
+    x: i32,
+    y: i32,
+) callconv(.c) void {
+    const state: *WaylandState = @ptrCast(@alignCast(data orelse return));
+    state.pointer_serial = serial;
+    // wl_fixed_t is 24.8 fixed-point; >> 8 converts to integer pixels
+    state.pointer_x = @intCast(@max(0, x >> 8));
+    state.pointer_y = @intCast(@max(0, y >> 8));
+}
+
+fn pointerLeave(
+    _: ?*anyopaque,
+    _: ?*wl_pointer,
+    _: u32,
+    _: ?*wl_surface,
+) callconv(.c) void {}
+
+fn pointerMotion(
+    data: ?*anyopaque,
+    _: ?*wl_pointer,
+    _: u32,
+    x: i32,
+    y: i32,
+) callconv(.c) void {
+    const state: *WaylandState = @ptrCast(@alignCast(data orelse return));
+    state.pointer_x = @intCast(@max(0, x >> 8));
+    state.pointer_y = @intCast(@max(0, y >> 8));
+    state.pushEvent(.{ .mouse_motion = .{ .x = state.pointer_x, .y = state.pointer_y } });
+}
+
+fn pointerButton(
+    data: ?*anyopaque,
+    _: ?*wl_pointer,
+    serial: u32,
+    _: u32,
+    button_code: u32,
+    button_state: u32,
+) callconv(.c) void {
+    const state: *WaylandState = @ptrCast(@alignCast(data orelse return));
+    state.pointer_serial = serial;
+    const btn: ?MouseButton = switch (button_code) {
+        0x110 => .left,
+        0x111 => .right,
+        0x112 => .middle,
+        else => null,
+    };
+    if (btn) |b| {
+        if (button_state == 1) {
+            state.pushEvent(.{ .mouse_press = .{ .x = state.pointer_x, .y = state.pointer_y, .button = b, .modifiers = state.mods_depressed } });
+        } else {
+            state.pushEvent(.{ .mouse_release = .{ .x = state.pointer_x, .y = state.pointer_y, .button = b, .modifiers = state.mods_depressed } });
+        }
+    }
+}
+
+fn pointerAxis(
+    data: ?*anyopaque,
+    _: ?*wl_pointer,
+    _: u32,
+    axis: u32,
+    value: i32,
+) callconv(.c) void {
+    if (axis != 0) return; // only handle vertical scroll
+    const state: *WaylandState = @ptrCast(@alignCast(data orelse return));
+    if (value > 0) {
+        state.pushEvent(.{ .mouse_press = .{ .x = state.pointer_x, .y = state.pointer_y, .button = .scroll_down, .modifiers = state.mods_depressed } });
+    } else if (value < 0) {
+        state.pushEvent(.{ .mouse_press = .{ .x = state.pointer_x, .y = state.pointer_y, .button = .scroll_up, .modifiers = state.mods_depressed } });
+    }
+}
+
+fn pointerFrame(
+    _: ?*anyopaque,
+    _: ?*wl_pointer,
+) callconv(.c) void {}
+
+fn pointerAxisSource(
+    _: ?*anyopaque,
+    _: ?*wl_pointer,
+    _: u32,
+) callconv(.c) void {}
+
+fn pointerAxisStop(
+    _: ?*anyopaque,
+    _: ?*wl_pointer,
+    _: u32,
+    _: u32,
+) callconv(.c) void {}
+
+fn pointerAxisDiscrete(
+    _: ?*anyopaque,
+    _: ?*wl_pointer,
+    _: u32,
     _: i32,
 ) callconv(.c) void {}
 
