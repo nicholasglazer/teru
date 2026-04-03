@@ -430,19 +430,17 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             // Exit scroll mode only for keys that type into the terminal:
                             // printable chars, Enter, Backspace, Tab, Space.
                             // Escape sequences (F-keys, arrows) keep scroll position.
-                            if (mux.getScrollOffset() > 0) {
+                            if (mux.getScrollOffset() > 0 or mux.getScrollPixel() > 0) {
                                 const exits_scroll = if (len == 1)
-                                    key_buf[0] >= 0x20 or // printable ASCII + space
+                                    key_buf[0] >= 0x20 or // printable ASCII (includes space, DEL)
                                         key_buf[0] == 0x0D or // Enter
                                         key_buf[0] == 0x0A or // Newline
                                         key_buf[0] == 0x08 or // Backspace
-                                        key_buf[0] == 0x7F or // Delete
                                         key_buf[0] == 0x09 // Tab
                                 else
                                     false; // escape sequences (F-keys, arrows) — don't exit
                                 if (exits_scroll) {
                                     mux.setScrollOffset(0);
-                                    if (mux.getActivePane()) |pane| pane.grid.dirty = true;
                                 }
                             }
 
@@ -469,7 +467,6 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         if (key.keycode >= 128) continue; // modifier-only, ignore
                         if (mux.getScrollOffset() > 0) {
                             mux.setScrollOffset(0);
-                            if (mux.getActivePane()) |pane| pane.grid.dirty = true;
                         }
                         if (prefix.awaiting) {
                             prefix.reset();

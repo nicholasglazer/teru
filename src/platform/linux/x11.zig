@@ -201,7 +201,6 @@ pub const X11Window = struct {
 
     // SHM state (zero-copy framebuffer)
     shm_seg: xcb_shm_seg_t = 0,
-    shm_id: c_int = -1,
     shm_ptr: ?[*]u32 = null,
     shm_size: usize = 0,
     shm_width: u32 = 0,
@@ -440,7 +439,8 @@ pub const X11Window = struct {
 
         // Attach to our address space
         const ptr = shmat(shmid_val, null, 0);
-        if (ptr == null) {
+        const SHM_FAILED: ?*anyopaque = @ptrFromInt(std.math.maxInt(usize));
+        if (ptr == null or ptr == SHM_FAILED) {
             _ = shmctl(shmid_val, IPC_RMID, null);
             return;
         }
@@ -454,7 +454,6 @@ pub const X11Window = struct {
         _ = xcb_flush(self.connection);
 
         self.shm_seg = seg;
-        self.shm_id = shmid_val;
         self.shm_ptr = @ptrCast(@alignCast(ptr));
         self.shm_size = size;
         self.shm_width = width;
@@ -474,7 +473,6 @@ pub const X11Window = struct {
         self.shm_width = 0;
         self.shm_height = 0;
         self.shm_seg = 0;
-        self.shm_id = -1;
         self.use_shm = false;
     }
 

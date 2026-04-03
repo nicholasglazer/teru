@@ -40,17 +40,7 @@ pub const CursorShape = enum { block, underline, bar };
 // ── Color helpers for scrollback encoding ────────────────────────
 
 fn colorEql(a: Color, b: Color) bool {
-    return switch (a) {
-        .default => b == .default,
-        .indexed => |ai| switch (b) {
-            .indexed => |bi| ai == bi,
-            else => false,
-        },
-        .rgb => |ar| switch (b) {
-            .rgb => |br| ar.r == br.r and ar.g == br.g and ar.b == br.b,
-            else => false,
-        },
-    };
+    return std.meta.eql(a, b);
 }
 
 /// Encode an SGR foreground color change into buf at position pos.

@@ -93,8 +93,6 @@ pub fn smoothScroll(self: *Multiplexer, pixel_delta: i32, cell_height: u32, max_
         new_offset = @intCast(max_offset);
         new_pixel = 0;
     }
-    // At offset 0, no sub-pixel offset either
-    if (new_offset == 0 and new_pixel < 0) new_pixel = 0;
 
     const changed = new_offset != @as(i32, @intCast(pane.scroll_offset)) or new_pixel != pane.scroll_pixel;
     pane.scroll_offset = @intCast(new_offset);
