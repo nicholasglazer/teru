@@ -8,6 +8,7 @@ const SoftwareRenderer = @import("software.zig").SoftwareRenderer;
 const Grid = @import("../core/Grid.zig");
 const Multiplexer = @import("../core/Multiplexer.zig");
 const FontAtlas = @import("FontAtlas.zig");
+const Compositor = @import("Compositor.zig");
 const Scrollback = @import("../persist/Scrollback.zig");
 const LayoutEngine = @import("../tiling/LayoutEngine.zig");
 const Rect = LayoutEngine.Rect;
@@ -387,7 +388,7 @@ pub fn renderScrollOverlay(
     }
 
     // Render scrollback text into the top rows of the pane.
-    // Mini-parses SGR escape sequences to preserve colors (dimmed).
+    // Parses SGR escape sequences to preserve fg/bg colors and attributes.
     var line: u32 = 0;
     while (line < lines_to_show) : (line += 1) {
         const sb_offset = scroll_offset - 1 - line;
@@ -401,12 +402,15 @@ pub fn renderScrollOverlay(
 
         var col: usize = 0;
         var fg_color: u32 = s.fg;
+        var bg_color: u32 = s.bg;
+        var is_bold = false;
+        var is_dim = false;
+        var is_inverse = false;
         var i: usize = 0;
         while (i < text.len) {
-            // Parse ESC [ ... m sequences for color
+            // Parse ESC [ ... m sequences for color/attrs
             if (i + 2 < text.len and text[i] == 0x1b and text[i + 1] == '[') {
                 i += 2;
-                // Collect params until 'm' or non-param byte
                 var params: [8]u16 = .{ 0, 0, 0, 0, 0, 0, 0, 0 };
                 var param_count: usize = 0;
                 var num: u16 = 0;
@@ -424,29 +428,39 @@ pub fn renderScrollOverlay(
                         num = 0;
                         has_num = false;
                     } else {
-                        // Final byte
                         if (has_num and param_count < params.len) {
                             params[param_count] = num;
                             param_count += 1;
                         }
                         if (c == 'm') {
-                            // Apply SGR params
                             if (param_count == 0) {
-                                fg_color = s.fg; // reset
+                                fg_color = s.fg;
+                                bg_color = s.bg;
+                                is_bold = false;
+                                is_dim = false;
+                                is_inverse = false;
                             }
                             var p: usize = 0;
                             while (p < param_count) : (p += 1) {
                                 switch (params[p]) {
-                                    0 => fg_color = s.fg,
+                                    0 => {
+                                        fg_color = s.fg;
+                                        bg_color = s.bg;
+                                        is_bold = false;
+                                        is_dim = false;
+                                        is_inverse = false;
+                                    },
+                                    1 => is_bold = true,
+                                    2 => is_dim = true,
+                                    7 => is_inverse = true,
+                                    22 => { is_bold = false; is_dim = false; },
+                                    27 => is_inverse = false,
                                     30...37 => fg_color = s.ansi[params[p] - 30],
-                                    90...97 => fg_color = s.ansi[params[p] - 90 + 8],
                                     38 => {
                                         if (p + 2 < param_count and params[p + 1] == 5) {
-                                            // 256-color: 38;5;N
                                             fg_color = s.indexed256(@intCast(params[p + 2]));
                                             p += 2;
                                         } else if (p + 4 < param_count and params[p + 1] == 2) {
-                                            // RGB: 38;2;R;G;B
                                             const r = @as(u32, @min(255, params[p + 2]));
                                             const g = @as(u32, @min(255, params[p + 3]));
                                             const b = @as(u32, @min(255, params[p + 4]));
@@ -454,6 +468,23 @@ pub fn renderScrollOverlay(
                                             p += 4;
                                         }
                                     },
+                                    39 => fg_color = s.fg,
+                                    40...47 => bg_color = s.ansi[params[p] - 40],
+                                    48 => {
+                                        if (p + 2 < param_count and params[p + 1] == 5) {
+                                            bg_color = s.indexed256(@intCast(params[p + 2]));
+                                            p += 2;
+                                        } else if (p + 4 < param_count and params[p + 1] == 2) {
+                                            const r = @as(u32, @min(255, params[p + 2]));
+                                            const g = @as(u32, @min(255, params[p + 3]));
+                                            const b = @as(u32, @min(255, params[p + 4]));
+                                            bg_color = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                                            p += 4;
+                                        }
+                                    },
+                                    49 => bg_color = s.bg,
+                                    90...97 => fg_color = s.ansi[params[p] - 90 + 8],
+                                    100...107 => bg_color = s.ansi[params[p] - 100 + 8],
                                     else => {},
                                 }
                             }
@@ -465,13 +496,64 @@ pub fn renderScrollOverlay(
                 continue;
             }
 
+            // Decode UTF-8 codepoint
             const byte = text[i];
-            i += 1;
-            if (byte < 32 or byte > 126) continue;
+            if (byte < 32) { i += 1; continue; }
+
+            var cp: u21 = 0;
+            var seq_len: usize = 1;
+            if (byte < 0x80) {
+                cp = byte;
+            } else if (byte < 0xC0) {
+                i += 1; continue; // continuation byte, skip
+            } else if (byte < 0xE0) {
+                seq_len = 2;
+                if (i + 2 > text.len) { i += 1; continue; }
+                cp = (@as(u21, byte & 0x1F) << 6) | @as(u21, text[i + 1] & 0x3F);
+            } else if (byte < 0xF0) {
+                seq_len = 3;
+                if (i + 3 > text.len) { i += 1; continue; }
+                cp = (@as(u21, byte & 0x0F) << 12) | (@as(u21, text[i + 1] & 0x3F) << 6) | @as(u21, text[i + 2] & 0x3F);
+            } else {
+                seq_len = 4;
+                if (i + 4 > text.len) { i += 1; continue; }
+                cp = (@as(u21, byte & 0x07) << 18) | (@as(u21, text[i + 1] & 0x3F) << 12) |
+                    (@as(u21, text[i + 2] & 0x3F) << 6) | @as(u21, text[i + 3] & 0x3F);
+            }
+            i += seq_len;
+
             const screen_x = rx + col * cw;
             if (screen_x + cw > rx + rw) break;
 
-            blitCharAt(cpu, byte, screen_x, screen_y, s.dimColor(fg_color));
+            // Apply inverse and dim
+            var eff_fg = fg_color;
+            var eff_bg = bg_color;
+            if (is_inverse) { eff_fg = bg_color; eff_bg = fg_color; }
+            if (is_dim) eff_fg = s.dimColor(eff_fg);
+
+            // Fill cell background
+            const max_y = @min(screen_y + ch, ry + rh);
+            const max_x = @min(screen_x + cw, rx + rw);
+            if (eff_bg != s.bg) {
+                for (screen_y..max_y) |py| {
+                    if (py >= cpu.height) break;
+                    const row_start = py * fb_w;
+                    if (row_start + max_x <= cpu.framebuffer.len and screen_x < max_x) {
+                        @memset(cpu.framebuffer[row_start + screen_x .. row_start + max_x], eff_bg);
+                    }
+                }
+            }
+
+            // Blit glyph using atlas (supports box-drawing, Latin-1, etc.)
+            if (cpu.atlas_width > 0 and cpu.glyph_atlas.len > 0) {
+                if (FontAtlas.glyphSlot(@intCast(cp))) |slot| {
+                    const atlas = cpu.getAtlasForAttrs(is_bold, false);
+                    Compositor.blitGlyphInRect(cpu, @intCast(slot), screen_x, screen_y, max_x, max_y, eff_fg, eff_bg, atlas);
+                } else if (cp < 127 and cp >= 32) {
+                    // Fallback to simple ASCII blit
+                    blitCharAt(cpu, @intCast(cp), screen_x, screen_y, eff_fg);
+                }
+            }
             col += 1;
         }
     }

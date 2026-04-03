@@ -46,11 +46,16 @@ fn colorEql(a: Color, b: Color) bool {
 /// Encode an SGR foreground color change into buf at position pos.
 /// Returns the new position after the sequence.
 fn encodeSgr(buf: []u8, pos: usize, color: Color) usize {
+    return encodeSgrColor(buf, pos, color, false);
+}
+
+/// Encode an SGR color change (foreground or background) into buf.
+/// `is_bg` selects 40-47/100-107/48;5;N/48;2;R;G;B instead of 30-37/90-97/38;5;N/38;2;R;G;B.
+fn encodeSgrColor(buf: []u8, pos: usize, color: Color, is_bg: bool) usize {
     var p = pos;
     switch (color) {
         .default => {
-            // ESC[0m (reset)
-            const seq = "\x1b[0m";
+            const seq = if (is_bg) "\x1b[49m" else "\x1b[39m";
             if (p + seq.len <= buf.len) {
                 @memcpy(buf[p..][0..seq.len], seq);
                 p += seq.len;
@@ -58,38 +63,97 @@ fn encodeSgr(buf: []u8, pos: usize, color: Color) usize {
         },
         .indexed => |idx| {
             if (idx < 8) {
-                // ESC[30-37m
-                const seq = [4]u8{ 0x1b, '[', '3', '0' + idx };
+                const base: u8 = if (is_bg) '4' else '3';
+                const seq = [4]u8{ 0x1b, '[', base, '0' + idx };
                 if (p + 5 <= buf.len) {
                     @memcpy(buf[p..][0..4], &seq);
                     buf[p + 4] = 'm';
                     p += 5;
                 }
             } else if (idx < 16) {
-                // ESC[90-97m
-                const seq = [4]u8{ 0x1b, '[', '9', '0' + idx - 8 };
-                if (p + 5 <= buf.len) {
-                    @memcpy(buf[p..][0..4], &seq);
-                    buf[p + 4] = 'm';
-                    p += 5;
+                if (is_bg) {
+                    if (p + 6 <= buf.len) {
+                        @memcpy(buf[p..][0..4], "\x1b[10");
+                        buf[p + 4] = '0' + idx - 8;
+                        buf[p + 5] = 'm';
+                        p += 6;
+                    }
+                } else {
+                    const seq = [4]u8{ 0x1b, '[', '9', '0' + idx - 8 };
+                    if (p + 5 <= buf.len) {
+                        @memcpy(buf[p..][0..4], &seq);
+                        buf[p + 4] = 'm';
+                        p += 5;
+                    }
                 }
             } else {
-                // ESC[38;5;Nm — up to 12 bytes
                 if (p + 12 <= buf.len) {
-                    const written = std.fmt.bufPrint(buf[p..][0..12], "\x1b[38;5;{d}m", .{idx}) catch return p;
+                    const written = if (is_bg)
+                        std.fmt.bufPrint(buf[p..][0..12], "\x1b[48;5;{d}m", .{idx}) catch return p
+                    else
+                        std.fmt.bufPrint(buf[p..][0..12], "\x1b[38;5;{d}m", .{idx}) catch return p;
                     p += written.len;
                 }
             }
         },
         .rgb => |c| {
-            // ESC[38;2;R;G;Bm — up to 19 bytes
             if (p + 19 <= buf.len) {
-                const written = std.fmt.bufPrint(buf[p..][0..19], "\x1b[38;2;{d};{d};{d}m", .{ c.r, c.g, c.b }) catch return p;
+                const written = if (is_bg)
+                    std.fmt.bufPrint(buf[p..][0..19], "\x1b[48;2;{d};{d};{d}m", .{ c.r, c.g, c.b }) catch return p
+                else
+                    std.fmt.bufPrint(buf[p..][0..19], "\x1b[38;2;{d};{d};{d}m", .{ c.r, c.g, c.b }) catch return p;
                 p += written.len;
             }
         },
     }
     return p;
+}
+
+/// Encode attribute SGR codes (bold, italic, inverse, dim) into buf.
+fn encodeAttrs(buf: []u8, pos: usize, attrs: Attrs) usize {
+    var p = pos;
+    if (attrs.bold) {
+        if (p + 4 <= buf.len) { @memcpy(buf[p..][0..4], "\x1b[1m"); p += 4; }
+    }
+    if (attrs.dim) {
+        if (p + 4 <= buf.len) { @memcpy(buf[p..][0..4], "\x1b[2m"); p += 4; }
+    }
+    if (attrs.italic) {
+        if (p + 4 <= buf.len) { @memcpy(buf[p..][0..4], "\x1b[3m"); p += 4; }
+    }
+    if (attrs.inverse) {
+        if (p + 4 <= buf.len) { @memcpy(buf[p..][0..4], "\x1b[7m"); p += 4; }
+    }
+    return p;
+}
+
+/// Encode a u21 codepoint as UTF-8 into buf at position pos.
+fn encodeUtf8(buf: []u8, pos: usize, cp: u21) usize {
+    if (cp < 0x80) {
+        if (pos < buf.len) { buf[pos] = @intCast(cp); return pos + 1; }
+    } else if (cp < 0x800) {
+        if (pos + 2 <= buf.len) {
+            buf[pos] = @intCast(0xC0 | (cp >> 6));
+            buf[pos + 1] = @intCast(0x80 | (cp & 0x3F));
+            return pos + 2;
+        }
+    } else if (cp < 0x10000) {
+        if (pos + 3 <= buf.len) {
+            buf[pos] = @intCast(0xE0 | (cp >> 12));
+            buf[pos + 1] = @intCast(0x80 | ((cp >> 6) & 0x3F));
+            buf[pos + 2] = @intCast(0x80 | (cp & 0x3F));
+            return pos + 3;
+        }
+    } else {
+        if (pos + 4 <= buf.len) {
+            buf[pos] = @intCast(0xF0 | (cp >> 18));
+            buf[pos + 1] = @intCast(0x80 | ((cp >> 12) & 0x3F));
+            buf[pos + 2] = @intCast(0x80 | ((cp >> 6) & 0x3F));
+            buf[pos + 3] = @intCast(0x80 | (cp & 0x3F));
+            return pos + 4;
+        }
+    }
+    return pos;
 }
 
 /// OSC 133 shell integration: semantic prompt marks.
@@ -249,27 +313,48 @@ pub fn scrollUpN(self: *Grid, n: u16) void {
     var i: u16 = 0;
     while (i < n) : (i += 1) {
         // Push the top line to scrollback before it's overwritten.
-        // Encodes cell colors as SGR sequences to preserve them.
+        // Encodes cell colors + attributes as SGR sequences.
         if (self.scrollback) |sb| {
-            var line_buf: [2048]u8 = undefined;
+            var line_buf: [4096]u8 = undefined;
             var len: usize = 0;
             var prev_fg: Color = .default;
+            var prev_bg: Color = .default;
+            var prev_attrs: Attrs = .{};
 
             for (0..w) |col| {
                 const cell = self.cellAtConst(@intCast(top), @intCast(col));
 
-                // Emit SGR sequence when foreground color changes
-                if (!colorEql(cell.fg, prev_fg)) {
-                    const sgr_len = encodeSgr(&line_buf, len, cell.fg);
-                    len = sgr_len;
+                // Emit attribute reset + re-apply when attrs change
+                const attrs_changed = @as(u8, @bitCast(cell.attrs)) != @as(u8, @bitCast(prev_attrs));
+                if (attrs_changed) {
+                    // Reset all attrs, then re-apply active ones
+                    if (len + 4 <= line_buf.len) {
+                        @memcpy(line_buf[len..][0..4], "\x1b[0m");
+                        len += 4;
+                    }
+                    len = encodeAttrs(&line_buf, len, cell.attrs);
+                    // After reset, fg/bg need re-emitting
+                    if (!colorEql(cell.fg, .default))
+                        len = encodeSgrColor(&line_buf, len, cell.fg, false);
+                    if (!colorEql(cell.bg, .default))
+                        len = encodeSgrColor(&line_buf, len, cell.bg, true);
                     prev_fg = cell.fg;
+                    prev_bg = cell.bg;
+                    prev_attrs = cell.attrs;
+                } else {
+                    if (!colorEql(cell.fg, prev_fg)) {
+                        len = encodeSgrColor(&line_buf, len, cell.fg, false);
+                        prev_fg = cell.fg;
+                    }
+                    if (!colorEql(cell.bg, prev_bg)) {
+                        len = encodeSgrColor(&line_buf, len, cell.bg, true);
+                        prev_bg = cell.bg;
+                    }
                 }
 
-                if (cell.char < 128 and cell.char >= 32) {
-                    if (len < line_buf.len) {
-                        line_buf[len] = @intCast(cell.char);
-                        len += 1;
-                    }
+                // Encode character as UTF-8 (not just ASCII)
+                if (cell.char >= 32) {
+                    len = encodeUtf8(&line_buf, len, cell.char);
                 }
             }
             // Trim trailing spaces (but not SGR sequences)
