@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const Grid = @import("Grid.zig");
+const Scrollback = @import("../persist/Scrollback.zig");
 
 const Selection = @This();
 
@@ -15,6 +16,9 @@ start_row: u16 = 0,
 start_col: u16 = 0,
 end_row: u16 = 0,
 end_col: u16 = 0,
+/// Scroll offset at selection start. When > 0, rows 0..scroll_offset-1
+/// reference scrollback lines, and rows >= scroll_offset reference grid rows.
+scroll_offset: u32 = 0,
 
 /// Begin a new selection at the given grid cell.
 pub fn begin(self: *Selection, row: u16, col: u16) void {
@@ -23,6 +27,12 @@ pub fn begin(self: *Selection, row: u16, col: u16) void {
     self.start_col = col;
     self.end_row = row;
     self.end_col = col;
+}
+
+/// Begin a new selection with scroll offset context.
+pub fn beginScrolled(self: *Selection, row: u16, col: u16, offset: u32) void {
+    self.begin(row, col);
+    self.scroll_offset = offset;
 }
 
 /// Update the selection endpoint (called during drag).
@@ -78,6 +88,7 @@ pub fn clear(self: *Selection) void {
     self.start_col = 0;
     self.end_row = 0;
     self.end_col = 0;
+    self.scroll_offset = 0;
 }
 
 /// Normalize selection to (first_row, first_col) .. (last_row, last_col)
@@ -192,6 +203,137 @@ pub fn getText(self: *const Selection, grid: *const Grid, buf: []u8) usize {
         }
     }
 
+    return pos;
+}
+
+/// Extract selected text, reading from scrollback for rows in the
+/// scroll region and from the grid for visible rows.
+pub fn getTextWithScrollback(self: *const Selection, grid: *const Grid, sb: ?*const Scrollback, buf: []u8) usize {
+    if (!self.active) return 0;
+    if (self.scroll_offset == 0 or sb == null) return self.getText(grid, buf);
+
+    const n = self.normalized();
+    var pos: usize = 0;
+    const so = self.scroll_offset;
+
+    var row = n.r0;
+    while (row <= n.r1) : (row += 1) {
+        const col_start: u16 = if (row == n.r0) n.c0 else 0;
+        const col_end: u16 = if (row == n.r1) n.c1 else grid.cols -| 1;
+
+        var line_buf: [1024]u8 = undefined;
+        var line_len: usize = 0;
+
+        if (row < so) {
+            // This row is in scrollback
+            const sb_offset = so - 1 - @as(u32, row);
+            if (sb.?.getLineByOffset(sb_offset)) |text| {
+                // Strip SGR sequences, extract plain text, respect col range
+                line_len = stripSgrToColumns(text, col_start, col_end, &line_buf);
+            }
+        } else {
+            // This row is in the grid (shifted by scroll_offset)
+            const grid_row: u16 = @intCast(@as(u32, row) - so);
+            if (grid_row < grid.rows) {
+                var col = col_start;
+                while (col <= col_end and col < grid.cols) : (col += 1) {
+                    const cell = grid.cellAtConst(grid_row, col);
+                    line_len = appendUtf8(&line_buf, line_len, cell.char);
+                }
+            }
+        }
+
+        // Trim trailing spaces
+        while (line_len > 0 and line_buf[line_len - 1] == ' ') {
+            line_len -= 1;
+        }
+
+        if (pos + line_len > buf.len) {
+            const avail = buf.len - pos;
+            @memcpy(buf[pos..][0..avail], line_buf[0..avail]);
+            return buf.len;
+        }
+        @memcpy(buf[pos..][0..line_len], line_buf[0..line_len]);
+        pos += line_len;
+
+        if (row < n.r1) {
+            if (pos < buf.len) { buf[pos] = '\n'; pos += 1; }
+        }
+    }
+    return pos;
+}
+
+/// Strip SGR escape sequences from VT bytes, extracting plain text
+/// for the given column range.
+fn stripSgrToColumns(text: []const u8, col_start: u16, col_end: u16, buf: []u8) usize {
+    var col: u16 = 0;
+    var len: usize = 0;
+    var i: usize = 0;
+
+    while (i < text.len) {
+        // Skip ESC [ ... m
+        if (i + 2 < text.len and text[i] == 0x1b and text[i + 1] == '[') {
+            i += 2;
+            while (i < text.len) : (i += 1) {
+                if (text[i] == 'm' or (text[i] >= 0x40 and text[i] <= 0x7E)) {
+                    i += 1;
+                    break;
+                }
+            }
+            continue;
+        }
+
+        const byte = text[i];
+        // Decode UTF-8 to count columns, but extract bytes
+        if (byte < 0x80) {
+            if (byte >= 32) {
+                if (col >= col_start and col <= col_end) {
+                    if (len < buf.len) { buf[len] = byte; len += 1; }
+                }
+                col += 1;
+            }
+            i += 1;
+        } else {
+            // Multi-byte UTF-8
+            const seq_len: usize = if (byte < 0xC0) 1 else if (byte < 0xE0) 2 else if (byte < 0xF0) 3 else 4;
+            if (col >= col_start and col <= col_end) {
+                const end = @min(i + seq_len, text.len);
+                for (text[i..end]) |b| {
+                    if (len < buf.len) { buf[len] = b; len += 1; }
+                }
+            }
+            col += 1;
+            i += seq_len;
+        }
+    }
+    return len;
+}
+
+fn appendUtf8(buf: []u8, pos: usize, cp: u21) usize {
+    if (cp < 0x80) {
+        if (pos < buf.len) { buf[pos] = @intCast(cp); return pos + 1; }
+    } else if (cp < 0x800) {
+        if (pos + 2 <= buf.len) {
+            buf[pos] = @intCast(0xC0 | (cp >> 6));
+            buf[pos + 1] = @intCast(0x80 | (cp & 0x3F));
+            return pos + 2;
+        }
+    } else if (cp < 0x10000) {
+        if (pos + 3 <= buf.len) {
+            buf[pos] = @intCast(0xE0 | (cp >> 12));
+            buf[pos + 1] = @intCast(0x80 | ((cp >> 6) & 0x3F));
+            buf[pos + 2] = @intCast(0x80 | (cp & 0x3F));
+            return pos + 3;
+        }
+    } else {
+        if (pos + 4 <= buf.len) {
+            buf[pos] = @intCast(0xF0 | (cp >> 18));
+            buf[pos + 1] = @intCast(0x80 | ((cp >> 12) & 0x3F));
+            buf[pos + 2] = @intCast(0x80 | ((cp >> 6) & 0x3F));
+            buf[pos + 3] = @intCast(0x80 | (cp & 0x3F));
+            return pos + 4;
+        }
+    }
     return pos;
 }
 
