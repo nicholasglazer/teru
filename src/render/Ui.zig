@@ -9,6 +9,8 @@ const Grid = @import("../core/Grid.zig");
 const Multiplexer = @import("../core/Multiplexer.zig");
 const FontAtlas = @import("FontAtlas.zig");
 const Scrollback = @import("../persist/Scrollback.zig");
+const LayoutEngine = @import("../tiling/LayoutEngine.zig");
+const Rect = LayoutEngine.Rect;
 
 // ── Search overlay (Feature 9) ───────────────────────────────────
 
@@ -312,62 +314,126 @@ pub fn renderScrollOverlay(
     scroll_offset: u32,
     cell_width: u32,
     cell_height: u32,
+    pane_rect: Rect,
 ) void {
     const fb_w: usize = cpu.width;
-    const fb_h: usize = cpu.height;
     const cw: usize = cell_width;
     const ch: usize = cell_height;
-    const pad: usize = cpu.padding;
     const s = &cpu.scheme;
 
     const sb_lines: u32 = @intCast(sb.lineCount());
     if (sb_lines == 0) return;
 
-    // How many scrollback lines to render at the top of the screen.
-    // Cap at screen rows so we never shift the entire framebuffer off-screen.
-    const screen_rows = if (ch > 0) @as(u32, @intCast(fb_h / ch)) else 1;
-    const lines_to_show = @min(scroll_offset, @min(sb_lines, screen_rows -| 1));
+    // Pane content area from layout rect
+    const rx: usize = pane_rect.x;
+    const ry: usize = pane_rect.y;
+    const rw: usize = pane_rect.width;
+    const rh: usize = pane_rect.height;
+    if (rh < ch or rw < cw) return;
 
-    // Shift the existing framebuffer content DOWN by (lines_to_show * ch) pixels.
-    // We do this by copying rows bottom-to-top to avoid overlap corruption.
+    // How many scrollback lines to render at the top of this pane.
+    const pane_rows: u32 = @intCast(rh / ch);
+    const lines_to_show = @min(scroll_offset, @min(sb_lines, pane_rows -| 1));
+
+    // Shift the pane's framebuffer region DOWN by (lines_to_show * ch) pixels.
+    // Only operates within the pane rect — other panes and status bar are untouched.
     const shift_px = lines_to_show * @as(u32, @intCast(ch));
-    if (shift_px > 0 and shift_px < fb_h) {
-        var y: usize = fb_h - 1;
-        while (y >= shift_px) : (y -= 1) {
-            const dst_start = y * fb_w;
-            const src_start = (y - shift_px) * fb_w;
-            if (dst_start + fb_w <= cpu.framebuffer.len and src_start + fb_w <= cpu.framebuffer.len) {
-                @memcpy(cpu.framebuffer[dst_start..][0..fb_w], cpu.framebuffer[src_start..][0..fb_w]);
+    if (shift_px > 0 and shift_px < rh) {
+        var y: usize = ry + rh - 1;
+        while (y >= ry + shift_px) : (y -= 1) {
+            const dst_start = y * fb_w + rx;
+            const src_start = (y - shift_px) * fb_w + rx;
+            if (dst_start + rw <= cpu.framebuffer.len and src_start + rw <= cpu.framebuffer.len) {
+                @memcpy(cpu.framebuffer[dst_start..][0..rw], cpu.framebuffer[src_start..][0..rw]);
             }
-            if (y == 0) break;
+            if (y == ry) break;
         }
     }
 
-    // Fill the top (shift_px) rows with background color
-    const fill_end = @min(shift_px * fb_w, cpu.framebuffer.len);
-    @memset(cpu.framebuffer[0..fill_end], s.bg);
+    // Fill the top (shift_px) rows of the pane rect with background color
+    for (ry..@min(ry + shift_px, ry + rh)) |y| {
+        const row_start = y * fb_w + rx;
+        if (row_start + rw <= cpu.framebuffer.len) {
+            @memset(cpu.framebuffer[row_start..][0..rw], s.bg);
+        }
+    }
 
-    // Render scrollback text into the top rows
-    // scrollback offset 0 = most recent line, offset N = N lines back
-    // We want to show: lines [scroll_offset - lines_to_show, scroll_offset) from bottom
+    // Render scrollback text into the top rows of the pane.
+    // Mini-parses SGR escape sequences to preserve colors (dimmed).
     var line: u32 = 0;
     while (line < lines_to_show) : (line += 1) {
-        // Which scrollback line? offset 0=newest, so for the topmost visible row
-        // we want the oldest of the shown lines
         const sb_offset = scroll_offset - 1 - line;
         const text = sb.getLineByOffset(sb_offset) orelse continue;
 
-        const screen_y = pad + @as(usize, line) * ch;
-        if (screen_y + ch > fb_h) break;
+        const screen_y = ry + @as(usize, line) * ch;
+        if (screen_y + ch > ry + rh) break;
 
         var col: usize = 0;
-        for (text) |byte| {
-            if (byte < 32 or byte > 126) continue; // skip non-printable
-            const screen_x = pad + col * cw;
-            if (screen_x + cw > fb_w) break;
+        var fg_color: u32 = s.fg;
+        var i: usize = 0;
+        while (i < text.len) {
+            // Parse ESC [ ... m sequences for color
+            if (i + 2 < text.len and text[i] == 0x1b and text[i + 1] == '[') {
+                i += 2;
+                // Collect params until 'm' or non-param byte
+                var params: [8]u16 = .{ 0, 0, 0, 0, 0, 0, 0, 0 };
+                var param_count: usize = 0;
+                var num: u16 = 0;
+                var has_num = false;
+                while (i < text.len) : (i += 1) {
+                    const c = text[i];
+                    if (c >= '0' and c <= '9') {
+                        num = num *| 10 +| (c - '0');
+                        has_num = true;
+                    } else if (c == ';') {
+                        if (param_count < params.len) {
+                            params[param_count] = num;
+                            param_count += 1;
+                        }
+                        num = 0;
+                        has_num = false;
+                    } else {
+                        // Final byte
+                        if (has_num and param_count < params.len) {
+                            params[param_count] = num;
+                            param_count += 1;
+                        }
+                        if (c == 'm') {
+                            // Apply SGR params
+                            if (param_count == 0) {
+                                fg_color = s.fg; // reset
+                            }
+                            var p: usize = 0;
+                            while (p < param_count) : (p += 1) {
+                                switch (params[p]) {
+                                    0 => fg_color = s.fg,
+                                    30...37 => fg_color = s.ansi[params[p] - 30],
+                                    90...97 => fg_color = s.ansi[params[p] - 90 + 8],
+                                    38 => {
+                                        // 256-color: 38;5;N
+                                        if (p + 2 < param_count and params[p + 1] == 5) {
+                                            fg_color = s.indexed256(@intCast(params[p + 2]));
+                                            p += 2;
+                                        }
+                                    },
+                                    else => {},
+                                }
+                            }
+                        }
+                        i += 1;
+                        break;
+                    }
+                }
+                continue;
+            }
 
-            // Blit character from atlas (dim color for scrollback)
-            blitCharAt(cpu, byte, screen_x, screen_y, s.ansi[8]);
+            const byte = text[i];
+            i += 1;
+            if (byte < 32 or byte > 126) continue;
+            const screen_x = rx + col * cw;
+            if (screen_x + cw > rx + rw) break;
+
+            blitCharAt(cpu, byte, screen_x, screen_y, s.dimColor(fg_color));
             col += 1;
         }
     }

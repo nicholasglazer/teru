@@ -60,6 +60,50 @@ pub fn getActivePaneMut(self: *Multiplexer) ?*Pane {
     return self.getPaneById(active_id);
 }
 
+/// Get the layout rect of the active pane (content area, inside border).
+/// Returns null if no active pane or layout calculation fails.
+pub fn getActivePaneRect(self: *Multiplexer, screen_width: u32, screen_height: u32, padding: u32) ?Rect {
+    const ws = &self.layout_engine.workspaces[self.active_workspace];
+    const node_ids = ws.node_ids.items;
+    if (node_ids.len == 0) return null;
+
+    const active_id = ws.getActiveNodeId() orelse return null;
+
+    const screen_rect = Rect{
+        .x = @intCast(padding),
+        .y = @intCast(padding),
+        .width = @intCast(@min(screen_width -| padding * 2, std.math.maxInt(u16))),
+        .height = @intCast(@min(screen_height -| padding * 2, std.math.maxInt(u16))),
+    };
+
+    const rects = self.layout_engine.calculate(self.active_workspace, screen_rect) catch return null;
+    defer self.allocator.free(rects);
+
+    const has_agents = if (self.graph) |g| g.countAgentsByState().running + g.countAgentsByState().done + g.countAgentsByState().failed > 0 else false;
+    const bar_height: u16 = if (has_agents and screen_height > 60) 20 else 0;
+    const effective_height: u16 = @intCast(screen_height -| bar_height -| padding);
+
+    for (rects, 0..) |rect, i| {
+        if (i >= node_ids.len) break;
+        if (rect.width == 0 or rect.height == 0) continue;
+
+        if (node_ids[i] != active_id) continue;
+
+        var clamped = rect;
+        if (@as(u32, clamped.y) + clamped.height > effective_height) {
+            if (clamped.y >= effective_height) return null;
+            clamped.height = effective_height - clamped.y;
+        }
+
+        // If multi-pane, return inset (inside border)
+        if (node_ids.len > 1) {
+            return Compositor.insetRect(clamped, 1);
+        }
+        return clamped;
+    }
+    return null;
+}
+
 /// Show a transient notification in the status bar (auto-clears after 5s).
 pub fn notify(self: *Multiplexer, msg: []const u8) void {
     const len = @min(msg.len, self.notification.len);

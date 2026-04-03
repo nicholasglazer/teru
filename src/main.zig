@@ -782,11 +782,13 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         }
                     }
 
-                    // Scroll overlay: render scrollback lines onto framebuffer (non-destructive)
+                    // Scroll overlay: render scrollback lines within the active pane's rect
                     if (mux.getScrollOffset() > 0) {
                         if (mux.getActivePane()) |pane| {
                             if (pane.grid.scrollback) |sb| {
-                                Ui.renderScrollOverlay(cpu, sb, mux.getScrollOffset(), atlas.cell_width, atlas.cell_height);
+                                if (mux.getActivePaneRect(sz.width, sz.height, cpu.padding)) |pane_rect| {
+                                    Ui.renderScrollOverlay(cpu, sb, mux.getScrollOffset(), atlas.cell_width, atlas.cell_height, pane_rect);
+                                }
                             }
                         }
                     }
