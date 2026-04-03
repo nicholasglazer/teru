@@ -199,7 +199,7 @@ pub fn renderTextStatusBar(
             var ts_now: std.os.linux.timespec = undefined;
             _ = std.os.linux.clock_gettime(.MONOTONIC, &ts_now);
             const now: i128 = @as(i128, ts_now.sec) * 1_000_000_000 + ts_now.nsec;
-            if (now - mux.notification_time < 5_000_000_000) {
+            if (now - mux.notification_time < mux.notification_duration_ns) {
                 break :blk true;
             }
             // Expired — clear it (cast away const for this transient state)

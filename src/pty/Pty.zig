@@ -15,6 +15,7 @@ pub const SpawnOptions = struct {
     cols: u16 = 80,
     cwd: ?[]const u8 = null,
     env: ?[*:null]const ?[*:0]const u8 = null,
+    term: ?[]const u8 = null,
 };
 
 pub fn spawn(opts: SpawnOptions) !Pty {
@@ -74,7 +75,7 @@ pub fn spawn(opts: SpawnOptions) !Pty {
         // execve races with the shell's init and can leave ECHO permanently off.
 
         // Set environment
-        setChildEnv(opts.cols, opts.rows);
+        setChildEnv(opts.cols, opts.rows, opts.term);
 
         // Change directory if specified
         if (opts.cwd) |cwd| {
@@ -167,8 +168,15 @@ fn getDefaultShell() []const u8 {
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
-fn setChildEnv(cols: u16, rows: u16) void {
-    _ = setenv("TERM", "xterm-256color", 1);
+fn setChildEnv(cols: u16, rows: u16, term_override: ?[]const u8) void {
+    if (term_override) |term_val| {
+        var term_buf: [64:0]u8 = [_:0]u8{0} ** 64;
+        const tlen = @min(term_val.len, term_buf.len - 1);
+        @memcpy(term_buf[0..tlen], term_val[0..tlen]);
+        _ = setenv("TERM", &term_buf, 1);
+    } else {
+        _ = setenv("TERM", "xterm-256color", 1);
+    }
     _ = setenv("COLORTERM", "truecolor", 1);
     _ = setenv("TERM_PROGRAM", "teru", 1);
     _ = setenv("TERM_PROGRAM_VERSION", "0.1.4", 1);

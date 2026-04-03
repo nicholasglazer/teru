@@ -29,10 +29,14 @@ scrollback: ?Scrollback,
 next_pane_id: u64,
 graph: ?*ProcessGraph = null,
 
-// Transient notification (shown in status bar, auto-clears)
+// Spawn config (threaded to new panes)
+spawn_config: Pane.SpawnConfig = .{},
+
+// Notification state
 notification: [64]u8 = [_]u8{0} ** 64,
 notification_len: u8 = 0,
 notification_time: i128 = 0,
+notification_duration_ns: i128 = 5_000_000_000,
 
 // --- Methods ---
 
@@ -190,7 +194,7 @@ pub fn spawnPane(self: *Multiplexer, rows: u16, cols: u16) !u64 {
     const id = self.next_pane_id;
     self.next_pane_id += 1;
 
-    var pane = try Pane.init(self.allocator, rows, cols, id);
+    var pane = try Pane.init(self.allocator, rows, cols, id, self.spawn_config);
     errdefer pane.deinit(self.allocator);
 
     try self.panes.append(self.allocator, pane);

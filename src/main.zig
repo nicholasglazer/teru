@@ -33,7 +33,7 @@ const SignalManager = @import("core/SignalManager.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
-const version = "0.1.18";
+const version = "0.1.19";
 
 const session_path = "/tmp/teru-session.bin";
 
@@ -135,15 +135,43 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     defer renderer.deinit();
     renderer.updateAtlas(atlas.atlas_data, atlas.atlas_width, atlas.atlas_height);
 
-    const padding: u32 = 8; // must match SoftwareRenderer.padding
+    const padding: u32 = config.padding;
     const status_bar_h: u32 = atlas.cell_height + 4; // must match renderTextStatusBar
     var grid_cols: u16 = @intCast((config.initial_width -| padding * 2) / atlas.cell_width);
     var grid_rows: u16 = @intCast((config.initial_height -| padding * 2 -| status_bar_h) / atlas.cell_height);
+
+    // Apply padding and full color scheme to renderer
+    switch (renderer) {
+        .cpu => |*cpu| {
+            cpu.padding = padding;
+            cpu.scheme = config.colorScheme();
+        },
+        .tty => {},
+    }
 
     // Multiplexer: manages all panes (linked to process graph for agent rendering)
     var mux = Multiplexer.init(allocator);
     defer mux.deinit();
     mux.graph = &graph;
+    mux.spawn_config = .{
+        .shell = config.shell,
+        .scrollback_lines = config.scrollback_lines,
+        .term = config.term,
+    };
+    mux.notification_duration_ns = @as(i128, config.notification_duration_ms) * 1_000_000;
+
+    // Apply per-workspace config
+    for (0..9) |i| {
+        if (config.workspace_layouts[i]) |layout| {
+            mux.layout_engine.workspaces[i].layout = layout;
+        }
+        if (config.workspace_ratios[i]) |ratio| {
+            mux.layout_engine.workspaces[i].master_ratio = ratio;
+        }
+        if (config.workspace_names[i]) |name| {
+            mux.layout_engine.workspaces[i].name = name;
+        }
+    }
 
     // Plugin hooks: external commands fired on terminal events
     var hooks = Hooks.init(allocator);
@@ -212,7 +240,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
         if (keyboard) |*kb| kb.deinit();
     };
 
-    var prefix = KeyHandler.PrefixState{};
+    var prefix = KeyHandler.PrefixState{ .timeout_ns = @as(i128, config.prefix_timeout_ms) * 1_000_000 };
     var selection = Selection{};
     _ = &selection;
     var mouse_down = false;
@@ -574,7 +602,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             else
                                 0;
                             if (max_offset > 0) {
-                                _ = mux.smoothScroll(@as(i32, @intCast(atlas.cell_height)) * 3, atlas.cell_height, max_offset);
+                                _ = mux.smoothScroll(@as(i32, @intCast(atlas.cell_height)) * @as(i32, @intCast(config.scroll_speed)), atlas.cell_height, max_offset);
                             }
                         },
                         .scroll_down => {
@@ -584,7 +612,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                     if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
                                 else
                                     0;
-                                _ = mux.smoothScroll(-@as(i32, @intCast(atlas.cell_height)) * 3, atlas.cell_height, max_offset);
+                                _ = mux.smoothScroll(-@as(i32, @intCast(atlas.cell_height)) * @as(i32, @intCast(config.scroll_speed)), atlas.cell_height, max_offset);
                             }
                         },
                         else => {},

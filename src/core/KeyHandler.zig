@@ -17,8 +17,7 @@ const compat = @import("../compat.zig");
 pub const PrefixState = struct {
     awaiting: bool = false,
     timestamp_ns: i128 = 0,
-
-    const TIMEOUT_NS: i128 = 500_000_000; // 500ms — short enough to not get stuck
+    timeout_ns: i128 = 500_000_000, // configurable via prefix_timeout_ms
 
     pub fn activate(self: *PrefixState) void {
         self.awaiting = true;
@@ -28,7 +27,7 @@ pub const PrefixState = struct {
     pub fn isExpired(self: *const PrefixState) bool {
         if (!self.awaiting) return false;
         const elapsed = compat.nanoTimestamp() - self.timestamp_ns;
-        return elapsed > TIMEOUT_NS;
+        return elapsed > self.timeout_ns;
     }
 
     pub fn reset(self: *PrefixState) void {

@@ -10,6 +10,12 @@ const Scrollback = @import("../persist/Scrollback.zig");
 /// Each pane is an independent terminal session with its own shell process.
 const Pane = @This();
 
+pub const SpawnConfig = struct {
+    shell: ?[]const u8 = null,
+    scrollback_lines: u32 = 10000,
+    term: ?[]const u8 = null,
+};
+
 pty: Pty,
 grid: Grid,
 vt: VtParser,
@@ -18,14 +24,22 @@ scrollback: Scrollback,
 scroll_offset: u32 = 0,
 scroll_pixel: i32 = 0, // sub-cell pixel offset for smooth scrolling (0..cell_height-1)
 
-pub fn init(allocator: Allocator, rows: u16, cols: u16, id: u64) !Pane {
+pub fn init(allocator: Allocator, rows: u16, cols: u16, id: u64, spawn_config: SpawnConfig) !Pane {
     var grid = try Grid.init(allocator, rows, cols);
     errdefer grid.deinit(allocator);
 
-    var sb = Scrollback.init(allocator, .{ .keyframe_interval = 100 });
+    var sb = Scrollback.init(allocator, .{
+        .keyframe_interval = 100,
+        .max_lines = spawn_config.scrollback_lines,
+    });
     grid.scrollback = &sb; // will be re-linked in linkVt after move
 
-    var pty = try Pty.spawn(.{ .rows = rows, .cols = cols });
+    var pty = try Pty.spawn(.{
+        .rows = rows,
+        .cols = cols,
+        .shell = spawn_config.shell,
+        .term = spawn_config.term,
+    });
     errdefer pty.deinit();
 
     // Set PTY master to non-blocking for event-loop polling
@@ -95,7 +109,7 @@ test "Pane init and deinit" {
     // This test spawns a real PTY, so it verifies the full integration.
     const allocator = std.testing.allocator;
 
-    var pane = try Pane.init(allocator, 24, 80, 1);
+    var pane = try Pane.init(allocator, 24, 80, 1, .{});
     defer pane.deinit(allocator);
 
     try std.testing.expectEqual(@as(u64, 1), pane.id);
@@ -108,7 +122,7 @@ test "Pane init and deinit" {
 test "Pane readAndProcess returns 0 on empty" {
     const allocator = std.testing.allocator;
 
-    var pane = try Pane.init(allocator, 24, 80, 42);
+    var pane = try Pane.init(allocator, 24, 80, 42, .{});
     defer pane.deinit(allocator);
 
     // Immediately after spawn, there may or may not be data.
@@ -120,7 +134,7 @@ test "Pane readAndProcess returns 0 on empty" {
 test "Pane resize" {
     const allocator = std.testing.allocator;
 
-    var pane = try Pane.init(allocator, 24, 80, 7);
+    var pane = try Pane.init(allocator, 24, 80, 7, .{});
     defer pane.deinit(allocator);
 
     try pane.resize(allocator, 40, 120);
