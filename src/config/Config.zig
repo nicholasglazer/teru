@@ -111,6 +111,9 @@ pub fn packArgb(r: u8, g: u8, b: u8) u32 {
 
 // Appearance
 font_path: ?[]const u8 = null, // path to .ttf font
+font_bold: ?[]const u8 = null, // path to bold .ttf
+font_italic: ?[]const u8 = null, // path to italic .ttf
+font_bold_italic: ?[]const u8 = null, // path to bold+italic .ttf
 font_size: u16 = 16,
 
 // Colors (miozu theme defaults — matches alacritty/ghostty miozu config)
@@ -155,6 +158,10 @@ copy_on_select: bool = true,
 bell: Bell = .visual,
 tab_width: u8 = 8,
 dynamic_title: bool = true,
+
+// Behavior
+mouse_hide_when_typing: bool = true,
+word_delimiters: ?[]const u8 = null,
 
 // Timing
 prefix_timeout_ms: u32 = 500,
@@ -209,24 +216,32 @@ pub fn load(allocator: Allocator, io: Io) !Config {
 /// Free any allocator-owned string fields.
 pub fn deinit(self: *Config) void {
     if (self.font_path) |p| self.allocator.free(p);
+    if (self.font_bold) |p| self.allocator.free(p);
+    if (self.font_italic) |p| self.allocator.free(p);
+    if (self.font_bold_italic) |p| self.allocator.free(p);
     if (self.shell) |s| self.allocator.free(s);
     if (self.hook_on_spawn) |s| self.allocator.free(s);
     if (self.hook_on_close) |s| self.allocator.free(s);
     if (self.hook_on_agent_start) |s| self.allocator.free(s);
     if (self.hook_on_session_save) |s| self.allocator.free(s);
     if (self.term) |s| self.allocator.free(s);
+    if (self.word_delimiters) |s| self.allocator.free(s);
     if (self.theme) |s| self.allocator.free(s);
     for (&self.workspace_names) |*name| {
         if (name.*) |s| self.allocator.free(s);
         name.* = null;
     }
     self.font_path = null;
+    self.font_bold = null;
+    self.font_italic = null;
+    self.font_bold_italic = null;
     self.shell = null;
     self.hook_on_spawn = null;
     self.hook_on_close = null;
     self.hook_on_agent_start = null;
     self.hook_on_session_save = null;
     self.term = null;
+    self.word_delimiters = null;
     self.theme = null;
 }
 
@@ -298,6 +313,14 @@ fn loadThemeFile(self: *Config, allocator: Allocator, io: Io, name: []const u8) 
 
 /// Build a ColorScheme from the current config fields.
 /// ANSI colors 0-15 are overridden by color0-color15 if set.
+/// Default word delimiters for double-click word selection.
+pub const default_word_delimiters = " \t{}[]()\"'`,;:@";
+
+/// Return the effective word delimiters (user-configured or default).
+pub fn getWordDelimiters(self: *const Config) []const u8 {
+    return self.word_delimiters orelse default_word_delimiters;
+}
+
 pub fn colorScheme(self: *const Config) ColorScheme {
     var scheme = ColorScheme{
         .bg = self.bg,
@@ -363,6 +386,12 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         self.font_size = std.fmt.parseInt(u16, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "font_path")) {
         self.setString(allocator, &self.font_path, value);
+    } else if (std.mem.eql(u8, key, "font_bold")) {
+        self.setString(allocator, &self.font_bold, value);
+    } else if (std.mem.eql(u8, key, "font_italic")) {
+        self.setString(allocator, &self.font_italic, value);
+    } else if (std.mem.eql(u8, key, "font_bold_italic")) {
+        self.setString(allocator, &self.font_bold_italic, value);
     } else if (std.mem.eql(u8, key, "shell")) {
         self.setString(allocator, &self.shell, value);
     } else if (std.mem.eql(u8, key, "bg")) {
@@ -411,6 +440,10 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         self.copy_on_select = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "bell")) {
         self.bell = parseBell(value) orelse return;
+    } else if (std.mem.eql(u8, key, "mouse_hide_when_typing")) {
+        self.mouse_hide_when_typing = parseBool(value) orelse return;
+    } else if (std.mem.eql(u8, key, "word_delimiters")) {
+        self.setString(allocator, &self.word_delimiters, value);
     } else if (std.mem.eql(u8, key, "prefix_timeout_ms")) {
         self.prefix_timeout_ms = std.fmt.parseInt(u32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "notification_duration_ms")) {

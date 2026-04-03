@@ -180,6 +180,14 @@ extern "xcb" fn xcb_flush(conn: *xcb_connection_t) callconv(.c) c_int;
 extern "xcb" fn xcb_put_image(conn: *xcb_connection_t, format: u8, drawable: xcb_window_t, gc: xcb_gcontext_t, width: u16, height: u16, dst_x: i16, dst_y: i16, left_pad: u8, depth: u8, data_len: u32, data: [*]const u8) callconv(.c) xcb_void_cookie_t;
 extern "xcb" fn xcb_intern_atom(conn: *xcb_connection_t, only_if_exists: u8, name_len: u16, name: [*]const u8) callconv(.c) xcb_intern_atom_cookie_t;
 extern "xcb" fn xcb_intern_atom_reply(conn: *xcb_connection_t, cookie: xcb_intern_atom_cookie_t, err: ?*?*anyopaque) callconv(.c) ?*xcb_intern_atom_reply_t;
+extern "xcb" fn xcb_create_pixmap(conn: *xcb_connection_t, depth: u8, pid: u32, drawable: xcb_window_t, width: u16, height: u16) callconv(.c) xcb_void_cookie_t;
+extern "xcb" fn xcb_free_pixmap(conn: *xcb_connection_t, pixmap: u32) callconv(.c) xcb_void_cookie_t;
+extern "xcb" fn xcb_create_cursor(conn: *xcb_connection_t, cid: u32, source: u32, mask: u32, fore_red: u16, fore_green: u16, fore_blue: u16, back_red: u16, back_green: u16, back_blue: u16, x: u16, y: u16) callconv(.c) xcb_void_cookie_t;
+extern "xcb" fn xcb_free_cursor(conn: *xcb_connection_t, cursor: u32) callconv(.c) xcb_void_cookie_t;
+extern "xcb" fn xcb_change_window_attributes(conn: *xcb_connection_t, window: xcb_window_t, value_mask: u32, value_list: ?*const anyopaque) callconv(.c) xcb_void_cookie_t;
+
+const XCB_CW_CURSOR: u32 = 0x4000;
+const XCB_EVENT_MASK_POINTER_MOTION: u32 = 0x40; // motion without button held
 
 // ── XCB-SHM extern functions ──────────────────────────────────────────
 extern "xcb-shm" fn xcb_shm_attach(conn: *xcb_connection_t, shmseg: xcb_shm_seg_t, shmid: u32, read_only: u8) callconv(.c) xcb_void_cookie_t;
@@ -198,6 +206,9 @@ pub const X11Window = struct {
     is_open: bool,
     wm_delete_window: xcb_atom_t,
     depth: u8,
+
+    // Invisible cursor for mouse_hide_when_typing
+    invisible_cursor: u32 = 0,
 
     // SHM state (zero-copy framebuffer)
     shm_seg: xcb_shm_seg_t = 0,
@@ -237,7 +248,8 @@ pub const X11Window = struct {
             XCB_EVENT_MASK_FOCUS_CHANGE |
             XCB_EVENT_MASK_BUTTON_PRESS |
             XCB_EVENT_MASK_BUTTON_RELEASE |
-            XCB_EVENT_MASK_BUTTON_MOTION;
+            XCB_EVENT_MASK_BUTTON_MOTION |
+            XCB_EVENT_MASK_POINTER_MOTION;
         const value_mask: u32 = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
         const value_list = [2]u32{ screen.black_pixel, event_mask };
 
@@ -281,10 +293,31 @@ pub const X11Window = struct {
         // Try to set up SHM for zero-copy framebuffer
         self.setupShm(width, height);
 
+        // Create invisible cursor for mouse_hide_when_typing
+        const pixmap = xcb_generate_id(connection);
+        _ = xcb_create_pixmap(connection, 1, pixmap, win_id, 1, 1);
+        self.invisible_cursor = xcb_generate_id(connection);
+        _ = xcb_create_cursor(connection, self.invisible_cursor, pixmap, pixmap, 0, 0, 0, 0, 0, 0, 0, 0);
+        _ = xcb_free_pixmap(connection, pixmap);
+
         return self;
     }
 
+    pub fn hideCursor(self: *X11Window) void {
+        if (self.invisible_cursor == 0) return;
+        const cursor_val = [1]u32{self.invisible_cursor};
+        _ = xcb_change_window_attributes(self.connection, self.window, XCB_CW_CURSOR, &cursor_val);
+        _ = xcb_flush(self.connection);
+    }
+
+    pub fn showCursor(self: *X11Window) void {
+        const cursor_val = [1]u32{0}; // XCB_CURSOR_NONE restores default
+        _ = xcb_change_window_attributes(self.connection, self.window, XCB_CW_CURSOR, &cursor_val);
+        _ = xcb_flush(self.connection);
+    }
+
     pub fn deinit(self: *X11Window) void {
+        if (self.invisible_cursor != 0) _ = xcb_free_cursor(self.connection, self.invisible_cursor);
         self.teardownShm();
         _ = xcb_free_gc(self.connection, self.gc);
         _ = xcb_destroy_window(self.connection, self.window);

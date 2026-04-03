@@ -254,6 +254,12 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     _ = &mouse_start_col;
     var pty_buf: [8192]u8 = undefined;
     var running = true;
+    var mouse_cursor_hidden = false;
+    var last_click_time: i128 = 0;
+    var last_click_row: u16 = 0;
+    var last_click_col: u16 = 0;
+    const DOUBLE_CLICK_NS: i128 = 300_000_000; // 300ms
+    const default_word_delimiters = " \t{}[]()\"'`,;:@";
 
     // Cursor blink state (530ms on/off cycle)
     const BLINK_INTERVAL_NS: i128 = 530_000_000;
@@ -361,6 +367,11 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     mux.setScrollOffset(0);
                 },
                 .key_press => |key| {
+                    // Hide mouse cursor while typing
+                    if (config.mouse_hide_when_typing and !mouse_cursor_hidden) {
+                        win.hideCursor();
+                        mouse_cursor_hidden = true;
+                    }
                     const XKB_KEY_Page_Up: u32 = 0xff55;
                     const XKB_KEY_Page_Down: u32 = 0xff56;
                     const XKB_KEY_Return: u32 = 0xff0d;
@@ -588,6 +599,33 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 } else |_| {}
                             }
 
+                            // Double-click: select word
+                            var click_ts: std.os.linux.timespec = undefined;
+                            _ = std.os.linux.clock_gettime(.MONOTONIC, &click_ts);
+                            const click_now: i128 = @as(i128, click_ts.sec) * 1_000_000_000 + click_ts.nsec;
+                            if (click_now - last_click_time < DOUBLE_CLICK_NS and
+                                row == last_click_row and col == last_click_col)
+                            {
+                                if (mux.getActivePane()) |pane| {
+                                    const delims = config.word_delimiters orelse default_word_delimiters;
+                                    selection.selectWord(&pane.grid, row, col, delims);
+                                    pane.grid.dirty = true;
+                                    if (config.copy_on_select) {
+                                        var sel_buf: [8192]u8 = undefined;
+                                        const len = selection.getText(&pane.grid, &sel_buf);
+                                        if (len > 0) {
+                                            Clipboard.copy(sel_buf[0..len]);
+                                            mux.notify("Copied to clipboard");
+                                        }
+                                    }
+                                }
+                                last_click_time = 0; // prevent triple-click triggering
+                                continue;
+                            }
+                            last_click_time = click_now;
+                            last_click_row = row;
+                            last_click_col = col;
+
                             // Clear any existing selection on click
                             if (selection.active) {
                                 selection.clear();
@@ -655,6 +693,11 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     }
                 },
                 .mouse_motion => |motion| {
+                    // Show mouse cursor when mouse moves
+                    if (mouse_cursor_hidden) {
+                        win.showCursor();
+                        mouse_cursor_hidden = false;
+                    }
                     if (mouse_down) {
                         const col: u16 = @intCast(@min(motion.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
                         const row: u16 = @intCast(@min(motion.y / atlas.cell_height, @as(u32, grid_rows -| 1)));

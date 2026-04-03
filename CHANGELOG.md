@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.2.0 (2026-04-03)
+
+### Features
+- Config system upgrade: `[section]` headers, `[workspace.N]` sections, external theme files
+- Base16 theme support: `theme = miozu` built-in, or load from `~/.config/teru/themes/<name>.conf`
+- External theme files support base16 keys (`base00`-`base0F`) and direct color keys
+- 25+ new config options: `opacity`, `cursor_blink`, `cursor_shape`, `tab_width`, `scroll_speed`, `bell`, `copy_on_select`, `padding`, `prefix_timeout_ms`, `bold_is_bright`, `term`, `font_bold`, `font_italic`, `font_bold_italic`, `dynamic_title`, `notification_duration_ms`
+- Per-workspace config: `[workspace.1]` with `layout`, `master_ratio`, `name`
+- Window opacity via `_NET_WM_WINDOW_OPACITY` (X11) and `setAlphaValue` (macOS)
+- Cursor blink: 530ms on/off timer, configurable via `cursor_blink = true`
+- Wayland mouse support: `wl_pointer` listener with click, motion, scroll
+- macOS backend compilation fix: replaced `@Type`-based `MsgSendType` (removed in Zig 0.16) with concrete function pointer types
+- Platform parity: X11, Wayland, and macOS now share matching API surface (`setOpacity`, `setTitle`, `getX11Info`)
+
+### Fixes
+- Config fields `bell`, `copy_on_select`, `cursor_shape`, `tab_width` wired to subsystems (were dead code)
+- `padding`, `scroll_speed`, `prefix_timeout_ms`, `notification_duration_ms` wired to runtime
+- Full `ColorScheme` applied to renderer (was cursor_color only)
+- `shell`, `scrollback_lines`, `term` threaded through to PTY spawn
+
+## 0.1.20 (2026-04-03)
+
+### Features
+- Window opacity (`opacity` config option, X11 `_NET_WM_WINDOW_OPACITY`)
+- Cursor blink (530ms timer, `cursor_blink` config option)
+- External theme file loading (`~/.config/teru/themes/<name>.conf`)
+- Base16 key mapping (`base00`-`base0F` mapped to ANSI palette + semantic colors)
+- Configurable bell (`visual` or `none`), copy-on-select, cursor shape, tab width
+
+## 0.1.19 (2026-04-03)
+
+### Features
+- Config wired to all subsystems: padding, ColorScheme, shell, scrollback, term, prefix timeout, notification duration, scroll speed
+- Per-workspace layout, master ratio, and name applied at startup
+
 ## 0.1.18 (2026-04-03)
 
 ### Features

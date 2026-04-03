@@ -40,6 +40,37 @@ pub fn finish(self: *Selection) void {
     _ = self;
 }
 
+/// Select the word at (row, col). Expands left and right until a
+/// delimiter character is hit.
+pub fn selectWord(self: *Selection, grid: *const Grid, row: u16, col: u16, delimiters: []const u8) void {
+    // Expand left
+    var left: u16 = col;
+    while (left > 0) {
+        const ch = grid.cellAtConst(row, left -| 1).char;
+        if (ch < 128 and isDelimiter(@intCast(ch), delimiters)) break;
+        left -= 1;
+    }
+    // Expand right
+    var right: u16 = col;
+    while (right + 1 < grid.cols) {
+        const ch = grid.cellAtConst(row, right + 1).char;
+        if (ch < 128 and isDelimiter(@intCast(ch), delimiters)) break;
+        right += 1;
+    }
+    self.active = true;
+    self.start_row = row;
+    self.start_col = left;
+    self.end_row = row;
+    self.end_col = right;
+}
+
+fn isDelimiter(ch: u8, delimiters: []const u8) bool {
+    for (delimiters) |d| {
+        if (ch == d) return true;
+    }
+    return false;
+}
+
 /// Clear the selection entirely.
 pub fn clear(self: *Selection) void {
     self.active = false;
