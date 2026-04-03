@@ -84,11 +84,11 @@ pub const ColorScheme = struct {
         return 0xFF000000 | (r << 16) | (g << 8) | b;
     }
 
-    /// Dim a color by halving R, G, B channels (preserve alpha).
+    /// Dim a color to 75% brightness (preserve alpha).
     pub fn dimColor(_: *const ColorScheme, argb: u32) u32 {
-        const r = ((argb >> 16) & 0xFF) >> 1;
-        const g = ((argb >> 8) & 0xFF) >> 1;
-        const b = (argb & 0xFF) >> 1;
+        const r = ((argb >> 16) & 0xFF) * 3 / 4;
+        const g = ((argb >> 8) & 0xFF) * 3 / 4;
+        const b = (argb & 0xFF) * 3 / 4;
         return (0xFF << 24) | (r << 16) | (g << 8) | b;
     }
 };
@@ -560,7 +560,7 @@ test "colorScheme resolve" {
 
     // Dim
     const bright = packArgb(200, 100, 50);
-    try std.testing.expectEqual(packArgb(100, 50, 25), scheme.dimColor(bright));
+    try std.testing.expectEqual(packArgb(150, 75, 37), scheme.dimColor(bright));
 
     _ = Grid;
 }

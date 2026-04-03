@@ -37,6 +37,71 @@ pub const Cell = struct {
 
 pub const CursorShape = enum { block, underline, bar };
 
+// ── Color helpers for scrollback encoding ────────────────────────
+
+fn colorEql(a: Color, b: Color) bool {
+    return switch (a) {
+        .default => b == .default,
+        .indexed => |ai| switch (b) {
+            .indexed => |bi| ai == bi,
+            else => false,
+        },
+        .rgb => |ar| switch (b) {
+            .rgb => |br| ar.r == br.r and ar.g == br.g and ar.b == br.b,
+            else => false,
+        },
+    };
+}
+
+/// Encode an SGR foreground color change into buf at position pos.
+/// Returns the new position after the sequence.
+fn encodeSgr(buf: []u8, pos: usize, color: Color) usize {
+    var p = pos;
+    switch (color) {
+        .default => {
+            // ESC[0m (reset)
+            const seq = "\x1b[0m";
+            if (p + seq.len <= buf.len) {
+                @memcpy(buf[p..][0..seq.len], seq);
+                p += seq.len;
+            }
+        },
+        .indexed => |idx| {
+            if (idx < 8) {
+                // ESC[30-37m
+                const seq = [4]u8{ 0x1b, '[', '3', '0' + idx };
+                if (p + 5 <= buf.len) {
+                    @memcpy(buf[p..][0..4], &seq);
+                    buf[p + 4] = 'm';
+                    p += 5;
+                }
+            } else if (idx < 16) {
+                // ESC[90-97m
+                const seq = [4]u8{ 0x1b, '[', '9', '0' + idx - 8 };
+                if (p + 5 <= buf.len) {
+                    @memcpy(buf[p..][0..4], &seq);
+                    buf[p + 4] = 'm';
+                    p += 5;
+                }
+            } else {
+                // ESC[38;5;Nm — up to 12 bytes
+                if (p + 12 <= buf.len) {
+                    const written = std.fmt.bufPrint(buf[p..][0..12], "\x1b[38;5;{d}m", .{idx}) catch return p;
+                    p += written.len;
+                }
+            }
+        },
+        .rgb => |c| {
+            // ESC[38;2;R;G;Bm — up to 19 bytes
+            if (p + 19 <= buf.len) {
+                const written = std.fmt.bufPrint(buf[p..][0..19], "\x1b[38;2;{d};{d};{d}m", .{ c.r, c.g, c.b }) catch return p;
+                p += written.len;
+            }
+        },
+    }
+    return p;
+}
+
 /// OSC 133 shell integration: semantic prompt marks.
 pub const PromptMark = enum {
     none,
@@ -192,12 +257,23 @@ pub fn scrollUpN(self: *Grid, n: u16) void {
 
     var i: u16 = 0;
     while (i < n) : (i += 1) {
-        // Push the top line to scrollback before it's overwritten
+        // Push the top line to scrollback before it's overwritten.
+        // Encodes cell colors as SGR sequences to preserve them.
         if (self.scrollback) |sb| {
-            var line_buf: [512]u8 = undefined;
+            var line_buf: [2048]u8 = undefined;
             var len: usize = 0;
+            var prev_fg: Color = .default;
+
             for (0..w) |col| {
                 const cell = self.cellAtConst(@intCast(top), @intCast(col));
+
+                // Emit SGR sequence when foreground color changes
+                if (!colorEql(cell.fg, prev_fg)) {
+                    const sgr_len = encodeSgr(&line_buf, len, cell.fg);
+                    len = sgr_len;
+                    prev_fg = cell.fg;
+                }
+
                 if (cell.char < 128 and cell.char >= 32) {
                     if (len < line_buf.len) {
                         line_buf[len] = @intCast(cell.char);
@@ -205,7 +281,7 @@ pub fn scrollUpN(self: *Grid, n: u16) void {
                     }
                 }
             }
-            // Trim trailing spaces
+            // Trim trailing spaces (but not SGR sequences)
             while (len > 0 and line_buf[len - 1] == ' ') len -= 1;
             // Scrollback capture is best-effort: OOM just drops the line
             sb.pushLine(line_buf[0..len], self) catch {};

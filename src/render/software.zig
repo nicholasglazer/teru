@@ -570,11 +570,11 @@ test "color resolution: RGB passthrough" {
     try std.testing.expectEqual(packArgb(128, 64, 255), scheme.resolve(color, true));
 }
 
-test "dimColor halves channels" {
+test "dimColor to 75 percent" {
     const scheme = ColorScheme{};
     const bright = packArgb(200, 100, 50);
     const dimmed = scheme.dimColor(bright);
-    try std.testing.expectEqual(packArgb(100, 50, 25), dimmed);
+    try std.testing.expectEqual(packArgb(150, 75, 37), dimmed);
 }
 
 test "cursor rendered as block at cursor position" {

@@ -33,7 +33,7 @@ const SignalManager = @import("core/SignalManager.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
-const version = "0.1.15";
+const version = "0.1.16";
 
 const session_path = "/tmp/teru-session.bin";
 
@@ -224,10 +224,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     var pty_buf: [8192]u8 = undefined;
     var running = true;
 
-    // Key repeat tracking: debounce rapid repeats of the same keycode
-    var last_keycode: u32 = 0;
-    var last_key_time: i128 = 0;
-    const KEY_REPEAT_MIN_NS: i128 = 33_000_000; // 33ms (~30Hz) minimum between same-key repeats
+
 
     // Scrollback state lives on mux (accessible from McpServer for teru_scroll)
     // No saved_cells needed — scroll is non-destructive (renders overlay on framebuffer)
@@ -266,9 +263,6 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     }
                     // Also reset prefix key in case it was stuck
                     prefix.reset();
-                    // Reset key repeat tracking
-                    last_keycode = 0;
-                    last_key_time = 0;
                 },
                 .resize => |sz| {
                     // Resize renderer
@@ -334,7 +328,6 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     const XKB_KEY_Return: u32 = 0xff0d;
                     const XKB_KEY_Escape: u32 = 0xff1b;
                     const XKB_KEY_BackSpace: u32 = 0xff08;
-                    const SHIFT_MASK: u32 = 1; // XCB ShiftMask
 
                     if (Keyboard != void) {
                         if (keyboard) |*kb| {
@@ -375,30 +368,25 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 continue;
                             }
 
-                            // Shift+PageUp/Down: scrollback browsing
-                            if (key.modifiers & SHIFT_MASK != 0) {
-                                if (keysym == XKB_KEY_Page_Up) {
-                                    const max_offset = if (mux.getActivePane()) |pane|
-                                        if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
-                                    else
-                                        0;
-                                    if (max_offset > 0) {
-                                        mux.setScrollOffset(@min(mux.getScrollOffset() + grid_rows, max_offset));
-                                        if (mux.getActivePane()) |pane| pane.grid.dirty = true;
-                                    }
-                                    // Update xkb state without forwarding to PTY
-                                    var dummy: [32]u8 = undefined;
-                                    _ = kb.processKey(key.keycode, true, &dummy);
-                                    continue;
-                                } else if (keysym == XKB_KEY_Page_Down) {
-                                    if (mux.getScrollOffset() > 0) {
-                                        { const so = mux.getScrollOffset(); mux.setScrollOffset(so -| grid_rows); }
-                                        if (mux.getActivePane()) |pane| pane.grid.dirty = true;
-                                    }
-                                    var dummy: [32]u8 = undefined;
-                                    _ = kb.processKey(key.keycode, true, &dummy);
-                                    continue;
+                            // PageUp/Down: scrollback browsing (with or without Shift)
+                            if (keysym == XKB_KEY_Page_Up) {
+                                const max_offset = if (mux.getActivePane()) |pane|
+                                    if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
+                                else
+                                    0;
+                                if (max_offset > 0) {
+                                    mux.setScrollOffset(@min(mux.getScrollOffset() + grid_rows, max_offset));
                                 }
+                                var dummy: [32]u8 = undefined;
+                                _ = kb.processKey(key.keycode, true, &dummy);
+                                continue;
+                            } else if (keysym == XKB_KEY_Page_Down) {
+                                if (mux.getScrollOffset() > 0) {
+                                    { const so = mux.getScrollOffset(); mux.setScrollOffset(so -| grid_rows); }
+                                }
+                                var dummy: [32]u8 = undefined;
+                                _ = kb.processKey(key.keycode, true, &dummy);
+                                continue;
                             }
 
                             // Ctrl+Shift+C: copy selection to clipboard
@@ -432,14 +420,31 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 }
                             }
 
-                            // Any other key while in scroll mode: exit scroll mode
-                            if (mux.getScrollOffset() > 0) {
-                                mux.setScrollOffset(0);
-                                if (mux.getActivePane()) |pane| pane.grid.dirty = true;
-                            }
-
                             var key_buf: [32]u8 = undefined;
                             const len = kb.processKey(key.keycode, true, &key_buf);
+
+                            // Modifier-only keys (Ctrl, Super, Shift, Alt) produce no output.
+                            // Don't exit scroll mode or interfere with anything.
+                            if (len == 0) continue;
+
+                            // Exit scroll mode only for keys that type into the terminal:
+                            // printable chars, Enter, Backspace, Tab, Space.
+                            // Escape sequences (F-keys, arrows) keep scroll position.
+                            if (mux.getScrollOffset() > 0) {
+                                const exits_scroll = if (len == 1)
+                                    key_buf[0] >= 0x20 or // printable ASCII + space
+                                        key_buf[0] == 0x0D or // Enter
+                                        key_buf[0] == 0x0A or // Newline
+                                        key_buf[0] == 0x08 or // Backspace
+                                        key_buf[0] == 0x7F or // Delete
+                                        key_buf[0] == 0x09 // Tab
+                                else
+                                    false; // escape sequences (F-keys, arrows) — don't exit
+                                if (exits_scroll) {
+                                    mux.setScrollOffset(0);
+                                    if (mux.getActivePane()) |pane| pane.grid.dirty = true;
+                                }
+                            }
 
                             // Check for prefix key (default: Ctrl+Space = NUL)
                             if (len == 1 and key_buf[0] == config.prefix_key) {
@@ -449,58 +454,36 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
 
                             if (prefix.awaiting) {
                                 prefix.reset();
-                                if (len > 0) {
-                                    const action = KeyHandler.handleMuxCommand(key_buf[0], &mux, &graph, &hooks, &running, grid_rows, grid_cols, io, config.prefix_key);
-                                    if (action == .enter_search) search_mode = true;
-                                    continue;
-                                }
+                                const action = KeyHandler.handleMuxCommand(key_buf[0], &mux, &graph, &hooks, &running, grid_rows, grid_cols, io, config.prefix_key);
+                                if (action == .enter_search) search_mode = true;
+                                continue;
                             }
 
-                            // Normal key — forward to active pane's PTY
-                            if (len > 0) {
-                                // Debounce rapid repeats of the same key (prevents
-                                // Enter/Backspace runaway when held and released)
-                                var ts: std.os.linux.timespec = undefined;
-                                _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
-                                const now: i128 = @as(i128, ts.sec) * 1_000_000_000 + ts.nsec;
-                                const is_repeat = key.keycode == last_keycode and (now - last_key_time) < KEY_REPEAT_MIN_NS;
-                                last_keycode = key.keycode;
-                                last_key_time = now;
-                                if (is_repeat) continue;
-
-                                if (mux.getActivePane()) |pane| {
-                                    _ = pane.pty.write(key_buf[0..len]) catch {};
-                                }
+                            // Forward key to active pane's PTY
+                            if (mux.getActivePane()) |pane| {
+                                _ = pane.pty.write(key_buf[0..len]) catch {};
                             }
                         }
                     } else {
                         // Fallback: raw keycode passthrough (no xkbcommon)
+                        if (key.keycode >= 128) continue; // modifier-only, ignore
                         if (mux.getScrollOffset() > 0) {
                             mux.setScrollOffset(0);
                             if (mux.getActivePane()) |pane| pane.grid.dirty = true;
                         }
                         if (prefix.awaiting) {
                             prefix.reset();
-                            if (key.keycode < 128) {
-                                const action = KeyHandler.handleMuxCommand(@truncate(key.keycode), &mux, &graph, &hooks, &running, grid_rows, grid_cols, io, config.prefix_key);
-                                if (action == .enter_search) search_mode = true;
-                                continue;
-                            }
+                            const action = KeyHandler.handleMuxCommand(@truncate(key.keycode), &mux, &graph, &hooks, &running, grid_rows, grid_cols, io, config.prefix_key);
+                            if (action == .enter_search) search_mode = true;
+                            continue;
                         }
-                        if (key.keycode < 128) {
-                            if (mux.getActivePane()) |pane| {
-                                const byte = [1]u8{@truncate(key.keycode)};
-                                _ = pane.pty.write(&byte) catch {};
-                            }
+                        if (mux.getActivePane()) |pane| {
+                            const byte = [1]u8{@truncate(key.keycode)};
+                            _ = pane.pty.write(&byte) catch {};
                         }
                     }
                 },
                 .key_release => |key| {
-                    // Clear repeat tracking so next press isn't debounced
-                    if (key.keycode == last_keycode) {
-                        last_keycode = 0;
-                        last_key_time = 0;
-                    }
                     // Sync xkb modifier/group state from X11 on release
                     if (Keyboard != void) {
                         if (keyboard) |*kb| {
@@ -588,24 +571,23 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             }
                         },
                         .scroll_up => {
-                            // Mouse wheel up: scroll into scrollback history
-                            const scroll_lines: u32 = 3; // lines per wheel tick
-                            // Max offset = scrollback lines + screen lines - one screenful
-                            // (so oldest scrollback line appears at top of screen)
+                            // Smooth scroll up: 3 lines per tick
                             const max_offset = if (mux.getActivePane()) |pane|
                                 if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
                             else
                                 0;
                             if (max_offset > 0) {
-                                mux.setScrollOffset(@min(mux.getScrollOffset() + scroll_lines, max_offset));
-                                if (mux.getActivePane()) |pane| pane.grid.dirty = true;
+                                _ = mux.smoothScroll(@as(i32, @intCast(atlas.cell_height)) * 3, atlas.cell_height, max_offset);
                             }
                         },
                         .scroll_down => {
-                            // Mouse wheel down: scroll back toward live terminal
-                            if (mux.getScrollOffset() > 0) {
-                                { const so = mux.getScrollOffset(); mux.setScrollOffset(so -| 3); }
-                                if (mux.getActivePane()) |pane| pane.grid.dirty = true;
+                            // Smooth scroll down: 3 lines per tick
+                            if (mux.getScrollOffset() > 0 or mux.getScrollPixel() > 0) {
+                                const max_offset = if (mux.getActivePane()) |pane|
+                                    if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
+                                else
+                                    0;
+                                _ = mux.smoothScroll(-@as(i32, @intCast(atlas.cell_height)) * 3, atlas.cell_height, max_offset);
                             }
                         },
                         else => {},
@@ -654,8 +636,28 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
             }
         }
 
+        // Track scrollback size before polling so we can pin scroll position
+        const sb_count_before: u64 = if (mux.getActivePane()) |pane|
+            if (pane.grid.scrollback) |sb| sb.lineCount() else 0
+        else
+            0;
+
         // Poll all PTYs (grid is never modified by scroll — no save/restore needed)
         const had_output = mux.pollPtys(&pty_buf);
+
+        // If user is scrolled up and new lines were added to scrollback,
+        // advance scroll_offset to keep the viewport pinned to the same content.
+        if (had_output and (mux.getScrollOffset() > 0 or mux.getScrollPixel() > 0)) {
+            if (mux.getActivePane()) |pane| {
+                if (pane.grid.scrollback) |sb| {
+                    const sb_count_after = sb.lineCount();
+                    if (sb_count_after > sb_count_before) {
+                        const new_lines: u32 = @intCast(sb_count_after - sb_count_before);
+                        pane.scroll_offset += new_lines;
+                    }
+                }
+            }
+        }
 
         // Poll MCP server for incoming connections
         if (mcp) |*m| m.poll();
@@ -783,11 +785,11 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     }
 
                     // Scroll overlay: render scrollback lines within the active pane's rect
-                    if (mux.getScrollOffset() > 0) {
+                    if (mux.getScrollOffset() > 0 or mux.getScrollPixel() > 0) {
                         if (mux.getActivePane()) |pane| {
                             if (pane.grid.scrollback) |sb| {
                                 if (mux.getActivePaneRect(sz.width, sz.height, cpu.padding)) |pane_rect| {
-                                    Ui.renderScrollOverlay(cpu, sb, mux.getScrollOffset(), atlas.cell_width, atlas.cell_height, pane_rect);
+                                    Ui.renderScrollOverlay(cpu, sb, mux.getScrollOffset(), atlas.cell_width, atlas.cell_height, pane_rect, mux.getScrollPixel());
                                 }
                             }
                         }
