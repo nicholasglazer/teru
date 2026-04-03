@@ -3,22 +3,36 @@
 ## 0.2.0 (2026-04-03)
 
 ### Features
-- Config system upgrade: `[section]` headers, `[workspace.N]` sections, external theme files
-- Base16 theme support: `theme = miozu` built-in, or load from `~/.config/teru/themes/<name>.conf`
-- External theme files support base16 keys (`base00`-`base0F`) and direct color keys
-- 25+ new config options: `opacity`, `cursor_blink`, `cursor_shape`, `tab_width`, `scroll_speed`, `bell`, `copy_on_select`, `padding`, `prefix_timeout_ms`, `bold_is_bright`, `term`, `font_bold`, `font_italic`, `font_bold_italic`, `dynamic_title`, `notification_duration_ms`
-- Per-workspace config: `[workspace.1]` with `layout`, `master_ratio`, `name`
-- Window opacity via `_NET_WM_WINDOW_OPACITY` (X11) and `setAlphaValue` (macOS)
-- Cursor blink: 530ms on/off timer, configurable via `cursor_blink = true`
-- Wayland mouse support: `wl_pointer` listener with click, motion, scroll
-- macOS backend compilation fix: replaced `@Type`-based `MsgSendType` (removed in Zig 0.16) with concrete function pointer types
-- Platform parity: X11, Wayland, and macOS now share matching API surface (`setOpacity`, `setTitle`, `getX11Info`)
+- **Config system**: `[section]` headers, `[workspace.N]` per-workspace config, external theme files
+- **30+ config options**: opacity, cursor_blink, cursor_shape, tab_width, scroll_speed, bell, copy_on_select, padding, prefix_timeout_ms, bold_is_bright, term, font_bold/italic/bold_italic, show_status_bar, bar_left/center/right, mouse_hide_when_typing, word_delimiters, dynamic_title, notification_duration_ms
+- **Base16 themes**: `theme = miozu` built-in, external files at `~/.config/teru/themes/<name>.conf` with base00-base0F keys
+- **Workspace tabs status bar**: shows all active workspaces, layout indicator [M/G/#/F], pane title from OSC, configurable sections
+- **Bold/italic font rendering**: separate font files per style (font_bold, font_italic), atlas-per-variant with fallback
+- **bold_is_bright**: shift ANSI 0-7 to bright 8-15 when cell is bold
+- **Double-click word select**: 300ms detection, configurable word_delimiters
+- **Mouse hide when typing**: X11 invisible cursor, Wayland wl_pointer_set_cursor(null)
+- **Bracketed paste**: wraps paste with `\e[200~`/`\e[201~` when mode 2004 is active
+- **Focus events**: sends `\e[I`/`\e[O` to PTY on window focus change
+- **CLI flags**: --config, --theme, --class, improved --help with keybinding reference
+- **Window opacity**: `_NET_WM_WINDOW_OPACITY` (X11), `setAlphaValue` (macOS)
+- **Cursor blink**: 530ms timer, resets to solid on keypress
+- **Wayland mouse**: full `wl_pointer` listener — click, motion, scroll wheel
+- **macOS compilation fix**: replaced `@Type`-based `MsgSendType` with concrete function pointer types (Zig 0.16 compat)
+- **Platform parity**: X11, Wayland, macOS share matching API surface
+
+### Performance
+- **XCB-SHM zero-copy framebuffer**: ~10x faster X11 rendering vs socket transfer
+- **Pixel-smooth scrolling**: sub-cell offset accumulator, configurable scroll_speed
+- **Scroll position pinning**: viewport stays in place while output arrives
+- **Key repeat debounce removed**: typing at native compositor rate
 
 ### Fixes
-- Config fields `bell`, `copy_on_select`, `cursor_shape`, `tab_width` wired to subsystems (were dead code)
-- `padding`, `scroll_speed`, `prefix_timeout_ms`, `notification_duration_ms` wired to runtime
-- Full `ColorScheme` applied to renderer (was cursor_color only)
-- `shell`, `scrollback_lines`, `term` threaded through to PTY spawn
+- Scroll overlay clipped to active pane rect (no bleed across panes or status bar)
+- Color-preserving scrollback: SGR colors retained, dimmed to 75%
+- Smart scroll exit: modifier keys, F-keys, arrows don't reset scroll position
+- PageUp/PageDown work without Shift modifier
+- All config fields wired to subsystems (shell, scrollback_lines, term, padding, etc.)
+- Code review cleanup: shmat error check, dead code removal, redundant checks
 
 ## 0.1.20 (2026-04-03)
 

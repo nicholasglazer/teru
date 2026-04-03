@@ -29,4 +29,4 @@ zig build run -- --raw  # run (TTY mode)
 Current: 0.2.0. Update in 3 files: `src/main.zig`, `build.zig.zon`, `src/agent/McpServer.zig`
 
 ## Testing
-All modules have inline tests (318 test blocks). Run with `zig build test`.
+All modules have inline tests (331 test blocks). Run with `zig build test`.
