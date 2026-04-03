@@ -119,6 +119,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
 
     var win = try platform.Platform.init(config.initial_width, config.initial_height, "teru");
     defer win.deinit();
+    win.setOpacity(config.opacity);
 
     var atlas = try render.FontAtlas.init(allocator, config.font_path, config.font_size, io);
     defer atlas.deinit();
@@ -254,7 +255,14 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     var pty_buf: [8192]u8 = undefined;
     var running = true;
 
-
+    // Cursor blink state (530ms on/off cycle)
+    const BLINK_INTERVAL_NS: i128 = 530_000_000;
+    var last_blink_time: i128 = blk: {
+        var ts: std.os.linux.timespec = undefined;
+        _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+        break :blk @as(i128, ts.sec) * 1_000_000_000 + ts.nsec;
+    };
+    var cursor_blink_visible: bool = true;
 
     // Scrollback state lives on mux (accessible from McpServer for teru_scroll)
     // No saved_cells needed — scroll is non-destructive (renders overlay on framebuffer)
@@ -769,6 +777,22 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     any_dirty = true;
                     break;
                 }
+            }
+        }
+
+        // Cursor blink timer
+        if (config.cursor_blink) {
+            var blink_ts: std.os.linux.timespec = undefined;
+            _ = std.os.linux.clock_gettime(.MONOTONIC, &blink_ts);
+            const now_blink: i128 = @as(i128, blink_ts.sec) * 1_000_000_000 + blink_ts.nsec;
+            if (now_blink - last_blink_time >= BLINK_INTERVAL_NS) {
+                cursor_blink_visible = !cursor_blink_visible;
+                last_blink_time = now_blink;
+                any_dirty = true;
+            }
+            switch (renderer) {
+                .cpu => |*cpu| cpu.cursor_blink_on = cursor_blink_visible,
+                .tty => {},
             }
         }
 

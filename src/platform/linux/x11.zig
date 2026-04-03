@@ -476,6 +476,17 @@ pub const X11Window = struct {
         self.use_shm = false;
     }
 
+    pub fn setOpacity(self: *X11Window, opacity: f32) void {
+        if (opacity >= 1.0) return; // fully opaque, no property needed
+        const clamped = @max(0.0, @min(1.0, opacity));
+        const max_opacity: f64 = 4294967295.0; // 0xFFFFFFFF
+        const value: u32 = @intFromFloat(clamped * max_opacity);
+        const atom = internAtom(self.connection, "_NET_WM_WINDOW_OPACITY", false);
+        const XCB_ATOM_CARDINAL: xcb_atom_t = 6;
+        _ = xcb_change_property(self.connection, XCB_PROP_MODE_REPLACE, self.window, atom, XCB_ATOM_CARDINAL, 32, 1, @as(*const u32, &value));
+        _ = xcb_flush(self.connection);
+    }
+
     pub fn setTitle(self: *X11Window, title: []const u8) void {
         const net_wm_name = internAtom(self.connection, "_NET_WM_NAME", false);
         const utf8_atom = internAtom(self.connection, "UTF8_STRING", false);

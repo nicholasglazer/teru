@@ -77,6 +77,13 @@ const DualPlatform = union(enum) {
         }
     }
 
+    pub fn setOpacity(self: *DualPlatform, opacity: f32) void {
+        switch (self.*) {
+            .x11 => |*w| w.setOpacity(opacity),
+            .wayland_ => {}, // Wayland: compositor controls opacity
+        }
+    }
+
     pub fn setTitle(self: *DualPlatform, title: []const u8) void {
         switch (self.*) {
             .x11 => |*w| w.setTitle(title),
@@ -121,6 +128,10 @@ const X11Only = struct {
         self.inner.putFramebuffer(pixels, width, height);
     }
 
+    pub fn setOpacity(self: *X11Only, opacity: f32) void {
+        self.inner.setOpacity(opacity);
+    }
+
     pub fn setTitle(self: *X11Only, title: []const u8) void {
         self.inner.setTitle(title);
     }
@@ -154,6 +165,8 @@ const WaylandOnly = struct {
     pub fn putFramebuffer(self: *WaylandOnly, pixels: []const u32, width: u32, height: u32) void {
         self.inner.putFramebuffer(pixels, width, height);
     }
+
+    pub fn setOpacity(_: *WaylandOnly, _: f32) void {}
 
     pub fn setTitle(self: *WaylandOnly, title: []const u8) void {
         self.inner.setTitle(title);

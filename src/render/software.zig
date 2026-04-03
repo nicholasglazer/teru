@@ -40,6 +40,7 @@ pub const SoftwareRenderer = struct {
     cursor_color: u32, // configurable cursor block color (ARGB)
     padding: u32, // pixels of padding around content
     scheme: ColorScheme, // runtime color scheme (palette + semantic colors)
+    cursor_blink_on: bool = true, // toggled by blink timer
     allocator: std.mem.Allocator,
 
     /// Init with default color scheme and cursor color.

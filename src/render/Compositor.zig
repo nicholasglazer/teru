@@ -98,8 +98,8 @@ pub fn renderPaneIntoRect(
         }
     }
 
-    // Draw cursor for active pane
-    if (is_active and grid.cursor_row < grid.rows and grid.cursor_col < grid.cols) {
+    // Draw cursor for active pane (respects blink state)
+    if (is_active and renderer.cursor_blink_on and grid.cursor_row < grid.rows and grid.cursor_col < grid.cols) {
         const cx: usize = rx + @as(usize, grid.cursor_col) * cw;
         const cy: usize = ry + @as(usize, grid.cursor_row) * ch;
         const cursor_color: u32 = renderer.scheme.cursor;
