@@ -219,6 +219,14 @@ pub fn load(allocator: Allocator, io: Io) !Config {
     return config;
 }
 
+/// Reload config from disk. Returns a fresh Config.
+/// Caller must deinit the OLD config after applying values.
+pub fn reload(allocator: Allocator, io: Io) ?Config {
+    var new_config = Config.load(allocator, io) catch return null;
+    _ = &new_config;
+    return new_config;
+}
+
 /// Free any allocator-owned string fields.
 pub fn deinit(self: *Config) void {
     if (self.font_path) |p| self.allocator.free(p);

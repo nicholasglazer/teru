@@ -14,6 +14,7 @@ const McpBridge = @import("agent/McpBridge.zig");
 const PaneBackend = @import("agent/PaneBackend.zig");
 const build_options = @import("build_options");
 const Config = @import("config/Config.zig");
+const ConfigWatcher = @import("config/ConfigWatcher.zig");
 const Hooks = @import("config/Hooks.zig");
 const Selection = @import("core/Selection.zig");
 const Clipboard = @import("core/Clipboard.zig");
@@ -115,6 +116,10 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     // Load configuration from ~/.config/teru/teru.conf (defaults if missing)
     var config = try Config.load(allocator, io);
     defer config.deinit();
+
+    // Watch config file for live reload (inotify, zero polling)
+    var config_watcher = ConfigWatcher.init();
+    defer if (config_watcher) |*w| w.deinit();
 
     var graph = ProcessGraph.init(allocator);
     defer graph.deinit();
@@ -954,6 +959,43 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     win.setTitle(pane.vt.title[0..pane.vt.title_len]);
                 }
                 pane.vt.title_changed = false;
+            }
+        }
+
+        // Live config reload (inotify — triggers only on file change)
+        if (config_watcher) |*w| {
+            if (w.poll()) {
+                if (Config.reload(allocator, io)) |new_config| {
+                    // Apply hot-reloadable values
+                    switch (renderer) {
+                        .cpu => |*cpu| {
+                            cpu.scheme = new_config.colorScheme();
+                            cpu.padding = new_config.padding;
+                        },
+                        .tty => {},
+                    }
+                    win.setOpacity(new_config.opacity);
+                    mux.notification_duration_ns = @as(i128, new_config.notification_duration_ms) * 1_000_000;
+                    prefix.timeout_ns = @as(i128, new_config.prefix_timeout_ms) * 1_000_000;
+
+                    // Update config fields that don't need subsystem propagation
+                    config.scroll_speed = new_config.scroll_speed;
+                    config.cursor_blink = new_config.cursor_blink;
+                    config.cursor_shape = new_config.cursor_shape;
+                    config.bold_is_bright = new_config.bold_is_bright;
+                    config.bell = new_config.bell;
+                    config.copy_on_select = new_config.copy_on_select;
+                    config.mouse_hide_when_typing = new_config.mouse_hide_when_typing;
+                    config.show_status_bar = new_config.show_status_bar;
+
+                    // Force full redraw
+                    for (mux.panes.items) |*pane| pane.grid.dirty = true;
+                    mux.notify("Config reloaded");
+
+                    // Free the new config's allocated strings (we only copied scalars)
+                    var tmp = new_config;
+                    tmp.deinit();
+                }
             }
         }
 
