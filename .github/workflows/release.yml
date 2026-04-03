@@ -6,16 +6,7 @@ on:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-linux
-            deps: libxcb1-dev libxcb-shm0-dev libxkbcommon-dev libwayland-dev
-          - os: ubuntu-latest
-            target: aarch64-linux
-            deps: libxcb1-dev libxcb-shm0-dev libxkbcommon-dev libwayland-dev
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,21 +15,21 @@ jobs:
         with:
           version: 0.16.0-dev.3039+b490412cd
       - name: Install deps
-        run: sudo apt-get install -y ${{ matrix.deps }}
+        run: sudo apt-get install -y libxcb1-dev libxcb-shm0-dev libxkbcommon-dev libwayland-dev
       - name: Build
         run: zig build -Doptimize=ReleaseSafe
       - name: Strip
-        run: strip zig-out/bin/teru || true
+        run: strip zig-out/bin/teru
       - name: Package
         run: |
           mkdir -p dist
           cp zig-out/bin/teru dist/
           cp LICENSE README.md CHANGELOG.md dist/
-          tar czf teru-${{ matrix.target }}.tar.gz -C dist .
+          tar czf teru-x86_64-linux.tar.gz -C dist .
       - uses: actions/upload-artifact@v4
         with:
-          name: teru-${{ matrix.target }}
-          path: teru-${{ matrix.target }}.tar.gz
+          name: teru-x86_64-linux
+          path: teru-x86_64-linux.tar.gz
 
   release:
     needs: build
@@ -50,7 +41,5 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            teru-x86_64-linux/teru-x86_64-linux.tar.gz
-            teru-aarch64-linux/teru-aarch64-linux.tar.gz
+          files: teru-x86_64-linux/teru-x86_64-linux.tar.gz
           generate_release_notes: true

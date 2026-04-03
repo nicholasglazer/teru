@@ -13,18 +13,96 @@ jobs:
       - name: Update PKGBUILD version and hash
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
-          TARBALL_URL="https://github.com/${{ github.repository }}/archive/v${VERSION}.tar.gz"
-          SHA256=$(curl -sL "$TARBALL_URL" | sha256sum | cut -d' ' -f1)
+          echo "Publishing version: ${VERSION}"
 
+          TARBALL_URL="https://github.com/${{ github.repository }}/archive/v${VERSION}.tar.gz"
+
+          for i in 1 2 3; do
+            SHA256=$(curl -sL "$TARBALL_URL" | sha256sum | cut -d' ' -f1)
+            if [ "$SHA256" != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]; then
+              break
+            fi
+            echo "Attempt $i: tarball not ready, waiting 10s..."
+            sleep 10
+          done
+
+          echo "SHA256: ${SHA256}"
           sed -i "s/^pkgver=.*/pkgver=${VERSION}/" pkg/arch/PKGBUILD
           sed -i "s/^sha256sums=.*/sha256sums=('${SHA256}')/" pkg/arch/PKGBUILD
+          cat pkg/arch/PKGBUILD
 
-      - name: Publish to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
-        with:
-          pkgname: teru
-          pkgbuild: pkg/arch/PKGBUILD
-          commit_username: Nicholas Glazer
-          commit_email: nicholasglazer@protonmail.com
-          ssh_private_key: ${{ secrets.AUR_SSH_KEY }}
-          commit_message: "Update to ${{ github.ref_name }}"
+      - name: Install pacman tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libarchive-tools pacman-package-manager 2>/dev/null || true
+          # If pacman-package-manager not available, install makepkg manually
+          if ! command -v makepkg &>/dev/null; then
+            sudo apt-get install -y -qq build-essential fakeroot
+            curl -sL https://gitlab.archlinux.org/pacman/pacman/-/raw/master/scripts/makepkg.sh.in > /tmp/makepkg
+            # We only need --printsrcinfo which is a simple parser, use a stub
+            echo '#!/bin/bash' | sudo tee /usr/local/bin/makepkg
+            echo 'exec /usr/bin/env bash "$@"' | sudo tee -a /usr/local/bin/makepkg
+            sudo chmod +x /usr/local/bin/makepkg
+          fi
+
+      - name: Generate .SRCINFO
+        run: |
+          cd pkg/arch
+          # Generate .SRCINFO manually since makepkg --printsrcinfo needs pacman
+          PKG_VER=$(grep '^pkgver=' PKGBUILD | cut -d= -f2)
+          PKG_REL=$(grep '^pkgrel=' PKGBUILD | cut -d= -f2)
+          PKG_DESC=$(grep '^pkgdesc=' PKGBUILD | sed 's/^pkgdesc=//' | tr -d '"')
+          PKG_URL=$(grep '^url=' PKGBUILD | sed 's/^url=//' | tr -d '"')
+          SHA256=$(grep "^sha256sums=" PKGBUILD | sed "s/^sha256sums=('//" | sed "s/')//")
+          cat > .SRCINFO << SRCINFO
+          pkgbase = teru
+          	pkgdesc = ${PKG_DESC}
+          	pkgver = ${PKG_VER}
+          	pkgrel = ${PKG_REL}
+          	url = ${PKG_URL}
+          	arch = x86_64
+          	arch = aarch64
+          	license = MIT
+          	makedepends = zig>=0.16
+          	depends = libxcb
+          	depends = libxkbcommon
+          	depends = wayland
+          	optdepends = xclip: clipboard support on X11
+          	optdepends = wl-clipboard: clipboard support on Wayland
+          	source = teru-${PKG_VER}.tar.gz::https://github.com/nicholasglazer/teru/archive/v${PKG_VER}.tar.gz
+          	sha256sums = ${SHA256}
+
+          pkgname = teru
+          SRCINFO
+          # Remove leading whitespace (heredoc indentation)
+          sed -i 's/^          //' .SRCINFO
+          echo "Generated .SRCINFO:"
+          cat .SRCINFO
+
+      - name: Push to AUR
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          # Setup SSH
+          mkdir -p ~/.ssh
+          echo "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Clone AUR repo
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/aur" git clone ssh://aur@aur.archlinux.org/teru.git /tmp/aur-teru
+
+          # Copy updated files
+          cp pkg/arch/PKGBUILD /tmp/aur-teru/PKGBUILD
+          cp pkg/arch/.SRCINFO /tmp/aur-teru/.SRCINFO
+
+          # Commit and push
+          cd /tmp/aur-teru
+          git config user.name "Nicholas Glazer"
+          git config user.email "nicholasglazer@protonmail.com"
+          git add PKGBUILD .SRCINFO
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "Update to ${GITHUB_REF_NAME}"
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/aur" git push
+
+          echo "Successfully published to AUR!"
