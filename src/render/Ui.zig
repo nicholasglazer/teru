@@ -124,7 +124,8 @@ pub fn renderSearchOverlay(
 
 // ── Text status bar (Feature 10) ─────────────────────────────────
 
-/// Render a text status bar at the very bottom of the framebuffer.
+/// Render the status bar at the very bottom of the framebuffer.
+/// Layout: [workspace tabs] | [layout] [title]          [dimensions]
 pub fn renderTextStatusBar(
     cpu: *SoftwareRenderer,
     mux: *const Multiplexer,
@@ -145,64 +146,67 @@ pub fn renderTextStatusBar(
     if (fb_h < bar_h + ch) return;
     const bar_y = fb_h - bar_h;
 
+    // Clear bar area
     for (bar_y..fb_h) |y| {
-        if (y >= fb_h) break;
         const row_start = y * fb_w;
         const end = @min(row_start + fb_w, cpu.framebuffer.len);
-        if (row_start < end) {
-            @memset(cpu.framebuffer[row_start..end], s.bg);
-        }
+        if (row_start < end) @memset(cpu.framebuffer[row_start..end], s.bg);
     }
 
-    // Top separator
+    // Top separator line
     if (bar_y > 0 and bar_y < fb_h) {
         const sep_start = bar_y * fb_w;
         const sep_end = @min(sep_start + fb_w, cpu.framebuffer.len);
-        if (sep_start < sep_end) {
-            @memset(cpu.framebuffer[sep_start..sep_end], s.selection_bg);
-        }
+        if (sep_start < sep_end) @memset(cpu.framebuffer[sep_start..sep_end], s.selection_bg);
     }
 
     const text_y = bar_y + 2;
-
-    // Left: workspace + pane info (with left padding)
-    var left_buf: [64]u8 = undefined;
-    const ws_num = mux.active_workspace + 1;
-    const active_idx = blk: {
-        const ws = &mux.layout_engine.workspaces[mux.active_workspace];
-        break :blk ws.active_index + 1;
-    };
-    const total_panes = mux.panes.items.len;
-    const left_text = std.fmt.bufPrint(&left_buf, " [{d}] {d}/{d}", .{ ws_num, active_idx, total_panes }) catch " [?]";
-
     var x: usize = pad;
-    for (left_text) |ch_byte| {
-        if (ch_byte == '[' or ch_byte == ']') {
-            blitCharAt(cpu, ch_byte, x, text_y, s.cursor);
-        } else if (ch_byte >= '0' and ch_byte <= '9') {
-            blitCharAt(cpu, ch_byte, x, text_y, s.ansi[6]); // cyan
-        } else {
-            blitCharAt(cpu, ch_byte, x, text_y, s.ansi[8]); // bright black
+
+    // ── Left: workspace tabs ──
+    // Show all workspaces that have panes or are active
+    for (0..9) |wi| {
+        const ws = &mux.layout_engine.workspaces[wi];
+        const has_panes = ws.node_ids.items.len > 0;
+        const is_active = wi == mux.active_workspace;
+        if (!has_panes and !is_active) continue;
+
+        blitCharAt(cpu, ' ', x, text_y, s.bg);
+        x += cw;
+
+        // Workspace number
+        const ws_char: u8 = '1' + @as(u8, @intCast(wi));
+        const ws_color = if (is_active) s.cursor else s.ansi[8];
+        blitCharAt(cpu, ws_char, x, text_y, ws_color);
+        x += cw;
+
+        // :name (if workspace has a custom name)
+        if (ws.name.len > 0 and ws.name[0] != ws_char) {
+            blitCharAt(cpu, ':', x, text_y, s.ansi[8]);
+            x += cw;
+            for (ws.name) |c| {
+                if (c < 32 or c > 126) continue;
+                blitCharAt(cpu, c, x, text_y, ws_color);
+                x += cw;
+                if (x + cw > fb_w / 2) break; // don't overflow
+            }
         }
+
+        blitCharAt(cpu, ' ', x, text_y, s.bg);
         x += cw;
     }
 
     // Separator
-    x += cw;
     blitCharAt(cpu, '|', x, text_y, s.selection_bg);
     x += cw * 2;
 
-    // Center: notification > PREFIX > "shell"
-    // Check if notification is active (auto-clear after 2 seconds)
+    // ── Center: notification > PREFIX > layout + title ──
     const has_notification = blk: {
         if (mux.notification_len > 0) {
             var ts_now: std.os.linux.timespec = undefined;
             _ = std.os.linux.clock_gettime(.MONOTONIC, &ts_now);
             const now: i128 = @as(i128, ts_now.sec) * 1_000_000_000 + ts_now.nsec;
-            if (now - mux.notification_time < mux.notification_duration_ns) {
-                break :blk true;
-            }
-            // Expired — clear it (cast away const for this transient state)
+            if (now - mux.notification_time < mux.notification_duration_ns) break :blk true;
             const mux_mut: *Multiplexer = @constCast(mux);
             mux_mut.notification_len = 0;
         }
@@ -210,39 +214,60 @@ pub fn renderTextStatusBar(
     };
 
     if (has_notification) {
-        const notif = mux.notification[0..mux.notification_len];
-        for (notif) |ch_byte| {
-            blitCharAt(cpu, ch_byte, x, text_y, s.ansi[2]); // green
+        for (mux.notification[0..mux.notification_len]) |c| {
+            blitCharAt(cpu, c, x, text_y, s.ansi[2]);
             x += cw;
         }
     } else if (prefix_active) {
-        const prefix_text = "PREFIX";
-        for (prefix_text) |ch_byte| {
-            blitCharAt(cpu, ch_byte, x, text_y, s.cursor);
+        for ("PREFIX") |c| {
+            blitCharAt(cpu, c, x, text_y, s.cursor);
             x += cw;
         }
     } else {
-        const center_text = "shell";
-        for (center_text) |ch_byte| {
-            blitCharAt(cpu, ch_byte, x, text_y, s.fg);
-            x += cw;
+        // Layout indicator
+        const active_ws = &mux.layout_engine.workspaces[mux.active_workspace];
+        const layout_char: u8 = switch (active_ws.layout) {
+            .master_stack => 'M',
+            .grid => 'G',
+            .monocle => '#',
+            .floating => 'F',
+        };
+        blitCharAt(cpu, '[', x, text_y, s.ansi[8]);
+        x += cw;
+        blitCharAt(cpu, layout_char, x, text_y, s.ansi[5]); // magenta
+        x += cw;
+        blitCharAt(cpu, ']', x, text_y, s.ansi[8]);
+        x += cw * 2;
+
+        // Pane title (from OSC or "shell")
+        if (@as(*Multiplexer, @constCast(mux)).getActivePaneMut()) |pane| {
+            const title = if (pane.vt.title_len > 0)
+                pane.vt.title[0..pane.vt.title_len]
+            else
+                "shell";
+            for (title) |c| {
+                if (c < 32 or c > 126) continue;
+                blitCharAt(cpu, c, x, text_y, s.fg);
+                x += cw;
+                if (x + cw > fb_w * 2 / 3) break; // don't overflow into right section
+            }
         }
     }
 
-    // Right: scroll indicator + dimensions + help hint
-    var right_buf: [96]u8 = undefined;
+    // ── Right: scroll indicator + dimensions ──
+    var right_buf: [64]u8 = undefined;
     const active_scroll = mux.getScrollOffset();
     const right_text = if (active_scroll > 0)
-        std.fmt.bufPrint(&right_buf, "\xe2\x86\x91{d}  {d}x{d}  C-Space ?", .{ active_scroll, grid_cols, grid_rows }) catch ""
+        std.fmt.bufPrint(&right_buf, "\xe2\x86\x91{d}  {d}x{d}", .{ active_scroll, grid_cols, grid_rows }) catch ""
     else
-        std.fmt.bufPrint(&right_buf, "{d}x{d}  C-Space ?", .{ grid_cols, grid_rows }) catch "";
+        std.fmt.bufPrint(&right_buf, "{d}x{d}", .{ grid_cols, grid_rows }) catch "";
     const right_start = if (fb_w > right_text.len * cw + cw + pad) fb_w - right_text.len * cw - cw - pad else 0;
     var rx = right_start;
     for (right_text) |ch_byte| {
         if (ch_byte >= '0' and ch_byte <= '9') {
-            blitCharAt(cpu, ch_byte, rx, text_y, s.ansi[4]); // blue
+            blitCharAt(cpu, ch_byte, rx, text_y, s.ansi[4]);
         } else {
-            blitCharAt(cpu, ch_byte, rx, text_y, s.ansi[8]); // bright black
+            blitCharAt(cpu, ch_byte, rx, text_y, s.ansi[8]);
         }
         rx += cw;
     }

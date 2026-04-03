@@ -165,7 +165,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     }
 
     const padding: u32 = config.padding;
-    const status_bar_h: u32 = atlas.cell_height + 4; // must match renderTextStatusBar
+    const status_bar_h: u32 = if (config.show_status_bar) atlas.cell_height + 4 else 0;
     var grid_cols: u16 = @intCast((config.initial_width -| padding * 2) / atlas.cell_width);
     var grid_rows: u16 = @intCast((config.initial_height -| padding * 2 -| status_bar_h) / atlas.cell_height);
 
@@ -934,8 +934,10 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         }
                     }
 
-                    // Status bar with text (Feature 10)
-                    Ui.renderTextStatusBar(cpu, &mux, grid_cols, grid_rows, atlas.cell_width, atlas.cell_height, prefix.awaiting);
+                    // Status bar
+                    if (config.show_status_bar) {
+                        Ui.renderTextStatusBar(cpu, &mux, grid_cols, grid_rows, atlas.cell_width, atlas.cell_height, prefix.awaiting);
+                    }
 
                     win.putFramebuffer(cpu.getFramebuffer(), sz.width, sz.height);
                 },

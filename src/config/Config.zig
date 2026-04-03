@@ -170,6 +170,12 @@ notification_duration_ms: u32 = 5000,
 // Theme
 theme: ?[]const u8 = null,
 
+// Status bar
+show_status_bar: bool = true,
+bar_left: ?[]const u8 = null, // format string (null = workspace tabs)
+bar_center: ?[]const u8 = null, // format string (null = layout + title)
+bar_right: ?[]const u8 = null, // format string (null = dimensions)
+
 // Per-workspace config (9 workspaces, 1-indexed in config, 0-indexed in array)
 workspace_layouts: [9]?LayoutEngine.Layout = .{null} ** 9,
 workspace_ratios: [9]?f32 = .{null} ** 9,
@@ -243,6 +249,12 @@ pub fn deinit(self: *Config) void {
     self.term = null;
     self.word_delimiters = null;
     self.theme = null;
+    if (self.bar_left) |p| self.allocator.free(p);
+    if (self.bar_center) |p| self.allocator.free(p);
+    if (self.bar_right) |p| self.allocator.free(p);
+    self.bar_left = null;
+    self.bar_center = null;
+    self.bar_right = null;
 }
 
 /// Load a theme from ~/.config/teru/themes/<name>.conf.
@@ -444,6 +456,14 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         self.mouse_hide_when_typing = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "word_delimiters")) {
         self.setString(allocator, &self.word_delimiters, value);
+    } else if (std.mem.eql(u8, key, "show_status_bar")) {
+        self.show_status_bar = parseBool(value) orelse return;
+    } else if (std.mem.eql(u8, key, "bar_left")) {
+        self.setString(allocator, &self.bar_left, value);
+    } else if (std.mem.eql(u8, key, "bar_center")) {
+        self.setString(allocator, &self.bar_center, value);
+    } else if (std.mem.eql(u8, key, "bar_right")) {
+        self.setString(allocator, &self.bar_right, value);
     } else if (std.mem.eql(u8, key, "prefix_timeout_ms")) {
         self.prefix_timeout_ms = std.fmt.parseInt(u32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "notification_duration_ms")) {
