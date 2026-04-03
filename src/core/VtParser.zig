@@ -233,8 +233,9 @@ fn handleGround(self: *VtParser, byte: u8) void {
                 self.grid.cursor_col -= 1;
             }
         },
-        0x09 => { // TAB — advance to next tab stop (every 8 columns)
-            const next = (self.grid.cursor_col / 8 + 1) * 8;
+        0x09 => { // TAB — advance to next tab stop
+            const tw: u16 = self.grid.tab_width;
+            const next = if (tw > 0) (self.grid.cursor_col / tw + 1) * tw else self.grid.cursor_col + 1;
             self.grid.cursor_col = @min(next, self.grid.cols -| 1);
         },
         0x0A, 0x0B, 0x0C => { // LF, VT, FF

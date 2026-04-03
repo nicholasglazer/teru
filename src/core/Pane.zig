@@ -14,6 +14,8 @@ pub const SpawnConfig = struct {
     shell: ?[]const u8 = null,
     scrollback_lines: u32 = 10000,
     term: ?[]const u8 = null,
+    tab_width: u8 = 8,
+    cursor_shape: Grid.CursorShape = .block,
 };
 
 pty: Pty,
@@ -27,6 +29,8 @@ scroll_pixel: i32 = 0, // sub-cell pixel offset for smooth scrolling (0..cell_he
 pub fn init(allocator: Allocator, rows: u16, cols: u16, id: u64, spawn_config: SpawnConfig) !Pane {
     var grid = try Grid.init(allocator, rows, cols);
     errdefer grid.deinit(allocator);
+    grid.tab_width = spawn_config.tab_width;
+    grid.cursor_shape = spawn_config.cursor_shape;
 
     var sb = Scrollback.init(allocator, .{
         .keyframe_interval = 100,

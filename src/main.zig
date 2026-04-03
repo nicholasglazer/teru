@@ -33,7 +33,7 @@ const SignalManager = @import("core/SignalManager.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
-const version = "0.1.19";
+const version = "0.1.20";
 
 const session_path = "/tmp/teru-session.bin";
 
@@ -157,6 +157,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
         .shell = config.shell,
         .scrollback_lines = config.scrollback_lines,
         .term = config.term,
+        .tab_width = config.tab_width,
+        .cursor_shape = config.cursor_shape,
     };
     mux.notification_duration_ns = @as(i128, config.notification_duration_ms) * 1_000_000;
 
@@ -628,12 +630,14 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         // Only finalize selection if mouse actually moved (not a single click)
                         if (selection.start_row != selection.end_row or selection.start_col != selection.end_col) {
                             selection.finish();
-                            if (mux.getActivePane()) |pane| {
-                                var sel_buf: [8192]u8 = undefined;
-                                const len = selection.getText(&pane.grid, &sel_buf);
-                                if (len > 0) {
-                                    Clipboard.copy(sel_buf[0..len]);
-                                    mux.notify("Copied to clipboard");
+                            if (config.copy_on_select) {
+                                if (mux.getActivePane()) |pane| {
+                                    var sel_buf: [8192]u8 = undefined;
+                                    const len = selection.getText(&pane.grid, &sel_buf);
+                                    if (len > 0) {
+                                        Clipboard.copy(sel_buf[0..len]);
+                                        mux.notify("Copied to clipboard");
+                                    }
                                 }
                             }
                         } else {
@@ -780,19 +784,23 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
         }
 
         if (any_dirty and !sync_active) {
-            // Visual bell: invert framebuffer for one frame when BEL received
-            for (mux.panes.items) |*pane| {
-                if (pane.grid.bell) {
-                    pane.grid.bell = false;
-                    switch (renderer) {
-                        .cpu => |*cpu| {
-                            for (cpu.framebuffer) |*pixel| {
-                                pixel.* ^= 0x00FFFFFF;
-                            }
-                        },
-                        .tty => {},
+            // Bell handling (configurable: visual or none)
+            if (config.bell == .visual) {
+                for (mux.panes.items) |*pane| {
+                    if (pane.grid.bell) {
+                        pane.grid.bell = false;
+                        switch (renderer) {
+                            .cpu => |*cpu| {
+                                for (cpu.framebuffer) |*pixel| {
+                                    pixel.* ^= 0x00FFFFFF;
+                                }
+                            },
+                            .tty => {},
+                        }
                     }
                 }
+            } else {
+                for (mux.panes.items) |*pane| pane.grid.bell = false;
             }
 
             // Get the underlying SoftwareRenderer for multi-pane rendering

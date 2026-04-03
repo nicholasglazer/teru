@@ -124,6 +124,7 @@ scroll_bottom: u16,
 dirty: bool = true,
 cursor_shape: CursorShape = .block,
 bell: bool = false,
+tab_width: u8 = 8,
 
 /// Optional scrollback buffer. When set, lines that scroll off the top
 /// are captured as text and pushed to the scrollback.

@@ -151,8 +151,10 @@ bold_is_bright: bool = false,
 // Terminal
 term: ?[]const u8 = null,
 scroll_speed: u32 = 3,
-copy_on_select: bool = false,
+copy_on_select: bool = true,
 bell: Bell = .visual,
+tab_width: u8 = 8,
+dynamic_title: bool = true,
 
 // Timing
 prefix_timeout_ms: u32 = 500,
@@ -193,6 +195,14 @@ pub fn load(allocator: Allocator, io: Io) !Config {
     const n = file.readPositionalAll(io, content, 0) catch return config;
 
     config.parse(allocator, content[0..n]);
+
+    // Load external theme file if theme was set and not a built-in
+    if (config.theme) |name| {
+        if (themes.getBuiltin(name) == null) {
+            config.loadThemeFile(allocator, io, name);
+        }
+    }
+
     return config;
 }
 
@@ -218,6 +228,72 @@ pub fn deinit(self: *Config) void {
     self.hook_on_session_save = null;
     self.term = null;
     self.theme = null;
+}
+
+/// Load a theme from ~/.config/teru/themes/<name>.conf.
+/// The file uses key=value format supporting base16 keys (base00-base0F),
+/// direct ANSI colors (color0-color15), and semantic colors (bg, fg, etc.).
+fn loadThemeFile(self: *Config, allocator: Allocator, io: Io, name: []const u8) void {
+    const home = compat.getenv("HOME") orelse return;
+
+    var path_buf: [Dir.max_path_bytes]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/.config/teru/themes/{s}.conf", .{ home, name }) catch return;
+
+    const file = Dir.cwd().openFile(io, path, .{}) catch return;
+    defer file.close(io);
+
+    const s = file.stat(io) catch return;
+    const size: usize = @intCast(s.size);
+    if (size > 64 * 1024) return;
+    const content = allocator.alloc(u8, size) catch return;
+    defer allocator.free(content);
+    const n = file.readPositionalAll(io, content, 0) catch return;
+
+    var line_iter = std.mem.splitScalar(u8, content[0..n], '\n');
+    while (line_iter.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, &std.ascii.whitespace);
+        if (line.len == 0 or line[0] == '#') continue;
+
+        const eq_pos = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq_pos], &std.ascii.whitespace);
+        const value = std.mem.trim(u8, line[eq_pos + 1 ..], &std.ascii.whitespace);
+        if (key.len == 0 or value.len == 0) continue;
+
+        const color = parseHexColor(value) orelse continue;
+
+        // Try base16 key first
+        var scheme = self.colorScheme();
+        if (themes.applyBase16Key(&scheme, key, color)) {
+            // Write scheme back to config fields
+            self.bg = scheme.bg;
+            self.fg = scheme.fg;
+            self.cursor_color = scheme.cursor;
+            self.selection_bg = scheme.selection_bg;
+            self.border_active = scheme.border_active;
+            self.border_inactive = scheme.border_inactive;
+            for (scheme.ansi, 0..) |c, i| self.ansi_colors[i] = c;
+            continue;
+        }
+
+        // Direct color keys
+        if (std.mem.eql(u8, key, "bg")) {
+            self.bg = color;
+        } else if (std.mem.eql(u8, key, "fg")) {
+            self.fg = color;
+        } else if (std.mem.eql(u8, key, "cursor_color")) {
+            self.cursor_color = color;
+        } else if (std.mem.eql(u8, key, "selection_bg")) {
+            self.selection_bg = color;
+        } else if (std.mem.eql(u8, key, "border_active")) {
+            self.border_active = color;
+        } else if (std.mem.eql(u8, key, "border_inactive")) {
+            self.border_inactive = color;
+        } else if (key.len >= 6 and key.len <= 7 and std.mem.startsWith(u8, key, "color")) {
+            const idx = std.fmt.parseInt(u8, key[5..], 10) catch continue;
+            if (idx > 15) continue;
+            self.ansi_colors[idx] = color;
+        }
+    }
 }
 
 /// Build a ColorScheme from the current config fields.
@@ -739,7 +815,7 @@ test "parse new flat fields" {
         \\bell = none
         \\prefix_timeout_ms = 1000
         \\notification_duration_ms = 3000
-        \\theme = dracula
+        \\theme = miozu
     ;
 
     var config = Config{ .allocator = allocator };
@@ -757,7 +833,7 @@ test "parse new flat fields" {
     try std.testing.expectEqual(Bell.none, config.bell);
     try std.testing.expectEqual(@as(u32, 1000), config.prefix_timeout_ms);
     try std.testing.expectEqual(@as(u32, 3000), config.notification_duration_ms);
-    try std.testing.expectEqualStrings("dracula", config.theme.?);
+    try std.testing.expectEqualStrings("miozu", config.theme.?);
 }
 
 test "parse workspace sections" {
@@ -850,35 +926,34 @@ test "parseBell" {
     try std.testing.expectEqual(@as(?Bell, null), parseBell("audible"));
 }
 
-test "theme = dracula applies dracula colors" {
+test "theme = miozu applies miozu colors" {
     const allocator = std.testing.allocator;
 
     const content =
-        \\theme = dracula
+        \\theme = miozu
     ;
 
     var config = Config{ .allocator = allocator };
     config.parse(allocator, content);
     defer config.deinit();
 
-    try std.testing.expectEqual(@as(u32, 0xFF282A36), config.bg);
-    try std.testing.expectEqual(@as(u32, 0xFFF8F8F2), config.fg);
-    try std.testing.expectEqual(@as(u32, 0xFFBD93F9), config.cursor_color);
-    try std.testing.expectEqual(@as(u32, 0xFF44475A), config.selection_bg);
-    try std.testing.expectEqual(@as(?u32, 0xFFFF5555), config.ansi_colors[1]); // red
-    try std.testing.expectEqual(@as(?u32, 0xFF50FA7B), config.ansi_colors[2]); // green
+    try std.testing.expectEqual(@as(u32, 0xFF232733), config.bg);
+    try std.testing.expectEqual(@as(u32, 0xFFD0D2DB), config.fg);
+    try std.testing.expectEqual(@as(u32, 0xFFFF9837), config.cursor_color);
+    try std.testing.expectEqual(@as(u32, 0xFF3E4359), config.selection_bg);
+    try std.testing.expectEqual(@as(?u32, 0xFFEB3137), config.ansi_colors[1]); // red
+    try std.testing.expectEqual(@as(?u32, 0xFF6DD672), config.ansi_colors[2]); // green
 
-    // colorScheme() should also reflect theme
     const scheme = config.colorScheme();
-    try std.testing.expectEqual(@as(u32, 0xFF282A36), scheme.bg);
-    try std.testing.expectEqual(@as(u32, 0xFFFF5555), scheme.ansi[1]);
+    try std.testing.expectEqual(@as(u32, 0xFF232733), scheme.bg);
+    try std.testing.expectEqual(@as(u32, 0xFFEB3137), scheme.ansi[1]);
 }
 
 test "theme colors can be overridden by subsequent keys" {
     const allocator = std.testing.allocator;
 
     const content =
-        \\theme = dracula
+        \\theme = miozu
         \\bg = #000000
         \\color1 = #FF0000
     ;
@@ -891,8 +966,8 @@ test "theme colors can be overridden by subsequent keys" {
     try std.testing.expectEqual(@as(u32, 0xFF000000), config.bg);
     // color1 overridden after theme
     try std.testing.expectEqual(@as(?u32, 0xFFFF0000), config.ansi_colors[1]);
-    // fg still from dracula
-    try std.testing.expectEqual(@as(u32, 0xFFF8F8F2), config.fg);
+    // fg still from miozu
+    try std.testing.expectEqual(@as(u32, 0xFFD0D2DB), config.fg);
 }
 
 test "unknown theme name leaves defaults" {
