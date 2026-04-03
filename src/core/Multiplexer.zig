@@ -50,8 +50,57 @@ pub fn getScrollOffset(self: *const Multiplexer) u32 {
 pub fn setScrollOffset(self: *Multiplexer, offset: u32) void {
     if (self.getActivePaneMut()) |pane| {
         pane.scroll_offset = offset;
+        pane.scroll_pixel = 0;
         pane.grid.dirty = true;
     }
+}
+
+/// Get the sub-cell pixel offset for smooth scrolling.
+pub fn getScrollPixel(self: *const Multiplexer) i32 {
+    const ws = &self.layout_engine.workspaces[self.active_workspace];
+    const active_id = ws.getActiveNodeId() orelse return 0;
+    for (self.panes.items) |*pane| {
+        if (pane.id == active_id) return pane.scroll_pixel;
+    }
+    return 0;
+}
+
+/// Smooth scroll: add pixel delta, converting to line offsets when needed.
+/// Returns true if the scroll state changed (need redraw).
+pub fn smoothScroll(self: *Multiplexer, pixel_delta: i32, cell_height: u32, max_offset: u32) bool {
+    const pane = self.getActivePaneMut() orelse return false;
+    const ch: i32 = @intCast(cell_height);
+
+    var new_pixel = pane.scroll_pixel + pixel_delta;
+    var new_offset: i32 = @intCast(pane.scroll_offset);
+
+    // Consume full lines from pixel accumulator
+    while (new_pixel >= ch) {
+        new_pixel -= ch;
+        new_offset += 1;
+    }
+    while (new_pixel < 0) {
+        new_pixel += ch;
+        new_offset -= 1;
+    }
+
+    // Clamp
+    if (new_offset < 0) {
+        new_offset = 0;
+        new_pixel = 0;
+    }
+    if (new_offset > @as(i32, @intCast(max_offset))) {
+        new_offset = @intCast(max_offset);
+        new_pixel = 0;
+    }
+    // At offset 0, no sub-pixel offset either
+    if (new_offset == 0 and new_pixel < 0) new_pixel = 0;
+
+    const changed = new_offset != @as(i32, @intCast(pane.scroll_offset)) or new_pixel != pane.scroll_pixel;
+    pane.scroll_offset = @intCast(new_offset);
+    pane.scroll_pixel = new_pixel;
+    if (changed) pane.grid.dirty = true;
+    return changed;
 }
 
 pub fn getActivePaneMut(self: *Multiplexer) ?*Pane {

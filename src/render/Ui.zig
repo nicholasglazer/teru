@@ -315,6 +315,7 @@ pub fn renderScrollOverlay(
     cell_width: u32,
     cell_height: u32,
     pane_rect: Rect,
+    scroll_pixel: i32,
 ) void {
     const fb_w: usize = cpu.width;
     const cw: usize = cell_width;
@@ -332,12 +333,14 @@ pub fn renderScrollOverlay(
     if (rh < ch or rw < cw) return;
 
     // How many scrollback lines to render at the top of this pane.
+    // Add 1 extra line when there's a pixel offset (partial line visible at boundary)
     const pane_rows: u32 = @intCast(rh / ch);
-    const lines_to_show = @min(scroll_offset, @min(sb_lines, pane_rows -| 1));
+    const pixel_extra: u32 = if (scroll_pixel > 0) 1 else 0;
+    const lines_to_show = @min(scroll_offset + pixel_extra, @min(sb_lines, pane_rows -| 1));
 
-    // Shift the pane's framebuffer region DOWN by (lines_to_show * ch) pixels.
-    // Only operates within the pane rect — other panes and status bar are untouched.
-    const shift_px = lines_to_show * @as(u32, @intCast(ch));
+    // Total pixel shift: full lines + sub-cell pixel offset
+    const sub_px: usize = if (scroll_pixel > 0) @intCast(scroll_pixel) else 0;
+    const shift_px = lines_to_show * @as(u32, @intCast(ch)) -| @as(u32, @intCast(sub_px));
     if (shift_px > 0 and shift_px < rh) {
         var y: usize = ry + rh - 1;
         while (y >= ry + shift_px) : (y -= 1) {
@@ -365,8 +368,11 @@ pub fn renderScrollOverlay(
         const sb_offset = scroll_offset - 1 - line;
         const text = sb.getLineByOffset(sb_offset) orelse continue;
 
-        const screen_y = ry + @as(usize, line) * ch;
+        // Offset text Y by the sub-pixel amount (scrolls text up within the area)
+        const base_y = ry + @as(usize, line) * ch;
+        const screen_y = if (sub_px <= base_y) base_y - sub_px else 0;
         if (screen_y + ch > ry + rh) break;
+        if (screen_y < ry) continue; // clipped above pane rect
 
         var col: usize = 0;
         var fg_color: u32 = s.fg;
@@ -410,10 +416,17 @@ pub fn renderScrollOverlay(
                                     30...37 => fg_color = s.ansi[params[p] - 30],
                                     90...97 => fg_color = s.ansi[params[p] - 90 + 8],
                                     38 => {
-                                        // 256-color: 38;5;N
                                         if (p + 2 < param_count and params[p + 1] == 5) {
+                                            // 256-color: 38;5;N
                                             fg_color = s.indexed256(@intCast(params[p + 2]));
                                             p += 2;
+                                        } else if (p + 4 < param_count and params[p + 1] == 2) {
+                                            // RGB: 38;2;R;G;B
+                                            const r = @as(u32, @min(255, params[p + 2]));
+                                            const g = @as(u32, @min(255, params[p + 3]));
+                                            const b = @as(u32, @min(255, params[p + 4]));
+                                            fg_color = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                                            p += 4;
                                         }
                                     },
                                     else => {},

@@ -16,6 +16,7 @@ vt: VtParser,
 id: u64,
 scrollback: Scrollback,
 scroll_offset: u32 = 0,
+scroll_pixel: i32 = 0, // sub-cell pixel offset for smooth scrolling (0..cell_height-1)
 
 pub fn init(allocator: Allocator, rows: u16, cols: u16, id: u64) !Pane {
     var grid = try Grid.init(allocator, rows, cols);
