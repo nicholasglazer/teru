@@ -35,6 +35,9 @@ pub const SoftwareRenderer = struct {
     cell_width: u32,
     cell_height: u32,
     glyph_atlas: []const u8, // pre-rasterized glyph bitmaps (grayscale, row-major)
+    glyph_atlas_bold: []const u8 = &.{}, // bold variant (same layout, optional)
+    glyph_atlas_italic: []const u8 = &.{}, // italic variant (same layout, optional)
+    glyph_atlas_bold_italic: []const u8 = &.{}, // bold+italic variant (same layout, optional)
     atlas_width: u32,
     atlas_height: u32,
     cursor_color: u32, // configurable cursor block color (ARGB)
@@ -149,10 +152,21 @@ pub const SoftwareRenderer = struct {
                     @memset(dst_slice, bg);
                 }
 
+                // Bold-is-bright: shift ANSI 0-7 to bright 8-15 when bold
+                if (cell.attrs.bold and self.scheme.bold_is_bright) {
+                    switch (cell.fg) {
+                        .indexed => |idx| if (idx < 8) {
+                            fg = self.scheme.ansi[idx + 8];
+                        },
+                        else => {},
+                    }
+                }
+
                 // 2. Blit glyph from atlas with foreground color (alpha blending)
                 const cp = cell.char;
                 if (self.atlas_width > 0 and self.glyph_atlas.len > 0) {
                     if (FontAtlas.glyphSlot(cp)) |slot| {
+                        const glyph_atlas = self.getAtlasForAttrs(cell.attrs.bold, cell.attrs.italic);
                         self.blitGlyph(
                             @intCast(slot),
                             screen_x,
@@ -161,6 +175,7 @@ pub const SoftwareRenderer = struct {
                             max_y,
                             fg,
                             bg,
+                            glyph_atlas,
                         );
                     }
                 }
@@ -228,6 +243,7 @@ pub const SoftwareRenderer = struct {
         max_y: usize,
         fg: u32,
         bg: u32,
+        atlas: []const u8,
     ) void {
         const cw: usize = self.cell_width;
         const ch: usize = self.cell_height;
@@ -249,9 +265,9 @@ pub const SoftwareRenderer = struct {
 
             // Bounds check: skip if atlas row is out of range
             if (atlas_y + dy >= self.atlas_height) break;
-            if (atlas_row_offset + cw > self.glyph_atlas.len) break;
+            if (atlas_row_offset + cw > atlas.len) break;
 
-            const alpha_row = self.glyph_atlas[atlas_row_offset..][0..cw];
+            const alpha_row = atlas[atlas_row_offset..][0..cw];
             const fb_row_start = (screen_y + dy) * fb_w + screen_x;
             const dst = self.framebuffer[fb_row_start..][0..render_w];
 
@@ -280,6 +296,15 @@ pub const SoftwareRenderer = struct {
         self.glyph_atlas = atlas_data;
         self.atlas_width = atlas_width;
         self.atlas_height = atlas_height;
+    }
+
+    /// Select the glyph atlas matching the given bold/italic attributes.
+    /// Falls back to the primary atlas when a variant is not loaded.
+    pub fn getAtlasForAttrs(self: *const SoftwareRenderer, bold: bool, italic: bool) []const u8 {
+        if (bold and italic and self.glyph_atlas_bold_italic.len > 0) return self.glyph_atlas_bold_italic;
+        if (bold and self.glyph_atlas_bold.len > 0) return self.glyph_atlas_bold;
+        if (italic and self.glyph_atlas_italic.len > 0) return self.glyph_atlas_italic;
+        return self.glyph_atlas;
     }
 
     /// Return the framebuffer for external consumption (X11 SHM, etc.).

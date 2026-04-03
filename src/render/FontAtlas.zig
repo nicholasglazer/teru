@@ -219,6 +219,123 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     };
 }
 
+/// Load a font variant (bold, italic, etc.) and rasterize it into a new atlas
+/// with the SAME cell dimensions and layout as the primary font. The caller
+/// owns the returned atlas data and the font_data kept alive for stbtt.
+pub fn loadVariant(self: *const FontAtlas, allocator: std.mem.Allocator, font_path: []const u8, io: Io) !VariantAtlas {
+    // Load font file
+    const font_data = try loadFile(allocator, font_path, io);
+    errdefer allocator.free(font_data);
+
+    // Init stbtt with the variant font
+    var font_info: stbtt.stbtt_fontinfo = undefined;
+    if (stbtt.stbtt_InitFont(&font_info, font_data.ptr, 0) == 0) {
+        allocator.free(font_data);
+        return error.FontInitFailed;
+    }
+
+    // Scale to match the primary font's cell height
+    var ascent: c_int = 0;
+    var descent: c_int = 0;
+    var line_gap: c_int = 0;
+    stbtt.stbtt_GetFontVMetrics(&font_info, &ascent, &descent, &line_gap);
+    const target_h: f32 = @floatFromInt(self.cell_height);
+    const scale = target_h / (@as(f32, @floatFromInt(ascent)) - @as(f32, @floatFromInt(descent)));
+
+    // Allocate atlas with SAME dimensions as primary
+    const atlas = try allocator.alloc(u8, self.atlas_width * self.atlas_height);
+    errdefer allocator.free(atlas);
+    @memset(atlas, 0);
+
+    const baseline: i32 = @intFromFloat(@as(f32, @floatFromInt(ascent)) * scale);
+    const cw = self.cell_width;
+    const ch = self.cell_height;
+    const aw = self.atlas_width;
+    const ah = self.atlas_height;
+    const glyphs_per_row: u32 = 16;
+
+    // Build same codepoint list as init
+    const total_glyphs: u32 = 95 + 96 + 128 + 32 + 256;
+    const Codepoint = struct { cp: u21, slot: u32 };
+    var codepoints: [total_glyphs]Codepoint = undefined;
+    var slot: u32 = 0;
+
+    for (32..127) |cp| {
+        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    }
+    for (160..256) |cp| {
+        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    }
+    for (0x2500..0x2580) |cp| {
+        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    }
+    for (0x2580..0x25A0) |cp| {
+        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    }
+    for (0x0400..0x0500) |cp| {
+        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    }
+
+    for (codepoints[0..slot]) |entry| {
+        const col = entry.slot % glyphs_per_row;
+        const row = entry.slot / glyphs_per_row;
+        const atlas_x: u32 = @intCast(col * cw);
+        const atlas_y: u32 = @intCast(row * ch);
+
+        var ix0: c_int = 0;
+        var iy0: c_int = 0;
+        var ix1: c_int = 0;
+        var iy1: c_int = 0;
+        stbtt.stbtt_GetCodepointBitmapBox(&font_info, @intCast(entry.cp), scale, scale, &ix0, &iy0, &ix1, &iy1);
+
+        const glyph_w: u32 = @intCast(@max(0, ix1 - ix0));
+        const glyph_h: u32 = @intCast(@max(0, iy1 - iy0));
+
+        if (glyph_w > 0 and glyph_h > 0) {
+            const offset_y: u32 = @intCast(@max(0, baseline + iy0));
+            const offset_x: u32 = @intCast(@max(0, ix0));
+            const dst_x = atlas_x + @min(offset_x, cw - 1);
+            const dst_y = atlas_y + @min(offset_y, ch - 1);
+            const render_w = @min(glyph_w, cw -| @min(offset_x, cw - 1));
+            const render_h = @min(glyph_h, ch -| @min(offset_y, ch - 1));
+
+            if (render_w > 0 and render_h > 0) {
+                stbtt.stbtt_MakeCodepointBitmap(
+                    &font_info,
+                    atlas.ptr + dst_y * aw + dst_x,
+                    @intCast(@min(render_w, aw - dst_x)),
+                    @intCast(@min(render_h, ah - dst_y)),
+                    @intCast(aw),
+                    scale,
+                    scale,
+                    @intCast(entry.cp),
+                );
+            }
+        }
+    }
+
+    return .{
+        .data = atlas,
+        .font_data = font_data,
+    };
+}
+
+/// Result of loadVariant — owns both the atlas bitmap and the font file data.
+pub const VariantAtlas = struct {
+    data: []u8,
+    font_data: []u8,
+
+    pub fn deinit(self: *VariantAtlas, allocator: std.mem.Allocator) void {
+        allocator.free(self.data);
+        allocator.free(self.font_data);
+    }
+};
+
 pub fn deinit(self: *FontAtlas) void {
     self.allocator.free(self.atlas_data);
     self.allocator.free(self.font_data);

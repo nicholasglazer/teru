@@ -88,11 +88,22 @@ pub fn renderPaneIntoRect(
                 @memset(renderer.framebuffer[row_start + screen_x .. row_start + max_x], bg);
             }
 
+            // Bold-is-bright: shift ANSI 0-7 to bright 8-15 when bold
+            if (cell.attrs.bold and renderer.scheme.bold_is_bright) {
+                switch (cell.fg) {
+                    .indexed => |idx| if (idx < 8) {
+                        fg = renderer.scheme.ansi[idx + 8];
+                    },
+                    else => {},
+                }
+            }
+
             // Blit glyph from atlas (ASCII, Latin-1, box drawing, block elements)
             const cp = cell.char;
             if (renderer.atlas_width > 0 and renderer.glyph_atlas.len > 0) {
                 if (FontAtlas.glyphSlot(@intCast(cp))) |slot| {
-                    blitGlyphInRect(renderer, @intCast(slot), screen_x, screen_y, max_x, max_y, fg, bg);
+                    const atlas = renderer.getAtlasForAttrs(cell.attrs.bold, cell.attrs.italic);
+                    blitGlyphInRect(renderer, @intCast(slot), screen_x, screen_y, max_x, max_y, fg, bg, atlas);
                 }
             }
         }
@@ -120,7 +131,9 @@ pub fn renderPaneIntoRect(
 
 // ── Glyph blitting ────────────────────────────────────────────────
 
-/// Blit a glyph from the atlas at the given screen position.
+/// Blit a glyph from the given atlas at the given screen position.
+/// The `atlas` parameter selects which font variant to render from
+/// (regular, bold, italic, or bold+italic).
 pub fn blitGlyphInRect(
     renderer: *SoftwareRenderer,
     glyph_index: u21,
@@ -130,6 +143,7 @@ pub fn blitGlyphInRect(
     max_y: usize,
     fg: u32,
     bg: u32,
+    atlas: []const u8,
 ) void {
     const cw: usize = renderer.cell_width;
     const ch: usize = renderer.cell_height;
@@ -151,9 +165,9 @@ pub fn blitGlyphInRect(
 
         const atlas_row_offset = (atlas_y + dy) * aw + atlas_x;
         if (atlas_y + dy >= renderer.atlas_height) break;
-        if (atlas_row_offset + cw > renderer.glyph_atlas.len) break;
+        if (atlas_row_offset + cw > atlas.len) break;
 
-        const alpha_row = renderer.glyph_atlas[atlas_row_offset..][0..cw];
+        const alpha_row = atlas[atlas_row_offset..][0..cw];
         const fb_row_start = py * fb_w + screen_x;
         const fb_row_end = fb_row_start + render_w;
         if (fb_row_end > renderer.framebuffer.len) break;

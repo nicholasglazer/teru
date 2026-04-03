@@ -124,6 +124,24 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     var atlas = try render.FontAtlas.init(allocator, config.font_path, config.font_size, io);
     defer atlas.deinit();
 
+    // Load font variants for bold/italic (optional — silently fall back to primary)
+    var variant_bold: ?render.FontAtlas.VariantAtlas = null;
+    var variant_italic: ?render.FontAtlas.VariantAtlas = null;
+    var variant_bold_italic: ?render.FontAtlas.VariantAtlas = null;
+    defer if (variant_bold) |*v| v.deinit(allocator);
+    defer if (variant_italic) |*v| v.deinit(allocator);
+    defer if (variant_bold_italic) |*v| v.deinit(allocator);
+
+    if (config.font_bold) |path| {
+        variant_bold = atlas.loadVariant(allocator, path, io) catch null;
+    }
+    if (config.font_italic) |path| {
+        variant_italic = atlas.loadVariant(allocator, path, io) catch null;
+    }
+    if (config.font_bold_italic) |path| {
+        variant_bold_italic = atlas.loadVariant(allocator, path, io) catch null;
+    }
+
     // CPU SIMD renderer — no GPU needed (cursor color from config)
     var renderer = try render.tier.Renderer.initCpuWithCursor(
         allocator,
@@ -135,6 +153,16 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     );
     defer renderer.deinit();
     renderer.updateAtlas(atlas.atlas_data, atlas.atlas_width, atlas.atlas_height);
+
+    // Apply variant atlases to the CPU renderer
+    switch (renderer) {
+        .cpu => |*cpu| {
+            if (variant_bold) |v| cpu.glyph_atlas_bold = v.data;
+            if (variant_italic) |v| cpu.glyph_atlas_italic = v.data;
+            if (variant_bold_italic) |v| cpu.glyph_atlas_bold_italic = v.data;
+        },
+        .tty => {},
+    }
 
     const padding: u32 = config.padding;
     const status_bar_h: u32 = atlas.cell_height + 4; // must match renderTextStatusBar
@@ -371,6 +399,17 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     if (config.mouse_hide_when_typing and !mouse_cursor_hidden) {
                         win.hideCursor();
                         mouse_cursor_hidden = true;
+                    }
+                    // Reset cursor blink on keypress (cursor stays solid while typing)
+                    if (config.cursor_blink) {
+                        cursor_blink_visible = true;
+                        var blink_reset_ts: std.os.linux.timespec = undefined;
+                        _ = std.os.linux.clock_gettime(.MONOTONIC, &blink_reset_ts);
+                        last_blink_time = @as(i128, blink_reset_ts.sec) * 1_000_000_000 + blink_reset_ts.nsec;
+                        switch (renderer) {
+                            .cpu => |*cpu| cpu.cursor_blink_on = true,
+                            .tty => {},
+                        }
                     }
                     const XKB_KEY_Page_Up: u32 = 0xff55;
                     const XKB_KEY_Page_Down: u32 = 0xff56;

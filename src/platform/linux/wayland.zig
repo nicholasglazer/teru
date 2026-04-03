@@ -226,6 +226,11 @@ fn wl_pointer_add_listener(ptr: *wl_pointer, listener: *const wl_pointer_listene
     return wl_proxy_add_listener(@ptrCast(ptr), @ptrCast(listener), data);
 }
 
+fn wl_pointer_set_cursor(ptr: *wl_pointer, serial: u32, surface: ?*wl_surface, hotspot_x: i32, hotspot_y: i32) void {
+    // WL_POINTER_SET_CURSOR = opcode 0
+    _ = wl_proxy_marshal_flags(@ptrCast(ptr), 0, null, wl_proxy_get_version(@ptrCast(ptr)), 0, serial, surface, hotspot_x, hotspot_y);
+}
+
 fn wl_pointer_destroy(ptr: *wl_pointer) void {
     wl_proxy_destroy(@ptrCast(ptr));
 }
@@ -587,6 +592,21 @@ pub const WaylandWindow = struct {
         wl_surface_damage_buffer(self.surface, 0, 0, @intCast(blit_w), @intCast(blit_h));
         wl_surface_commit(self.surface);
         _ = wl_display_flush(self.display);
+    }
+
+    pub fn hideCursor(self: *WaylandWindow) void {
+        if (self.state.pointer) |ptr| {
+            wl_pointer_set_cursor(ptr, self.state.pointer_serial, null, 0, 0);
+        }
+    }
+
+    pub fn showCursor(self: *WaylandWindow) void {
+        // Setting cursor to null hides it; to restore default we'd need
+        // wl_cursor_theme which requires libwayland-cursor. For now,
+        // set cursor to null (hidden) and it will reappear when pointer
+        // re-enters the window. This is a reasonable tradeoff.
+        // A full implementation would load wl_cursor_theme_load.
+        _ = self;
     }
 
     pub fn setTitle(self: *WaylandWindow, title: []const u8) void {

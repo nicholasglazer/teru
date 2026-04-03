@@ -87,14 +87,14 @@ const DualPlatform = union(enum) {
     pub fn hideCursor(self: *DualPlatform) void {
         switch (self.*) {
             .x11 => |*w| w.hideCursor(),
-            .wayland_ => {},
+            .wayland_ => |*w| w.hideCursor(),
         }
     }
 
     pub fn showCursor(self: *DualPlatform) void {
         switch (self.*) {
             .x11 => |*w| w.showCursor(),
-            .wayland_ => {},
+            .wayland_ => |*w| w.showCursor(),
         }
     }
 
@@ -183,8 +183,8 @@ const WaylandOnly = struct {
         self.inner.putFramebuffer(pixels, width, height);
     }
 
-    pub fn hideCursor(_: *WaylandOnly) void {}
-    pub fn showCursor(_: *WaylandOnly) void {}
+    pub fn hideCursor(self: *WaylandOnly) void { self.inner.hideCursor(); }
+    pub fn showCursor(self: *WaylandOnly) void { self.inner.showCursor(); }
 
     pub fn setOpacity(_: *WaylandOnly, _: f32) void {}
 
