@@ -29,73 +29,54 @@ fn cls(name: [*:0]const u8) id {
     return @ptrCast(c.objc_getClass(name) orelse unreachable);
 }
 
-/// Send a message returning an object pointer.
+/// Typed objc_msgSend wrappers using concrete function pointer types.
+/// Avoids @Type (removed in Zig 0.16) by declaring explicit signatures per arity.
+
 fn msgSend(target: id, selector: c.SEL, args: anytype) id {
-    const FnType = MsgSendType(id, @TypeOf(args));
-    const func: *const FnType = @ptrCast(&objc_msgSend_fn);
-    return @call(.auto, func, .{target, selector} ++ args);
+    return msgSendTyped(id, target, selector, args);
 }
 
-/// Send a message returning void.
 fn msgSendVoid(target: id, selector: c.SEL, args: anytype) void {
-    const FnType = MsgSendType(void, @TypeOf(args));
-    const func: *const FnType = @ptrCast(&objc_msgSend_fn);
-    @call(.auto, func, .{target, selector} ++ args);
+    _ = msgSendTyped(id, target, selector, args);
 }
 
-/// Send a message returning a boolean (BOOL is i8 on Apple platforms).
 fn msgSendBool(target: id, selector: c.SEL, args: anytype) bool {
-    const FnType = MsgSendType(i8, @TypeOf(args));
-    const func: *const FnType = @ptrCast(&objc_msgSend_fn);
-    return @call(.auto, func, .{target, selector} ++ args) != 0;
+    return msgSendTyped(i8, target, selector, args) != 0;
 }
 
-/// Send a message returning u64 (NSUInteger).
 fn msgSendU64(target: id, selector: c.SEL, args: anytype) u64 {
-    const FnType = MsgSendType(u64, @TypeOf(args));
-    const func: *const FnType = @ptrCast(&objc_msgSend_fn);
-    return @call(.auto, func, .{target, selector} ++ args);
+    return msgSendTyped(u64, target, selector, args);
 }
 
-/// Send a message returning i64 (NSInteger).
 fn msgSendI64(target: id, selector: c.SEL, args: anytype) i64 {
-    const FnType = MsgSendType(i64, @TypeOf(args));
-    const func: *const FnType = @ptrCast(&objc_msgSend_fn);
-    return @call(.auto, func, .{target, selector} ++ args);
+    return msgSendTyped(i64, target, selector, args);
 }
 
-/// Send a message returning u16.
 fn msgSendU16(target: id, selector: c.SEL, args: anytype) u16 {
-    const FnType = MsgSendType(u16, @TypeOf(args));
-    const func: *const FnType = @ptrCast(&objc_msgSend_fn);
-    return @call(.auto, func, .{target, selector} ++ args);
+    return msgSendTyped(u16, target, selector, args);
 }
 
-/// Send a message returning f64 (CGFloat on 64-bit).
 fn msgSendF64(target: id, selector: c.SEL, args: anytype) f64 {
-    const FnType = MsgSendType(f64, @TypeOf(args));
-    const func: *const FnType = @ptrCast(&objc_msgSend_fn);
-    return @call(.auto, func, .{target, selector} ++ args);
+    return msgSendTyped(f64, target, selector, args);
 }
 
-/// Construct the function type for objc_msgSend with a given return and args tuple.
-fn MsgSendType(comptime Ret: type, comptime ArgsTuple: type) type {
-    const args_info = @typeInfo(ArgsTuple).@"struct".fields;
-    // Build parameter list: (id, SEL, ...extra_args)
-    const base_count = 2; // self + _cmd
-    const total = base_count + args_info.len;
-    var params: [total]std.builtin.Type.Fn.Param = undefined;
-    params[0] = .{ .is_generic = false, .is_noalias = false, .type = id };
-    params[1] = .{ .is_generic = false, .is_noalias = false, .type = c.SEL };
-    for (args_info, 0..) |field, i| {
-        params[base_count + i] = .{ .is_generic = false, .is_noalias = false, .type = field.type };
+/// Call objc_msgSend with concrete function pointer types per arity.
+inline fn msgSendTyped(comptime Ret: type, target: id, selector: c.SEL, args: anytype) Ret {
+    const base = &objc_msgSend_fn;
+    switch (args.len) {
+        0 => return @as(*const fn (id, c.SEL) callconv(.c) Ret, @ptrCast(base))(target, selector),
+        1 => return @as(*const fn (id, c.SEL, @TypeOf(args[0])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0]),
+        2 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1]),
+        3 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2]),
+        4 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3]),
+        5 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4]),
+        6 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4]), @TypeOf(args[5])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4], args[5]),
+        7 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4]), @TypeOf(args[5]), @TypeOf(args[6])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4], args[5], args[6]),
+        8 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4]), @TypeOf(args[5]), @TypeOf(args[6]), @TypeOf(args[7])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]),
+        9 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4]), @TypeOf(args[5]), @TypeOf(args[6]), @TypeOf(args[7]), @TypeOf(args[8])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]),
+        10 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4]), @TypeOf(args[5]), @TypeOf(args[6]), @TypeOf(args[7]), @TypeOf(args[8]), @TypeOf(args[9])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9]),
+        else => @compileError("msgSendTyped: too many arguments (max 10 extra args supported)"),
     }
-    // @Type was removed in Zig 0.16 — this code is macOS-only and
-    // will be updated when @Type's replacement is stabilized.
-    // On non-macOS, this function is never called.
-    _ = &params;
-    _ = Ret;
-    @compileError("macOS platform backend requires @Type builtin (removed in Zig 0.16)");
 }
 
 // ── Cocoa constants ─────────────────────────────────────────────────
@@ -202,6 +183,20 @@ pub const MacosWindow = struct {
             .height = height,
             .is_open = true,
         };
+    }
+
+    pub fn setOpacity(self: *MacosWindow, opacity: f32) void {
+        if (opacity >= 1.0) return;
+        const alpha: f64 = @max(0.0, @min(1.0, @as(f64, opacity)));
+        _ = msgSendF64(self.ns_window, sel("setAlphaValue:"), .{alpha});
+    }
+
+    pub fn setTitle(self: *MacosWindow, title: []const u8) void {
+        const NSString = cls("NSString");
+        const title_str = msgSend(NSString, sel("stringWithUTF8String:"), .{
+            @as([*:0]const u8, @ptrCast(title.ptr)),
+        });
+        msgSendVoid(self.ns_window, sel("setTitle:"), .{title_str});
     }
 
     pub fn deinit(self: *MacosWindow) void {
@@ -384,9 +379,21 @@ pub const Platform = union(enum) {
         };
     }
 
+    pub fn setOpacity(self: *Platform, opacity: f32) void {
+        switch (self.*) {
+            .macos => |*w| w.setOpacity(opacity),
+        }
+    }
+
     pub fn putFramebuffer(self: *Platform, pixels: []const u32, width: u32, height: u32) void {
         switch (self.*) {
             .macos => |*w| w.putFramebuffer(pixels, width, height),
+        }
+    }
+
+    pub fn setTitle(self: *Platform, title: []const u8) void {
+        switch (self.*) {
+            .macos => |*w| w.setTitle(title),
         }
     }
 
@@ -394,5 +401,9 @@ pub const Platform = union(enum) {
         return switch (self.*) {
             .macos => |*w| .{ .width = w.width, .height = w.height },
         };
+    }
+
+    pub fn getX11Info(_: *const Platform) ?types.X11Info {
+        return null;
     }
 };
