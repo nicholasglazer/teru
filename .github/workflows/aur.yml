@@ -1,0 +1,30 @@
+name: AUR Publish
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  aur:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update PKGBUILD version and hash
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          TARBALL_URL="https://github.com/${{ github.repository }}/archive/v${VERSION}.tar.gz"
+          SHA256=$(curl -sL "$TARBALL_URL" | sha256sum | cut -d' ' -f1)
+
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" pkg/arch/PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('${SHA256}')/" pkg/arch/PKGBUILD
+
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
+        with:
+          pkgname: teru
+          pkgbuild: pkg/arch/PKGBUILD
+          commit_username: Nicholas Glazer
+          commit_email: nicholasglazer@protonmail.com
+          ssh_private_key: ${{ secrets.AUR_SSH_KEY }}
+          commit_message: "Update to ${{ github.ref_name }}"
