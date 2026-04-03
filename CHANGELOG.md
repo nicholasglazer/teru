@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.1.18 (2026-04-03)
+
+### Features
+- Pixel-smooth scrolling with sub-cell offset (kitty/ghostty-style)
+- Scroll position pinning: viewport stays put while output is generated
+- PageUp/PageDown work without Shift modifier
+
+### Fixes
+- Smart scroll exit: modifier keys (Ctrl, Super, Alt, Shift) no longer reset scroll position
+- Escape sequences (F-keys, arrows) no longer exit scroll mode
+- Removed key repeat debounce that throttled typing to 30fps
+
+## 0.1.17 (2026-04-03)
+
+### Performance
+- XCB-SHM zero-copy framebuffer: ~10x faster X11 rendering vs xcb_put_image socket transfer
+- Link xcb-shm library for X11 builds
+
+## 0.1.16 (2026-04-03)
+
+### Features
+- Color-preserving scrollback: SGR colors (red, green, etc.) retained in scroll history
+- Scrollback capture encodes cell foreground colors as SGR sequences
+- SGR parser in scroll overlay handles indexed (256) and RGB colors
+
+### Fixes
+- dimColor now 75% brightness (was 50%, too dim on dark themes)
+
+## 0.1.15 (2026-04-03)
+
+### Features
+- Ctrl+Shift+C/V copy/paste keyboard shortcuts
+- Status bar notifications with auto-clear (copy feedback, etc.)
+- Per-pane independent scrollback
+- Scroll overlay clipped to pane rect boundaries
+
+### Fixes
+- Pane content clipping to prevent rendering outside pane bounds
+- Click-to-focus for multi-pane layouts
+- Keyboard architecture overhaul: Cyrillic/non-Latin input, modifier sync, layout switching
+- Reset keyboard state on focus-in to prevent stuck modifiers
+
+## 0.1.4 (2026-04-02)
+
+### Features
+- OSC 8 hyperlinks: clickable links from CLI tools
+- Base16 ColorScheme: fully configurable ANSI palette (color0-color15 in teru.conf)
+- MCP stdio bridge (--mcp-bridge) + 7 new tools for terminal control
+- Non-destructive scrollback browsing with synchronized output (DEC 2026)
+
+### Refactoring
+- Extracted Compositor, Ui, SignalManager into separate modules
+
+### Fixes
+- PTY echo race condition
+- VT parser ESC\ (ST) handling
+- Glyph clipping at cell boundaries
+
 ## 0.1.3 (2026-04-01)
 
 ### Features
