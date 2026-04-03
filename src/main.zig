@@ -325,16 +325,20 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                 },
                 .focus_in => {
                     // Reset keyboard modifier state on focus regain.
-                    // When a WM intercepts keys (e.g., screenshot shortcut),
-                    // the key_release never reaches us, leaving modifiers stuck.
-                    // Reinitializing xkb state clears all held modifiers.
                     if (Keyboard != void) {
-                        if (keyboard) |*kb| {
-                            kb.resetState();
-                        }
+                        if (keyboard) |*kb| kb.resetState();
                     }
-                    // Also reset prefix key in case it was stuck
                     prefix.reset();
+                    // Send focus-in event to PTY (neovim, etc. use this)
+                    if (mux.getActivePaneMut()) |pane| {
+                        _ = pane.pty.write("\x1b[I") catch {};
+                    }
+                },
+                .focus_out => {
+                    // Send focus-out event to PTY
+                    if (mux.getActivePaneMut()) |pane| {
+                        _ = pane.pty.write("\x1b[O") catch {};
+                    }
                 },
                 .resize => |sz| {
                     // Resize renderer
@@ -500,9 +504,15 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                     continue;
                                 }
                                 if (keysym == XKB_KEY_V or keysym == XKB_KEY_v) {
-                                    // Paste
-                                    if (mux.getActivePane()) |pane| {
+                                    // Paste (with bracketed paste wrapping)
+                                    if (mux.getActivePaneMut()) |pane| {
+                                        if (pane.vt.bracketed_paste) {
+                                            _ = pane.pty.write("\x1b[200~") catch {};
+                                        }
                                         Clipboard.paste(&pane.pty);
+                                        if (pane.vt.bracketed_paste) {
+                                            _ = pane.pty.write("\x1b[201~") catch {};
+                                        }
                                     }
                                     continue;
                                 }
@@ -677,9 +687,15 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             mouse_down = true;
                         },
                         .middle => {
-                            // Paste from clipboard
-                            if (mux.getActivePane()) |pane| {
+                            // Paste from clipboard (with bracketed paste wrapping)
+                            if (mux.getActivePaneMut()) |pane| {
+                                if (pane.vt.bracketed_paste) {
+                                    _ = pane.pty.write("\x1b[200~") catch {};
+                                }
                                 Clipboard.paste(&pane.pty);
+                                if (pane.vt.bracketed_paste) {
+                                    _ = pane.pty.write("\x1b[201~") catch {};
+                                }
                             }
                         },
                         .scroll_up => {
