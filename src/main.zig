@@ -563,9 +563,19 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 continue;
                             }
 
-                            // Forward key to active pane's PTY
+                            // Forward key to active pane's PTY.
+                            // Alt (Mod1) sends ESC prefix before the character.
+                            const ALT_MASK: u32 = 8; // Mod1Mask
                             if (mux.getActivePane()) |pane| {
-                                _ = pane.pty.write(key_buf[0..len]) catch {};
+                                if (key.modifiers & ALT_MASK != 0 and len > 0 and key_buf[0] != 0x1b) {
+                                    // Alt+key: send ESC prefix + character
+                                    var alt_buf: [33]u8 = undefined;
+                                    alt_buf[0] = 0x1b;
+                                    @memcpy(alt_buf[1..][0..len], key_buf[0..len]);
+                                    _ = pane.pty.write(alt_buf[0 .. len + 1]) catch {};
+                                } else {
+                                    _ = pane.pty.write(key_buf[0..len]) catch {};
+                                }
                             }
                         }
                     } else {
