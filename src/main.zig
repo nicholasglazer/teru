@@ -871,7 +871,9 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     const tracking_active = if (mux.getActivePane()) |pane| pane.vt.mouse_tracking != .none else false;
                     if (mouse_down and !tracking_active) {
                         const col: u16 = @intCast(@min(motion.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
-                        const row: u16 = @intCast(@min(motion.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
+                        const raw_row = motion.y / atlas.cell_height;
+                        const row: u16 = @intCast(@min(raw_row, @as(u32, grid_rows -| 1)));
+
                         // Start selection on first drag movement
                         if (!selection.active) {
                             const so = mux.getScrollOffset();
@@ -881,6 +883,32 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 selection.begin(mouse_start_row, mouse_start_col);
                         }
                         selection.update(row, col);
+
+                        // Auto-scroll when dragging near viewport edges
+                        const edge_zone = atlas.cell_height; // 1 cell height from edge
+                        const in_alt = if (mux.getActivePane()) |pane| pane.vt.alt_screen else false;
+                        if (!in_alt) {
+                            if (motion.y < edge_zone) {
+                                // Dragging near top edge: scroll up into scrollback
+                                const max_offset = if (mux.getActivePane()) |pane|
+                                    if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
+                                else
+                                    0;
+                                if (max_offset > 0) {
+                                    _ = mux.smoothScroll(@as(i32, @intCast(atlas.cell_height)), atlas.cell_height, max_offset);
+                                }
+                            } else if (motion.y >= grid_rows * atlas.cell_height -| edge_zone) {
+                                // Dragging near bottom edge: scroll down
+                                if (mux.getScrollOffset() > 0) {
+                                    const max_offset = if (mux.getActivePane()) |pane|
+                                        if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
+                                    else
+                                        0;
+                                    _ = mux.smoothScroll(-@as(i32, @intCast(atlas.cell_height)), atlas.cell_height, max_offset);
+                                }
+                            }
+                        }
+
                         // Mark grid dirty so selection highlight redraws
                         if (mux.getActivePane()) |pane| {
                             pane.grid.dirty = true;
