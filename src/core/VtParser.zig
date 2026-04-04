@@ -30,6 +30,8 @@ pub const State = enum {
     csi_intermediate, // saw intermediate byte (0x20-0x2F)
     osc_string, // saw ESC], collecting until BEL/ST
     dcs_passthrough, // saw ESC P, ignore until ST (ESC \)
+    charset_g0, // saw ESC(, waiting for charset designator
+    charset_g1, // saw ESC), waiting for charset designator
 };
 
 pub const MAX_PARAMS = 16;
@@ -86,6 +88,9 @@ auto_wrap: bool = true,
 /// Mouse tracking modes (ESC[?1000h..1003h, ESC[?1006h)
 mouse_tracking: MouseMode = .none,
 mouse_sgr: bool = false, // SGR extended format (mode 1006)
+
+/// G0 charset: false = ASCII (B), true = DEC Special Graphics (0)
+g0_line_drawing: bool = false,
 
 /// Synchronized output (ESC[?2026h/l) — when true, defer rendering until
 /// the app sends ESC[?2026l. Prevents flickering during rapid screen updates.
@@ -226,6 +231,8 @@ fn processByte(self: *VtParser, byte: u8) void {
             }
             // All other bytes: silently consumed (no output)
         },
+        .charset_g0 => self.handleCharsetG0(byte),
+        .charset_g1 => self.handleCharsetG1(byte),
     }
 }
 
@@ -263,7 +270,11 @@ fn handleGround(self: *VtParser, byte: u8) void {
             if (byte >= 0x80) {
                 self.handleUtf8(byte);
             } else {
-                const ch: u21 = @as(u21, byte);
+                var ch: u21 = @as(u21, byte);
+                // DEC Special Graphics (line drawing) charset mapping
+                if (self.g0_line_drawing) {
+                    ch = acsMap(byte);
+                }
                 self.grid.write(ch);
                 self.last_char = ch;
             }
@@ -321,6 +332,27 @@ fn decodeUtf8(bytes: []const u8) u21 {
 
 // ── Escape state (saw ESC) ───────────────────────────────────────
 
+/// DEC Special Graphics (ACS) character mapping.
+/// Maps ASCII 0x60-0x7E to Unicode box-drawing/symbol codepoints.
+fn acsMap(byte: u8) u21 {
+    return switch (byte) {
+        '`' => 0x25C6, // ◆ diamond
+        'a' => 0x2592, // ▒ checkerboard
+        'j' => 0x2518, // ┘ lower-right corner
+        'k' => 0x2510, // ┐ upper-right corner
+        'l' => 0x250C, // ┌ upper-left corner
+        'm' => 0x2514, // └ lower-left corner
+        'n' => 0x253C, // ┼ crossing
+        'q' => 0x2500, // ─ horizontal line
+        't' => 0x251C, // ├ left tee
+        'u' => 0x2524, // ┤ right tee
+        'v' => 0x2534, // ┴ bottom tee
+        'w' => 0x252C, // ┬ top tee
+        'x' => 0x2502, // │ vertical line
+        else => byte, // pass through unchanged
+    };
+}
+
 fn handleEscape(self: *VtParser, byte: u8) void {
     switch (byte) {
         '[' => {
@@ -367,6 +399,7 @@ fn handleEscape(self: *VtParser, byte: u8) void {
             self.grid.scroll_top = 0;
             self.grid.scroll_bottom = self.grid.rows -| 1;
             self.cursor_visible = true;
+            self.g0_line_drawing = false;
             self.state = .ground;
         },
         'P' => {
@@ -374,11 +407,36 @@ fn handleEscape(self: *VtParser, byte: u8) void {
             // Silently consume until ST (ESC \) or BEL
             self.state = .dcs_passthrough;
         },
+        '(' => {
+            // ESC( — Designate G0 character set. Next byte selects charset.
+            self.state = .charset_g0;
+        },
+        ')' => {
+            // ESC) — Designate G1 character set (ignored for now)
+            self.state = .charset_g1;
+        },
         else => {
             // Unknown escape sequence: drop back to ground
             self.state = .ground;
         },
     }
+}
+
+// ── Charset designation (ESC( / ESC)) ───────────────────────────
+
+fn handleCharsetG0(self: *VtParser, byte: u8) void {
+    switch (byte) {
+        '0' => self.g0_line_drawing = true, // DEC Special Graphics
+        'B' => self.g0_line_drawing = false, // ASCII
+        else => {},
+    }
+    self.state = .ground;
+}
+
+fn handleCharsetG1(self: *VtParser, byte: u8) void {
+    // G1 charset designation — consume and ignore
+    _ = byte;
+    self.state = .ground;
 }
 
 // ── CSI entry (saw ESC[) ─────────────────────────────────────────
