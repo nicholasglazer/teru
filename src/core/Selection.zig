@@ -147,36 +147,7 @@ pub fn getText(self: *const Selection, grid: *const Grid, buf: []u8) usize {
         var col = col_start;
         while (col <= col_end and col < grid.cols) : (col += 1) {
             const cell = grid.cellAtConst(row, col);
-            const cp = cell.char;
-
-            // Encode the codepoint as UTF-8
-            if (cp < 0x80) {
-                if (line_len < line_buf.len) {
-                    line_buf[line_len] = @intCast(cp);
-                    line_len += 1;
-                }
-            } else if (cp < 0x800) {
-                if (line_len + 2 <= line_buf.len) {
-                    line_buf[line_len] = @intCast(0xC0 | (cp >> 6));
-                    line_buf[line_len + 1] = @intCast(0x80 | (cp & 0x3F));
-                    line_len += 2;
-                }
-            } else if (cp < 0x10000) {
-                if (line_len + 3 <= line_buf.len) {
-                    line_buf[line_len] = @intCast(0xE0 | (cp >> 12));
-                    line_buf[line_len + 1] = @intCast(0x80 | ((cp >> 6) & 0x3F));
-                    line_buf[line_len + 2] = @intCast(0x80 | (cp & 0x3F));
-                    line_len += 3;
-                }
-            } else {
-                if (line_len + 4 <= line_buf.len) {
-                    line_buf[line_len] = @intCast(0xF0 | (cp >> 18));
-                    line_buf[line_len + 1] = @intCast(0x80 | ((cp >> 12) & 0x3F));
-                    line_buf[line_len + 2] = @intCast(0x80 | ((cp >> 6) & 0x3F));
-                    line_buf[line_len + 3] = @intCast(0x80 | (cp & 0x3F));
-                    line_len += 4;
-                }
-            }
+            line_len = appendUtf8(&line_buf, line_len, cell.char);
         }
 
         // Trim trailing spaces
