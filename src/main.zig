@@ -740,23 +740,29 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             }
                         },
                         .scroll_up => {
-                            // Smooth scroll up: 3 lines per tick
-                            const max_offset = if (mux.getActivePane()) |pane|
-                                if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
-                            else
-                                0;
-                            if (max_offset > 0) {
-                                _ = mux.smoothScroll(@as(i32, @intCast(atlas.cell_height)) * @as(i32, @intCast(config.scroll_speed)), atlas.cell_height, max_offset);
-                            }
-                        },
-                        .scroll_down => {
-                            // Smooth scroll down: 3 lines per tick
-                            if (mux.getScrollOffset() > 0 or mux.getScrollPixel() > 0) {
+                            // Don't scroll teru's scrollback when alt screen is active
+                            // (tmux, vim, etc. handle scrolling themselves)
+                            const in_alt = if (mux.getActivePane()) |pane| pane.vt.alt_screen else false;
+                            if (!in_alt) {
                                 const max_offset = if (mux.getActivePane()) |pane|
                                     if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
                                 else
                                     0;
-                                _ = mux.smoothScroll(-@as(i32, @intCast(atlas.cell_height)) * @as(i32, @intCast(config.scroll_speed)), atlas.cell_height, max_offset);
+                                if (max_offset > 0) {
+                                    _ = mux.smoothScroll(@as(i32, @intCast(atlas.cell_height)) * @as(i32, @intCast(config.scroll_speed)), atlas.cell_height, max_offset);
+                                }
+                            }
+                        },
+                        .scroll_down => {
+                            const in_alt = if (mux.getActivePane()) |pane| pane.vt.alt_screen else false;
+                            if (!in_alt) {
+                                if (mux.getScrollOffset() > 0 or mux.getScrollPixel() > 0) {
+                                    const max_offset = if (mux.getActivePane()) |pane|
+                                        if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
+                                    else
+                                        0;
+                                    _ = mux.smoothScroll(-@as(i32, @intCast(atlas.cell_height)) * @as(i32, @intCast(config.scroll_speed)), atlas.cell_height, max_offset);
+                                }
                             }
                         },
                         else => {},
@@ -851,7 +857,9 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             }
                         }
                     }
-                    if (mouse_down) {
+                    // Only handle selection when mouse tracking is off (app handles mouse)
+                    const tracking_active = if (mux.getActivePane()) |pane| pane.vt.mouse_tracking != .none else false;
+                    if (mouse_down and !tracking_active) {
                         const col: u16 = @intCast(@min(motion.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
                         const row: u16 = @intCast(@min(motion.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
                         // Start selection on first drag movement
