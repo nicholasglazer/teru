@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.5 (2026-04-06)
+
+### Features
+- **Binary split tree layout**: horizontal and vertical splits with arbitrary nesting, replacing the flat pane list. Keyboard: `prefix + \` (vertical), `prefix + -` (horizontal)
+- **Mouse drag-to-resize pane borders**: click and drag any split border to adjust the ratio
+- **MCP pane creation with direction/command/cwd**: `teru_create_pane` supports `direction`, `command`, and `cwd` parameters. New panes inherit the active pane's working directory by default
+- **Grid resize on pane layout change**: grid dimensions now match pane rect, so apps render at full pane width
+- **teru-mcp skill**: `.claude/skills/teru-mcp.md` teaches agents how to use teru's MCP tools
+
+### Fixes
+- **Crash on pane creation**: dangling pointers after ArrayList reallocation — all pane VtParser/Grid/Scrollback pointers re-linked after append
+- **Pane borders respect status bar**: layout calculation subtracts status bar height
+- **JSON unescape in teru_send_input**: `\n`, `\r`, `\t` now sent as actual control characters
+- **Ctrl+letter normalization in mux commands**: holding Ctrl after prefix no longer fails (e.g., Ctrl+Space then Ctrl+V = vi mode)
+- **Mouse_down tracked during mouse tracking**: fixes tmux pane border drag-to-resize (mode 1002)
+- **Selection release skipped during mouse tracking**: prevents selection finalization conflicts with app mouse handling
+
 ## 0.2.4 (2026-04-05)
 
 ### Features

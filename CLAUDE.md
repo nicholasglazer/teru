@@ -26,7 +26,7 @@ zig build run -- --raw  # run (TTY mode)
 - See `.claude/rules/zig-terminal.md` for dev rules, anti-patterns, and perf targets
 
 ## Version
-Current: 0.2.4. Update in 3 files: `src/main.zig`, `build.zig.zon`, `src/agent/McpServer.zig`
+Current: 0.2.5. Update in 3 files: `src/main.zig`, `build.zig.zon`, `src/agent/McpServer.zig`
 
 ## Testing
-All modules have inline tests (346 test blocks). Run with `zig build test`.
+All modules have inline tests (370 test blocks). Run with `zig build test`.

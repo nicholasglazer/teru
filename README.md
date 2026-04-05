@@ -8,7 +8,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
   <a href="https://github.com/nicholasglazer/teru/actions"><img src="https://github.com/nicholasglazer/teru/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/zig-0.16-orange" alt="Zig 0.16">
-  <img src="https://img.shields.io/badge/tests-250-blue" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-370-blue" alt="Tests">
   <img src="https://img.shields.io/badge/binary-1.3MB-brightgreen" alt="Binary Size">
   <a href="https://aur.archlinux.org/packages/teru"><img src="https://img.shields.io/aur/version/teru" alt="AUR"></a>
 </p>
@@ -132,7 +132,7 @@ teru --attach             # restore saved session layout
 - **CPU SIMD rendering** — `@Vector` alpha blending, no GPU, <50μs per frame
 - **Multiplexer** — multi-pane, master-stack/grid/monocle/floating layouts, 9 workspaces
 - **CustomPaneBackend** — native Claude Code agent team protocol (7 operations)
-- **MCP server** — 6 tools for cross-agent communication over Unix socket
+- **MCP server** — 10 tools for cross-agent communication over Unix socket
 - **OSC 9999** — agent self-declaration protocol (start/stop/status/progress)
 - **OSC 133** — shell integration (command blocks, exit code tracking)
 - **Process graph** — DAG of all processes/agents with lifecycle tracking
@@ -279,7 +279,7 @@ src/
 │   └── UrlDetector.zig     URL detection (regex-free)
 ├── agent/
 │   ├── PaneBackend.zig     CustomPaneBackend protocol (Claude Code)
-│   ├── McpServer.zig       MCP server (6 tools, Unix socket)
+│   ├── McpServer.zig       MCP server (10 tools, Unix socket)
 │   ├── HookHandler.zig     Claude Code hook JSON parser
 │   └── protocol.zig        OSC 9999 agent protocol parser
 ├── graph/
@@ -337,7 +337,7 @@ cd teru
 
 # Requires Zig 0.16-dev
 make dev                  # debug build (~4MB, full safety + debug symbols)
-make test                 # 250 tests
+make test                 # 370 tests
 make run                  # build and run
 make release              # release build (1.3MB)
 make deps                 # check runtime dependencies
