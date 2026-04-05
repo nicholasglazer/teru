@@ -1234,6 +1234,36 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         }
                     }
 
+                    // Vi mode selection overlay (re-applied after scroll overlay)
+                    if (vi_mode.active and vi_mode.selection_active) {
+                        if (vi_mode.getViewportSelection(mux.getScrollOffset(), vi_sb)) |bounds| {
+                            if (mux.getActivePaneRect(sz.width, sz.height, cpu.padding)) |pr| {
+                                const cw = atlas.cell_width;
+                                const ch = atlas.cell_height;
+                                const sel_bg = cpu.scheme.selection_bg;
+                                var sr: u16 = bounds.start_row;
+                                while (sr <= bounds.end_row) : (sr += 1) {
+                                    const sc = if (sr == bounds.start_row) bounds.start_col else 0;
+                                    const ec = if (sr == bounds.end_row) bounds.end_col else vi_mode.grid_cols -| 1;
+                                    var col: u16 = sc;
+                                    while (col <= ec) : (col += 1) {
+                                        const px = pr.x + @as(usize, col) * cw;
+                                        const py = pr.y + @as(usize, sr) * ch;
+                                        const mx = @min(px + cw, @as(usize, pr.x) + pr.width);
+                                        const my = @min(py + ch, @as(usize, pr.y) + pr.height);
+                                        for (py..my) |y| {
+                                            if (y >= cpu.height) break;
+                                            const row_start = y * cpu.width;
+                                            if (row_start + mx <= cpu.framebuffer.len and px < mx) {
+                                                @memset(cpu.framebuffer[row_start + px .. row_start + mx], sel_bg);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Vi mode cursor overlay (inverted block)
                     if (vi_mode.active) {
                         if (vi_mode.viewportRow(mux.getScrollOffset(), vi_sb)) |vrow| {

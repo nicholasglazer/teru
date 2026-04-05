@@ -142,7 +142,7 @@ pub fn getText(self: *const Selection, grid: *const Grid, buf: []u8) usize {
         // Collect the row's characters into a temporary line buffer,
         // then trim trailing spaces before copying to output.
         var line_len: usize = 0;
-        var line_buf: [1024]u8 = undefined;
+        var line_buf: [2048]u8 = undefined;
 
         var col = col_start;
         while (col <= col_end and col < grid.cols) : (col += 1) {
@@ -192,7 +192,7 @@ pub fn getTextWithScrollback(self: *const Selection, grid: *const Grid, sb: ?*co
         const col_start: u16 = if (row == n.r0) n.c0 else 0;
         const col_end: u16 = if (row == n.r1) n.c1 else grid.cols -| 1;
 
-        var line_buf: [1024]u8 = undefined;
+        var line_buf: [2048]u8 = undefined;
         var line_len: usize = 0;
 
         if (row < so) {
