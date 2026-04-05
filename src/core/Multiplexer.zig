@@ -204,8 +204,9 @@ pub fn spawnPane(self: *Multiplexer, rows: u16, cols: u16) !u64 {
     try self.panes.append(self.allocator, pane);
     errdefer _ = self.panes.pop();
 
-    // Patch VtParser's grid pointer now that Pane is in its final memory location
-    self.panes.items[self.panes.items.len - 1].linkVt(self.allocator);
+    // Re-link ALL panes — append may have reallocated the backing array,
+    // invalidating vt.grid and grid.scrollback pointers in existing panes.
+    for (self.panes.items) |*p| p.linkVt(self.allocator);
 
     try self.layout_engine.workspaces[self.active_workspace].addNode(self.allocator, id);
 
@@ -245,8 +246,8 @@ pub fn spawnPaneWithCommand(self: *Multiplexer, rows: u16, cols: u16, command: [
     try self.panes.append(self.allocator, pane);
     errdefer _ = self.panes.pop();
 
-    // Patch VtParser's grid pointer now that Pane is in its final memory location
-    self.panes.items[self.panes.items.len - 1].linkVt(self.allocator);
+    // Re-link ALL panes — append may have reallocated the backing array
+    for (self.panes.items) |*p| p.linkVt(self.allocator);
 
     try self.layout_engine.workspaces[self.active_workspace].addNode(self.allocator, id);
 
