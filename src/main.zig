@@ -17,6 +17,7 @@ const Config = @import("config/Config.zig");
 const ConfigWatcher = @import("config/ConfigWatcher.zig");
 const Hooks = @import("config/Hooks.zig");
 const Selection = @import("core/Selection.zig");
+const ViMode = @import("core/ViMode.zig");
 const Clipboard = @import("core/Clipboard.zig");
 const KeyHandler = @import("core/KeyHandler.zig");
 const Grid = @import("core/Grid.zig");
@@ -281,6 +282,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     var prefix = KeyHandler.PrefixState{ .timeout_ns = @as(i128, config.prefix_timeout_ms) * 1_000_000 };
     var selection = Selection{};
     _ = &selection;
+    var vi_mode = ViMode{};
+    _ = &vi_mode;
     var mouse_down = false;
     _ = &mouse_down;
     var mouse_start_row: u16 = 0;
@@ -437,6 +440,82 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
 
                             const keysym = kb.getKeysym(key.keycode);
 
+                            // Vi/copy mode: intercept ALL keys
+                            if (vi_mode.active) {
+                                // Try keysym first (arrows, PageUp/Down, ESC)
+                                const sb_lines: u32 = if (mux.getActivePane()) |pane|
+                                    if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
+                                else
+                                    0;
+                                var vi_scroll = mux.getScrollOffset();
+                                const ksym_action = vi_mode.handleKeysym(keysym, &vi_scroll, sb_lines);
+                                mux.setScrollOffset(vi_scroll);
+
+                                if (ksym_action != .none) {
+                                    switch (ksym_action) {
+                                        .exit => {
+                                            vi_mode.exit();
+                                            mux.setScrollOffset(0);
+                                        },
+                                        .yank => {
+                                            if (vi_mode.toSelection(vi_scroll, sb_lines)) |sel| {
+                                                if (mux.getActivePane()) |pane| {
+                                                    var sel_buf: [8192]u8 = undefined;
+                                                    const sbl = pane.grid.scrollback;
+                                                    var sel_copy = sel;
+                                                    const len = sel_copy.getTextWithScrollback(&pane.grid, sbl, &sel_buf);
+                                                    if (len > 0) {
+                                                        Clipboard.copy(sel_buf[0..len]);
+                                                        mux.notify("Yanked to clipboard");
+                                                    }
+                                                }
+                                            }
+                                            vi_mode.exit();
+                                            mux.setScrollOffset(0);
+                                        },
+                                        .search => { search_mode = true; },
+                                        .none => {},
+                                    }
+                                    if (mux.getActivePane()) |pane| pane.grid.dirty = true;
+                                    continue;
+                                }
+
+                                // Try as ASCII key byte
+                                var vi_key_buf: [32]u8 = undefined;
+                                const vi_len = kb.processKey(key.keycode, true, &vi_key_buf);
+                                if (vi_len > 0) {
+                                    vi_scroll = mux.getScrollOffset();
+                                    const vi_action = vi_mode.handleKey(vi_key_buf[0], if (mux.getActivePane()) |p| &p.grid else unreachable, &vi_scroll, sb_lines);
+                                    mux.setScrollOffset(vi_scroll);
+                                    switch (vi_action) {
+                                        .exit => {
+                                            vi_mode.exit();
+                                            mux.setScrollOffset(0);
+                                        },
+                                        .yank => {
+                                            if (vi_mode.toSelection(vi_scroll, sb_lines)) |sel| {
+                                                if (mux.getActivePane()) |pane| {
+                                                    var sel_buf: [8192]u8 = undefined;
+                                                    const sbl = pane.grid.scrollback;
+                                                    var sel_copy = sel;
+                                                    const len = sel_copy.getTextWithScrollback(&pane.grid, sbl, &sel_buf);
+                                                    if (len > 0) {
+                                                        Clipboard.copy(sel_buf[0..len]);
+                                                        mux.notify("Yanked to clipboard");
+                                                    }
+                                                }
+                                            }
+                                            vi_mode.exit();
+                                            mux.setScrollOffset(0);
+                                        },
+                                        .search => { search_mode = true; },
+                                        .none => {},
+                                    }
+                                    if (mux.getActivePane()) |pane| pane.grid.dirty = true;
+                                }
+                                continue;
+                            }
+
                             // Search mode: intercept all keys for the search query
                             if (search_mode) {
                                 var search_key_buf: [32]u8 = undefined;
@@ -560,6 +639,13 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 prefix.reset();
                                 const action = KeyHandler.handleMuxCommand(key_buf[0], &mux, &graph, &hooks, &running, grid_rows, grid_cols, io, config.prefix_key);
                                 if (action == .enter_search) search_mode = true;
+                                if (action == .enter_vi_mode) {
+                                    if (mux.getActivePane()) |pane| {
+                                        const sb_n: u32 = if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0;
+                                        vi_mode.enter(grid_rows, grid_cols, pane.grid.cursor_row, pane.grid.cursor_col, mux.getScrollOffset(), sb_n);
+                                        pane.grid.dirty = true;
+                                    }
+                                }
                                 continue;
                             }
 
@@ -588,6 +674,13 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             prefix.reset();
                             const action = KeyHandler.handleMuxCommand(@truncate(key.keycode), &mux, &graph, &hooks, &running, grid_rows, grid_cols, io, config.prefix_key);
                             if (action == .enter_search) search_mode = true;
+                            if (action == .enter_vi_mode) {
+                                if (mux.getActivePane()) |pane| {
+                                    const sb_n: u32 = if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0;
+                                    vi_mode.enter(grid_rows, grid_cols, pane.grid.cursor_row, pane.grid.cursor_col, mux.getScrollOffset(), sb_n);
+                                    pane.grid.dirty = true;
+                                }
+                            }
                             continue;
                         }
                         if (mux.getActivePane()) |pane| {
@@ -1114,7 +1207,13 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
             switch (renderer) {
                 .cpu => |*cpu| {
                     const sz = win.getSize();
-                    const sel_ptr: ?*const Selection = if (selection.active) &selection else null;
+                    // Use vi mode selection if active, else mouse selection
+                    const vi_sb: u32 = if (mux.getActivePane()) |pane|
+                        if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
+                    else
+                        0;
+                    var vi_sel = if (vi_mode.active) vi_mode.toSelection(mux.getScrollOffset(), vi_sb) else null;
+                    const sel_ptr: ?*const Selection = if (vi_sel != null) &vi_sel.? else if (selection.active) &selection else null;
                     mux.renderAllWithSelection(cpu, sz.width, sz.height, atlas.cell_width, atlas.cell_height, sel_ptr);
 
                     // Search overlay: highlight matches + draw search bar
@@ -1135,9 +1234,31 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         }
                     }
 
+                    // Vi mode cursor overlay (inverted block)
+                    if (vi_mode.active) {
+                        if (vi_mode.viewportRow(mux.getScrollOffset(), vi_sb)) |vrow| {
+                            if (mux.getActivePaneRect(sz.width, sz.height, cpu.padding)) |pr| {
+                                const cx = pr.x + @as(u16, vi_mode.cursor_col) * atlas.cell_width;
+                                const cy = pr.y + vrow * atlas.cell_height;
+                                const max_x = @min(cx + atlas.cell_width, pr.x + pr.width);
+                                const max_y = @min(cy + atlas.cell_height, pr.y + pr.height);
+                                for (cy..max_y) |py| {
+                                    if (py >= cpu.height) break;
+                                    for (cx..max_x) |px| {
+                                        if (px >= cpu.width) break;
+                                        const idx = py * cpu.width + px;
+                                        if (idx < cpu.framebuffer.len) {
+                                            cpu.framebuffer[idx] ^= 0x00FFFFFF; // invert RGB
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Status bar
                     if (config.show_status_bar) {
-                        Ui.renderTextStatusBar(cpu, &mux, grid_cols, grid_rows, atlas.cell_width, atlas.cell_height, prefix.awaiting);
+                        Ui.renderTextStatusBar(cpu, &mux, grid_cols, grid_rows, atlas.cell_width, atlas.cell_height, prefix.awaiting, vi_mode.modeString());
                     }
 
                     win.putFramebuffer(cpu.getFramebuffer(), sz.width, sz.height);

@@ -135,6 +135,7 @@ pub fn renderTextStatusBar(
     cell_width: u32,
     cell_height: u32,
     prefix_active: bool,
+    vi_mode_str: []const u8,
 ) void {
     const fb_w: usize = cpu.width;
     const fb_h: usize = cpu.height;
@@ -217,6 +218,11 @@ pub fn renderTextStatusBar(
     if (has_notification) {
         for (mux.notification[0..mux.notification_len]) |c| {
             blitCharAt(cpu, c, x, text_y, s.ansi[2]);
+            x += cw;
+        }
+    } else if (vi_mode_str.len > 0) {
+        for (vi_mode_str) |c| {
+            blitCharAt(cpu, c, x, text_y, s.ansi[3]); // yellow
             x += cw;
         }
     } else if (prefix_active) {

@@ -41,6 +41,7 @@ pub const PrefixState = struct {
 pub const MuxAction = enum {
     none,
     enter_search,
+    enter_vi_mode,
 };
 
 // ── Mux command dispatch ─────────────────────────────────────────
@@ -110,6 +111,7 @@ pub fn handleMuxCommand(
             // Switch workspace (1-based → 0-based)
             mux.switchWorkspace(cmd - '1');
         },
+        'v' => return .enter_vi_mode,
         'z' => {
             // Zoom: toggle active pane between current layout and monocle
             mux.toggleZoom();
