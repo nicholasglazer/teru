@@ -290,6 +290,12 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     var mouse_start_col: u16 = 0;
     _ = &mouse_start_row;
     _ = &mouse_start_col;
+    var border_dragging = false;
+    _ = &border_dragging;
+    var border_drag_x: u32 = 0; // initial mouse x for drag
+    _ = &border_drag_x;
+    var border_drag_ratio: f32 = 0.6; // initial master_ratio
+    _ = &border_drag_ratio;
     var pty_buf: [8192]u8 = undefined;
     var running = true;
     var mouse_cursor_hidden = false;
@@ -763,11 +769,47 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 continue;
                             }
 
-                            // Click-to-focus: switch active pane if click lands in another pane's rect
+                            // Click-to-focus + border drag detection
                             const ClickRect = @import("tiling/LayoutEngine.zig").Rect;
                             const click_ws = &mux.layout_engine.workspaces[mux.active_workspace];
                             const click_node_ids = click_ws.node_ids.items;
-                            if (click_node_ids.len > 1) {
+                            if (click_node_ids.len > 1 and click_ws.layout == .master_stack) {
+                                const sz = win.getSize();
+                                const click_screen = ClickRect{
+                                    .x = @intCast(padding),
+                                    .y = @intCast(padding),
+                                    .width = @intCast(@min(sz.width -| padding * 2, std.math.maxInt(u16))),
+                                    .height = @intCast(@min(sz.height -| padding * 2, std.math.maxInt(u16))),
+                                };
+                                if (mux.layout_engine.calculate(mux.active_workspace, click_screen)) |click_rects| {
+                                    defer allocator.free(click_rects);
+                                    // Check if click is on master/stack border (within 4px)
+                                    const border_zone: u32 = 4;
+                                    if (click_rects.len >= 2) {
+                                        const master_right = @as(u32, click_rects[0].x) + click_rects[0].width;
+                                        if (mouse.x >= master_right -| border_zone and mouse.x <= master_right + border_zone) {
+                                            border_dragging = true;
+                                            border_drag_x = mouse.x;
+                                            border_drag_ratio = click_ws.master_ratio;
+                                            continue;
+                                        }
+                                    }
+                                    // Click-to-focus
+                                    for (click_rects, 0..) |cr, ci| {
+                                        if (ci >= click_node_ids.len) break;
+                                        if (mouse.x >= cr.x and mouse.x < @as(u32, cr.x) + cr.width and
+                                            mouse.y >= cr.y and mouse.y < @as(u32, cr.y) + cr.height)
+                                        {
+                                            if (ci != click_ws.active_index) {
+                                                mux.layout_engine.workspaces[mux.active_workspace].active_index = ci;
+                                                for (mux.panes.items) |*p| p.grid.dirty = true;
+                                            }
+                                            break;
+                                        }
+                                    }
+                                } else |_| {}
+                            } else if (click_node_ids.len > 1) {
+                                // Non-master_stack layouts: click-to-focus only
                                 const sz = win.getSize();
                                 const click_screen = ClickRect{
                                     .x = @intCast(padding),
@@ -784,7 +826,6 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                         {
                                             if (ci != click_ws.active_index) {
                                                 mux.layout_engine.workspaces[mux.active_workspace].active_index = ci;
-                                                // Mark all panes dirty to redraw borders
                                                 for (mux.panes.items) |*p| p.grid.dirty = true;
                                             }
                                             break;
@@ -902,6 +943,10 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             }
                         }
                     }
+                    if (mouse.button == .left and border_dragging) {
+                        border_dragging = false;
+                        continue;
+                    }
                     if (mouse.button == .left and mouse_down) {
                         mouse_down = false;
                         // Don't process selection when mouse tracking is active
@@ -936,6 +981,19 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     if (mouse_cursor_hidden) {
                         win.showCursor();
                         mouse_cursor_hidden = false;
+                    }
+                    // Border drag-to-resize: update master_ratio from mouse delta
+                    if (border_dragging) {
+                        const sz = win.getSize();
+                        const content_w = sz.width -| padding * 2;
+                        if (content_w > 0) {
+                            const delta_px: i32 = @as(i32, @intCast(motion.x)) - @as(i32, @intCast(border_drag_x));
+                            const delta_ratio: f32 = @as(f32, @floatFromInt(delta_px)) / @as(f32, @floatFromInt(content_w));
+                            const new_ratio = std.math.clamp(border_drag_ratio + delta_ratio, 0.15, 0.85);
+                            mux.layout_engine.workspaces[mux.active_workspace].master_ratio = new_ratio;
+                            for (mux.panes.items) |*p| p.grid.dirty = true;
+                        }
+                        continue;
                     }
                     // Mouse motion reporting to PTY (modes 1002/1003)
                     if (mux.getActivePaneMut()) |pane| {
