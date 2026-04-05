@@ -208,7 +208,7 @@ fn handleToolsList(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teru_read_output","description":"Get recent N lines from a pane scrollback","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"lines":{{"type":"integer","default":50}}}},"required":["pane_id"]}}}},
         \\{{"name":"teru_get_graph","description":"Get the process graph as JSON","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
         \\{{"name":"teru_send_input","description":"Write text to a pane PTY stdin","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"text":{{"type":"string"}}}},"required":["pane_id","text"]}}}},
-        \\{{"name":"teru_create_pane","description":"Spawn a new pane in a workspace","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer","default":0}}}},"required":[]}}}},
+        \\{{"name":"teru_create_pane","description":"Spawn a new pane in a workspace","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer","default":0}},"direction":{{"type":"string","enum":["vertical","horizontal"],"default":"vertical"}}}},"required":[]}}}},
         \\{{"name":"teru_broadcast","description":"Send text to all panes in a workspace","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer"}},"text":{{"type":"string"}}}},"required":["workspace","text"]}}}},
         \\{{"name":"teru_send_keys","description":"Send named keystrokes to a pane (e.g. enter, ctrl+c, up, f1)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"keys":{{"type":"array","items":{{"type":"string"}}}}}},"required":["pane_id","keys"]}}}},
         \\{{"name":"teru_get_state","description":"Query terminal state for a pane (cursor, size, modes, title)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}}}},"required":["pane_id"]}}}},
@@ -248,7 +248,9 @@ fn handleToolsCall(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u
         return self.toolSendInput(pane_id, text, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_create_pane")) {
         const workspace = extractNestedJsonInt(params_body, "workspace") orelse 0;
-        return self.toolCreatePane(@intCast(workspace), buf, id);
+        const dir_str = extractNestedJsonString(params_body, "direction");
+        const is_horizontal = if (dir_str) |d| std.mem.eql(u8, d, "horizontal") else false;
+        return self.toolCreatePane(@intCast(workspace), is_horizontal, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_broadcast")) {
         const workspace = extractNestedJsonInt(params_body, "workspace") orelse
             return jsonRpcError(buf, id, -32602, "Missing workspace");
@@ -458,7 +460,7 @@ fn toolSendInput(self: *McpServer, pane_id: u64, text: []const u8, buf: []u8, id
         jsonRpcError(buf, id, -32603, "Internal error");
 }
 
-fn toolCreatePane(self: *McpServer, workspace: u8, buf: []u8, id: ?[]const u8) []const u8 {
+fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
 
     // Save current workspace, switch, spawn, restore
@@ -473,7 +475,8 @@ fn toolCreatePane(self: *McpServer, workspace: u8, buf: []u8, id: ?[]const u8) [
 
     // Add to split tree if active
     const ws = &self.multiplexer.layout_engine.workspaces[workspace];
-    ws.addNodeSplit(self.multiplexer.allocator, pane_id, .vertical) catch {};
+    const dir: @import("../tiling/LayoutEngine.zig").SplitDirection = if (horizontal) .horizontal else .vertical;
+    ws.addNodeSplit(self.multiplexer.allocator, pane_id, dir) catch {};
 
     // Register in graph — non-fatal: pane works without graph tracking
     if (self.multiplexer.getPaneById(pane_id)) |pane| {
