@@ -42,6 +42,7 @@ pub const MuxAction = enum {
     none,
     enter_search,
     enter_vi_mode,
+    panes_changed,
 };
 
 // ── Mux command dispatch ─────────────────────────────────────────
@@ -72,10 +73,10 @@ pub fn handleMuxCommand(
             // Spawn new pane
             const id = mux.spawnPane(grid_rows, grid_cols) catch return .none;
             if (mux.getPaneById(id)) |pane| {
-                // Graph registration failure is non-fatal: pane works without tracking
                 _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.pty.child_pid }) catch {};
             }
             hooks.fire(.spawn);
+            return .panes_changed;
         },
         'x' => {
             // Close active pane
@@ -83,11 +84,12 @@ pub fn handleMuxCommand(
                 const id = pane.id;
                 mux.closePane(id);
                 hooks.fire(.close);
-                // If no panes left, exit
                 if (mux.panes.items.len == 0) {
                     running.* = false;
+                    return .none;
                 }
             }
+            return .panes_changed;
         },
         'n' => mux.focusNext(),
         'p' => mux.focusPrev(),

@@ -652,6 +652,10 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                         pane.grid.dirty = true;
                                     }
                                 }
+                                if (action == .panes_changed) {
+                                    const sz = win.getSize();
+                                    mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                }
                                 continue;
                             }
 
@@ -686,6 +690,10 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                     vi_mode.enter(grid_rows, grid_cols, pane.grid.cursor_row, pane.grid.cursor_col, mux.getScrollOffset(), sb_n);
                                     pane.grid.dirty = true;
                                 }
+                            }
+                            if (action == .panes_changed) {
+                                const sz = win.getSize();
+                                mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
                             }
                             continue;
                         }
@@ -945,6 +953,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     }
                     if (mouse.button == .left and border_dragging) {
                         border_dragging = false;
+                        const sz = win.getSize();
+                        mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
                         continue;
                     }
                     if (mouse.button == .left and mouse_down) {

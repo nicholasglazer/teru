@@ -326,6 +326,40 @@ pub fn toggleZoom(self: *Multiplexer) void {
 
 /// Resize the active pane by adjusting the master ratio.
 /// dx > 0 grows width, dx < 0 shrinks. dy is reserved for future use.
+/// Resize all pane PTYs to match their current layout rects.
+/// Call after adding/removing panes or changing layout.
+pub fn resizePanePtys(self: *Multiplexer, screen_width: u32, screen_height: u32, cell_width: u32, cell_height: u32, pad: u32) void {
+    const ws = &self.layout_engine.workspaces[self.active_workspace];
+    const node_ids = ws.node_ids.items;
+    if (node_ids.len == 0) return;
+
+    const sw = screen_width -| pad * 2;
+    const sh = screen_height -| pad * 2;
+    if (sw == 0 or sh == 0 or cell_width == 0 or cell_height == 0) return;
+
+    const screen = LayoutEngine.Rect{
+        .x = @intCast(pad),
+        .y = @intCast(pad),
+        .width = @intCast(@min(sw, std.math.maxInt(u16))),
+        .height = @intCast(@min(sh, std.math.maxInt(u16))),
+    };
+
+    const rects = self.layout_engine.calculate(self.active_workspace, screen) catch return;
+    defer self.allocator.free(rects);
+
+    for (rects, 0..) |rect, i| {
+        if (i >= node_ids.len) break;
+        const pane_id = node_ids[i];
+        if (self.getPaneById(pane_id)) |pane| {
+            const content = if (node_ids.len > 1) Compositor.insetRect(rect, 1) else rect;
+            const new_cols: u16 = @intCast(@max(1, content.width / @as(u16, @intCast(cell_width))));
+            const new_rows: u16 = @intCast(@max(1, content.height / @as(u16, @intCast(cell_height))));
+            pane.pty.resize(new_rows, new_cols);
+            pane.grid.dirty = true;
+        }
+    }
+}
+
 pub fn resizeActive(self: *Multiplexer, dx: i8, dy: i8) void {
     _ = dy;
     const ws = &self.layout_engine.workspaces[self.active_workspace];
