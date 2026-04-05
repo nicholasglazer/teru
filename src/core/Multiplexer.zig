@@ -421,11 +421,13 @@ pub fn renderAllWithSelection(
     @memset(renderer.framebuffer, renderer.scheme.bg);
 
     const pad = renderer.padding;
+    // Reserve space for the text status bar (cell_height + 4px when visible)
+    const status_h: u32 = if (cell_height > 0) cell_height + 4 else 0;
     const screen_rect = Rect{
         .x = @intCast(pad),
         .y = @intCast(pad),
         .width = @intCast(@min(screen_width -| pad * 2, std.math.maxInt(u16))),
-        .height = @intCast(@min(screen_height -| pad * 2, std.math.maxInt(u16))),
+        .height = @intCast(@min(screen_height -| pad * 2 -| status_h, std.math.maxInt(u16))),
     };
 
     const ws = &self.layout_engine.workspaces[self.active_workspace];
