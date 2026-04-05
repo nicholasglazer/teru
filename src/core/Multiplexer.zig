@@ -115,10 +115,16 @@ pub fn getActivePaneMut(self: *Multiplexer) ?*Pane {
 /// Returns null if no active pane or layout calculation fails.
 pub fn getActivePaneRect(self: *Multiplexer, screen_width: u32, screen_height: u32, padding: u32) ?Rect {
     const ws = &self.layout_engine.workspaces[self.active_workspace];
-    const node_ids = ws.node_ids.items;
-    if (node_ids.len == 0) return null;
 
-    const active_id = ws.getActiveNodeId() orelse return null;
+    var tree_ids_buf: [64]u64 = undefined;
+    const pane_ids = if (ws.split_root != null) blk: {
+        const n = ws.getTreePaneIds(&tree_ids_buf);
+        break :blk tree_ids_buf[0..n];
+    } else ws.node_ids.items;
+    if (pane_ids.len == 0) return null;
+
+    const active_id = if (ws.split_root != null) ws.active_node else ws.getActiveNodeId();
+    if (active_id == null) return null;
 
     const screen_rect = Rect{
         .x = @intCast(padding),
@@ -135,10 +141,9 @@ pub fn getActivePaneRect(self: *Multiplexer, screen_width: u32, screen_height: u
     const effective_height: u16 = @intCast(screen_height -| bar_height -| padding);
 
     for (rects, 0..) |rect, i| {
-        if (i >= node_ids.len) break;
+        if (i >= pane_ids.len) break;
         if (rect.width == 0 or rect.height == 0) continue;
-
-        if (node_ids[i] != active_id) continue;
+        if (pane_ids[i] != active_id.?) continue;
 
         var clamped = rect;
         if (@as(u32, clamped.y) + clamped.height > effective_height) {
@@ -146,8 +151,7 @@ pub fn getActivePaneRect(self: *Multiplexer, screen_width: u32, screen_height: u
             clamped.height = effective_height - clamped.y;
         }
 
-        // If multi-pane, return inset (inside border)
-        if (node_ids.len > 1) {
+        if (pane_ids.len > 1) {
             return Compositor.insetRect(clamped, 1);
         }
         return clamped;
@@ -251,9 +255,10 @@ pub fn spawnPaneWithCommand(self: *Multiplexer, rows: u16, cols: u16, command: [
 
 /// Close and remove a pane by its ID.
 pub fn closePane(self: *Multiplexer, pane_id: u64) void {
-    // Remove from all workspaces
+    // Remove from all workspaces (flat list and tree)
     for (&self.layout_engine.workspaces) |*ws| {
         ws.removeNode(pane_id);
+        ws.removeNodeFromTree(pane_id);
     }
 
     // Find and remove from panes list
@@ -330,8 +335,14 @@ pub fn toggleZoom(self: *Multiplexer) void {
 /// Call after adding/removing panes or changing layout.
 pub fn resizePanePtys(self: *Multiplexer, screen_width: u32, screen_height: u32, cell_width: u32, cell_height: u32, pad: u32) void {
     const ws = &self.layout_engine.workspaces[self.active_workspace];
-    const node_ids = ws.node_ids.items;
-    if (node_ids.len == 0) return;
+
+    // Get pane IDs from tree or flat list
+    var tree_ids_buf: [64]u64 = undefined;
+    const pane_ids = if (ws.split_root != null) blk: {
+        const n = ws.getTreePaneIds(&tree_ids_buf);
+        break :blk tree_ids_buf[0..n];
+    } else ws.node_ids.items;
+    if (pane_ids.len == 0) return;
 
     const sw = screen_width -| pad * 2;
     const sh = screen_height -| pad * 2;
@@ -348,10 +359,10 @@ pub fn resizePanePtys(self: *Multiplexer, screen_width: u32, screen_height: u32,
     defer self.allocator.free(rects);
 
     for (rects, 0..) |rect, i| {
-        if (i >= node_ids.len) break;
-        const pane_id = node_ids[i];
+        if (i >= pane_ids.len) break;
+        const pane_id = pane_ids[i];
         if (self.getPaneById(pane_id)) |pane| {
-            const content = if (node_ids.len > 1) Compositor.insetRect(rect, 1) else rect;
+            const content = if (pane_ids.len > 1) Compositor.insetRect(rect, 1) else rect;
             const new_cols: u16 = @intCast(@max(1, content.width / @as(u16, @intCast(cell_width))));
             const new_rows: u16 = @intCast(@max(1, content.height / @as(u16, @intCast(cell_height))));
             pane.pty.resize(new_rows, new_cols);
@@ -417,13 +428,19 @@ pub fn renderAllWithSelection(
     };
 
     const ws = &self.layout_engine.workspaces[self.active_workspace];
-    const node_ids = ws.node_ids.items;
-    if (node_ids.len == 0) return;
+
+    // Get pane IDs from tree or flat list
+    var tree_ids_buf: [64]u64 = undefined;
+    const pane_ids = if (ws.split_root != null) blk: {
+        const n = ws.getTreePaneIds(&tree_ids_buf);
+        break :blk tree_ids_buf[0..n];
+    } else ws.node_ids.items;
+    if (pane_ids.len == 0) return;
 
     const rects = self.layout_engine.calculate(self.active_workspace, screen_rect) catch return;
     defer self.allocator.free(rects);
 
-    const active_id = ws.getActiveNodeId();
+    const active_id = if (ws.split_root != null) ws.active_node else ws.getActiveNodeId();
 
     // Reserve bottom bar height only when agents are active
     const has_agents = if (self.graph) |g| g.countAgentsByState().running + g.countAgentsByState().done + g.countAgentsByState().failed > 0 else false;
@@ -431,7 +448,7 @@ pub fn renderAllWithSelection(
     const effective_height: u16 = @intCast(screen_height -| bar_height -| pad);
 
     for (rects, 0..) |rect, i| {
-        if (i >= node_ids.len) break;
+        if (i >= pane_ids.len) break;
         if (rect.width == 0 or rect.height == 0) continue;
 
         // Clamp rect to effective height (above status bar)
@@ -441,13 +458,13 @@ pub fn renderAllWithSelection(
             clamped.height = effective_height - clamped.y;
         }
 
-        const pane = self.getPaneById(node_ids[i]) orelse continue;
+        const pane = self.getPaneById(pane_ids[i]) orelse continue;
         const is_active = if (active_id) |aid| aid == pane.id else false;
         // Only apply selection highlight to the active pane
         const pane_sel = if (is_active) sel else null;
 
         // For multi-pane layouts, reserve 1px border around each pane
-        const has_border = node_ids.len > 1;
+        const has_border = pane_ids.len > 1;
         if (has_border) {
             // Draw border with agent-aware color
             const border_color = Compositor.getBorderColor(self.graph, pane.id, is_active, &renderer.scheme);

@@ -294,8 +294,10 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     _ = &border_dragging;
     var border_drag_x: u32 = 0; // initial mouse x for drag
     _ = &border_drag_x;
-    var border_drag_ratio: f32 = 0.6; // initial master_ratio
+    var border_drag_ratio: f32 = 0.6; // initial ratio
     _ = &border_drag_ratio;
+    var border_drag_node: u16 = 0; // split node index for tree drag
+    _ = &border_drag_node;
     var pty_buf: [8192]u8 = undefined;
     var running = true;
     var mouse_cursor_hidden = false;
@@ -656,6 +658,20 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                     const sz = win.getSize();
                                     mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
                                 }
+                                if (action == .split_vertical or action == .split_horizontal) {
+                                    const dir: @import("tiling/LayoutEngine.zig").SplitDirection = if (action == .split_horizontal) .horizontal else .vertical;
+                                    const id = mux.spawnPane(grid_rows, grid_cols) catch continue;
+                                    if (mux.getPaneById(id)) |pane| {
+                                        _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.pty.child_pid }) catch {};
+                                    }
+                                    hooks.fire(.spawn);
+                                    // Add to split tree
+                                    const ws = &mux.layout_engine.workspaces[mux.active_workspace];
+                                    ws.addNodeSplit(mux.allocator, id, dir) catch {};
+                                    // Resize all PTYs to match new layout
+                                    const sz = win.getSize();
+                                    mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                }
                                 continue;
                             }
 
@@ -780,8 +796,14 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             // Click-to-focus + border drag detection
                             const ClickRect = @import("tiling/LayoutEngine.zig").Rect;
                             const click_ws = &mux.layout_engine.workspaces[mux.active_workspace];
-                            const click_node_ids = click_ws.node_ids.items;
-                            if (click_node_ids.len > 1 and click_ws.layout == .master_stack) {
+
+                            var click_ids_buf: [64]u64 = undefined;
+                            const click_pane_ids = if (click_ws.split_root != null) blk: {
+                                const n = click_ws.getTreePaneIds(&click_ids_buf);
+                                break :blk click_ids_buf[0..n];
+                            } else click_ws.node_ids.items;
+
+                            if (click_pane_ids.len > 1) {
                                 const sz = win.getSize();
                                 const click_screen = ClickRect{
                                     .x = @intCast(padding),
@@ -789,53 +811,33 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                     .width = @intCast(@min(sz.width -| padding * 2, std.math.maxInt(u16))),
                                     .height = @intCast(@min(sz.height -| padding * 2, std.math.maxInt(u16))),
                                 };
-                                if (mux.layout_engine.calculate(mux.active_workspace, click_screen)) |click_rects| {
-                                    defer allocator.free(click_rects);
-                                    // Check if click is on master/stack border (within 4px)
-                                    const border_zone: u32 = 4;
-                                    if (click_rects.len >= 2) {
-                                        const master_right = @as(u32, click_rects[0].x) + click_rects[0].width;
-                                        if (mouse.x >= master_right -| border_zone and mouse.x <= master_right + border_zone) {
-                                            border_dragging = true;
-                                            border_drag_x = mouse.x;
-                                            border_drag_ratio = click_ws.master_ratio;
-                                            continue;
-                                        }
+
+                                // Border drag: check if click is on a split border
+                                if (click_ws.split_root != null) {
+                                    if (mux.layout_engine.workspaces[mux.active_workspace].findSplitForBorder(click_screen, mouse.x, mouse.y, 4)) |hit| {
+                                        border_dragging = true;
+                                        border_drag_x = mouse.x;
+                                        border_drag_ratio = mux.layout_engine.workspaces[mux.active_workspace].split_nodes[hit.node_idx].split.ratio;
+                                        // Store the split node index for the drag handler
+                                        border_drag_node = hit.node_idx;
+                                        continue;
                                     }
-                                    // Click-to-focus
-                                    for (click_rects, 0..) |cr, ci| {
-                                        if (ci >= click_node_ids.len) break;
-                                        if (mouse.x >= cr.x and mouse.x < @as(u32, cr.x) + cr.width and
-                                            mouse.y >= cr.y and mouse.y < @as(u32, cr.y) + cr.height)
-                                        {
-                                            if (ci != click_ws.active_index) {
-                                                mux.layout_engine.workspaces[mux.active_workspace].active_index = ci;
-                                                for (mux.panes.items) |*p| p.grid.dirty = true;
-                                            }
-                                            break;
-                                        }
-                                    }
-                                } else |_| {}
-                            } else if (click_node_ids.len > 1) {
-                                // Non-master_stack layouts: click-to-focus only
-                                const sz = win.getSize();
-                                const click_screen = ClickRect{
-                                    .x = @intCast(padding),
-                                    .y = @intCast(padding),
-                                    .width = @intCast(@min(sz.width -| padding * 2, std.math.maxInt(u16))),
-                                    .height = @intCast(@min(sz.height -| padding * 2, std.math.maxInt(u16))),
-                                };
+                                }
+
+                                // Click-to-focus
                                 if (mux.layout_engine.calculate(mux.active_workspace, click_screen)) |click_rects| {
                                     defer allocator.free(click_rects);
                                     for (click_rects, 0..) |cr, ci| {
-                                        if (ci >= click_node_ids.len) break;
+                                        if (ci >= click_pane_ids.len) break;
                                         if (mouse.x >= cr.x and mouse.x < @as(u32, cr.x) + cr.width and
                                             mouse.y >= cr.y and mouse.y < @as(u32, cr.y) + cr.height)
                                         {
-                                            if (ci != click_ws.active_index) {
+                                            if (click_ws.split_root != null) {
+                                                mux.layout_engine.workspaces[mux.active_workspace].active_node = click_pane_ids[ci];
+                                            } else if (ci != click_ws.active_index) {
                                                 mux.layout_engine.workspaces[mux.active_workspace].active_index = ci;
-                                                for (mux.panes.items) |*p| p.grid.dirty = true;
                                             }
+                                            for (mux.panes.items) |*p| p.grid.dirty = true;
                                             break;
                                         }
                                     }
@@ -992,7 +994,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         win.showCursor();
                         mouse_cursor_hidden = false;
                     }
-                    // Border drag-to-resize: update master_ratio from mouse delta
+                    // Border drag-to-resize
                     if (border_dragging) {
                         const sz = win.getSize();
                         const content_w = sz.width -| padding * 2;
@@ -1000,7 +1002,12 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             const delta_px: i32 = @as(i32, @intCast(motion.x)) - @as(i32, @intCast(border_drag_x));
                             const delta_ratio: f32 = @as(f32, @floatFromInt(delta_px)) / @as(f32, @floatFromInt(content_w));
                             const new_ratio = std.math.clamp(border_drag_ratio + delta_ratio, 0.15, 0.85);
-                            mux.layout_engine.workspaces[mux.active_workspace].master_ratio = new_ratio;
+                            const ws_mut = &mux.layout_engine.workspaces[mux.active_workspace];
+                            if (ws_mut.split_root != null) {
+                                ws_mut.resizeSplit(border_drag_node, new_ratio);
+                            } else {
+                                ws_mut.master_ratio = new_ratio;
+                            }
                             for (mux.panes.items) |*p| p.grid.dirty = true;
                         }
                         continue;

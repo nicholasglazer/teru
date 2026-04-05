@@ -43,6 +43,8 @@ pub const MuxAction = enum {
     enter_search,
     enter_vi_mode,
     panes_changed,
+    split_horizontal,
+    split_vertical,
 };
 
 // ── Mux command dispatch ─────────────────────────────────────────
@@ -64,20 +66,15 @@ pub fn handleMuxCommand(
     io: Io,
     prefix_byte: u8,
 ) MuxAction {
+    _ = grid_rows;
+    _ = grid_cols;
     // Normalize Ctrl+letter (0x01-0x1A) to plain letter.
     // If user holds Ctrl while pressing the command key (e.g., Ctrl still
     // held after prefix), xkbcommon sends Ctrl+V (0x16) instead of 'v'.
     const key = if (cmd >= 1 and cmd <= 26) cmd + 0x60 else cmd;
     switch (key) {
-        'c' => {
-            // Spawn new pane
-            const id = mux.spawnPane(grid_rows, grid_cols) catch return .none;
-            if (mux.getPaneById(id)) |pane| {
-                _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.pty.child_pid }) catch {};
-            }
-            hooks.fire(.spawn);
-            return .panes_changed;
-        },
+        'c', '\\' => return .split_vertical,
+        '-' => return .split_horizontal,
         'x' => {
             // Close active pane
             if (mux.getActivePane()) |pane| {
