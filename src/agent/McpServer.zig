@@ -14,6 +14,7 @@ const Allocator = std.mem.Allocator;
 const Multiplexer = @import("../core/Multiplexer.zig");
 const ProcessGraph = @import("../graph/ProcessGraph.zig");
 const Grid = @import("../core/Grid.zig");
+const compat = @import("../compat.zig");
 
 const McpServer = @This();
 
@@ -214,7 +215,7 @@ fn handleToolsList(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teru_read_output","description":"Get recent N lines from a pane scrollback","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"lines":{{"type":"integer","default":50}}}},"required":["pane_id"]}}}},
         \\{{"name":"teru_get_graph","description":"Get the process graph as JSON","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
         \\{{"name":"teru_send_input","description":"Write text to a pane PTY stdin","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"text":{{"type":"string"}}}},"required":["pane_id","text"]}}}},
-        \\{{"name":"teru_create_pane","description":"Spawn a new pane in a workspace","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer","default":0}},"direction":{{"type":"string","enum":["vertical","horizontal"],"default":"vertical"}}}},"required":[]}}}},
+        \\{{"name":"teru_create_pane","description":"Spawn a new pane in a workspace","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer","default":0}},"direction":{{"type":"string","enum":["vertical","horizontal"],"default":"vertical"}},"command":{{"type":"string","description":"Command to run (default: user shell)"}},"cwd":{{"type":"string","description":"Working directory (default: active pane CWD)"}}}},"required":[]}}}},
         \\{{"name":"teru_broadcast","description":"Send text to all panes in a workspace","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer"}},"text":{{"type":"string"}}}},"required":["workspace","text"]}}}},
         \\{{"name":"teru_send_keys","description":"Send named keystrokes to a pane (e.g. enter, ctrl+c, up, f1)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"keys":{{"type":"array","items":{{"type":"string"}}}}}},"required":["pane_id","keys"]}}}},
         \\{{"name":"teru_get_state","description":"Query terminal state for a pane (cursor, size, modes, title)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}}}},"required":["pane_id"]}}}},
@@ -256,7 +257,9 @@ fn handleToolsCall(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u
         const workspace = extractNestedJsonInt(params_body, "workspace") orelse 0;
         const dir_str = extractNestedJsonString(params_body, "direction");
         const is_horizontal = if (dir_str) |d| std.mem.eql(u8, d, "horizontal") else false;
-        return self.toolCreatePane(@intCast(workspace), is_horizontal, buf, id);
+        const command = extractNestedJsonString(params_body, "command");
+        const cwd = extractNestedJsonString(params_body, "cwd");
+        return self.toolCreatePane(@intCast(workspace), is_horizontal, command, cwd, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_broadcast")) {
         const workspace = extractNestedJsonInt(params_body, "workspace") orelse
             return jsonRpcError(buf, id, -32602, "Missing workspace");
@@ -470,8 +473,30 @@ fn toolSendInput(self: *McpServer, pane_id: u64, text: []const u8, buf: []u8, id
         jsonRpcError(buf, id, -32603, "Internal error");
 }
 
-fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, buf: []u8, id: ?[]const u8) []const u8 {
+fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, command: ?[]const u8, cwd_param: ?[]const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
+
+    // Resolve CWD: explicit param > active pane's CWD > inherit
+    var cwd_buf: [512]u8 = undefined;
+    const cwd: ?[]const u8 = if (cwd_param) |c| c else blk: {
+        // Read active pane's CWD from /proc/<pid>/cwd
+        if (self.multiplexer.getActivePane()) |pane| {
+            if (pane.pty.child_pid) |pid| {
+                var path_buf: [64]u8 = undefined;
+                const proc_path = std.fmt.bufPrint(&path_buf, "/proc/{d}/cwd", .{pid}) catch break :blk null;
+                // Null-terminate for readlinkat
+                var path_z: [64:0]u8 = undefined;
+                @memcpy(path_z[0..proc_path.len], proc_path);
+                path_z[proc_path.len] = 0;
+                const rc = linux.readlinkat(linux.AT.FDCWD, &path_z, &cwd_buf, cwd_buf.len);
+                const signed: isize = @bitCast(rc);
+                if (signed > 0) {
+                    break :blk cwd_buf[0..@intCast(signed)];
+                }
+            }
+        }
+        break :blk null;
+    };
 
     // Save current workspace, switch, spawn, restore
     const prev_workspace = self.multiplexer.active_workspace;
@@ -479,8 +504,10 @@ fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, buf: []u8, 
         self.multiplexer.switchWorkspace(workspace);
     }
 
-    // Use default grid size (24x80)
-    const pane_id = self.multiplexer.spawnPane(24, 80) catch
+    // spawnPaneWithCommand handles both custom commands and CWD.
+    // When command is null, pass the default shell explicitly.
+    const shell = command orelse compat.getenv("SHELL") orelse "/bin/sh";
+    const pane_id = self.multiplexer.spawnPaneWithCommand(24, 80, shell, cwd) catch
         return jsonRpcError(buf, id, -32603, "Spawn failed");
 
     // Add to split tree if active
