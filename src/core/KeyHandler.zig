@@ -63,7 +63,11 @@ pub fn handleMuxCommand(
     io: Io,
     prefix_byte: u8,
 ) MuxAction {
-    switch (cmd) {
+    // Normalize Ctrl+letter (0x01-0x1A) to plain letter.
+    // If user holds Ctrl while pressing the command key (e.g., Ctrl still
+    // held after prefix), xkbcommon sends Ctrl+V (0x16) instead of 'v'.
+    const key = if (cmd >= 1 and cmd <= 26) cmd + 0x60 else cmd;
+    switch (key) {
         'c' => {
             // Spawn new pane
             const id = mux.spawnPane(grid_rows, grid_cols) catch return .none;
