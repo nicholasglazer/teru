@@ -726,6 +726,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                     _ = pane.pty.write(mbuf[0..6]) catch {};
                                 }
                             }
+                            // Track button state for motion reporting (mode 1002)
+                            if (mouse.button == .left) mouse_down = true;
                             // Scroll events: don't consume, let teru handle them too
                             if (mouse.button != .scroll_up and mouse.button != .scroll_down) continue;
                         }
@@ -902,6 +904,9 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     }
                     if (mouse.button == .left and mouse_down) {
                         mouse_down = false;
+                        // Don't process selection when mouse tracking is active
+                        const track_active = if (mux.getActivePane()) |pane| pane.vt.mouse_tracking != .none else false;
+                        if (track_active) continue;
                         const col: u16 = @intCast(@min(mouse.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
                         const row: u16 = @intCast(@min(mouse.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
                         selection.update(row, col);
