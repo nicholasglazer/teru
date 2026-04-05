@@ -99,11 +99,13 @@ pub const Workspace = struct {
     }
 
     pub fn focusNext(self: *Workspace) void {
+        if (self.split_root != null) { self.focusNextInTree(); return; }
         if (self.node_ids.items.len == 0) return;
         self.active_index = (self.active_index + 1) % self.node_ids.items.len;
     }
 
     pub fn focusPrev(self: *Workspace) void {
+        if (self.split_root != null) { self.focusPrevInTree(); return; }
         if (self.node_ids.items.len == 0) return;
         if (self.active_index == 0) {
             self.active_index = self.node_ids.items.len - 1;
@@ -148,6 +150,7 @@ pub const Workspace = struct {
     }
 
     pub fn getActiveNodeId(self: *const Workspace) ?u64 {
+        if (self.split_root != null) return self.active_node;
         if (self.node_ids.items.len == 0) return null;
         return self.node_ids.items[self.active_index];
     }
@@ -180,7 +183,28 @@ pub const Workspace = struct {
         self.layout = autoSelectLayout(self.node_ids.items.len);
 
         if (self.split_root == null) {
-            // Empty tree — add single leaf
+            // Tree empty — check if there's an existing pane in the flat list to split
+            if (self.node_ids.items.len >= 2) {
+                // We have the existing pane + the new one. Build a split.
+                const existing_id = blk: {
+                    for (self.node_ids.items) |nid| {
+                        if (nid != pane_id) break :blk nid;
+                    }
+                    break :blk pane_id; // fallback
+                };
+                const first_idx = self.allocSplitNode(.{ .leaf = existing_id }) orelse return;
+                const second_idx = self.allocSplitNode(.{ .leaf = pane_id }) orelse return;
+                const split_idx = self.allocSplitNode(.{ .split = .{
+                    .dir = direction,
+                    .ratio = 0.5,
+                    .first = first_idx,
+                    .second = second_idx,
+                } }) orelse return;
+                self.split_root = split_idx;
+                self.active_node = pane_id;
+                return;
+            }
+            // Truly empty — single leaf
             const idx = self.allocSplitNode(.{ .leaf = pane_id }) orelse return;
             self.split_root = idx;
             self.active_node = pane_id;
