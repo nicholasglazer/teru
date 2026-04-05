@@ -367,6 +367,10 @@ pub fn resizePanePtys(self: *Multiplexer, screen_width: u32, screen_height: u32,
             const new_cols: u16 = @intCast(@max(1, content.width / @as(u16, @intCast(cell_width))));
             const new_rows: u16 = @intCast(@max(1, content.height / @as(u16, @intCast(cell_height))));
             pane.pty.resize(new_rows, new_cols);
+            if (new_rows != pane.grid.rows or new_cols != pane.grid.cols) {
+                pane.grid.resize(self.allocator, new_rows, new_cols) catch {};
+                pane.linkVt(self.allocator);
+            }
             pane.grid.dirty = true;
         }
     }
