@@ -225,6 +225,15 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     };
     defer if (mcp) |*m| m.deinit();
 
+    // Set screen dimensions for MCP pane creation
+    if (mcp) |*m| {
+        m.screen_width = config.initial_width;
+        m.screen_height = config.initial_height;
+        m.cell_width = atlas.cell_width;
+        m.cell_height = atlas.cell_height;
+        m.padding = padding;
+    }
+
     // PaneBackend: Claude Code agent team protocol (NDJSON over Unix socket)
     var pane_backend = PaneBackend.init(allocator, &mux, &graph) catch null;
     defer if (pane_backend) |*pb| pb.deinit();
@@ -361,6 +370,12 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                 .resize => |sz| {
                     // Resize renderer
                     renderer.resize(sz.width, sz.height);
+
+                    // Update MCP screen dimensions
+                    if (mcp) |*m| {
+                        m.screen_width = sz.width;
+                        m.screen_height = sz.height;
+                    }
 
                     // Recalculate grid dimensions
                     const new_cols: u16 = @intCast((sz.width -| padding * 2) / atlas.cell_width);
@@ -1057,12 +1072,16 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         }
                         selection.update(row, col);
 
-                        // Auto-scroll when dragging near viewport edges
-                        const edge_zone = atlas.cell_height; // 1 cell height from edge
+                        // Auto-scroll when dragging near active pane edges
                         const in_alt = if (mux.getActivePane()) |pane| pane.vt.alt_screen else false;
                         if (!in_alt) {
-                            if (motion.y < edge_zone) {
-                                // Dragging near top edge: scroll up into scrollback
+                            const sz_scroll = win.getSize();
+                            const pane_rect = mux.getActivePaneRect(sz_scroll.width, sz_scroll.height, padding);
+                            const edge_zone = atlas.cell_height;
+                            const top_edge = if (pane_rect) |pr| @as(u32, pr.y) else 0;
+                            const bot_edge = if (pane_rect) |pr| @as(u32, pr.y) + pr.height else grid_rows * atlas.cell_height;
+
+                            if (motion.y < top_edge + edge_zone) {
                                 const max_offset = if (mux.getActivePane()) |pane|
                                     if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
                                 else
@@ -1070,8 +1089,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 if (max_offset > 0) {
                                     _ = mux.smoothScroll(@as(i32, @intCast(atlas.cell_height)), atlas.cell_height, max_offset);
                                 }
-                            } else if (motion.y >= grid_rows * atlas.cell_height -| edge_zone) {
-                                // Dragging near bottom edge: scroll down
+                            } else if (motion.y >= bot_edge -| edge_zone) {
                                 if (mux.getScrollOffset() > 0) {
                                     const max_offset = if (mux.getActivePane()) |pane|
                                         if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0

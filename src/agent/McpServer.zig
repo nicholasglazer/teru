@@ -33,6 +33,12 @@ multiplexer: *Multiplexer,
 graph: *ProcessGraph,
 allocator: Allocator,
 running: bool,
+// Screen dimensions for PTY resize after pane creation
+screen_width: u32 = 0,
+screen_height: u32 = 0,
+cell_width: u32 = 0,
+cell_height: u32 = 0,
+padding: u32 = 0,
 
 // ── Lifecycle ──────────────────────────────────────────────────
 
@@ -486,6 +492,11 @@ fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, buf: []u8, 
             .pid = pane.pty.child_pid,
             .workspace = workspace,
         }) catch {};
+    }
+
+    // Resize all PTYs to match new layout
+    if (self.screen_width > 0) {
+        self.multiplexer.resizePanePtys(self.screen_width, self.screen_height, self.cell_width, self.cell_height, self.padding);
     }
 
     // Restore workspace
