@@ -458,9 +458,9 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                             mux.setScrollOffset(0);
                                         },
                                         .yank => {
-                                            if (vi_mode.toSelection(vi_scroll, sb_lines)) |sel| {
+                                            if (vi_mode.toYankSelection(sb_lines)) |sel| {
                                                 if (mux.getActivePane()) |pane| {
-                                                    var sel_buf: [8192]u8 = undefined;
+                                                    var sel_buf: [65536]u8 = undefined;
                                                     const sbl = pane.grid.scrollback;
                                                     var sel_copy = sel;
                                                     const len = sel_copy.getTextWithScrollback(&pane.grid, sbl, &sel_buf);
@@ -493,9 +493,9 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                             mux.setScrollOffset(0);
                                         },
                                         .yank => {
-                                            if (vi_mode.toSelection(vi_scroll, sb_lines)) |sel| {
+                                            if (vi_mode.toYankSelection(sb_lines)) |sel| {
                                                 if (mux.getActivePane()) |pane| {
-                                                    var sel_buf: [8192]u8 = undefined;
+                                                    var sel_buf: [65536]u8 = undefined;
                                                     const sbl = pane.grid.scrollback;
                                                     var sel_copy = sel;
                                                     const len = sel_copy.getTextWithScrollback(&pane.grid, sbl, &sel_buf);
@@ -579,7 +579,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                     // Copy selection
                                     if (selection.active) {
                                         if (mux.getActivePane()) |pane| {
-                                            var sel_buf: [8192]u8 = undefined;
+                                            var sel_buf: [65536]u8 = undefined;
                                             const sb = pane.grid.scrollback;
                                             const copy_len = selection.getTextWithScrollback(&pane.grid, sb, &sel_buf);
                                             if (copy_len > 0) {
@@ -803,7 +803,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                     selection.selectWord(&pane.grid, row, col, delims);
                                     pane.grid.dirty = true;
                                     if (config.copy_on_select) {
-                                        var sel_buf: [8192]u8 = undefined;
+                                        var sel_buf: [65536]u8 = undefined;
                                         const sb = pane.grid.scrollback;
                                         const len = selection.getTextWithScrollback(&pane.grid, sb, &sel_buf);
                                         if (len > 0) {
@@ -911,7 +911,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             selection.finish();
                             if (config.copy_on_select) {
                                 if (mux.getActivePane()) |pane| {
-                                    var sel_buf: [8192]u8 = undefined;
+                                    var sel_buf: [65536]u8 = undefined;
                                     const sb = pane.grid.scrollback;
                                     const len = selection.getTextWithScrollback(&pane.grid, sb, &sel_buf);
                                     if (len > 0) {
