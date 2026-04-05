@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.2.4 (2026-04-05)
+
+### Features
+- **Vi/copy mode**: keyboard-driven scrollback navigation and text selection (prefix + v)
+  - hjkl / arrow keys for cursor movement, w/b/e for word motion
+  - g/G for top/bottom of scrollback, Ctrl+U/D for half-page, H/M/L for viewport
+  - v for character selection, V for line selection, o to swap endpoint
+  - y to yank to clipboard, / to search, q or ESC to exit
+  - Status bar shows -- VI -- / -- VISUAL -- / -- VISUAL LINE --
+  - Vi cursor rendered as inverted block overlay
+
+## 0.2.3 (2026-04-04)
+
+### Features
+- **DEC Special Graphics charset (ACS)**: ESC(0 / ESC(B for line-drawing character set — fixes garbled tmux borders
+
+### Fixes
+- **Alt+key sends ESC prefix**: Alt+1..9 for tmux windows, Alt+b/f for word movement now work
+- **Scroll suppressed in alt screen**: tmux/vim handle scrolling themselves, teru no longer scrolls its own scrollback on top
+- **Mouse tracking isolation**: drag events go to app (tmux border resize) instead of starting text selection when mouse tracking is active
+- **Auto-scroll during drag selection**: dragging near viewport edges scrolls into scrollback
+- **Deduplicated UTF-8 encoding**: Selection.getText uses shared appendUtf8 helper
+
+## 0.2.2 (2026-04-04)
+
+### Features
+- **Programmatic box-drawing**: U+2500-U+257F and block elements U+2580-U+259F rendered pixel-perfect edge-to-edge, replacing font glyphs — fixes gaps in separator lines
+- **Scrollback preserves colors and attributes**: bg color, bold/dim/italic/inverse encoded in scrollback lines, full UTF-8 (was ASCII-only, fg-only)
+- **Scrollback selection**: text selection works in scrollback region, reads from scrollback buffer for rows above viewport
+
+### Fixes
+- Removed unconditional dimColor() that dimmed all scrollback text — colors now match active viewport
+- Scrollback renderer parses bg color SGR codes and attributes, renders via atlas for non-ASCII
+
+### CI
+- Fixed release workflow (removed broken aarch64 cross-compilation)
+- Replaced AUR publish action with direct script (KSXGitHub action had bash bug)
+
+## 0.2.1 (2026-04-03)
+
+### Features
+- **Live config reload**: inotify watches ~/.config/teru/ directory for teru.conf changes
+- **Mouse reporting**: modes 1000/1002/1003/1006 for app mouse support (vim, tmux)
+
 ## 0.2.0 (2026-04-03)
 
 ### Features
