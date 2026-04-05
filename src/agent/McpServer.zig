@@ -457,7 +457,11 @@ fn toolSendInput(self: *McpServer, pane_id: u64, text: []const u8, buf: []u8, id
     const pane = self.multiplexer.getPaneById(pane_id) orelse
         return jsonRpcError(buf, id, -32602, "Pane not found");
 
-    _ = pane.pty.write(text) catch
+    // Unescape JSON string sequences before writing to PTY
+    var unesc: [4096]u8 = undefined;
+    const unesc_text = unescapeJson(text, &unesc);
+
+    _ = pane.pty.write(unesc_text) catch
         return jsonRpcError(buf, id, -32603, "Write failed");
 
     return std.fmt.bufPrint(buf,
@@ -919,6 +923,29 @@ fn parseContentLength(data: []const u8) ?usize {
     const start = pos + needle.len;
     const end = std.mem.indexOfScalar(u8, data[start..], '\r') orelse return null;
     return std.fmt.parseInt(usize, data[start .. start + end], 10) catch null;
+}
+
+/// Unescape JSON string escape sequences: \n \r \t \\ \"
+fn unescapeJson(src: []const u8, dst: []u8) []const u8 {
+    var di: usize = 0;
+    var si: usize = 0;
+    while (si < src.len and di < dst.len) {
+        if (src[si] == '\\' and si + 1 < src.len) {
+            switch (src[si + 1]) {
+                'n' => { dst[di] = '\n'; di += 1; si += 2; },
+                'r' => { dst[di] = '\r'; di += 1; si += 2; },
+                't' => { dst[di] = '\t'; di += 1; si += 2; },
+                '\\' => { dst[di] = '\\'; di += 1; si += 2; },
+                '"' => { dst[di] = '"'; di += 1; si += 2; },
+                else => { dst[di] = src[si]; di += 1; si += 1; },
+            }
+        } else {
+            dst[di] = src[si];
+            di += 1;
+            si += 1;
+        }
+    }
+    return dst[0..di];
 }
 
 fn extractJsonString(json: []const u8, key: []const u8) ?[]const u8 {
