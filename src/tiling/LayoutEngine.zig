@@ -367,18 +367,19 @@ pub const Workspace = struct {
                 var first_rect = rect;
                 var second_rect = rect;
 
+                const clamped_ratio = std.math.clamp(s.ratio, 0.0, 1.0);
                 switch (s.dir) {
                     .vertical => {
-                        // Split left/right
-                        const first_w: u16 = @intFromFloat(@as(f32, @floatFromInt(rect.width)) * s.ratio);
+                        const fw = @as(f32, @floatFromInt(rect.width)) * clamped_ratio;
+                        const first_w: u16 = if (fw < 0 or fw > @as(f32, @floatFromInt(std.math.maxInt(u16)))) rect.width / 2 else @intFromFloat(fw);
                         const second_w: u16 = rect.width -| first_w;
                         first_rect.width = first_w;
                         second_rect.x = rect.x +| first_w;
                         second_rect.width = second_w;
                     },
                     .horizontal => {
-                        // Split top/bottom
-                        const first_h: u16 = @intFromFloat(@as(f32, @floatFromInt(rect.height)) * s.ratio);
+                        const fh = @as(f32, @floatFromInt(rect.height)) * clamped_ratio;
+                        const first_h: u16 = if (fh < 0 or fh > @as(f32, @floatFromInt(std.math.maxInt(u16)))) rect.height / 2 else @intFromFloat(fh);
                         const second_h: u16 = rect.height -| first_h;
                         first_rect.height = first_h;
                         second_rect.y = rect.y +| first_h;
