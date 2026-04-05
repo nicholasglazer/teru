@@ -175,12 +175,20 @@ pub const Workspace = struct {
     /// Split the active pane (or add first pane if tree is empty).
     /// Creates a new split node: active pane becomes `first`, new pane becomes `second`.
     pub fn addNodeSplit(self: *Workspace, allocator: Allocator, pane_id: u64, direction: SplitDirection) !void {
-        // Also maintain the flat list for backward compat
+        // Maintain the flat list for backward compat (skip if already present)
+        var in_flat = false;
         for (self.node_ids.items) |existing| {
-            if (existing == pane_id) return;
+            if (existing == pane_id) { in_flat = true; break; }
         }
-        try self.node_ids.append(allocator, pane_id);
-        self.layout = autoSelectLayout(self.node_ids.items.len);
+        if (!in_flat) {
+            try self.node_ids.append(allocator, pane_id);
+            self.layout = autoSelectLayout(self.node_ids.items.len);
+        }
+
+        // Check if pane already exists in the tree
+        if (self.split_root) |root| {
+            if (self.findLeaf(root, pane_id) != null) return;
+        }
 
         if (self.split_root == null) {
             // Tree empty — check if there's an existing pane in the flat list to split

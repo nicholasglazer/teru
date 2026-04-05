@@ -471,6 +471,10 @@ fn toolCreatePane(self: *McpServer, workspace: u8, buf: []u8, id: ?[]const u8) [
     const pane_id = self.multiplexer.spawnPane(24, 80) catch
         return jsonRpcError(buf, id, -32603, "Spawn failed");
 
+    // Add to split tree if active
+    const ws = &self.multiplexer.layout_engine.workspaces[workspace];
+    ws.addNodeSplit(self.multiplexer.allocator, pane_id, .vertical) catch {};
+
     // Register in graph — non-fatal: pane works without graph tracking
     if (self.multiplexer.getPaneById(pane_id)) |pane| {
         _ = self.graph.spawn(.{
