@@ -283,7 +283,7 @@ Workspace sections use `[workspace.N]` headers where N is 1-9.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `layout` | string | (auto) | Default layout: `master-stack`, `grid`, `monocle`, `floating`, `spiral`, `three-col`, or `columns` |
+| `layout` | string | (auto) | Default layout: `master-stack`, `grid`, `monocle`, `dishes`, `spiral`, `three-col`, `columns`, or `accordion` |
 | `layouts` | string | (all) | Comma-separated layout cycle list. Prefix+Space cycles within this list |
 | `master_ratio` | float | `0.6` | Proportion of screen for the master pane (0.15-0.85). Used by `master-stack` and `three-col` |
 | `name` | string | (none) | Display name for the workspace |
@@ -295,10 +295,11 @@ Workspace sections use `[workspace.N]` headers where N is 1-9.
 | `master-stack` | One master pane on the left, stack of panes on the right | `[M]` |
 | `grid` | Equal-sized grid (cols = ceil(sqrt(n))) | `[G]` |
 | `monocle` | Fullscreen active pane, others hidden | `[#]` |
-| `floating` | Cascading windows with default positions | `[F]` |
+| `dishes` | Master on top (full width), stack in columns below | `[D]` |
 | `spiral` | Fibonacci spiral: alternates vertical/horizontal splits | `[S]` |
 | `three-col` | Master in center, stacks on left and right sides | `[3]` |
 | `columns` | Equal-width vertical columns | `[|]` |
+| `accordion` | Focused pane tall, others compressed to thin strips | `[A]` |
 
 #### Per-Workspace Layout Lists
 

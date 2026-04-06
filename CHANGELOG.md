@@ -4,14 +4,22 @@
 
 ### Features
 - **Per-workspace layout lists**: configure layout cycling per workspace with `layouts = master-stack, grid, monocle` in `[workspace.N]` config sections. Prefix+Space cycles within the workspace's list (xmonad `|||` pattern)
+- **8 tiling layouts**: master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion
 - **Spiral layout**: Fibonacci/golden ratio spiral that alternates vertical and horizontal splits
 - **Three-column layout**: master pane in center with stacks on left and right sides (ThreeColMid)
 - **Columns layout**: equal-width vertical columns
+- **Dishes layout**: horizontal master-stack — master on top (full width), stack in columns below
+- **Accordion layout**: focused pane gets most height, others compressed to thin strips
+- **`teru_set_layout` MCP tool**: agents can switch layouts programmatically
 - **Layout list hot-reload**: changing `layouts` in teru.conf applies immediately without restart
 
 ### Fixes
-- **Resize in three-col layout**: `resizeActive` now adjusts master_ratio for three_col (not just master-stack)
+- **Resize in three-col/dishes layout**: `resizeActive` now adjusts master_ratio for three_col and dishes
 - **Auto-select respects config**: `addNode`/`removeNode` no longer override the layout when a per-workspace layout list is configured
+- **Split tree cleared on layout switch**: `cycleLayout`, `toggleZoom`, and `teru_set_layout` now clear the split tree so flat layouts take effect
+
+### Removed
+- **Floating layout**: removed non-functional stub (cascading windows with no user interaction)
 
 ## 0.2.6 (2026-04-06)
 

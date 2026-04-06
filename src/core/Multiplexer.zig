@@ -384,7 +384,7 @@ pub fn resizePanePtys(self: *Multiplexer, screen_width: u32, screen_height: u32,
 pub fn resizeActive(self: *Multiplexer, dx: i8, dy: i8) void {
     _ = dy;
     const ws = &self.layout_engine.workspaces[self.active_workspace];
-    if (ws.layout != .master_stack and ws.layout != .three_col) return;
+    if (ws.layout != .master_stack and ws.layout != .three_col and ws.layout != .dishes) return;
     const step: f32 = @as(f32, @floatFromInt(dx)) * 0.02;
     ws.master_ratio = @min(0.85, @max(0.15, ws.master_ratio + step));
 }
@@ -621,7 +621,7 @@ test "Multiplexer cycleLayout — legacy (no layout list)" {
     try t.expectEqual(LayoutEngine.Layout.monocle, ws.layout);
 
     mux.cycleLayout();
-    try t.expectEqual(LayoutEngine.Layout.floating, ws.layout);
+    try t.expectEqual(LayoutEngine.Layout.dishes, ws.layout);
 
     mux.cycleLayout();
     try t.expectEqual(LayoutEngine.Layout.spiral, ws.layout);
@@ -631,6 +631,9 @@ test "Multiplexer cycleLayout — legacy (no layout list)" {
 
     mux.cycleLayout();
     try t.expectEqual(LayoutEngine.Layout.columns, ws.layout);
+
+    mux.cycleLayout();
+    try t.expectEqual(LayoutEngine.Layout.accordion, ws.layout);
 
     mux.cycleLayout();
     try t.expectEqual(LayoutEngine.Layout.master_stack, ws.layout);

@@ -71,7 +71,7 @@ Set the tiling layout for a workspace.
 ```json
 {"workspace": 0, "layout": "spiral"}
 ```
-Available layouts: `master-stack`, `grid`, `monocle`, `floating`, `spiral`, `three-col`, `columns`
+Available layouts: `master-stack`, `grid`, `monocle`, `dishes`, `spiral`, `three-col`, `columns`, `accordion`
 
 ### teru_get_graph
 Get the process graph (DAG of all processes/agents) as JSON.
@@ -108,8 +108,14 @@ mcp('teru_set_layout', {'layout': 'columns'})
 # For focus mode: one pane fullscreen
 mcp('teru_set_layout', {'layout': 'monocle'})
 
+# For horizontal master-stack: big pane on top, stack below
+mcp('teru_set_layout', {'layout': 'dishes'})
+
 # For Fibonacci spiral with many panes
 mcp('teru_set_layout', {'layout': 'spiral'})
+
+# For accordion: focused pane tall, others compressed
+mcp('teru_set_layout', {'layout': 'accordion'})
 
 # For center-focused editing: master center + stacks on sides
 mcp('teru_set_layout', {'layout': 'three-col'})

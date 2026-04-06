@@ -592,7 +592,8 @@ fn parseLayout(value: []const u8) ?LayoutEngine.Layout {
     if (std.mem.eql(u8, value, "master-stack") or std.mem.eql(u8, value, "master_stack")) return .master_stack;
     if (std.mem.eql(u8, value, "grid")) return .grid;
     if (std.mem.eql(u8, value, "monocle")) return .monocle;
-    if (std.mem.eql(u8, value, "floating")) return .floating;
+    if (std.mem.eql(u8, value, "dishes")) return .dishes;
+    if (std.mem.eql(u8, value, "accordion")) return .accordion;
     if (std.mem.eql(u8, value, "spiral")) return .spiral;
     if (std.mem.eql(u8, value, "three-col") or std.mem.eql(u8, value, "three_col")) return .three_col;
     if (std.mem.eql(u8, value, "columns")) return .columns;
@@ -995,7 +996,9 @@ test "parseLayout" {
     try std.testing.expectEqual(@as(?LayoutEngine.Layout, .master_stack), parseLayout("master_stack"));
     try std.testing.expectEqual(@as(?LayoutEngine.Layout, .grid), parseLayout("grid"));
     try std.testing.expectEqual(@as(?LayoutEngine.Layout, .monocle), parseLayout("monocle"));
-    try std.testing.expectEqual(@as(?LayoutEngine.Layout, .floating), parseLayout("floating"));
+    try std.testing.expectEqual(@as(?LayoutEngine.Layout, .dishes), parseLayout("dishes"));
+    try std.testing.expectEqual(@as(?LayoutEngine.Layout, .accordion), parseLayout("accordion"));
+    try std.testing.expectEqual(@as(?LayoutEngine.Layout, null), parseLayout("floating"));
     try std.testing.expectEqual(@as(?LayoutEngine.Layout, .spiral), parseLayout("spiral"));
     try std.testing.expectEqual(@as(?LayoutEngine.Layout, .three_col), parseLayout("three-col"));
     try std.testing.expectEqual(@as(?LayoutEngine.Layout, .three_col), parseLayout("three_col"));

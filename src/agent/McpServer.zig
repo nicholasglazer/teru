@@ -224,7 +224,7 @@ fn handleToolsList(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teru_switch_workspace","description":"Switch the active workspace (0-8)","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer"}}}},"required":["workspace"]}}}},
         \\{{"name":"teru_scroll","description":"Scroll a pane's scrollback (up/down/bottom)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"direction":{{"type":"string","enum":["up","down","bottom"]}},"lines":{{"type":"integer","default":10}}}},"required":["pane_id","direction"]}}}},
         \\{{"name":"teru_wait_for","description":"Check if text pattern exists in pane output (non-blocking)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"pattern":{{"type":"string"}},"lines":{{"type":"integer","default":20}}}},"required":["pane_id","pattern"]}}}},
-        \\{{"name":"teru_set_layout","description":"Set the layout for a workspace. Layouts: master-stack, grid, monocle, floating, spiral, three-col, columns","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer","default":0}},"layout":{{"type":"string","enum":["master-stack","grid","monocle","floating","spiral","three-col","columns"]}}}},"required":["layout"]}}}}
+        \\{{"name":"teru_set_layout","description":"Set the layout for a workspace. Layouts: master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer","default":0}},"layout":{{"type":"string","enum":["master-stack","grid","monocle","dishes","spiral","three-col","columns","accordion"]}}}},"required":["layout"]}}}}
         \\]}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
@@ -688,8 +688,10 @@ fn toolSetLayout(self: *McpServer, workspace: u8, layout_str: []const u8, buf: [
         .grid
     else if (std.mem.eql(u8, layout_str, "monocle"))
         .monocle
-    else if (std.mem.eql(u8, layout_str, "floating"))
-        .floating
+    else if (std.mem.eql(u8, layout_str, "dishes"))
+        .dishes
+    else if (std.mem.eql(u8, layout_str, "accordion"))
+        .accordion
     else if (std.mem.eql(u8, layout_str, "spiral"))
         .spiral
     else if (std.mem.eql(u8, layout_str, "three-col") or std.mem.eql(u8, layout_str, "three_col"))

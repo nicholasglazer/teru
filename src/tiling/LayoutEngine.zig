@@ -28,10 +28,11 @@ pub const Layout = enum(u8) {
     master_stack = 0,
     grid = 1,
     monocle = 2,
-    floating = 3,
+    dishes = 3,
     spiral = 4,
     three_col = 5,
     columns = 6,
+    accordion = 7,
 };
 
 pub const SplitDirection = enum { horizontal, vertical };
@@ -103,11 +104,12 @@ pub const Workspace = struct {
             self.layout = switch (self.layout) {
                 .master_stack => .grid,
                 .grid => .monocle,
-                .monocle => .floating,
-                .floating => .spiral,
+                .monocle => .dishes,
+                .dishes => .spiral,
                 .spiral => .three_col,
                 .three_col => .columns,
-                .columns => .master_stack,
+                .columns => .accordion,
+                .accordion => .master_stack,
             };
         }
         // layout_count == 1: no-op (only one layout)
@@ -614,7 +616,8 @@ pub fn calculate(self: *LayoutEngine, workspace_index: u8, screen: Rect) ![]Rect
         .master_stack => try calculateMasterStack(self.allocator, count, screen, ws.master_ratio),
         .grid => try calculateGrid(self.allocator, count, screen),
         .monocle => try calculateMonocle(self.allocator, count, screen, ws.active_index),
-        .floating => try calculateFloating(self.allocator, count, screen),
+        .dishes => try calculateDishes(self.allocator, count, screen, ws.master_ratio),
+        .accordion => try calculateAccordion(self.allocator, count, screen, ws.active_index),
         .spiral => try calculateSpiral(self.allocator, count, screen),
         .three_col => try calculateThreeCol(self.allocator, count, screen, ws.master_ratio),
         .columns => try calculateColumns(self.allocator, count, screen),
@@ -711,22 +714,71 @@ fn calculateMonocle(allocator: Allocator, count: usize, screen: Rect, active: us
     return rects;
 }
 
-fn calculateFloating(allocator: Allocator, count: usize, screen: Rect) ![]Rect {
-    // Floating layout: position nodes in a reasonable default (cascading)
-    // since we don't store per-node rects yet.
+fn calculateDishes(allocator: Allocator, count: usize, screen: Rect, ratio: f32) ![]Rect {
+    // Horizontal master-stack: master on top (full width), stack below in rows.
     const rects = try allocator.alloc(Rect, count);
 
-    const default_w = screen.width * 3 / 4;
-    const default_h = screen.height * 3 / 4;
+    if (count == 1) {
+        rects[0] = screen;
+        return rects;
+    }
 
-    for (0..count) |i| {
-        const offset: u16 = @intCast(@min(i * 2, screen.width / 4));
-        rects[i] = .{
-            .x = screen.x + offset,
-            .y = screen.y + offset,
-            .width = @min(default_w, screen.width -| offset),
-            .height = @min(default_h, screen.height -| offset),
+    const master_h: u16 = @intFromFloat(@as(f32, @floatFromInt(screen.height)) * ratio);
+    const stack_h: u16 = screen.height -| master_h;
+    const stack_count: u16 = @intCast(count - 1);
+
+    // Master pane (top, full width)
+    rects[0] = .{
+        .x = screen.x,
+        .y = screen.y,
+        .width = screen.width,
+        .height = master_h,
+    };
+
+    // Stack panes — divide bottom portion into equal-width columns
+    const cell_w = screen.width / stack_count;
+    const remainder = screen.width % stack_count;
+
+    for (0..stack_count) |i| {
+        const idx: u16 = @intCast(i);
+        const extra: u16 = if (i == stack_count - 1) remainder else 0;
+        rects[i + 1] = .{
+            .x = screen.x + idx * cell_w,
+            .y = screen.y + master_h,
+            .width = cell_w + extra,
+            .height = stack_h,
         };
+    }
+
+    return rects;
+}
+
+fn calculateAccordion(allocator: Allocator, count: usize, screen: Rect, active: usize) ![]Rect {
+    // Accordion: focused pane gets most of the height, others compressed
+    // to thin strips above and below it.
+    const rects = try allocator.alloc(Rect, count);
+
+    if (count == 1) {
+        rects[0] = screen;
+        return rects;
+    }
+
+    // Collapsed panes get a thin strip (enough for 1-2 lines of context)
+    const min_h: u16 = @min(2, screen.height / @as(u16, @intCast(count)));
+    const collapsed_total: u16 = min_h * @as(u16, @intCast(count - 1));
+    const active_h: u16 = screen.height -| collapsed_total;
+    const clamped_active = @min(active, count - 1);
+
+    var y: u16 = screen.y;
+    for (0..count) |i| {
+        const h: u16 = if (i == clamped_active) active_h else min_h;
+        rects[i] = .{
+            .x = screen.x,
+            .y = y,
+            .width = screen.width,
+            .height = h,
+        };
+        y +|= h;
     }
 
     return rects;
@@ -1142,22 +1194,63 @@ test "monocle — active node gets full screen, focus switching" {
     try t.expect(r2[1].eql(Rect.zero));
 }
 
-test "floating — cascading default positions" {
+test "dishes — master on top, stack in columns below" {
     var s = testEngine();
     defer s.engine.deinit();
     const ws = &s.engine.workspaces[0];
     for (1..4) |id| try ws.addNode(s.allocator, @intCast(id));
-    ws.layout = .floating;
+    ws.layout = .dishes;
+    ws.master_ratio = 0.5;
+
+    const rects = try s.engine.calculate(0, .{ .x = 0, .y = 0, .width = 900, .height = 600 });
+    defer s.allocator.free(rects);
+    try t.expectEqual(@as(usize, 3), rects.len);
+    // Master: top half, full width
+    try t.expectEqual(@as(u16, 0), rects[0].x);
+    try t.expectEqual(@as(u16, 0), rects[0].y);
+    try t.expectEqual(@as(u16, 900), rects[0].width);
+    try t.expectEqual(@as(u16, 300), rects[0].height);
+    // Stack: two columns in bottom half
+    try t.expectEqual(@as(u16, 0), rects[1].x);
+    try t.expectEqual(@as(u16, 300), rects[1].y);
+    try t.expectEqual(@as(u16, 450), rects[1].width);
+    try t.expectEqual(@as(u16, 300), rects[1].height);
+    try t.expectEqual(@as(u16, 450), rects[2].x);
+    try t.expectEqual(@as(u16, 300), rects[2].y);
+    try t.expectEqual(@as(u16, 450), rects[2].width);
+}
+
+test "dishes — single pane gets full screen" {
+    var s = testEngine();
+    defer s.engine.deinit();
+    const ws = &s.engine.workspaces[0];
+    try ws.addNode(s.allocator, 1);
+    ws.layout = .dishes;
 
     const rects = try s.engine.calculate(0, .{ .x = 0, .y = 0, .width = 800, .height = 600 });
     defer s.allocator.free(rects);
-    try t.expectEqual(@as(usize, 3), rects.len);
-    try t.expectEqual(@as(u16, 0), rects[0].x);
-    try t.expectEqual(@as(u16, 0), rects[0].y);
-    try t.expectEqual(@as(u16, 600), rects[0].width);
-    try t.expectEqual(@as(u16, 450), rects[0].height);
-    try t.expectEqual(@as(u16, 2), rects[1].x);
-    try t.expectEqual(@as(u16, 2), rects[1].y);
+    try t.expectEqual(@as(usize, 1), rects.len);
+    try t.expect(rects[0].eql(.{ .x = 0, .y = 0, .width = 800, .height = 600 }));
+}
+
+test "accordion — focused pane gets most height" {
+    var s = testEngine();
+    defer s.engine.deinit();
+    const ws = &s.engine.workspaces[0];
+    for (1..5) |id| try ws.addNode(s.allocator, @intCast(id));
+    ws.layout = .accordion;
+    ws.active_index = 1; // focus second pane
+
+    const rects = try s.engine.calculate(0, .{ .x = 0, .y = 0, .width = 800, .height = 100 });
+    defer s.allocator.free(rects);
+    try t.expectEqual(@as(usize, 4), rects.len);
+    // All panes full width
+    for (rects) |r| try t.expectEqual(@as(u16, 800), r.width);
+    // Collapsed panes get min_h=2, active gets the rest
+    try t.expectEqual(@as(u16, 2), rects[0].height); // collapsed
+    try t.expectEqual(@as(u16, 94), rects[1].height); // active (100 - 3*2)
+    try t.expectEqual(@as(u16, 2), rects[2].height); // collapsed
+    try t.expectEqual(@as(u16, 2), rects[3].height); // collapsed
 }
 
 test "calculate — zero nodes and invalid workspace" {

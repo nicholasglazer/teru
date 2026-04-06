@@ -14,7 +14,7 @@ zig build run -- --raw  # run (TTY mode)
 - src/pty/ -- PTY management (Linux: posix_openpt/forkpty)
 - src/graph/ -- ProcessGraph (DAG of all processes/agents)
 - src/agent/ -- OSC 9999 protocol, HookHandler, HookListener, McpServer, PaneBackend
-- src/tiling/ -- Layout engine (master-stack, grid, monocle, floating, spiral, three-col, columns)
+- src/tiling/ -- Layout engine (master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion)
 - src/persist/ -- Session serialization, binary format
 - src/config/ -- Config file parser (key=value format)
 - src/render/ -- CPU SIMD renderer, stb_truetype FontAtlas
