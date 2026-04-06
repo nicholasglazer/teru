@@ -699,7 +699,16 @@ fn toolSetLayout(self: *McpServer, workspace: u8, layout_str: []const u8, buf: [
     else
         return jsonRpcError(buf, id, -32602, "Unknown layout");
 
-    self.multiplexer.layout_engine.workspaces[workspace].layout = layout;
+    const ws = &self.multiplexer.layout_engine.workspaces[workspace];
+    ws.layout = layout;
+    // Clear split tree so the flat layout algorithm takes effect.
+    // Panes remain in ws.node_ids (the flat list) which all layouts use.
+    ws.split_root = null;
+    ws.split_node_count = 0;
+    // Sync active_node to flat list active
+    if (ws.node_ids.items.len > 0) {
+        ws.active_node = null;
+    }
 
     // Resize PTYs to match new layout
     if (self.screen_width > 0 and self.cell_width > 0) {

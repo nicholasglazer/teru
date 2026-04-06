@@ -307,22 +307,32 @@ pub fn switchWorkspace(self: *Multiplexer, idx: u8) void {
 
 /// Cycle the layout of the active workspace.
 /// Uses the workspace's layout list if configured, otherwise cycles all.
+/// Clears the split tree so the flat layout algorithm takes effect.
 pub fn cycleLayout(self: *Multiplexer) void {
-    self.layout_engine.workspaces[self.active_workspace].cycleLayout();
+    const ws = &self.layout_engine.workspaces[self.active_workspace];
+    ws.cycleLayout();
+    // Clear split tree so flat layout takes effect
+    ws.split_root = null;
+    ws.split_node_count = 0;
+    ws.active_node = null;
 }
 
 /// Toggle zoom: switch between current layout and monocle.
 /// If already monocle, restore the previous layout.
+/// Clears the split tree so the flat layout algorithm takes effect.
 pub fn toggleZoom(self: *Multiplexer) void {
     const ws = &self.layout_engine.workspaces[self.active_workspace];
     if (ws.layout == .monocle) {
-        // Restore previous layout (default to master_stack)
         ws.layout = if (ws.prev_layout) |prev| prev else .master_stack;
         ws.prev_layout = null;
     } else {
         ws.prev_layout = ws.layout;
         ws.layout = .monocle;
     }
+    // Clear split tree so flat layout takes effect
+    ws.split_root = null;
+    ws.split_node_count = 0;
+    ws.active_node = null;
 }
 
 /// Resize the active pane by adjusting the master ratio.
