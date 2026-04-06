@@ -630,7 +630,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                                     var sel_buf: [65536]u8 = undefined;
                                                     const sbl = pane.grid.scrollback;
                                                     var sel_copy = sel;
-                                                    const len = sel_copy.getTextWithScrollback(&pane.grid, sbl, &sel_buf);
+                                                    const len = sel_copy.getText(&pane.grid, sbl, &sel_buf);
                                                     if (len > 0) {
                                                         Clipboard.copy(sel_buf[0..len]);
                                                         mux.notify("Yanked to clipboard");
@@ -665,7 +665,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                                     var sel_buf: [65536]u8 = undefined;
                                                     const sbl = pane.grid.scrollback;
                                                     var sel_copy = sel;
-                                                    const len = sel_copy.getTextWithScrollback(&pane.grid, sbl, &sel_buf);
+                                                    const len = sel_copy.getText(&pane.grid, sbl, &sel_buf);
                                                     if (len > 0) {
                                                         Clipboard.copy(sel_buf[0..len]);
                                                         mux.notify("Yanked to clipboard");
@@ -748,7 +748,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                         if (mux.getActivePane()) |pane| {
                                             var sel_buf: [65536]u8 = undefined;
                                             const sb = pane.grid.scrollback;
-                                            const copy_len = selection.getTextWithScrollback(&pane.grid, sb, &sel_buf);
+                                            const copy_len = selection.getText(&pane.grid, sb, &sel_buf);
                                             if (copy_len > 0) {
                                                 Clipboard.copy(sel_buf[0..copy_len]);
                                                 mux.notify("Copied to clipboard");
@@ -1012,12 +1012,14 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             {
                                 if (mux.getActivePane()) |pane| {
                                     const delims = config.word_delimiters orelse default_word_delimiters;
-                                    selection.selectWord(&pane.grid, row, col, delims);
+                                    const so = mux.getScrollOffset();
+                                    const sbl: u32 = if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0;
+                                    selection.selectWord(&pane.grid, row, col, delims, so, sbl);
                                     pane.grid.dirty = true;
                                     if (config.copy_on_select) {
                                         var sel_buf: [65536]u8 = undefined;
                                         const sb = pane.grid.scrollback;
-                                        const len = selection.getTextWithScrollback(&pane.grid, sb, &sel_buf);
+                                        const len = selection.getText(&pane.grid, sb, &sel_buf);
                                         if (len > 0) {
                                             Clipboard.copy(sel_buf[0..len]);
                                             mux.notify("Copied to clipboard");
@@ -1125,7 +1127,11 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         if (track_active) continue;
                         const col: u16 = @intCast(@min(mouse.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
                         const row: u16 = @intCast(@min(mouse.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
-                        selection.update(row, col);
+                        {
+                            const so = mux.getScrollOffset();
+                            const sbl: u32 = if (mux.getActivePane()) |p| (if (p.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0) else 0;
+                            selection.update(row, col, so, sbl);
+                        }
 
                         // Only finalize selection if mouse actually moved (not a single click)
                         if (selection.start_row != selection.end_row or selection.start_col != selection.end_col) {
@@ -1134,7 +1140,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 if (mux.getActivePane()) |pane| {
                                     var sel_buf: [65536]u8 = undefined;
                                     const sb = pane.grid.scrollback;
-                                    const len = selection.getTextWithScrollback(&pane.grid, sb, &sel_buf);
+                                    const len = selection.getText(&pane.grid, sb, &sel_buf);
                                     if (len > 0) {
                                         Clipboard.copy(sel_buf[0..len]);
                                         mux.notify("Copied to clipboard");
@@ -1209,12 +1215,14 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         // Start selection on first drag movement
                         if (!selection.active) {
                             const so = mux.getScrollOffset();
-                            if (so > 0)
-                                selection.beginScrolled(mouse_start_row, mouse_start_col, so)
-                            else
-                                selection.begin(mouse_start_row, mouse_start_col);
+                            const sbl: u32 = if (mux.getActivePane()) |p| (if (p.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0) else 0;
+                            selection.begin(mouse_start_row, mouse_start_col, so, sbl);
                         }
-                        selection.update(row, col);
+                        {
+                            const so = mux.getScrollOffset();
+                            const sbl: u32 = if (mux.getActivePane()) |p| (if (p.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0) else 0;
+                            selection.update(row, col, so, sbl);
+                        }
 
                         // Auto-scroll when dragging near active pane edges
                         const in_alt = if (mux.getActivePane()) |pane| pane.vt.alt_screen else false;

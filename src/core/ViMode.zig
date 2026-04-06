@@ -450,25 +450,10 @@ pub fn getViewportSelection(self: *const ViMode, scroll_offset: u32, sb_lines: u
     };
 }
 
-/// Build a Selection struct compatible with the existing renderer,
-/// based on the vi mode's current selection state.
-/// Build a viewport-relative Selection for rendering highlights.
+/// Build a Selection struct for rendering highlights.
+/// Uses absolute coordinates (scrollback-aware).
 pub fn toSelection(self: *const ViMode, scroll_offset: u32, sb_lines: u32) ?@import("Selection.zig") {
-    const bounds = self.getViewportSelection(scroll_offset, sb_lines) orelse return null;
-    const Selection = @import("Selection.zig");
-    return Selection{
-        .active = true,
-        .start_row = bounds.start_row,
-        .start_col = bounds.start_col,
-        .end_row = bounds.end_row,
-        .end_col = bounds.end_col,
-        .scroll_offset = scroll_offset,
-    };
-}
-
-/// Build a Selection for text extraction (yank). Uses the full
-/// scrollback-aware coordinates so text above the viewport is included.
-pub fn toYankSelection(self: *const ViMode, sb_lines: u32) ?@import("Selection.zig") {
+    _ = scroll_offset;
     if (!self.selection_active) return null;
 
     var sr = self.selection_start_row;
@@ -487,18 +472,48 @@ pub fn toYankSelection(self: *const ViMode, sb_lines: u32) ?@import("Selection.z
         ec = self.grid_cols -| 1;
     }
 
-    // The selection rows are virtual: 0..sb_lines-1 = scrollback, sb_lines..total = grid.
-    // For getTextWithScrollback, scroll_offset = sb_lines means all rows < sb_lines
-    // are scrollback rows. Row coordinates stay as-is since getTextWithScrollback
-    // treats rows < scroll_offset as scrollback.
+    // Vi mode rows are already absolute (0..sb_lines-1 = scrollback, sb_lines+ = grid)
+    _ = sb_lines;
     const Selection = @import("Selection.zig");
     return Selection{
         .active = true,
-        .start_row = @intCast(@min(sr, 0xFFFF)),
+        .start_row = sr,
         .start_col = sc,
-        .end_row = @intCast(@min(er, 0xFFFF)),
+        .end_row = er,
         .end_col = ec,
-        .scroll_offset = sb_lines,
+    };
+}
+
+/// Build a Selection for text extraction (yank). Uses the full
+/// scrollback-aware coordinates so text above the viewport is included.
+pub fn toYankSelection(self: *const ViMode, _: u32) ?@import("Selection.zig") {
+    if (!self.selection_active) return null;
+
+    var sr = self.selection_start_row;
+    var sc = self.selection_start_col;
+    var er = self.cursor_row;
+    var ec = self.cursor_col;
+
+    if (sr > er or (sr == er and sc > ec)) {
+        const tr = sr; const tc = sc;
+        sr = er; sc = ec;
+        er = tr; ec = tc;
+    }
+
+    if (self.line_select) {
+        sc = 0;
+        ec = self.grid_cols -| 1;
+    }
+
+    // Vi mode rows are already absolute (0..sb_lines-1 = scrollback, sb_lines+ = grid).
+    // Vi mode rows are already absolute coordinates
+    const Selection = @import("Selection.zig");
+    return Selection{
+        .active = true,
+        .start_row = sr,
+        .start_col = sc,
+        .end_row = er,
+        .end_col = ec,
     };
 }
 
@@ -739,9 +754,9 @@ test "ViMode toSelection" {
 
     const sel = vm.toSelection(0, 0).?;
     try std.testing.expect(sel.active);
-    try std.testing.expectEqual(@as(u16, 10), sel.start_row);
+    try std.testing.expectEqual(@as(u32, 10), sel.start_row);
     try std.testing.expectEqual(@as(u16, 5), sel.start_col);
-    try std.testing.expectEqual(@as(u16, 12), sel.end_row);
+    try std.testing.expectEqual(@as(u32, 12), sel.end_row);
     try std.testing.expectEqual(@as(u16, 20), sel.end_col);
 }
 

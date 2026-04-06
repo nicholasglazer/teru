@@ -37,6 +37,8 @@ pub fn renderPaneIntoRect(
     cell_height: u32,
     is_active: bool,
     sel: ?*const Selection,
+    scroll_offset: u32,
+    sb_lines: u32,
 ) void {
     const cols: usize = grid.cols;
     const rows: usize = grid.rows;
@@ -72,7 +74,7 @@ pub fn renderPaneIntoRect(
 
             // Selection highlight: use selection_bg, keep fg readable
             if (sel) |s| {
-                if (s.isSelected(@intCast(row), @intCast(col))) {
+                if (s.isSelected(@intCast(row), @intCast(col), scroll_offset, sb_lines)) {
                     bg = renderer.scheme.selection_bg;
                     // If fg would be invisible against selection bg, use bright white
                     if (fg == bg) fg = renderer.scheme.ansi[15];

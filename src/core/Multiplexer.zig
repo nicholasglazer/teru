@@ -489,6 +489,9 @@ pub fn renderAllWithSelection(
         const is_active = if (active_id) |aid| aid == pane.id else false;
         // Only apply selection highlight to the active pane
         const pane_sel = if (is_active) sel else null;
+        // Scroll state for selection coordinate mapping
+        const so: u32 = if (is_active) pane.scroll_offset else 0;
+        const sb_lines: u32 = if (pane.grid.scrollback) |sb| @intCast(sb.lineCount()) else 0;
 
         // For multi-pane layouts, reserve 1px border around each pane
         const has_border = pane_ids.len > 1;
@@ -499,10 +502,10 @@ pub fn renderAllWithSelection(
 
             // Render grid into inset rect
             const inset = Compositor.insetRect(clamped, 1);
-            Compositor.renderPaneIntoRect(renderer, &pane.grid, inset, cell_width, cell_height, is_active, pane_sel);
+            Compositor.renderPaneIntoRect(renderer, &pane.grid, inset, cell_width, cell_height, is_active, pane_sel, so, sb_lines);
         } else {
             // Single pane: no border, full screen (above status bar)
-            Compositor.renderPaneIntoRect(renderer, &pane.grid, clamped, cell_width, cell_height, is_active, pane_sel);
+            Compositor.renderPaneIntoRect(renderer, &pane.grid, clamped, cell_width, cell_height, is_active, pane_sel, so, sb_lines);
         }
     }
 
