@@ -32,6 +32,7 @@ pub const UrlDetector = @import("core/UrlDetector.zig");
 pub const Session = @import("persist/Session.zig");
 pub const Scrollback = @import("persist/Scrollback.zig");
 pub const LayoutEngine = @import("tiling/LayoutEngine.zig");
+pub const Workspace = @import("tiling/Workspace.zig");
 pub const render = @import("render/render.zig");
 pub const Compositor = @import("render/Compositor.zig");
 pub const Ui = @import("render/Ui.zig");
@@ -60,6 +61,7 @@ test {
     _ = Session;
     _ = Scrollback;
     _ = LayoutEngine;
+    _ = Workspace;
     _ = render;
     _ = Config;
     _ = Hooks;
