@@ -18,6 +18,13 @@ pub const MouseEvent = struct {
     modifiers: u32 = 0, // keyboard modifiers (e.g., Ctrl, Shift)
 };
 
+pub const ModifiersEvent = struct {
+    depressed: u32,
+    latched: u32,
+    locked: u32,
+    group: u32,
+};
+
 pub const Event = union(enum) {
     key_press: KeyEvent,
     key_release: KeyEvent,
@@ -25,6 +32,7 @@ pub const Event = union(enum) {
     mouse_release: MouseEvent,
     mouse_motion: struct { x: u32, y: u32 },
     resize: struct { width: u32, height: u32 },
+    wl_modifiers: ModifiersEvent,
     close,
     focus_in,
     focus_out,

@@ -349,6 +349,9 @@ const WaylandState = struct {
 
     // Modifier state from wl_keyboard.modifiers
     mods_depressed: u32 = 0,
+    mods_latched: u32 = 0,
+    mods_locked: u32 = 0,
+    mods_group: u32 = 0,
 
     fn pushEvent(self: *WaylandState, ev: Event) void {
         const next = (self.key_head + 1) % 32;
@@ -955,12 +958,21 @@ fn keyboardModifiers(
     _: ?*wl_keyboard,
     _: u32,
     mods_depressed: u32,
-    _: u32,
-    _: u32,
-    _: u32,
+    mods_latched: u32,
+    mods_locked: u32,
+    group: u32,
 ) callconv(.c) void {
     const state: *WaylandState = @ptrCast(@alignCast(data orelse return));
     state.mods_depressed = mods_depressed;
+    state.mods_latched = mods_latched;
+    state.mods_locked = mods_locked;
+    state.mods_group = group;
+    state.pushEvent(.{ .wl_modifiers = .{
+        .depressed = mods_depressed,
+        .latched = mods_latched,
+        .locked = mods_locked,
+        .group = group,
+    } });
 }
 
 fn keyboardRepeatInfo(

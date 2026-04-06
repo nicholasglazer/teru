@@ -511,6 +511,14 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         _ = pane.pty.write("\x1b[O") catch {};
                     }
                 },
+                .wl_modifiers => |mods| {
+                    // Wayland modifier/layout group update
+                    if (Keyboard != void) {
+                        if (keyboard) |*kb| {
+                            kb.updateModifiers(mods.depressed, mods.latched, mods.locked, mods.group);
+                        }
+                    }
+                },
                 .resize => |sz| {
                     // Resize renderer
                     renderer.resize(sz.width, sz.height);
@@ -600,10 +608,9 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
 
                     if (Keyboard != void) {
                         if (keyboard) |*kb| {
-                            // Sync xkb modifier/group state from X11 before
-                            // any key processing. This ensures layout switches
-                            // (e.g., Alt+Shift) are reflected immediately.
-                            kb.updateModifiers(key.modifiers);
+                            // Feed key press into xkbcommon for modifier/group tracking.
+                            // This handles layout switching (Alt+Shift), Caps Lock, etc.
+                            kb.updateKey(key.keycode, true);
 
                             const keysym = kb.getKeysym(key.keycode);
 
@@ -649,7 +656,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
 
                                 // Try as ASCII key byte
                                 var vi_key_buf: [32]u8 = undefined;
-                                const vi_len = kb.processKey(key.keycode, true, &vi_key_buf);
+                                const vi_len = kb.processKey(key.keycode, &vi_key_buf);
                                 if (vi_len > 0) {
                                     vi_scroll = mux.getScrollOffset();
                                     const vi_action = vi_mode.handleKey(vi_key_buf[0], if (mux.getActivePane()) |p| &p.grid else unreachable, &vi_scroll, sb_lines);
@@ -686,7 +693,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             // Search mode: intercept all keys for the search query
                             if (search_mode) {
                                 var search_key_buf: [32]u8 = undefined;
-                                const slen = kb.processKey(key.keycode, true, &search_key_buf);
+                                const slen = kb.processKey(key.keycode, &search_key_buf);
 
                                 if (keysym == XKB_KEY_Escape) {
                                     // Cancel search
@@ -723,14 +730,14 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                     mux.setScrollOffset(@min(mux.getScrollOffset() + grid_rows, max_offset));
                                 }
                                 var dummy: [32]u8 = undefined;
-                                _ = kb.processKey(key.keycode, true, &dummy);
+                                _ = kb.processKey(key.keycode, &dummy);
                                 continue;
                             } else if (keysym == XKB_KEY_Page_Down) {
                                 if (mux.getScrollOffset() > 0) {
                                     { const so = mux.getScrollOffset(); mux.setScrollOffset(so -| grid_rows); }
                                 }
                                 var dummy: [32]u8 = undefined;
-                                _ = kb.processKey(key.keycode, true, &dummy);
+                                _ = kb.processKey(key.keycode, &dummy);
                                 continue;
                             }
 
@@ -773,7 +780,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             }
 
                             var key_buf: [32]u8 = undefined;
-                            const len = kb.processKey(key.keycode, true, &key_buf);
+                            const len = kb.processKey(key.keycode, &key_buf);
 
                             // Modifier-only keys (Ctrl, Super, Shift, Alt) produce no output.
                             // Don't exit scroll mode or interfere with anything.
@@ -879,10 +886,10 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     }
                 },
                 .key_release => |key| {
-                    // Sync xkb modifier/group state from X11 on release
+                    // Feed key release into xkbcommon for modifier/group tracking
                     if (Keyboard != void) {
                         if (keyboard) |*kb| {
-                            kb.updateModifiers(key.modifiers);
+                            kb.updateKey(key.keycode, false);
                         }
                     }
                 },

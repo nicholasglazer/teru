@@ -23,6 +23,8 @@ extern "xkbcommon" fn xkb_state_key_get_utf8(state: *xkb_state, key: xkb_keycode
 extern "xkbcommon" fn xkb_state_key_get_one_sym(state: *xkb_state, key: xkb_keycode_t) callconv(.c) xkb_keysym_t;
 extern "xkbcommon" fn xkb_state_update_key(state: *xkb_state, key: xkb_keycode_t, direction: u32) callconv(.c) u32;
 extern "xkbcommon" fn xkb_state_update_mask(state: *xkb_state, depressed_mods: u32, latched_mods: u32, locked_mods: u32, depressed_layout: u32, latched_layout: u32, locked_layout: u32) callconv(.c) u32;
+extern "xkbcommon" fn xkb_state_serialize_mods(state: *xkb_state, components: u32) callconv(.c) u32;
+extern "xkbcommon" fn xkb_state_serialize_layout(state: *xkb_state, components: u32) callconv(.c) u32;
 
 const XkbRuleNames = extern struct {
     rules: ?[*:0]const u8 = null,
@@ -143,32 +145,22 @@ pub const Keyboard = struct {
         return xkb_state_key_get_one_sym(self.state, keycode);
     }
 
-    /// Sync xkbcommon state with X11 modifier/group state.
-    /// Call this with the XCB key event's `state` field before processKey
-    /// to keep the layout group (e.g., us vs ua) in sync with the X server.
-    pub fn updateModifiers(self: *Keyboard, x11_state: u32) void {
-        // X11 state field layout:
-        // bits 0-7: modifier mask (Shift=1, Lock=2, Control=4, Mod1-5)
-        // bits 13-14: group index (0-3)
-        //
-        // The modifier mask combines depressed + latched + locked.
-        // We can't decompose them from X11 alone, so we set locked_mods
-        // (most modifiers from Alt+Shift group switching are locked state).
-        // depressed_mods handles currently-held keys like Shift/Ctrl.
-        const mods = x11_state & 0xFF;
-        const group: u32 = (x11_state >> 13) & 0x3;
-        // Set mods as both depressed and locked to cover both cases.
-        // xkbcommon resolves the effective state correctly from this.
-        _ = xkb_state_update_mask(self.state, mods, 0, mods, group, 0, group);
+    /// Feed a key event into xkbcommon so it tracks modifier/group state
+    /// (including layout switching via Alt+Shift, Caps Lock, etc.).
+    pub fn updateKey(self: *Keyboard, keycode: u32, pressed: bool) void {
+        _ = xkb_state_update_key(self.state, keycode, if (pressed) XKB_KEY_DOWN else XKB_KEY_UP);
     }
 
-    /// Translate a raw XCB keycode to bytes for the PTY.
-    /// State is synced via updateModifiers() before this call — do NOT
-    /// call xkb_state_update_key here (mixing update_key and update_mask
-    /// causes xkbcommon to lose track of the modifier/group state).
-    pub fn processKey(self: *Keyboard, keycode: u32, pressed: bool, buf: []u8) usize {
-        if (!pressed) return 0;
+    /// Sync xkbcommon state with X11/Wayland modifier+group state.
+    /// Use when the platform provides explicit modifier state (e.g., Wayland
+    /// modifiers event, or X11 focus-in re-sync).
+    pub fn updateModifiers(self: *Keyboard, depressed: u32, latched: u32, locked: u32, group: u32) void {
+        _ = xkb_state_update_mask(self.state, depressed, latched, locked, group, 0, group);
+    }
 
+    /// Translate a raw keycode to bytes for the PTY.
+    /// State must be up to date via updateKey() before this call.
+    pub fn processKey(self: *Keyboard, keycode: u32, buf: []u8) usize {
         const keysym = xkb_state_key_get_one_sym(self.state, keycode);
         const special = keysymToEscape(keysym);
         if (special.len > 0) {
