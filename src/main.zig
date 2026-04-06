@@ -1209,8 +1209,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     const tracking_active = if (mux.getActivePane()) |pane| pane.vt.mouse_tracking != .none else false;
                     if (mouse_down and !tracking_active) {
                         const col: u16 = @intCast(@min(motion.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
-                        const raw_row = motion.y / atlas.cell_height;
-                        const row: u16 = @intCast(@min(raw_row, @as(u32, grid_rows -| 1)));
+                        const row: u16 = @intCast(@min(motion.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
 
                         // Start selection on first drag movement
                         if (!selection.active) {
@@ -1218,13 +1217,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             const sbl: u32 = if (mux.getActivePane()) |p| (if (p.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0) else 0;
                             selection.begin(mouse_start_row, mouse_start_col, so, sbl);
                         }
-                        {
-                            const so = mux.getScrollOffset();
-                            const sbl: u32 = if (mux.getActivePane()) |p| (if (p.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0) else 0;
-                            selection.update(row, col, so, sbl);
-                        }
 
-                        // Auto-scroll when dragging near active pane edges
+                        // Auto-scroll when dragging near viewport edges
                         const in_alt = if (mux.getActivePane()) |pane| pane.vt.alt_screen else false;
                         if (!in_alt) {
                             const sz_scroll = win.getSize();
@@ -1250,6 +1244,13 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                     _ = mux.smoothScroll(-@as(i32, @intCast(atlas.cell_height)), atlas.cell_height, max_offset);
                                 }
                             }
+                        }
+
+                        // Update selection AFTER auto-scroll so scroll_offset is current
+                        {
+                            const so = mux.getScrollOffset();
+                            const sbl: u32 = if (mux.getActivePane()) |p| (if (p.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0) else 0;
+                            selection.update(row, col, so, sbl);
                         }
 
                         // Mark grid dirty so selection highlight redraws
@@ -1491,7 +1492,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         if (mux.getActivePane()) |pane| {
                             if (pane.grid.scrollback) |sb| {
                                 if (mux.getActivePaneRect(sz.width, sz.height, cpu.padding)) |pane_rect| {
-                                    Ui.renderScrollOverlay(cpu, sb, mux.getScrollOffset(), atlas.cell_width, atlas.cell_height, pane_rect, mux.getScrollPixel());
+                                    Ui.renderScrollOverlay(cpu, sb, mux.getScrollOffset(), atlas.cell_width, atlas.cell_height, pane_rect, mux.getScrollPixel(), sel_ptr);
                                 }
                             }
                         }

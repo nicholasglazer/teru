@@ -11,6 +11,7 @@ const FontAtlas = @import("FontAtlas.zig");
 const Compositor = @import("Compositor.zig");
 const Scrollback = @import("../persist/Scrollback.zig");
 const LayoutEngine = @import("../tiling/LayoutEngine.zig");
+const Selection = @import("../core/Selection.zig");
 const Rect = LayoutEngine.Rect;
 
 // ── Search overlay (Feature 9) ───────────────────────────────────
@@ -352,6 +353,7 @@ pub fn renderScrollOverlay(
     cell_height: u32,
     pane_rect: Rect,
     scroll_pixel: i32,
+    sel: ?*const Selection,
 ) void {
     const fb_w: usize = cpu.width;
     const cw: usize = cell_width;
@@ -540,6 +542,15 @@ pub fn renderScrollOverlay(
             var eff_bg = bg_color;
             if (is_inverse) { eff_fg = bg_color; eff_bg = fg_color; }
             if (is_dim) eff_fg = s.dimColor(eff_fg);
+
+            // Selection highlight in scrollback
+            if (sel) |sl| {
+                const sb_lines_count: u32 = @intCast(sb.lineCount());
+                if (sl.isSelected(@intCast(line), @intCast(col), scroll_offset, sb_lines_count)) {
+                    eff_bg = s.selection_bg;
+                    if (eff_fg == eff_bg) eff_fg = s.ansi[15];
+                }
+            }
 
             // Fill cell background
             const max_y = @min(screen_y + ch, ry + rh);
