@@ -32,10 +32,12 @@ const UrlDetector = @import("core/UrlDetector.zig");
 const HookListener = @import("agent/HookListener.zig");
 const HookHandler = @import("agent/HookHandler.zig");
 const SignalManager = @import("core/SignalManager.zig");
+const Daemon = @import("server/daemon.zig");
+const daemon_proto = @import("server/protocol.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
-const version = "0.2.5";
+const version = "0.2.6";
 
 const session_path = "/tmp/teru-session.bin";
 
@@ -59,6 +61,9 @@ pub fn main(init: std.process.Init) !void {
     var mode_raw = false;
     var mode_attach = false;
     var mode_mcp_bridge = false;
+    var daemon_session: ?[]const u8 = null;
+    var attach_session: ?[]const u8 = null;
+    var list_sessions = false;
 
     while (args_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--version")) {
@@ -67,14 +72,34 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, arg, "--help")) {
-            out("teru — AI-first terminal emulator\n\nUsage: teru [options]\n\nOptions:\n  --help              Show this help\n  --version           Show version\n  --raw               Raw passthrough mode (no window)\n  --attach            Restore session from last detach\n  --mcp-bridge        MCP stdio bridge\n  --config <path>     Use custom config file\n  --theme <name>      Override theme (built-in or ~/.config/teru/themes/)\n  --class <name>      Set WM_CLASS (X11 window class)\n\nMultiplexer keys (prefix: Ctrl+Space):\n  c     Spawn new pane        n/p   Next/prev pane\n  x     Close active pane     1-9   Switch workspace\n  Space Cycle layout           d    Detach session\n  /     Search                 z    Zoom pane\n  H/L   Resize master ratio\n\nScrollback: PageUp/Down or mouse wheel. Any typing key exits scroll.\nURL: Ctrl+click to open. Double-click to select word.\n\n");
+            out("teru — AI-first terminal emulator\n\nUsage: teru [options]\n\nOptions:\n  --help                Show this help\n  --version             Show version\n  --raw                 Raw passthrough mode (no window)\n  --attach              Restore session from last detach\n  --daemon <name>       Start headless daemon session\n  --session <name>      Attach to daemon session (TTY)\n  --list                List active daemon sessions\n  --mcp-bridge          MCP stdio bridge\n  --config <path>       Use custom config file\n  --theme <name>        Override theme\n  --class <name>        Set WM_CLASS\n\nMultiplexer keys (prefix: Ctrl+Space):\n  c/\\   Vertical split        -     Horizontal split\n  x     Close pane             n/p   Next/prev pane\n  v     Vi/copy mode           /     Search\n  1-9   Switch workspace       d     Detach\n  Space Cycle layout            z     Zoom\n  H/L   Resize width           K/J   Resize height\n\n");
             return;
         }
         if (std.mem.eql(u8, arg, "--raw")) { mode_raw = true; continue; }
         if (std.mem.eql(u8, arg, "--attach")) { mode_attach = true; continue; }
         if (std.mem.eql(u8, arg, "--mcp-bridge")) { mode_mcp_bridge = true; continue; }
-        // Args with values: skip next arg
-        // These are handled in Config.load via CLI override (future)
+        if (std.mem.eql(u8, arg, "--list")) { list_sessions = true; continue; }
+        if (std.mem.eql(u8, arg, "--daemon")) { daemon_session = args_iter.next(); continue; }
+        if (std.mem.eql(u8, arg, "--session")) { attach_session = args_iter.next(); continue; }
+    }
+
+    if (list_sessions) {
+        var buf: [1024]u8 = undefined;
+        if (Daemon.listSessions(&buf)) |sessions| {
+            out("Active sessions:\n");
+            out(sessions);
+        } else {
+            out("No active sessions\n");
+        }
+        return;
+    }
+
+    if (daemon_session) |name| {
+        return runDaemonMode(allocator, io, name);
+    }
+
+    if (attach_session) |name| {
+        return runSessionAttach(name);
     }
 
     if (mode_mcp_bridge) return McpBridge.run(io);
@@ -111,6 +136,120 @@ fn runAttachMode(allocator: std.mem.Allocator, io: std.Io) !void {
     outFmt(&msg_buf, "[teru] Restoring session ({d} panes)\n", .{shell_count});
 
     return runWindowedMode(allocator, io, .{ .pane_count = shell_count });
+}
+
+/// Start a headless daemon session. PTYs persist after this process forks.
+fn runDaemonMode(allocator: std.mem.Allocator, io: std.Io, session_name: []const u8) !void {
+    var config = try Config.load(allocator, io);
+    defer config.deinit();
+    var hooks = Hooks.init(allocator);
+    defer hooks.deinit();
+
+    var graph = ProcessGraph.init(allocator);
+    defer graph.deinit();
+
+    var mux = Multiplexer.init(allocator);
+    mux.graph = &graph;
+    defer mux.deinit();
+
+    // Spawn initial pane (24x80 default, resized by client on attach)
+    const pid = try mux.spawnPane(24, 80);
+    _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = if (mux.getPaneById(pid)) |p| p.pty.child_pid else null }) catch {};
+
+    // Start MCP server
+    var mcp = McpServer.init(allocator, &mux, &graph) catch null;
+    defer if (mcp) |*m| m.deinit();
+
+    // Create daemon
+    var daemon = try Daemon.init(allocator, session_name, &mux, &graph, if (mcp) |*m| m else null, &hooks);
+    defer daemon.deinit();
+
+    var buf: [128]u8 = undefined;
+    outFmt(&buf, "[teru] Daemon started: {s}\n", .{daemon.getSocketPath()});
+
+    // Run daemon loop (blocks until all panes close)
+    daemon.run();
+
+    outFmt(&buf, "[teru] Daemon {s} exited\n", .{session_name});
+}
+
+/// Attach to a running daemon session in TTY raw mode.
+fn runSessionAttach(session_name: []const u8) !void {
+    const sock = Daemon.connectToSession(session_name) catch {
+        var buf: [128]u8 = undefined;
+        outFmt(&buf, "[teru] Session '{s}' not found\n", .{session_name});
+        return;
+    };
+    defer _ = posix.system.close(sock);
+
+    out("[teru] Attached to session\n");
+
+    // Enter raw terminal mode
+    var orig_termios: posix.termios = undefined;
+    _ = std.c.tcgetattr(0, &orig_termios);
+    var raw = orig_termios;
+    raw.iflag.ICRNL = false;
+    raw.iflag.IXON = false;
+    raw.lflag.ECHO = false;
+    raw.lflag.ICANON = false;
+    raw.lflag.ISIG = false;
+    raw.lflag.IEXTEN = false;
+    _ = std.c.tcsetattr(0, .FLUSH, &raw);
+    defer _ = std.c.tcsetattr(0, .FLUSH, &orig_termios);
+
+    // Set socket non-blocking
+    const flags = std.c.fcntl(sock, posix.F.GETFL);
+    if (flags >= 0) _ = std.c.fcntl(sock, posix.F.SETFL, flags | 0x800);
+
+    // Set stdin non-blocking
+    const stdin_flags = std.c.fcntl(0, posix.F.GETFL);
+    if (stdin_flags >= 0) _ = std.c.fcntl(0, posix.F.SETFL, stdin_flags | 0x800);
+    defer _ = std.c.fcntl(0, posix.F.SETFL, stdin_flags); // restore
+
+    // Relay loop: stdin → daemon, daemon → stdout
+    var in_buf: [4096]u8 = undefined;
+    var out_buf: [4096]u8 = undefined;
+    const POLLIN: i16 = 0x001;
+    const POLLHUP: i16 = 0x010;
+
+    while (true) {
+        var fds = [2]posix.pollfd{
+            .{ .fd = 0, .events = POLLIN, .revents = 0 },
+            .{ .fd = sock, .events = POLLIN, .revents = 0 },
+        };
+        _ = posix.poll(&fds, 100) catch continue;
+
+        // stdin → daemon (as input message)
+        if (fds[0].revents & POLLIN != 0) {
+            const n = posix.read(0, &in_buf) catch break;
+            if (n == 0) break;
+            // Check for detach sequence: Ctrl+\ (0x1C)
+            for (in_buf[0..n]) |b| {
+                if (b == 0x1C) {
+                    _ = daemon_proto.sendMessage(sock, .detach, &.{});
+                    out("\r\n[teru] Detached\r\n");
+                    return;
+                }
+            }
+            _ = daemon_proto.sendMessage(sock, .input, in_buf[0..n]);
+        }
+
+        // daemon → stdout (raw PTY output)
+        if (fds[1].revents & POLLIN != 0) {
+            var hdr: daemon_proto.Header = undefined;
+            while (daemon_proto.recvMessage(sock, &hdr, &out_buf)) |payload| {
+                if (hdr.tag == .output) {
+                    _ = std.c.write(1, payload.ptr, payload.len);
+                }
+            }
+        }
+
+        // Daemon disconnected
+        if (fds[1].revents & POLLHUP != 0) {
+            out("\r\n[teru] Session ended\r\n");
+            return;
+        }
+    }
 }
 
 fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo) !void {

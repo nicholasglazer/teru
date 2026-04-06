@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.6 (2026-04-06)
+
+### Features
+- **Session persistence (daemon mode)**: `teru --daemon <name>` starts a headless session where PTYs survive terminal close. `teru --session <name>` reattaches in TTY raw mode. `teru --list` shows active sessions. Ctrl+\ detaches.
+- **Wire protocol**: 5-byte header (tag:u8 + len:u32) over Unix domain socket for daemon↔client communication. Message types: input, output, resize, detach, grid_sync.
+- **Session socket**: `/run/user/{uid}/teru-session-{name}.sock` with permission 0660.
+
+### Architecture
+- `src/server/daemon.zig` — daemon event loop with poll() over PTY fds + client socket
+- `src/server/protocol.zig` — message framing, encode/decode helpers
+- One daemon per session (zmx/abduco pattern) for crash isolation
+
 ## 0.2.5 (2026-04-06)
 
 ### Features

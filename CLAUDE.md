@@ -10,6 +10,7 @@ zig build run -- --raw  # run (TTY mode)
 
 ## Architecture
 - src/core/ -- VtParser, Grid, Pane, Multiplexer, Selection, KeyHandler, Clipboard, ViMode
+- src/server/ -- Daemon persistence (daemon.zig, protocol.zig)
 - src/pty/ -- PTY management (Linux: posix_openpt/forkpty)
 - src/graph/ -- ProcessGraph (DAG of all processes/agents)
 - src/agent/ -- OSC 9999 protocol, HookHandler, HookListener, McpServer, PaneBackend
@@ -26,7 +27,15 @@ zig build run -- --raw  # run (TTY mode)
 - See `.claude/rules/zig-terminal.md` for dev rules, anti-patterns, and perf targets
 
 ## Version
-Current: 0.2.5. Update in 3 files: `src/main.zig`, `build.zig.zon`, `src/agent/McpServer.zig`
+Current: 0.2.6. Update in 3 files: `src/main.zig`, `build.zig.zon`, `src/agent/McpServer.zig`
 
 ## Testing
-All modules have inline tests (370 test blocks). Run with `zig build test`.
+All modules have inline tests (384 test blocks). Run with `zig build test`.
+
+## Session Persistence
+```bash
+teru --daemon myproject   # start headless daemon (PTYs persist)
+teru --session myproject  # attach to daemon (TTY raw mode)
+teru --list               # list active sessions
+# Ctrl+\ to detach from session
+```
