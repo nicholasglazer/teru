@@ -14,7 +14,7 @@ zig build run -- --raw  # run (TTY mode)
 - src/pty/ -- PTY management (Linux: posix_openpt/forkpty)
 - src/graph/ -- ProcessGraph (DAG of all processes/agents)
 - src/agent/ -- OSC 9999 protocol, HookHandler, HookListener, McpServer, PaneBackend
-- src/tiling/ -- Layout engine (master-stack, grid, monocle, floating)
+- src/tiling/ -- Layout engine (master-stack, grid, monocle, floating, spiral, three-col, columns)
 - src/persist/ -- Session serialization, binary format
 - src/config/ -- Config file parser (key=value format)
 - src/render/ -- CPU SIMD renderer, stb_truetype FontAtlas
@@ -27,7 +27,7 @@ zig build run -- --raw  # run (TTY mode)
 - See `.claude/rules/zig-terminal.md` for dev rules, anti-patterns, and perf targets
 
 ## Version
-Current: 0.2.6. Update in 3 files: `src/main.zig`, `build.zig.zon`, `src/agent/McpServer.zig`
+Current: 0.2.7. Update in 3 files: `src/main.zig`, `build.zig.zon`, `src/agent/McpServer.zig`
 
 ## Testing
 All modules have inline tests (384 test blocks). Run with `zig build test`.

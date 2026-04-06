@@ -74,13 +74,18 @@ initial_height = 640
 
 # ── Workspaces ──────────────────────────────────────────
 [workspace.1]
-layout = master-stack
-master_ratio = 0.55
+layouts = master-stack, grid, monocle
+master_ratio = 0.6
 name = dev
 
 [workspace.2]
-layout = grid
-name = logs
+layouts = three-col, columns
+master_ratio = 0.5
+name = wide
+
+[workspace.3]
+layout = monocle
+name = focus
 
 # ── Hooks ───────────────────────────────────────────────
 hook_on_spawn = notify-send "pane spawned"
@@ -250,6 +255,7 @@ Default prefix: `Ctrl+Space`
 | prefix + `x` | Close pane |
 | prefix + `h`/`j`/`k`/`l` | Navigate panes (left/down/up/right) |
 | prefix + `H`/`L` | Resize master ratio |
+| prefix + `Space` | Cycle layout (within workspace layout list) |
 | prefix + `z` | Zoom (toggle monocle layout) |
 | prefix + `1`-`9` | Switch workspace |
 | prefix + `/` | Search in scrollback |
@@ -277,24 +283,46 @@ Workspace sections use `[workspace.N]` headers where N is 1-9.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `layout` | string | `master-stack` | Tiling layout: `master-stack`, `grid`, `monocle`, or `floating` |
-| `master_ratio` | float | `0.55` | Proportion of screen for the master pane (0.15-0.85) |
+| `layout` | string | (auto) | Default layout: `master-stack`, `grid`, `monocle`, `floating`, `spiral`, `three-col`, or `columns` |
+| `layouts` | string | (all) | Comma-separated layout cycle list. Prefix+Space cycles within this list |
+| `master_ratio` | float | `0.6` | Proportion of screen for the master pane (0.15-0.85). Used by `master-stack` and `three-col` |
 | `name` | string | (none) | Display name for the workspace |
+
+#### Layout Types
+
+| Layout | Description | Status bar |
+|--------|-------------|------------|
+| `master-stack` | One master pane on the left, stack of panes on the right | `[M]` |
+| `grid` | Equal-sized grid (cols = ceil(sqrt(n))) | `[G]` |
+| `monocle` | Fullscreen active pane, others hidden | `[#]` |
+| `floating` | Cascading windows with default positions | `[F]` |
+| `spiral` | Fibonacci spiral: alternates vertical/horizontal splits | `[S]` |
+| `three-col` | Master in center, stacks on left and right sides | `[3]` |
+| `columns` | Equal-width vertical columns | `[|]` |
+
+#### Per-Workspace Layout Lists
+
+Use `layouts` to restrict which layouts Prefix+Space cycles through. This follows the xmonad `|||` pattern -- each workspace can have its own set of available layouts.
 
 ```conf
 [workspace.1]
-layout = master-stack
+layouts = master-stack, grid, monocle
 master_ratio = 0.6
 name = code
 
 [workspace.2]
-layout = grid
-name = terminals
+layouts = three-col, columns
+master_ratio = 0.5
+name = wide
 
 [workspace.3]
 layout = monocle
 name = focus
 ```
+
+When `layouts` is set, Prefix+Space cycles only within that list. When only `layout` is set (or neither), all layouts are available. `layouts` takes priority over `layout`.
+
+Without any workspace config, teru auto-selects the layout based on pane count: 0-1 = monocle, 2-4 = master-stack, 5+ = grid. This auto-selection is disabled when a layout list is configured.
 
 ### Hooks
 

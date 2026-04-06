@@ -37,7 +37,7 @@ const daemon_proto = @import("server/protocol.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
-const version = "0.2.6";
+const version = "0.2.7";
 
 const session_path = "/tmp/teru-session.bin";
 
@@ -340,7 +340,12 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
 
     // Apply per-workspace config
     for (0..9) |i| {
-        if (config.workspace_layouts[i]) |layout| {
+        // Layout list takes priority over single layout
+        if (config.workspace_layout_counts[i] > 0) {
+            mux.layout_engine.workspaces[i].setLayouts(
+                config.workspace_layout_lists[i][0..config.workspace_layout_counts[i]],
+            );
+        } else if (config.workspace_layouts[i]) |layout| {
             mux.layout_engine.workspaces[i].layout = layout;
         }
         if (config.workspace_ratios[i]) |ratio| {
@@ -1360,6 +1365,19 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     win.setOpacity(new_config.opacity);
                     mux.notification_duration_ns = @as(i128, new_config.notification_duration_ms) * 1_000_000;
                     prefix.timeout_ns = @as(i128, new_config.prefix_timeout_ms) * 1_000_000;
+
+                    // Hot-reload per-workspace layout lists and ratios
+                    // (names are not hot-reloaded — they're owned by Config and freed below)
+                    for (0..9) |i| {
+                        if (new_config.workspace_layout_counts[i] > 0) {
+                            mux.layout_engine.workspaces[i].setLayouts(
+                                new_config.workspace_layout_lists[i][0..new_config.workspace_layout_counts[i]],
+                            );
+                        }
+                        if (new_config.workspace_ratios[i]) |ratio| {
+                            mux.layout_engine.workspaces[i].master_ratio = ratio;
+                        }
+                    }
 
                     // Update config fields that don't need subsystem propagation
                     config.scroll_speed = new_config.scroll_speed;

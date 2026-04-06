@@ -24,11 +24,14 @@ pub const Rect = struct {
     pub const zero = Rect{ .x = 0, .y = 0, .width = 0, .height = 0 };
 };
 
-pub const Layout = enum {
-    master_stack,
-    grid,
-    monocle,
-    floating,
+pub const Layout = enum(u8) {
+    master_stack = 0,
+    grid = 1,
+    monocle = 2,
+    floating = 3,
+    spiral = 4,
+    three_col = 5,
+    columns = 6,
 };
 
 pub const SplitDirection = enum { horizontal, vertical };
@@ -45,6 +48,8 @@ pub const SplitNode = union(enum) {
     };
 };
 
+pub const max_layouts = 8;
+
 pub const Workspace = struct {
     name: []const u8,
     layout: Layout,
@@ -52,6 +57,13 @@ pub const Workspace = struct {
     node_ids: std.ArrayListUnmanaged(u64),
     active_index: usize = 0,
     master_ratio: f32 = 0.6,
+
+    // Per-workspace layout list (xmonad ||| pattern)
+    // When layout_count > 0, cycleLayout cycles within this list.
+    // When layout_count == 0, cycles through all layouts (legacy behavior).
+    layouts: [max_layouts]Layout = undefined,
+    layout_count: u8 = 0,
+    layout_index: u8 = 0,
 
     // ── Binary split tree (pre-allocated, no heap) ─────────────
     split_nodes: [64]SplitNode = undefined,
@@ -67,6 +79,40 @@ pub const Workspace = struct {
         };
     }
 
+    /// Set the workspace layout list. First layout becomes active.
+    pub fn setLayouts(self: *Workspace, list: []const Layout) void {
+        const count = @min(list.len, max_layouts);
+        for (0..count) |i| {
+            self.layouts[i] = list[i];
+        }
+        self.layout_count = @intCast(count);
+        self.layout_index = 0;
+        if (count > 0) {
+            self.layout = self.layouts[0];
+        }
+    }
+
+    /// Cycle to the next layout in the workspace's layout list.
+    /// If no list is configured, cycles through all layouts.
+    pub fn cycleLayout(self: *Workspace) void {
+        if (self.layout_count > 1) {
+            self.layout_index = (self.layout_index + 1) % self.layout_count;
+            self.layout = self.layouts[self.layout_index];
+        } else if (self.layout_count == 0) {
+            // Legacy: cycle through all layouts
+            self.layout = switch (self.layout) {
+                .master_stack => .grid,
+                .grid => .monocle,
+                .monocle => .floating,
+                .floating => .spiral,
+                .spiral => .three_col,
+                .three_col => .columns,
+                .columns => .master_stack,
+            };
+        }
+        // layout_count == 1: no-op (only one layout)
+    }
+
     pub fn deinit(self: *Workspace, allocator: Allocator) void {
         self.node_ids.deinit(allocator);
     }
@@ -77,8 +123,10 @@ pub const Workspace = struct {
             if (existing == id) return;
         }
         try self.node_ids.append(allocator, id);
-        // Auto-select layout for new count
-        self.layout = autoSelectLayout(self.node_ids.items.len);
+        // Auto-select layout only when no per-workspace layout list is configured
+        if (self.layout_count == 0) {
+            self.layout = autoSelectLayout(self.node_ids.items.len);
+        }
     }
 
     pub fn removeNode(self: *Workspace, id: u64) void {
@@ -94,8 +142,10 @@ pub const Workspace = struct {
         } else if (self.active_index >= self.node_ids.items.len) {
             self.active_index = self.node_ids.items.len - 1;
         }
-        // Auto-select layout for new count
-        self.layout = autoSelectLayout(self.node_ids.items.len);
+        // Auto-select layout only when no per-workspace layout list is configured
+        if (self.layout_count == 0) {
+            self.layout = autoSelectLayout(self.node_ids.items.len);
+        }
     }
 
     pub fn focusNext(self: *Workspace) void {
@@ -182,7 +232,9 @@ pub const Workspace = struct {
         }
         if (!in_flat) {
             try self.node_ids.append(allocator, pane_id);
-            self.layout = autoSelectLayout(self.node_ids.items.len);
+            if (self.layout_count == 0) {
+                self.layout = autoSelectLayout(self.node_ids.items.len);
+            }
         }
 
         // Check if pane already exists in the tree
@@ -563,6 +615,9 @@ pub fn calculate(self: *LayoutEngine, workspace_index: u8, screen: Rect) ![]Rect
         .grid => try calculateGrid(self.allocator, count, screen),
         .monocle => try calculateMonocle(self.allocator, count, screen, ws.active_index),
         .floating => try calculateFloating(self.allocator, count, screen),
+        .spiral => try calculateSpiral(self.allocator, count, screen),
+        .three_col => try calculateThreeCol(self.allocator, count, screen, ws.master_ratio),
+        .columns => try calculateColumns(self.allocator, count, screen),
     };
 }
 
@@ -671,6 +726,154 @@ fn calculateFloating(allocator: Allocator, count: usize, screen: Rect) ![]Rect {
             .y = screen.y + offset,
             .width = @min(default_w, screen.width -| offset),
             .height = @min(default_h, screen.height -| offset),
+        };
+    }
+
+    return rects;
+}
+
+fn calculateSpiral(allocator: Allocator, count: usize, screen: Rect) ![]Rect {
+    const rects = try allocator.alloc(Rect, count);
+
+    if (count == 1) {
+        rects[0] = screen;
+        return rects;
+    }
+
+    // Fibonacci spiral: each successive pane takes half the remaining space,
+    // alternating vertical and horizontal splits.
+    var remaining = screen;
+    for (0..count) |i| {
+        if (i == count - 1) {
+            // Last pane gets whatever is left
+            rects[i] = remaining;
+            break;
+        }
+        const is_vertical = (i % 2 == 0);
+        if (is_vertical) {
+            const w: u16 = @intFromFloat(@as(f32, @floatFromInt(remaining.width)) * 0.5);
+            rects[i] = .{
+                .x = remaining.x,
+                .y = remaining.y,
+                .width = w,
+                .height = remaining.height,
+            };
+            remaining.x +|= w;
+            remaining.width -|= w;
+        } else {
+            const h: u16 = @intFromFloat(@as(f32, @floatFromInt(remaining.height)) * 0.5);
+            rects[i] = .{
+                .x = remaining.x,
+                .y = remaining.y,
+                .width = remaining.width,
+                .height = h,
+            };
+            remaining.y +|= h;
+            remaining.height -|= h;
+        }
+    }
+
+    return rects;
+}
+
+fn calculateThreeCol(allocator: Allocator, count: usize, screen: Rect, ratio: f32) ![]Rect {
+    const rects = try allocator.alloc(Rect, count);
+
+    if (count == 1) {
+        rects[0] = screen;
+        return rects;
+    }
+
+    if (count == 2) {
+        // Two panes: master center, one side
+        const master_w: u16 = @intFromFloat(@as(f32, @floatFromInt(screen.width)) * ratio);
+        const side_w: u16 = screen.width -| master_w;
+        rects[0] = .{ .x = screen.x, .y = screen.y, .width = master_w, .height = screen.height };
+        rects[1] = .{ .x = screen.x +| master_w, .y = screen.y, .width = side_w, .height = screen.height };
+        return rects;
+    }
+
+    // ThreeColMid: master in center, stacks on left and right
+    const master_w: u16 = @intFromFloat(@as(f32, @floatFromInt(screen.width)) * ratio);
+    const side_total: u16 = screen.width -| master_w;
+    const left_w: u16 = side_total / 2;
+    const right_w: u16 = side_total -| left_w;
+    const center_x: u16 = screen.x +| left_w;
+
+    // Master pane (center)
+    rects[0] = .{
+        .x = center_x,
+        .y = screen.y,
+        .width = master_w,
+        .height = screen.height,
+    };
+
+    // Distribute remaining panes: odd-indexed to left stack, even-indexed to right stack
+    var left_count: u16 = 0;
+    var right_count: u16 = 0;
+    for (1..count) |i| {
+        if (i % 2 == 1) {
+            left_count += 1;
+        } else {
+            right_count += 1;
+        }
+    }
+    // If all went to one side, balance
+    if (right_count == 0 and left_count > 1) {
+        left_count -= 1;
+        right_count = 1;
+    }
+
+    var left_idx: u16 = 0;
+    var right_idx: u16 = 0;
+    for (1..count) |i| {
+        const is_left = if (right_count == 0) true else if (left_count == 0) false else (i % 2 == 1);
+        if (is_left) {
+            const cell_h = if (left_count > 0) screen.height / left_count else screen.height;
+            const extra: u16 = if (left_idx == left_count - 1) screen.height % left_count else 0;
+            rects[i] = .{
+                .x = screen.x,
+                .y = screen.y +| left_idx * cell_h,
+                .width = left_w,
+                .height = cell_h + extra,
+            };
+            left_idx += 1;
+        } else {
+            const cell_h = if (right_count > 0) screen.height / right_count else screen.height;
+            const extra: u16 = if (right_idx == right_count - 1) screen.height % right_count else 0;
+            rects[i] = .{
+                .x = center_x +| master_w,
+                .y = screen.y +| right_idx * cell_h,
+                .width = right_w,
+                .height = cell_h + extra,
+            };
+            right_idx += 1;
+        }
+    }
+
+    return rects;
+}
+
+fn calculateColumns(allocator: Allocator, count: usize, screen: Rect) ![]Rect {
+    const rects = try allocator.alloc(Rect, count);
+
+    if (count == 1) {
+        rects[0] = screen;
+        return rects;
+    }
+
+    const col_count: u16 = @intCast(count);
+    const col_w: u16 = screen.width / col_count;
+    const remainder: u16 = screen.width % col_count;
+
+    for (0..count) |i| {
+        const idx: u16 = @intCast(i);
+        const extra: u16 = if (i == count - 1) remainder else 0;
+        rects[i] = .{
+            .x = screen.x + idx * col_w,
+            .y = screen.y,
+            .width = col_w + extra,
+            .height = screen.height,
         };
     }
 
@@ -1591,4 +1794,191 @@ test "getTreePaneIds — matches calculateFromTree order" {
     try t.expectEqual(@as(u64, 10), id_buf[0]);
     try t.expectEqual(@as(u64, 20), id_buf[1]);
     try t.expectEqual(@as(u64, 30), id_buf[2]);
+}
+
+// ── New layout algorithm tests ────────────────────────────────
+
+test "spiral — single pane gets full screen" {
+    var s = testEngine();
+    defer s.engine.deinit();
+    const ws = &s.engine.workspaces[0];
+    try ws.addNode(s.allocator, 1);
+    ws.layout = .spiral;
+
+    const rects = try s.engine.calculate(0, .{ .x = 0, .y = 0, .width = 1000, .height = 800 });
+    defer s.allocator.free(rects);
+    try t.expectEqual(@as(usize, 1), rects.len);
+    try t.expect(rects[0].eql(.{ .x = 0, .y = 0, .width = 1000, .height = 800 }));
+}
+
+test "spiral — two panes splits vertically" {
+    var s = testEngine();
+    defer s.engine.deinit();
+    const ws = &s.engine.workspaces[0];
+    try ws.addNode(s.allocator, 1);
+    try ws.addNode(s.allocator, 2);
+    ws.layout = .spiral;
+
+    const rects = try s.engine.calculate(0, .{ .x = 0, .y = 0, .width = 1000, .height = 800 });
+    defer s.allocator.free(rects);
+    try t.expectEqual(@as(usize, 2), rects.len);
+    // First pane: left half
+    try t.expectEqual(@as(u16, 0), rects[0].x);
+    try t.expectEqual(@as(u16, 500), rects[0].width);
+    try t.expectEqual(@as(u16, 800), rects[0].height);
+    // Second pane: right half
+    try t.expectEqual(@as(u16, 500), rects[1].x);
+    try t.expectEqual(@as(u16, 500), rects[1].width);
+    try t.expectEqual(@as(u16, 800), rects[1].height);
+}
+
+test "spiral — three panes: V split then H split" {
+    var s = testEngine();
+    defer s.engine.deinit();
+    const ws = &s.engine.workspaces[0];
+    for (1..4) |id| try ws.addNode(s.allocator, @intCast(id));
+    ws.layout = .spiral;
+
+    const rects = try s.engine.calculate(0, .{ .x = 0, .y = 0, .width = 1000, .height = 800 });
+    defer s.allocator.free(rects);
+    try t.expectEqual(@as(usize, 3), rects.len);
+    // First: left half
+    try t.expectEqual(@as(u16, 500), rects[0].width);
+    try t.expectEqual(@as(u16, 800), rects[0].height);
+    // Second: top-right quarter
+    try t.expectEqual(@as(u16, 500), rects[1].x);
+    try t.expectEqual(@as(u16, 0), rects[1].y);
+    try t.expectEqual(@as(u16, 500), rects[1].width);
+    try t.expectEqual(@as(u16, 400), rects[1].height);
+    // Third: bottom-right quarter (remainder)
+    try t.expectEqual(@as(u16, 500), rects[2].x);
+    try t.expectEqual(@as(u16, 400), rects[2].y);
+    try t.expectEqual(@as(u16, 500), rects[2].width);
+    try t.expectEqual(@as(u16, 400), rects[2].height);
+}
+
+test "three_col — single pane gets full screen" {
+    var s = testEngine();
+    defer s.engine.deinit();
+    const ws = &s.engine.workspaces[0];
+    try ws.addNode(s.allocator, 1);
+    ws.layout = .three_col;
+
+    const rects = try s.engine.calculate(0, .{ .x = 0, .y = 0, .width = 1200, .height = 800 });
+    defer s.allocator.free(rects);
+    try t.expectEqual(@as(usize, 1), rects.len);
+    try t.expect(rects[0].eql(.{ .x = 0, .y = 0, .width = 1200, .height = 800 }));
+}
+
+test "three_col — three panes: center master + left + right" {
+    var s = testEngine();
+    defer s.engine.deinit();
+    const ws = &s.engine.workspaces[0];
+    for (1..4) |id| try ws.addNode(s.allocator, @intCast(id));
+    ws.layout = .three_col;
+    ws.master_ratio = 0.5;
+
+    const rects = try s.engine.calculate(0, .{ .x = 0, .y = 0, .width = 1200, .height = 800 });
+    defer s.allocator.free(rects);
+    try t.expectEqual(@as(usize, 3), rects.len);
+    // Master (center): width=600, starts at x=300
+    try t.expectEqual(@as(u16, 300), rects[0].x);
+    try t.expectEqual(@as(u16, 600), rects[0].width);
+    try t.expectEqual(@as(u16, 800), rects[0].height);
+    // Left stack pane
+    try t.expectEqual(@as(u16, 0), rects[1].x);
+    try t.expectEqual(@as(u16, 300), rects[1].width);
+    // Right stack pane
+    try t.expectEqual(@as(u16, 900), rects[2].x);
+    try t.expectEqual(@as(u16, 300), rects[2].width);
+}
+
+test "columns — equal width columns" {
+    var s = testEngine();
+    defer s.engine.deinit();
+    const ws = &s.engine.workspaces[0];
+    for (1..4) |id| try ws.addNode(s.allocator, @intCast(id));
+    ws.layout = .columns;
+
+    const rects = try s.engine.calculate(0, .{ .x = 0, .y = 0, .width = 900, .height = 600 });
+    defer s.allocator.free(rects);
+    try t.expectEqual(@as(usize, 3), rects.len);
+    try t.expectEqual(@as(u16, 0), rects[0].x);
+    try t.expectEqual(@as(u16, 300), rects[0].width);
+    try t.expectEqual(@as(u16, 600), rects[0].height);
+    try t.expectEqual(@as(u16, 300), rects[1].x);
+    try t.expectEqual(@as(u16, 300), rects[1].width);
+    try t.expectEqual(@as(u16, 600), rects[2].x);
+    try t.expectEqual(@as(u16, 300), rects[2].width);
+}
+
+test "columns — remainder pixels go to last column" {
+    var s = testEngine();
+    defer s.engine.deinit();
+    const ws = &s.engine.workspaces[0];
+    for (1..4) |id| try ws.addNode(s.allocator, @intCast(id));
+    ws.layout = .columns;
+
+    const rects = try s.engine.calculate(0, .{ .x = 0, .y = 0, .width = 901, .height = 600 });
+    defer s.allocator.free(rects);
+    try t.expectEqual(@as(u16, 300), rects[0].width);
+    try t.expectEqual(@as(u16, 300), rects[1].width);
+    try t.expectEqual(@as(u16, 301), rects[2].width);
+}
+
+// ── Workspace layout list tests ───────────────────────────────
+
+test "setLayouts — sets layout list and activates first" {
+    var ws = testWorkspace();
+    ws.setLayouts(&.{ .spiral, .grid, .monocle });
+
+    try t.expectEqual(@as(u8, 3), ws.layout_count);
+    try t.expectEqual(@as(u8, 0), ws.layout_index);
+    try t.expectEqual(Layout.spiral, ws.layout);
+}
+
+test "cycleLayout — cycles within layout list" {
+    const a = t.allocator;
+    var ws = testWorkspace();
+    defer ws.deinit(a);
+
+    ws.setLayouts(&.{ .master_stack, .three_col, .monocle });
+
+    try t.expectEqual(Layout.master_stack, ws.layout);
+    ws.cycleLayout();
+    try t.expectEqual(Layout.three_col, ws.layout);
+    ws.cycleLayout();
+    try t.expectEqual(Layout.monocle, ws.layout);
+    ws.cycleLayout(); // wraps
+    try t.expectEqual(Layout.master_stack, ws.layout);
+}
+
+test "cycleLayout — single layout list is no-op" {
+    var ws = testWorkspace();
+    ws.setLayouts(&.{.spiral});
+    ws.cycleLayout();
+    try t.expectEqual(Layout.spiral, ws.layout);
+    ws.cycleLayout();
+    try t.expectEqual(Layout.spiral, ws.layout);
+}
+
+test "addNode skips auto-select when layout list is set" {
+    var s = testEngine();
+    defer s.engine.deinit();
+    const ws = &s.engine.workspaces[0];
+
+    ws.setLayouts(&.{ .columns, .spiral });
+    try t.expectEqual(Layout.columns, ws.layout);
+
+    // Adding nodes should NOT change the layout
+    try ws.addNode(s.allocator, 1);
+    try t.expectEqual(Layout.columns, ws.layout);
+    try ws.addNode(s.allocator, 2);
+    try t.expectEqual(Layout.columns, ws.layout);
+    try ws.addNode(s.allocator, 3);
+    try t.expectEqual(Layout.columns, ws.layout);
+    try ws.addNode(s.allocator, 4);
+    try t.expectEqual(Layout.columns, ws.layout);
+    try ws.addNode(s.allocator, 5);
+    try t.expectEqual(Layout.columns, ws.layout); // would be .grid without layout list
 }

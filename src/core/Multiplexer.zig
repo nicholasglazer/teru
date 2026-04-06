@@ -306,14 +306,9 @@ pub fn switchWorkspace(self: *Multiplexer, idx: u8) void {
 }
 
 /// Cycle the layout of the active workspace.
+/// Uses the workspace's layout list if configured, otherwise cycles all.
 pub fn cycleLayout(self: *Multiplexer) void {
-    const ws = &self.layout_engine.workspaces[self.active_workspace];
-    ws.layout = switch (ws.layout) {
-        .master_stack => .grid,
-        .grid => .monocle,
-        .monocle => .floating,
-        .floating => .master_stack,
-    };
+    self.layout_engine.workspaces[self.active_workspace].cycleLayout();
 }
 
 /// Toggle zoom: switch between current layout and monocle.
@@ -379,7 +374,7 @@ pub fn resizePanePtys(self: *Multiplexer, screen_width: u32, screen_height: u32,
 pub fn resizeActive(self: *Multiplexer, dx: i8, dy: i8) void {
     _ = dy;
     const ws = &self.layout_engine.workspaces[self.active_workspace];
-    if (ws.layout != .master_stack) return; // only master-stack supports ratio
+    if (ws.layout != .master_stack and ws.layout != .three_col) return;
     const step: f32 = @as(f32, @floatFromInt(dx)) * 0.02;
     ws.master_ratio = @min(0.85, @max(0.15, ws.master_ratio + step));
 }
@@ -599,7 +594,7 @@ test "Multiplexer switchWorkspace" {
     try t.expectEqual(@as(u8, 3), mux.active_workspace);
 }
 
-test "Multiplexer cycleLayout" {
+test "Multiplexer cycleLayout — legacy (no layout list)" {
     var mux = Multiplexer.init(t.allocator);
     defer mux.deinit();
 
@@ -607,8 +602,7 @@ test "Multiplexer cycleLayout" {
 
     const ws = &mux.layout_engine.workspaces[0];
 
-    // monocle (auto-selected for 1 pane) -> grid -> monocle -> ...
-    // Force a known starting layout
+    // Legacy cycle: all 7 layouts
     ws.layout = .master_stack;
     mux.cycleLayout();
     try t.expectEqual(LayoutEngine.Layout.grid, ws.layout);
@@ -620,6 +614,36 @@ test "Multiplexer cycleLayout" {
     try t.expectEqual(LayoutEngine.Layout.floating, ws.layout);
 
     mux.cycleLayout();
+    try t.expectEqual(LayoutEngine.Layout.spiral, ws.layout);
+
+    mux.cycleLayout();
+    try t.expectEqual(LayoutEngine.Layout.three_col, ws.layout);
+
+    mux.cycleLayout();
+    try t.expectEqual(LayoutEngine.Layout.columns, ws.layout);
+
+    mux.cycleLayout();
+    try t.expectEqual(LayoutEngine.Layout.master_stack, ws.layout);
+}
+
+test "Multiplexer cycleLayout — per-workspace layout list" {
+    var mux = Multiplexer.init(t.allocator);
+    defer mux.deinit();
+
+    _ = try mux.spawnPane(10, 20);
+
+    const ws = &mux.layout_engine.workspaces[0];
+    ws.setLayouts(&.{ .master_stack, .spiral, .monocle });
+
+    try t.expectEqual(LayoutEngine.Layout.master_stack, ws.layout);
+
+    mux.cycleLayout();
+    try t.expectEqual(LayoutEngine.Layout.spiral, ws.layout);
+
+    mux.cycleLayout();
+    try t.expectEqual(LayoutEngine.Layout.monocle, ws.layout);
+
+    mux.cycleLayout(); // wraps
     try t.expectEqual(LayoutEngine.Layout.master_stack, ws.layout);
 }
 

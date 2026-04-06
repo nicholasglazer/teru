@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.7 (2026-04-06)
+
+### Features
+- **Per-workspace layout lists**: configure layout cycling per workspace with `layouts = master-stack, grid, monocle` in `[workspace.N]` config sections. Prefix+Space cycles within the workspace's list (xmonad `|||` pattern)
+- **Spiral layout**: Fibonacci/golden ratio spiral that alternates vertical and horizontal splits
+- **Three-column layout**: master pane in center with stacks on left and right sides (ThreeColMid)
+- **Columns layout**: equal-width vertical columns
+- **Layout list hot-reload**: changing `layouts` in teru.conf applies immediately without restart
+
+### Fixes
+- **Resize in three-col layout**: `resizeActive` now adjusts master_ratio for three_col (not just master-stack)
+- **Auto-select respects config**: `addNode`/`removeNode` no longer override the layout when a per-workspace layout list is configured
+
 ## 0.2.6 (2026-04-06)
 
 ### Features

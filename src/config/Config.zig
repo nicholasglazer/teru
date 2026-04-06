@@ -180,6 +180,9 @@ bar_right: ?[]const u8 = null, // format string (null = dimensions)
 workspace_layouts: [9]?LayoutEngine.Layout = .{null} ** 9,
 workspace_ratios: [9]?f32 = .{null} ** 9,
 workspace_names: [9]?[]const u8 = .{null} ** 9,
+// Per-workspace layout lists (layouts = master-stack, grid, monocle)
+workspace_layout_lists: [9][LayoutEngine.max_layouts]LayoutEngine.Layout = undefined,
+workspace_layout_counts: [9]u8 = .{0} ** 9,
 
 allocator: Allocator,
 
@@ -502,6 +505,8 @@ fn applyWorkspaceField(self: *Config, allocator: Allocator, ws_idx: usize, key: 
     if (ws_idx >= 9) return;
     if (std.mem.eql(u8, key, "layout")) {
         self.workspace_layouts[ws_idx] = parseLayout(value);
+    } else if (std.mem.eql(u8, key, "layouts")) {
+        self.workspace_layout_counts[ws_idx] = parseLayoutList(value, &self.workspace_layout_lists[ws_idx]);
     } else if (std.mem.eql(u8, key, "master_ratio")) {
         self.workspace_ratios[ws_idx] = parseFloat(value);
     } else if (std.mem.eql(u8, key, "name")) {
@@ -588,7 +593,27 @@ fn parseLayout(value: []const u8) ?LayoutEngine.Layout {
     if (std.mem.eql(u8, value, "grid")) return .grid;
     if (std.mem.eql(u8, value, "monocle")) return .monocle;
     if (std.mem.eql(u8, value, "floating")) return .floating;
+    if (std.mem.eql(u8, value, "spiral")) return .spiral;
+    if (std.mem.eql(u8, value, "three-col") or std.mem.eql(u8, value, "three_col")) return .three_col;
+    if (std.mem.eql(u8, value, "columns")) return .columns;
     return null;
+}
+
+/// Parse a comma-separated list of layout names.
+/// Returns the count of successfully parsed layouts written into `out`.
+fn parseLayoutList(value: []const u8, out: *[LayoutEngine.max_layouts]LayoutEngine.Layout) u8 {
+    var count: u8 = 0;
+    var iter = std.mem.splitScalar(u8, value, ',');
+    while (iter.next()) |raw| {
+        if (count >= LayoutEngine.max_layouts) break;
+        const trimmed = std.mem.trim(u8, raw, &std.ascii.whitespace);
+        if (trimmed.len == 0) continue;
+        if (parseLayout(trimmed)) |layout| {
+            out[count] = layout;
+            count += 1;
+        }
+    }
+    return count;
 }
 
 fn parseCursorShape(value: []const u8) ?Grid.CursorShape {
@@ -971,7 +996,76 @@ test "parseLayout" {
     try std.testing.expectEqual(@as(?LayoutEngine.Layout, .grid), parseLayout("grid"));
     try std.testing.expectEqual(@as(?LayoutEngine.Layout, .monocle), parseLayout("monocle"));
     try std.testing.expectEqual(@as(?LayoutEngine.Layout, .floating), parseLayout("floating"));
+    try std.testing.expectEqual(@as(?LayoutEngine.Layout, .spiral), parseLayout("spiral"));
+    try std.testing.expectEqual(@as(?LayoutEngine.Layout, .three_col), parseLayout("three-col"));
+    try std.testing.expectEqual(@as(?LayoutEngine.Layout, .three_col), parseLayout("three_col"));
+    try std.testing.expectEqual(@as(?LayoutEngine.Layout, .columns), parseLayout("columns"));
     try std.testing.expectEqual(@as(?LayoutEngine.Layout, null), parseLayout("unknown"));
+}
+
+test "parseLayoutList" {
+    var buf: [LayoutEngine.max_layouts]LayoutEngine.Layout = undefined;
+
+    // Basic comma-separated list
+    const n1 = parseLayoutList("master-stack, grid, monocle", &buf);
+    try std.testing.expectEqual(@as(u8, 3), n1);
+    try std.testing.expectEqual(LayoutEngine.Layout.master_stack, buf[0]);
+    try std.testing.expectEqual(LayoutEngine.Layout.grid, buf[1]);
+    try std.testing.expectEqual(LayoutEngine.Layout.monocle, buf[2]);
+
+    // With new layout types
+    const n2 = parseLayoutList("spiral, three-col, columns", &buf);
+    try std.testing.expectEqual(@as(u8, 3), n2);
+    try std.testing.expectEqual(LayoutEngine.Layout.spiral, buf[0]);
+    try std.testing.expectEqual(LayoutEngine.Layout.three_col, buf[1]);
+    try std.testing.expectEqual(LayoutEngine.Layout.columns, buf[2]);
+
+    // Invalid entries are skipped
+    const n3 = parseLayoutList("grid, bogus, monocle", &buf);
+    try std.testing.expectEqual(@as(u8, 2), n3);
+    try std.testing.expectEqual(LayoutEngine.Layout.grid, buf[0]);
+    try std.testing.expectEqual(LayoutEngine.Layout.monocle, buf[1]);
+
+    // Empty string
+    const n4 = parseLayoutList("", &buf);
+    try std.testing.expectEqual(@as(u8, 0), n4);
+
+    // Single layout
+    const n5 = parseLayoutList("spiral", &buf);
+    try std.testing.expectEqual(@as(u8, 1), n5);
+    try std.testing.expectEqual(LayoutEngine.Layout.spiral, buf[0]);
+}
+
+test "parse workspace layouts list" {
+    const allocator = std.testing.allocator;
+
+    const content =
+        \\[workspace.1]
+        \\layouts = master-stack, grid, monocle
+        \\name = code
+        \\
+        \\[workspace.2]
+        \\layouts = spiral, three-col
+        \\master_ratio = 0.5
+    ;
+
+    var config = Config{ .allocator = allocator };
+    config.parse(allocator, content);
+    defer config.deinit();
+
+    // Workspace 1 layout list
+    try std.testing.expectEqual(@as(u8, 3), config.workspace_layout_counts[0]);
+    try std.testing.expectEqual(LayoutEngine.Layout.master_stack, config.workspace_layout_lists[0][0]);
+    try std.testing.expectEqual(LayoutEngine.Layout.grid, config.workspace_layout_lists[0][1]);
+    try std.testing.expectEqual(LayoutEngine.Layout.monocle, config.workspace_layout_lists[0][2]);
+
+    // Workspace 2 layout list
+    try std.testing.expectEqual(@as(u8, 2), config.workspace_layout_counts[1]);
+    try std.testing.expectEqual(LayoutEngine.Layout.spiral, config.workspace_layout_lists[1][0]);
+    try std.testing.expectEqual(LayoutEngine.Layout.three_col, config.workspace_layout_lists[1][1]);
+
+    // Workspace 3 — not set
+    try std.testing.expectEqual(@as(u8, 0), config.workspace_layout_counts[2]);
 }
 
 test "parseCursorShape" {

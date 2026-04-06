@@ -200,7 +200,7 @@ fn handleInitialize(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
     _ = self;
     const id_str = id orelse "null";
     return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"protocolVersion":"2025-03-26","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"teru","version":"0.2.6"}}}},"id":{s}}}
+        \\{{"jsonrpc":"2.0","result":{{"protocolVersion":"2025-03-26","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"teru","version":"0.2.7"}}}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
 }
@@ -223,7 +223,8 @@ fn handleToolsList(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teru_close_pane","description":"Close a pane by ID","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}}}},"required":["pane_id"]}}}},
         \\{{"name":"teru_switch_workspace","description":"Switch the active workspace (0-8)","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer"}}}},"required":["workspace"]}}}},
         \\{{"name":"teru_scroll","description":"Scroll a pane's scrollback (up/down/bottom)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"direction":{{"type":"string","enum":["up","down","bottom"]}},"lines":{{"type":"integer","default":10}}}},"required":["pane_id","direction"]}}}},
-        \\{{"name":"teru_wait_for","description":"Check if text pattern exists in pane output (non-blocking)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"pattern":{{"type":"string"}},"lines":{{"type":"integer","default":20}}}},"required":["pane_id","pattern"]}}}}
+        \\{{"name":"teru_wait_for","description":"Check if text pattern exists in pane output (non-blocking)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"pattern":{{"type":"string"}},"lines":{{"type":"integer","default":20}}}},"required":["pane_id","pattern"]}}}},
+        \\{{"name":"teru_set_layout","description":"Set the layout for a workspace. Layouts: master-stack, grid, monocle, floating, spiral, three-col, columns","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer","default":0}},"layout":{{"type":"string","enum":["master-stack","grid","monocle","floating","spiral","three-col","columns"]}}}},"required":["layout"]}}}}
         \\]}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
@@ -299,6 +300,11 @@ fn handleToolsCall(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u
             return jsonRpcError(buf, id, -32602, "Missing pattern");
         const lines = extractNestedJsonInt(params_body, "lines") orelse 20;
         return self.toolWaitFor(@intCast(pane_id), pattern, @intCast(lines), buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teru_set_layout")) {
+        const layout_str = extractNestedJsonString(params_body, "layout") orelse
+            return jsonRpcError(buf, id, -32602, "Missing layout");
+        const workspace = extractNestedJsonInt(params_body, "workspace") orelse 0;
+        return self.toolSetLayout(@intCast(workspace), layout_str, buf, id);
     } else {
         return jsonRpcError(buf, id, -32602, "Unknown tool");
     }
@@ -662,6 +668,45 @@ fn toolSwitchWorkspace(self: *McpServer, workspace: u8, buf: []u8, id: ?[]const 
         return jsonRpcError(buf, id, -32602, "Workspace must be 0-8");
 
     self.multiplexer.switchWorkspace(workspace);
+
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
+    , .{id_str}) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolSetLayout(self: *McpServer, workspace: u8, layout_str: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+    const LayoutEngine = @import("../tiling/LayoutEngine.zig");
+
+    if (workspace > 8)
+        return jsonRpcError(buf, id, -32602, "Workspace must be 0-8");
+
+    const layout: LayoutEngine.Layout = if (std.mem.eql(u8, layout_str, "master-stack") or std.mem.eql(u8, layout_str, "master_stack"))
+        .master_stack
+    else if (std.mem.eql(u8, layout_str, "grid"))
+        .grid
+    else if (std.mem.eql(u8, layout_str, "monocle"))
+        .monocle
+    else if (std.mem.eql(u8, layout_str, "floating"))
+        .floating
+    else if (std.mem.eql(u8, layout_str, "spiral"))
+        .spiral
+    else if (std.mem.eql(u8, layout_str, "three-col") or std.mem.eql(u8, layout_str, "three_col"))
+        .three_col
+    else if (std.mem.eql(u8, layout_str, "columns"))
+        .columns
+    else
+        return jsonRpcError(buf, id, -32602, "Unknown layout");
+
+    self.multiplexer.layout_engine.workspaces[workspace].layout = layout;
+
+    // Resize PTYs to match new layout
+    if (self.screen_width > 0 and self.cell_width > 0) {
+        self.multiplexer.resizePanePtys(self.screen_width, self.screen_height, self.cell_width, self.cell_height, self.padding);
+    }
+    // Mark panes dirty for redraw
+    for (self.multiplexer.panes.items) |*pane| pane.grid.dirty = true;
 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}

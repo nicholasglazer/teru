@@ -66,6 +66,13 @@ Send text to all panes in a workspace.
 {"workspace": 0, "text": "exit\n"}
 ```
 
+### teru_set_layout
+Set the tiling layout for a workspace.
+```json
+{"workspace": 0, "layout": "spiral"}
+```
+Available layouts: `master-stack`, `grid`, `monocle`, `floating`, `spiral`, `three-col`, `columns`
+
 ### teru_get_graph
 Get the process graph (DAG of all processes/agents) as JSON.
 
@@ -91,6 +98,24 @@ mcp('teru_send_keys', {'pane_id': 2, 'keys': ['enter']})
 mcp('teru_create_pane', {'direction': 'vertical'})      # pane 2 right
 mcp('teru_focus_pane', {'pane_id': 2})
 mcp('teru_create_pane', {'direction': 'horizontal'})     # pane 3 below 2
+```
+
+### Switch to a layout appropriate for the task
+```python
+# For wide code review: 3 equal columns
+mcp('teru_set_layout', {'layout': 'columns'})
+
+# For focus mode: one pane fullscreen
+mcp('teru_set_layout', {'layout': 'monocle'})
+
+# For Fibonacci spiral with many panes
+mcp('teru_set_layout', {'layout': 'spiral'})
+
+# For center-focused editing: master center + stacks on sides
+mcp('teru_set_layout', {'layout': 'three-col'})
+
+# Classic master-stack (default for 2-4 panes)
+mcp('teru_set_layout', {'layout': 'master-stack'})
 ```
 
 ### Stop a running process

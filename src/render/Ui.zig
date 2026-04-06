@@ -238,6 +238,9 @@ pub fn renderTextStatusBar(
             .grid => 'G',
             .monocle => '#',
             .floating => 'F',
+            .spiral => 'S',
+            .three_col => '3',
+            .columns => '|',
         };
         blitCharAt(cpu, '[', x, text_y, s.ansi[8]);
         x += cw;
