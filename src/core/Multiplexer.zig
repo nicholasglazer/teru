@@ -350,8 +350,10 @@ pub fn resizePanePtys(self: *Multiplexer, screen_width: u32, screen_height: u32,
     } else ws.node_ids.items;
     if (pane_ids.len == 0) return;
 
+    // Subtract status bar height (must match renderAllWithSelection)
+    const status_h: u32 = if (cell_height > 0) cell_height + 4 else 0;
     const sw = screen_width -| pad * 2;
-    const sh = screen_height -| pad * 2;
+    const sh = screen_height -| pad * 2 -| status_h;
     if (sw == 0 or sh == 0 or cell_width == 0 or cell_height == 0) return;
 
     const screen = LayoutEngine.Rect{
@@ -382,11 +384,24 @@ pub fn resizePanePtys(self: *Multiplexer, screen_width: u32, screen_height: u32,
 }
 
 pub fn resizeActive(self: *Multiplexer, dx: i8, dy: i8) void {
-    _ = dy;
     const ws = &self.layout_engine.workspaces[self.active_workspace];
-    if (ws.layout != .master_stack and ws.layout != .three_col and ws.layout != .dishes) return;
-    const step: f32 = @as(f32, @floatFromInt(dx)) * 0.02;
-    ws.master_ratio = @min(0.85, @max(0.15, ws.master_ratio + step));
+    switch (ws.layout) {
+        // Horizontal layouts: dx adjusts master_ratio (width)
+        .master_stack, .three_col => {
+            if (dx != 0) {
+                const step: f32 = @as(f32, @floatFromInt(dx)) * 0.02;
+                ws.master_ratio = @min(0.85, @max(0.15, ws.master_ratio + step));
+            }
+        },
+        // Vertical layout: dy adjusts master_ratio (height)
+        .dishes => {
+            if (dy != 0) {
+                const step: f32 = @as(f32, @floatFromInt(dy)) * 0.02;
+                ws.master_ratio = @min(0.85, @max(0.15, ws.master_ratio + step));
+            }
+        },
+        else => {},
+    }
 }
 
 // ── PTY polling ────────────────────────────────────────────────

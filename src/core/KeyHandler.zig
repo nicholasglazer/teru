@@ -90,7 +90,10 @@ pub fn handleMuxCommand(
         },
         'n' => mux.focusNext(),
         'p' => mux.focusPrev(),
-        ' ' => mux.cycleLayout(),
+        ' ' => {
+            mux.cycleLayout();
+            return .panes_changed;
+        },
         'd' => {
             // Detach: save session and exit
             const path = "/tmp/teru-session.bin";
@@ -116,13 +119,25 @@ pub fn handleMuxCommand(
         },
         'v' => return .enter_vi_mode,
         'z' => {
-            // Zoom: toggle active pane between current layout and monocle
             mux.toggleZoom();
+            return .panes_changed;
         },
-        'H' => mux.resizeActive(-2, 0),   // shrink width
-        'L' => mux.resizeActive(2, 0),    // grow width
-        'K' => mux.resizeActive(0, -2),   // shrink height
-        'J' => mux.resizeActive(0, 2),    // grow height
+        'H' => {
+            mux.resizeActive(-2, 0);
+            return .panes_changed;
+        },
+        'L' => {
+            mux.resizeActive(2, 0);
+            return .panes_changed;
+        },
+        'K' => {
+            mux.resizeActive(0, -2);
+            return .panes_changed;
+        },
+        'J' => {
+            mux.resizeActive(0, 2);
+            return .panes_changed;
+        },
         else => {
             // Unknown command; forward the prefix + key to active pane
             if (mux.getActivePane()) |pane| {
