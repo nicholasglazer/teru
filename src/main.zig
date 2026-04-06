@@ -37,7 +37,7 @@ const daemon_proto = @import("server/protocol.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
-const version = "0.2.7";
+const version = "0.2.8";
 
 const session_path = "/tmp/teru-session.bin";
 

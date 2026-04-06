@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.2.8 (2026-04-06)
+
+### Features
+- **Per-workspace layout lists**: `layouts = master-stack, grid, monocle` in workspace config (xmonad `|||` pattern)
+- **8 tiling layouts**: master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion
+- **`teru_set_layout` MCP tool**: agents can switch layouts programmatically (14 MCP tools total)
+- **Dishes layout**: horizontal master-stack (master on top, columns below)
+- **Accordion layout**: focused pane tall, others compressed to thin strips
+- **Spiral layout**: Fibonacci alternating vertical/horizontal splits
+- **Three-column layout**: master center, stacks on sides (ThreeColMid)
+- **Columns layout**: equal-width vertical columns
+
+### Fixes
+- **Keyboard layout switching**: Cyrillic/Ukrainian and multi-layout support via xkb_state_update_key
+- **Selection absolute coordinates**: selections stable across scrollback scrolling, work in both grid and scrollback
+- **Selection in scrollback overlay**: highlight renders correctly in scrolled-back content
+- **Vi mode selection color**: removed duplicate overlay that was painting solid color over text glyphs
+- **Mouse drag-to-resize**: works for flat layouts (master-stack/three-col/dishes) with any number of panes
+- **Layout switch reactive**: prefix+Space immediately resizes PTYs and redraws (no mouse click needed)
+- **Status bar height**: PTY resize accounts for status bar, fixing bottom content cutoff
+- **Resize both directions**: H/L for horizontal master, K/J for vertical master (dishes)
+- **Auto-select respects config**: addNode/removeNode skip auto-layout when workspace has a layout list
+- **Wayland modifier group**: keyboardModifiers callback captures layout group for proper layout switching
+
+### Refactoring
+- **Split LayoutEngine.zig** (2,077 lines) into 4 modules: types.zig, layouts.zig, Workspace.zig, facade
+- **Extract scrollback helper**: Multiplexer.getScrollbackLineCount() replaces 17+ inline duplicates
+- **Remove floating layout**: non-functional stub replaced by dishes
+
+### Removed
+- **Floating layout**: removed non-functional cascading window stub
+
 ## 0.2.7 (2026-04-06)
 
 ### Features
