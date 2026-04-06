@@ -111,6 +111,19 @@ pub fn getActivePaneMut(self: *Multiplexer) ?*Pane {
     return self.getPaneById(active_id);
 }
 
+/// Get the scrollback line count for the active pane.
+pub fn getScrollbackLineCount(self: *const Multiplexer) u32 {
+    const ws = &self.layout_engine.workspaces[self.active_workspace];
+    const active_id = ws.getActiveNodeId() orelse return 0;
+    for (self.panes.items) |*pane| {
+        if (pane.id == active_id) {
+            if (pane.grid.scrollback) |sb| return @intCast(sb.lineCount());
+            return 0;
+        }
+    }
+    return 0;
+}
+
 /// Get the layout rect of the active pane (content area, inside border).
 /// Returns null if no active pane or layout calculation fails.
 pub fn getActivePaneRect(self: *Multiplexer, screen_width: u32, screen_height: u32, padding: u32) ?Rect {

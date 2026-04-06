@@ -617,10 +617,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             // Vi/copy mode: intercept ALL keys
                             if (vi_mode.active) {
                                 // Try keysym first (arrows, PageUp/Down, ESC)
-                                const sb_lines: u32 = if (mux.getActivePane()) |pane|
-                                    if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
-                                else
-                                    0;
+                                const sb_lines: u32 = mux.getScrollbackLineCount();
                                 var vi_scroll = mux.getScrollOffset();
                                 const ksym_action = vi_mode.handleKeysym(keysym, &vi_scroll, sb_lines);
                                 mux.setScrollOffset(vi_scroll);
@@ -722,10 +719,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
 
                             // PageUp/Down: scrollback browsing (with or without Shift)
                             if (keysym == XKB_KEY_Page_Up) {
-                                const max_offset = if (mux.getActivePane()) |pane|
-                                    if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
-                                else
-                                    0;
+                                const max_offset = mux.getScrollbackLineCount();
                                 if (max_offset > 0) {
                                     mux.setScrollOffset(@min(mux.getScrollOffset() + grid_rows, max_offset));
                                 }
@@ -815,7 +809,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 if (action == .enter_search) search_mode = true;
                                 if (action == .enter_vi_mode) {
                                     if (mux.getActivePane()) |pane| {
-                                        const sb_n: u32 = if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0;
+                                        const sb_n: u32 = mux.getScrollbackLineCount();
                                         vi_mode.enter(grid_rows, grid_cols, pane.grid.cursor_row, pane.grid.cursor_col, mux.getScrollOffset(), sb_n);
                                         pane.grid.dirty = true;
                                     }
@@ -868,7 +862,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             if (action == .enter_search) search_mode = true;
                             if (action == .enter_vi_mode) {
                                 if (mux.getActivePane()) |pane| {
-                                    const sb_n: u32 = if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0;
+                                    const sb_n: u32 = mux.getScrollbackLineCount();
                                     vi_mode.enter(grid_rows, grid_cols, pane.grid.cursor_row, pane.grid.cursor_col, mux.getScrollOffset(), sb_n);
                                     pane.grid.dirty = true;
                                 }
@@ -978,15 +972,40 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                     .height = @intCast(@min(sz.height -| padding * 2, std.math.maxInt(u16))),
                                 };
 
-                                // Border drag: check if click is on a split border
+                                // Border drag: check if click is on a split or layout border
                                 if (click_ws.split_root != null) {
                                     if (mux.layout_engine.workspaces[mux.active_workspace].findSplitForBorder(click_screen, mouse.x, mouse.y, 4)) |hit| {
                                         border_dragging = true;
                                         border_drag_x = mouse.x;
                                         border_drag_ratio = mux.layout_engine.workspaces[mux.active_workspace].split_nodes[hit.node_idx].split.ratio;
-                                        // Store the split node index for the drag handler
                                         border_drag_node = hit.node_idx;
                                         continue;
+                                    }
+                                } else if (click_pane_ids.len >= 2) {
+                                    // Flat layout: detect master ratio border
+                                    const layout = click_ws.layout;
+                                    const ratio = click_ws.master_ratio;
+                                    const zone: u32 = 4;
+                                    const is_vertical = (layout == .master_stack or layout == .three_col);
+                                    const is_horizontal = (layout == .dishes);
+                                    if (is_vertical) {
+                                        const border_x: u32 = @as(u32, click_screen.x) + @as(u32, @intFromFloat(@as(f32, @floatFromInt(click_screen.width)) * ratio));
+                                        if (mouse.x >= border_x -| zone and mouse.x <= border_x + zone) {
+                                            border_dragging = true;
+                                            border_drag_x = mouse.x;
+                                            border_drag_ratio = ratio;
+                                            border_drag_node = std.math.maxInt(u16); // sentinel: flat layout
+                                            continue;
+                                        }
+                                    } else if (is_horizontal) {
+                                        const border_y: u32 = @as(u32, click_screen.y) + @as(u32, @intFromFloat(@as(f32, @floatFromInt(click_screen.height)) * ratio));
+                                        if (mouse.y >= border_y -| zone and mouse.y <= border_y + zone) {
+                                            border_dragging = true;
+                                            border_drag_x = mouse.y; // store Y for horizontal
+                                            border_drag_ratio = ratio;
+                                            border_drag_node = std.math.maxInt(u16); // sentinel: flat layout
+                                            continue;
+                                        }
                                     }
                                 }
 
@@ -1020,7 +1039,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 if (mux.getActivePane()) |pane| {
                                     const delims = config.word_delimiters orelse default_word_delimiters;
                                     const so = mux.getScrollOffset();
-                                    const sbl: u32 = if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0;
+                                    const sbl: u32 = mux.getScrollbackLineCount();
                                     selection.selectWord(&pane.grid, row, col, delims, so, sbl);
                                     pane.grid.dirty = true;
                                     if (config.copy_on_select) {
@@ -1068,10 +1087,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             // (tmux, vim, etc. handle scrolling themselves)
                             const in_alt = if (mux.getActivePane()) |pane| pane.vt.alt_screen else false;
                             if (!in_alt) {
-                                const max_offset = if (mux.getActivePane()) |pane|
-                                    if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
-                                else
-                                    0;
+                                const max_offset = mux.getScrollbackLineCount();
                                 if (max_offset > 0) {
                                     _ = mux.smoothScroll(@as(i32, @intCast(atlas.cell_height)) * @as(i32, @intCast(config.scroll_speed)), atlas.cell_height, max_offset);
                                 }
@@ -1081,10 +1097,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             const in_alt = if (mux.getActivePane()) |pane| pane.vt.alt_screen else false;
                             if (!in_alt) {
                                 if (mux.getScrollOffset() > 0 or mux.getScrollPixel() > 0) {
-                                    const max_offset = if (mux.getActivePane()) |pane|
-                                        if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
-                                    else
-                                        0;
+                                    const max_offset = mux.getScrollbackLineCount();
                                     _ = mux.smoothScroll(-@as(i32, @intCast(atlas.cell_height)) * @as(i32, @intCast(config.scroll_speed)), atlas.cell_height, max_offset);
                                 }
                             }
@@ -1136,7 +1149,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         const row: u16 = @intCast(@min(mouse.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
                         {
                             const so = mux.getScrollOffset();
-                            const sbl: u32 = if (mux.getActivePane()) |p| (if (p.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0) else 0;
+                            const sbl: u32 = mux.getScrollbackLineCount();
                             selection.update(row, col, so, sbl);
                         }
 
@@ -1169,19 +1182,27 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     // Border drag-to-resize
                     if (border_dragging) {
                         const sz = win.getSize();
-                        const content_w = sz.width -| padding * 2;
-                        if (content_w > 0) {
-                            const delta_px: i32 = @as(i32, @intCast(motion.x)) - @as(i32, @intCast(border_drag_x));
-                            const delta_ratio: f32 = @as(f32, @floatFromInt(delta_px)) / @as(f32, @floatFromInt(content_w));
-                            const new_ratio = std.math.clamp(border_drag_ratio + delta_ratio, 0.15, 0.85);
-                            const ws_mut = &mux.layout_engine.workspaces[mux.active_workspace];
-                            if (ws_mut.split_root != null) {
-                                ws_mut.resizeSplit(border_drag_node, new_ratio);
-                            } else {
-                                ws_mut.master_ratio = new_ratio;
+                        const ws_mut = &mux.layout_engine.workspaces[mux.active_workspace];
+                        if (ws_mut.split_root != null and border_drag_node != std.math.maxInt(u16)) {
+                            // Tree split drag
+                            const content_w = sz.width -| padding * 2;
+                            if (content_w > 0) {
+                                const delta_px: i32 = @as(i32, @intCast(motion.x)) - @as(i32, @intCast(border_drag_x));
+                                const delta_ratio: f32 = @as(f32, @floatFromInt(delta_px)) / @as(f32, @floatFromInt(content_w));
+                                ws_mut.resizeSplit(border_drag_node, std.math.clamp(border_drag_ratio + delta_ratio, 0.15, 0.85));
                             }
-                            for (mux.panes.items) |*p| p.grid.dirty = true;
+                        } else {
+                            // Flat layout master_ratio drag
+                            const is_horizontal = (ws_mut.layout == .dishes);
+                            const content_size = if (is_horizontal) sz.height -| padding * 2 else sz.width -| padding * 2;
+                            const mouse_pos = if (is_horizontal) motion.y else motion.x;
+                            if (content_size > 0) {
+                                const delta_px: i32 = @as(i32, @intCast(mouse_pos)) - @as(i32, @intCast(border_drag_x));
+                                const delta_ratio: f32 = @as(f32, @floatFromInt(delta_px)) / @as(f32, @floatFromInt(content_size));
+                                ws_mut.master_ratio = std.math.clamp(border_drag_ratio + delta_ratio, 0.15, 0.85);
+                            }
                         }
+                        for (mux.panes.items) |*p| p.grid.dirty = true;
                         continue;
                     }
                     // Mouse motion reporting to PTY (modes 1002/1003)
@@ -1221,7 +1242,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         // Start selection on first drag movement
                         if (!selection.active) {
                             const so = mux.getScrollOffset();
-                            const sbl: u32 = if (mux.getActivePane()) |p| (if (p.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0) else 0;
+                            const sbl: u32 = mux.getScrollbackLineCount();
                             selection.begin(mouse_start_row, mouse_start_col, so, sbl);
                         }
 
@@ -1235,19 +1256,13 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             const bot_edge = if (pane_rect) |pr| @as(u32, pr.y) + pr.height else grid_rows * atlas.cell_height;
 
                             if (motion.y < top_edge + edge_zone) {
-                                const max_offset = if (mux.getActivePane()) |pane|
-                                    if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
-                                else
-                                    0;
+                                const max_offset = mux.getScrollbackLineCount();
                                 if (max_offset > 0) {
                                     _ = mux.smoothScroll(@as(i32, @intCast(atlas.cell_height)), atlas.cell_height, max_offset);
                                 }
                             } else if (motion.y >= bot_edge -| edge_zone) {
                                 if (mux.getScrollOffset() > 0) {
-                                    const max_offset = if (mux.getActivePane()) |pane|
-                                        if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
-                                    else
-                                        0;
+                                    const max_offset = mux.getScrollbackLineCount();
                                     _ = mux.smoothScroll(-@as(i32, @intCast(atlas.cell_height)), atlas.cell_height, max_offset);
                                 }
                             }
@@ -1256,7 +1271,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         // Update selection AFTER auto-scroll so scroll_offset is current
                         {
                             const so = mux.getScrollOffset();
-                            const sbl: u32 = if (mux.getActivePane()) |p| (if (p.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0) else 0;
+                            const sbl: u32 = mux.getScrollbackLineCount();
                             selection.update(row, col, so, sbl);
                         }
 
@@ -1479,10 +1494,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                 .cpu => |*cpu| {
                     const sz = win.getSize();
                     // Use vi mode selection if active, else mouse selection
-                    const vi_sb: u32 = if (mux.getActivePane()) |pane|
-                        if (pane.grid.scrollback) |sb| @as(u32, @intCast(sb.lineCount())) else 0
-                    else
-                        0;
+                    const vi_sb: u32 = mux.getScrollbackLineCount();
                     var vi_sel = if (vi_mode.active) vi_mode.toSelection(mux.getScrollOffset(), vi_sb) else null;
                     const sel_ptr: ?*const Selection = if (vi_sel != null) &vi_sel.? else if (selection.active) &selection else null;
                     mux.renderAllWithSelection(cpu, sz.width, sz.height, atlas.cell_width, atlas.cell_height, sel_ptr);
