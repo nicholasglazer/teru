@@ -451,6 +451,15 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     _ = &border_drag_ratio;
     var border_drag_node: u16 = 0; // split node index for tree drag
     _ = &border_drag_node;
+    // Shift+hover URL underline state
+    var hover_url_row: u16 = 0;
+    var hover_url_start: u16 = 0;
+    var hover_url_end: u16 = 0;
+    var hover_url_active: bool = false;
+    _ = &hover_url_row;
+    _ = &hover_url_start;
+    _ = &hover_url_end;
+    _ = &hover_url_active;
     var pty_buf: [8192]u8 = undefined;
     var running = true;
     var mouse_cursor_hidden = false;
@@ -927,10 +936,10 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             const col: u16 = @intCast(@min(mouse.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
                             const row: u16 = @intCast(@min(mouse.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
 
-                            // Ctrl+click: open URL under cursor
+                            // Shift+click: open URL under cursor
                             // Prefer OSC 8 hyperlink (explicit), fall back to regex detection
-                            const CTRL_MASK: u32 = 4; // XCB ControlMask
-                            if (mouse.modifiers & CTRL_MASK != 0) {
+                            const SHIFT_MASK: u32 = 1; // XCB ShiftMask
+                            if (mouse.modifiers & SHIFT_MASK != 0) {
                                 if (mux.getActivePane()) |pane| {
                                     const cell = pane.grid.cellAtConst(row, col);
                                     if (cell.hyperlink_id != 0) {
@@ -1233,6 +1242,30 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             }
                         }
                     }
+                    // Shift+hover: detect URL under cursor for underline
+                    const SHIFT_MOTION: u32 = 1;
+                    if (motion.modifiers & SHIFT_MOTION != 0) {
+                        const hcol: u16 = @intCast(@min(motion.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
+                        const hrow: u16 = @intCast(@min(motion.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
+                        if (mux.getActivePane()) |pane| {
+                            if (UrlDetector.findUrlAt(&pane.grid, hrow, hcol)) |match| {
+                                if (!hover_url_active or hover_url_row != match.row or hover_url_start != match.start_col or hover_url_end != match.end_col) {
+                                    hover_url_active = true;
+                                    hover_url_row = match.row;
+                                    hover_url_start = match.start_col;
+                                    hover_url_end = match.end_col;
+                                    pane.grid.dirty = true;
+                                }
+                            } else if (hover_url_active) {
+                                hover_url_active = false;
+                                pane.grid.dirty = true;
+                            }
+                        }
+                    } else if (hover_url_active) {
+                        hover_url_active = false;
+                        if (mux.getActivePane()) |pane| pane.grid.dirty = true;
+                    }
+
                     // Only handle selection when mouse tracking is off (app handles mouse)
                     const tracking_active = if (mux.getActivePane()) |pane| pane.vt.mouse_tracking != .none else false;
                     if (mouse_down and !tracking_active) {
@@ -1512,6 +1545,27 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             if (pane.grid.scrollback) |sb| {
                                 if (mux.getActivePaneRect(sz.width, sz.height, cpu.padding)) |pane_rect| {
                                     Ui.renderScrollOverlay(cpu, sb, mux.getScrollOffset(), atlas.cell_width, atlas.cell_height, pane_rect, mux.getScrollPixel(), sel_ptr);
+                                }
+                            }
+                        }
+                    }
+
+                    // Shift+hover URL underline
+                    if (hover_url_active) {
+                        if (mux.getActivePaneRect(sz.width, sz.height, cpu.padding)) |pr| {
+                            const cw = atlas.cell_width;
+                            const ch = atlas.cell_height;
+                            // Draw 1px underline at the bottom of each cell in the URL
+                            var ucol: u16 = hover_url_start;
+                            while (ucol <= hover_url_end) : (ucol += 1) {
+                                const ux = @as(usize, pr.x) + @as(usize, ucol) * cw;
+                                const uy = @as(usize, pr.y) + @as(usize, hover_url_row) * ch + ch - 1;
+                                if (uy >= cpu.height) break;
+                                const ux_end = @min(ux + cw, @as(usize, pr.x) + pr.width);
+                                if (ux >= cpu.width or ux >= ux_end) continue;
+                                const row_start = uy * cpu.width;
+                                if (row_start + ux_end <= cpu.framebuffer.len) {
+                                    @memset(cpu.framebuffer[row_start + ux .. row_start + ux_end], cpu.scheme.cursor);
                                 }
                             }
                         }

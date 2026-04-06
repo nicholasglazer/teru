@@ -384,6 +384,7 @@ pub const X11Window = struct {
                 return .{ .mouse_motion = .{
                     .x = @intCast(@max(0, motion.event_x)),
                     .y = @intCast(@max(0, motion.event_y)),
+                    .modifiers = @intCast(motion.state),
                 } };
             },
             XCB_CLIENT_MESSAGE => {

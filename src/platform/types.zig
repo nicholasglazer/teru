@@ -30,7 +30,7 @@ pub const Event = union(enum) {
     key_release: KeyEvent,
     mouse_press: MouseEvent,
     mouse_release: MouseEvent,
-    mouse_motion: struct { x: u32, y: u32 },
+    mouse_motion: struct { x: u32, y: u32, modifiers: u32 = 0 },
     resize: struct { width: u32, height: u32 },
     wl_modifiers: ModifiersEvent,
     close,
