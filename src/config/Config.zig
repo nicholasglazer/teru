@@ -39,6 +39,7 @@ pub const ColorScheme = struct {
     selection_bg: u32 = 0xFF3E4359, // selection highlight
     border_active: u32 = 0xFFFF9837, // active pane border
     border_inactive: u32 = 0xFF3E4359, // inactive pane border
+    attention: u32 = 0xFFEB3137, // workspace attention indicator
     bold_is_bright: bool = false, // shift ANSI 0-7 to bright 8-15 when bold
 
     /// Miozu theme defaults for ANSI 0-15.
@@ -123,6 +124,7 @@ cursor_color: u32 = 0xFFFF9837, // orange accent
 selection_bg: u32 = 0xFF3E4359, // miozu02 - selection
 border_active: u32 = 0xFFFF9837, // active pane border
 border_inactive: u32 = 0xFF3E4359, // inactive pane border
+attention_color: u32 = 0xFFEB3137, // workspace attention indicator
 
 // ANSI palette overrides (color0-color15). null = use default from ColorScheme.
 ansi_colors: [16]?u32 = .{null} ** 16,
@@ -160,6 +162,7 @@ tab_width: u8 = 8,
 dynamic_title: bool = true,
 
 // Behavior
+alt_workspace_switch: bool = true, // Alt+key shortcuts (workspace, focus, zoom, split)
 mouse_hide_when_typing: bool = true,
 word_delimiters: ?[]const u8 = null,
 
@@ -210,7 +213,7 @@ pub fn load(allocator: Allocator, io: Io) !Config {
     defer allocator.free(content);
     const n = file.readPositionalAll(io, content, 0) catch return config;
 
-    config.parse(allocator, content[0..n]);
+    config.parseWithDepth(allocator, content[0..n], io, 0);
 
     // Load external theme file if theme was set and not a built-in
     if (config.theme) |name| {
@@ -352,6 +355,7 @@ pub fn colorScheme(self: *const Config) ColorScheme {
         .selection_bg = self.selection_bg,
         .border_active = self.border_active,
         .border_inactive = self.border_inactive,
+        .attention = self.attention_color,
         .bold_is_bright = self.bold_is_bright,
     };
     for (self.ansi_colors, 0..) |maybe_color, i| {
@@ -365,6 +369,12 @@ pub fn colorScheme(self: *const Config) ColorScheme {
 // ── Parsing ───────────────────────────────────────────────────────
 
 fn parse(self: *Config, allocator: Allocator, content: []const u8) void {
+    self.parseWithDepth(allocator, content, null, 0);
+}
+
+fn parseWithDepth(self: *Config, allocator: Allocator, content: []const u8, io: ?Io, depth: u8) void {
+    if (depth > 4) return; // prevent infinite include cycles
+
     var current_section: ?[]const u8 = null;
     var line_iter = std.mem.splitScalar(u8, content, '\n');
     while (line_iter.next()) |raw_line| {
@@ -373,6 +383,15 @@ fn parse(self: *Config, allocator: Allocator, content: []const u8) void {
         // Skip empty lines and comments
         if (line.len == 0) continue;
         if (line[0] == '#') continue;
+
+        // Include directive: include <path>
+        if (std.mem.startsWith(u8, line, "include ")) {
+            if (io) |real_io| {
+                const inc_path = std.mem.trim(u8, line["include ".len..], &std.ascii.whitespace);
+                if (inc_path.len > 0) self.loadInclude(allocator, real_io, inc_path, depth + 1);
+            }
+            continue;
+        }
 
         // Section header: [section_name]
         if (line[0] == '[') {
@@ -391,6 +410,29 @@ fn parse(self: *Config, allocator: Allocator, content: []const u8) void {
 
         self.applyField(allocator, current_section, key, value);
     }
+}
+
+/// Load an included config file. Relative paths resolve from ~/.config/teru/.
+fn loadInclude(self: *Config, allocator: Allocator, io: Io, path: []const u8, depth: u8) void {
+    var path_buf: [Dir.max_path_bytes]u8 = undefined;
+    const full_path = if (path.len > 0 and path[0] == '/')
+        path
+    else blk: {
+        const home = compat.getenv("HOME") orelse return;
+        break :blk std.fmt.bufPrint(&path_buf, "{s}/.config/teru/{s}", .{ home, path }) catch return;
+    };
+
+    const file = Dir.cwd().openFile(io, full_path, .{}) catch return;
+    defer file.close(io);
+
+    const s = file.stat(io) catch return;
+    const size: usize = @intCast(s.size);
+    if (size > 64 * 1024) return;
+    const content = allocator.alloc(u8, size) catch return;
+    defer allocator.free(content);
+    const n = file.readPositionalAll(io, content, 0) catch return;
+
+    self.parseWithDepth(allocator, content[0..n], io, depth);
 }
 
 fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []const u8, value: []const u8) void {
@@ -429,6 +471,8 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         self.border_active = parseHexColor(value) orelse return;
     } else if (std.mem.eql(u8, key, "border_inactive")) {
         self.border_inactive = parseHexColor(value) orelse return;
+    } else if (std.mem.eql(u8, key, "attention_color")) {
+        self.attention_color = parseHexColor(value) orelse return;
     } else if (std.mem.eql(u8, key, "scrollback_lines")) {
         self.scrollback_lines = std.fmt.parseInt(u32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "prefix_key")) {
@@ -463,6 +507,8 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         self.copy_on_select = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "bell")) {
         self.bell = parseBell(value) orelse return;
+    } else if (std.mem.eql(u8, key, "alt_workspace_switch")) {
+        self.alt_workspace_switch = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "mouse_hide_when_typing")) {
         self.mouse_hide_when_typing = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "word_delimiters")) {

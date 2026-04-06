@@ -4,6 +4,7 @@
 //! Extracted from main.zig for modularity. Zero allocations in hot path.
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const SoftwareRenderer = @import("software.zig").SoftwareRenderer;
 const Grid = @import("../core/Grid.zig");
 const Multiplexer = @import("../core/Multiplexer.zig");
@@ -179,7 +180,7 @@ pub fn renderTextStatusBar(
 
         // Workspace number
         const ws_char: u8 = '1' + @as(u8, @intCast(wi));
-        const ws_color = if (is_active) s.cursor else s.ansi[8];
+        const ws_color = if (is_active) s.cursor else if (ws.attention) s.attention else s.ansi[8];
         blitCharAt(cpu, ws_char, x, text_y, ws_color);
         x += cw;
 
@@ -206,9 +207,7 @@ pub fn renderTextStatusBar(
     // ── Center: notification > PREFIX > layout + title ──
     const has_notification = blk: {
         if (mux.notification_len > 0) {
-            var ts_now: std.os.linux.timespec = undefined;
-            _ = std.os.linux.clock_gettime(.MONOTONIC, &ts_now);
-            const now: i128 = @as(i128, ts_now.sec) * 1_000_000_000 + ts_now.nsec;
+            const now = compat.monotonicNow();
             if (now - mux.notification_time < mux.notification_duration_ns) break :blk true;
             const mux_mut: *Multiplexer = @constCast(mux);
             mux_mut.notification_len = 0;

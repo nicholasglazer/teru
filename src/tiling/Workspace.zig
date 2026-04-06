@@ -31,6 +31,12 @@ layouts: [max_layouts]Layout = undefined,
 layout_count: u8 = 0,
 layout_index: u8 = 0,
 
+// Marked master pane — Alt+Shift+M sets, Alt+M focuses
+master_id: ?u64 = null,
+
+// Attention flag — set when output arrives in a non-active workspace
+attention: bool = false,
+
 // ── Binary split tree (pre-allocated, no heap) ─────────────────
 split_nodes: [64]SplitNode = undefined,
 split_node_count: u16 = 0,

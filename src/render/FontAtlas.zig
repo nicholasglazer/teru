@@ -224,6 +224,136 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     };
 }
 
+/// Re-rasterize the atlas at a new font size using the already-loaded font data.
+/// No file I/O — pure CPU rasterization from memory. Returns a new atlas;
+/// caller must deinit the old one.
+pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
+    var font_info: stbtt.stbtt_fontinfo = undefined;
+    if (stbtt.stbtt_InitFont(&font_info, self.font_data.ptr, 0) == 0) {
+        return error.FontInitFailed;
+    }
+
+    const scale = stbtt.stbtt_ScaleForPixelHeight(&font_info, @floatFromInt(new_size));
+
+    var ascent: c_int = 0;
+    var descent: c_int = 0;
+    var line_gap: c_int = 0;
+    stbtt.stbtt_GetFontVMetrics(&font_info, &ascent, &descent, &line_gap);
+
+    const f_ascent: f32 = @as(f32, @floatFromInt(ascent)) * scale;
+    const f_descent: f32 = @as(f32, @floatFromInt(descent)) * scale;
+    const cell_h: u32 = @intFromFloat(@ceil(f_ascent - f_descent));
+
+    var m_advance: c_int = 0;
+    var m_lsb: c_int = 0;
+    stbtt.stbtt_GetCodepointHMetrics(&font_info, 'M', &m_advance, &m_lsb);
+    const cell_w: u32 = @intFromFloat(@ceil(@as(f32, @floatFromInt(m_advance)) * scale));
+
+    if (cell_w == 0 or cell_h == 0) return error.InvalidFontMetrics;
+
+    const total_glyphs: u32 = 95 + 96 + 128 + 32 + 256;
+    const glyphs_per_row: u32 = 16;
+    const num_rows: u32 = (total_glyphs + glyphs_per_row - 1) / glyphs_per_row;
+    const atlas_w = glyphs_per_row * cell_w;
+    const atlas_h = num_rows * cell_h;
+
+    const atlas_data = try self.allocator.alloc(u8, atlas_w * atlas_h);
+    @memset(atlas_data, 0);
+
+    var glyphs: [256]?GlyphInfo = [_]?GlyphInfo{null} ** 256;
+    var box_glyphs: [128]?GlyphInfo = [_]?GlyphInfo{null} ** 128;
+    var block_glyphs: [32]?GlyphInfo = [_]?GlyphInfo{null} ** 32;
+    var cyrillic_glyphs: [256]?GlyphInfo = [_]?GlyphInfo{null} ** 256;
+    const baseline: i32 = @intFromFloat(f_ascent);
+
+    const Codepoint = struct { cp: u21, slot: u32 };
+    var codepoints: [total_glyphs]Codepoint = undefined;
+    var slot: u32 = 0;
+    for (32..127) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
+    for (160..256) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
+    for (0x2500..0x2580) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
+    for (0x2580..0x25A0) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
+    for (0x0400..0x0500) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
+
+    for (codepoints[0..slot]) |entry| {
+        const col = entry.slot % glyphs_per_row;
+        const row = entry.slot / glyphs_per_row;
+        const atlas_x: u32 = @intCast(col * cell_w);
+        const atlas_y: u32 = @intCast(row * cell_h);
+
+        var advance_c: c_int = 0;
+        var lsb: c_int = 0;
+        stbtt.stbtt_GetCodepointHMetrics(&font_info, @intCast(entry.cp), &advance_c, &lsb);
+
+        var ix0: c_int = 0;
+        var iy0: c_int = 0;
+        var ix1: c_int = 0;
+        var iy1: c_int = 0;
+        stbtt.stbtt_GetCodepointBitmapBox(&font_info, @intCast(entry.cp), scale, scale, &ix0, &iy0, &ix1, &iy1);
+
+        const glyph_w: u32 = @intCast(@max(0, ix1 - ix0));
+        const glyph_h: u32 = @intCast(@max(0, iy1 - iy0));
+
+        if (glyph_w > 0 and glyph_h > 0) {
+            const offset_y: u32 = @intCast(@max(0, baseline + iy0));
+            const offset_x: u32 = @intCast(@max(0, ix0));
+            const dst_x = atlas_x + @min(offset_x, cell_w - 1);
+            const dst_y = atlas_y + @min(offset_y, cell_h - 1);
+            const render_w = @min(glyph_w, cell_w -| @min(offset_x, cell_w - 1));
+            const render_h = @min(glyph_h, cell_h -| @min(offset_y, cell_h - 1));
+
+            if (render_w > 0 and render_h > 0) {
+                stbtt.stbtt_MakeCodepointBitmap(
+                    &font_info,
+                    atlas_data.ptr + dst_y * atlas_w + dst_x,
+                    @intCast(@min(render_w, atlas_w - dst_x)),
+                    @intCast(@min(render_h, atlas_h - dst_y)),
+                    @intCast(atlas_w),
+                    scale,
+                    scale,
+                    @intCast(entry.cp),
+                );
+            }
+        }
+
+        const info = GlyphInfo{
+            .atlas_x = @intCast(atlas_x),
+            .atlas_y = @intCast(atlas_y),
+            .width = @intCast(@min(glyph_w, cell_w)),
+            .height = @intCast(@min(glyph_h, cell_h)),
+            .bearing_x = @intCast(ix0),
+            .bearing_y = @intCast(iy0),
+            .advance = @intCast(@as(u32, @intFromFloat(@ceil(@as(f32, @floatFromInt(advance_c)) * scale)))),
+        };
+
+        if (entry.cp < 256) { glyphs[entry.cp] = info; }
+        else if (entry.cp >= 0x2500 and entry.cp < 0x2580) { box_glyphs[entry.cp - 0x2500] = info; }
+        else if (entry.cp >= 0x2580 and entry.cp < 0x25A0) { block_glyphs[entry.cp - 0x2580] = info; }
+        else if (entry.cp >= 0x0400 and entry.cp < 0x0500) { cyrillic_glyphs[entry.cp - 0x0400] = info; }
+    }
+
+    drawBoxDrawingRange(atlas_data, atlas_w, cell_w, cell_h, glyphs_per_row);
+    drawBlockElements(atlas_data, atlas_w, cell_w, cell_h, glyphs_per_row);
+
+    // Reuse existing font_data (don't free it — the old atlas still owns it until caller deinits)
+    const font_data_copy = try self.allocator.alloc(u8, self.font_data.len);
+    @memcpy(font_data_copy, self.font_data);
+
+    return FontAtlas{
+        .atlas_data = atlas_data,
+        .atlas_width = atlas_w,
+        .atlas_height = atlas_h,
+        .glyphs = glyphs,
+        .box_glyphs = box_glyphs,
+        .block_glyphs = block_glyphs,
+        .cyrillic_glyphs = cyrillic_glyphs,
+        .cell_width = cell_w,
+        .cell_height = cell_h,
+        .allocator = self.allocator,
+        .font_data = font_data_copy,
+    };
+}
+
 /// Load a font variant (bold, italic, etc.) and rasterize it into a new atlas
 /// with the SAME cell dimensions and layout as the primary font. The caller
 /// owns the returned atlas data and the font_data kept alive for stbtt.
@@ -370,33 +500,59 @@ pub fn glyphSlot(codepoint: u21) ?u32 {
 
 // ── Font discovery (no fontconfig) ─────────────────────────────────
 
-const font_search_paths = [_][]const u8{
-    "/usr/share/fonts/TTF",           // Arch Linux
-    "/usr/share/fonts/nerd-fonts",    // Arch nerd-fonts
-    "/usr/share/fonts/OTF",           // Arch OTF
-    "/usr/share/fonts/truetype/hack", // Debian/Ubuntu hack
-    "/usr/share/fonts/truetype/dejavu", // Debian/Ubuntu dejavu
-    "/usr/share/fonts/truetype/liberation", // Debian/Ubuntu liberation
-    "/usr/share/fonts/truetype",      // Debian/Ubuntu general
-    "/usr/share/fonts/Adwaita",       // GNOME/Fedora
-    "/usr/local/share/fonts",         // User-installed
+const font_search_paths = switch (@import("builtin").os.tag) {
+    .macos => &[_][]const u8{
+        "/System/Library/Fonts",
+        "/System/Library/Fonts/Supplemental",
+        "/Library/Fonts",
+    },
+    .windows => &[_][]const u8{
+        "C:\\Windows\\Fonts",
+    },
+    else => &[_][]const u8{ // Linux
+        "/usr/share/fonts/TTF",           // Arch Linux
+        "/usr/share/fonts/nerd-fonts",    // Arch nerd-fonts
+        "/usr/share/fonts/OTF",           // Arch OTF
+        "/usr/share/fonts/truetype/hack", // Debian/Ubuntu hack
+        "/usr/share/fonts/truetype/dejavu", // Debian/Ubuntu dejavu
+        "/usr/share/fonts/truetype/liberation", // Debian/Ubuntu liberation
+        "/usr/share/fonts/truetype",      // Debian/Ubuntu general
+        "/usr/share/fonts/Adwaita",       // GNOME/Fedora
+        "/usr/local/share/fonts",         // User-installed
+    },
 };
 
-const preferred_fonts = [_][]const u8{
-    "Hack-Regular.ttf",
-    "HackNerdFont-Regular.ttf",
-    "HackNerdFontMono-Regular.ttf",
-    "JetBrainsMono-Regular.ttf",
-    "JetBrainsMonoNerdFont-Regular.ttf",
-    "SourceCodePro-Regular.ttf",
-    "FiraCode-Regular.ttf",
-    "DejaVuSansMono.ttf",
-    "LiberationMono-Regular.ttf",
-    "UbuntuMono-Regular.ttf",
-    "Inconsolata-Regular.ttf",
-    "RobotoMono-Regular.ttf",
-    "AdwaitaMono-Regular.ttf",
-    "DroidSansMono.ttf",
+const preferred_fonts = switch (@import("builtin").os.tag) {
+    .macos => &[_][]const u8{
+        "SF-Mono-Regular.otf",
+        "SFMono-Regular.otf",
+        "Menlo.ttc",
+        "Monaco.ttf",
+        "Courier New.ttf",
+    },
+    .windows => &[_][]const u8{
+        "consola.ttf",  // Consolas
+        "cour.ttf",     // Courier New
+        "lucon.ttf",    // Lucida Console
+        "cascadiamono.ttf", // Cascadia Mono
+        "CascadiaCode.ttf",
+    },
+    else => &[_][]const u8{ // Linux
+        "Hack-Regular.ttf",
+        "HackNerdFont-Regular.ttf",
+        "HackNerdFontMono-Regular.ttf",
+        "JetBrainsMono-Regular.ttf",
+        "JetBrainsMonoNerdFont-Regular.ttf",
+        "SourceCodePro-Regular.ttf",
+        "FiraCode-Regular.ttf",
+        "DejaVuSansMono.ttf",
+        "LiberationMono-Regular.ttf",
+        "UbuntuMono-Regular.ttf",
+        "Inconsolata-Regular.ttf",
+        "RobotoMono-Regular.ttf",
+        "AdwaitaMono-Regular.ttf",
+        "DroidSansMono.ttf",
+    },
 };
 
 fn findMonospaceFont(allocator: std.mem.Allocator, io: Io) ![]const u8 {
@@ -413,10 +569,19 @@ fn findMonospaceFont(allocator: std.mem.Allocator, io: Io) ![]const u8 {
         }
     }
 
-    // Try HOME/.local/share/fonts
-    if (compat.getenv("HOME")) |home| {
+    // Try user font directories
+    const user_home_env: [*:0]const u8 = switch (@import("builtin").os.tag) {
+        .windows => "LOCALAPPDATA",
+        else => "HOME",
+    };
+    const user_font_suffix: []const u8 = switch (@import("builtin").os.tag) {
+        .macos => "/Library/Fonts",
+        .windows => "\\Microsoft\\Windows\\Fonts",
+        else => "/.local/share/fonts",
+    };
+    if (compat.getenv(user_home_env)) |base| {
         for (preferred_fonts) |font_name| {
-            const path = try std.fmt.allocPrint(allocator, "{s}/.local/share/fonts/{s}", .{ home, font_name });
+            const path = try std.fmt.allocPrint(allocator, "{s}{s}/{s}", .{ base, user_font_suffix, font_name });
             if (accessFast(path)) {
                 return path;
             }

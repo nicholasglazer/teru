@@ -161,6 +161,5 @@ test "fire executes command asynchronously" {
     // because the fire() call forks a child process — the parent's io
     // handle is not valid across fork boundaries. nanosleep is correct
     // for this test-only wait.
-    const req = std.os.linux.timespec{ .sec = 0, .nsec = 10_000_000 }; // 10ms
-    _ = std.os.linux.nanosleep(&req, null);
+    compat.sleepNs(10_000_000); // 10ms
 }

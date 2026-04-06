@@ -2,6 +2,7 @@ const std = @import("std");
 const posix = std.posix;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
+const compat = @import("../compat.zig");
 const Pane = @import("Pane.zig");
 const Grid = @import("Grid.zig");
 const VtParser = @import("VtParser.zig");
@@ -177,9 +178,7 @@ pub fn notify(self: *Multiplexer, msg: []const u8) void {
     const len = @min(msg.len, self.notification.len);
     @memcpy(self.notification[0..len], msg[0..len]);
     self.notification_len = @intCast(len);
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
-    self.notification_time = @as(i128, ts.sec) * 1_000_000_000 + ts.nsec;
+    self.notification_time = compat.monotonicNow();
     if (self.getActivePane()) |pane| pane.grid.dirty = true;
 }
 
@@ -244,8 +243,7 @@ pub fn spawnPaneWithCommand(self: *Multiplexer, rows: u16, cols: u16, command: [
     // Set PTY master to non-blocking
     const flags = std.c.fcntl(pty.master, posix.F.GETFL);
     if (flags < 0) return error.FcntlFailed;
-    const O_NONBLOCK = 0x800;
-    _ = std.c.fcntl(pty.master, posix.F.SETFL, flags | O_NONBLOCK);
+    _ = std.c.fcntl(pty.master, posix.F.SETFL, flags | compat.O_NONBLOCK);
 
     var pane = Pane{
         .pty = pty,
@@ -312,10 +310,40 @@ pub fn focusPrev(self: *Multiplexer) void {
     self.layout_engine.workspaces[self.active_workspace].focusPrev();
 }
 
+/// Swap active pane with next in the workspace pane list.
+pub fn swapPaneNext(self: *Multiplexer) void {
+    self.layout_engine.workspaces[self.active_workspace].swapWithNext();
+}
+
+/// Swap active pane with previous in the workspace pane list.
+pub fn swapPanePrev(self: *Multiplexer) void {
+    self.layout_engine.workspaces[self.active_workspace].swapWithPrev();
+}
+
+/// Mark the active pane as the master pane for its workspace.
+pub fn setMaster(self: *Multiplexer) void {
+    const ws = &self.layout_engine.workspaces[self.active_workspace];
+    ws.master_id = ws.getActiveNodeId();
+}
+
+/// Focus the master pane in the active workspace.
+pub fn focusMaster(self: *Multiplexer) void {
+    const ws = &self.layout_engine.workspaces[self.active_workspace];
+    const mid = ws.master_id orelse return;
+    for (ws.node_ids.items, 0..) |nid, i| {
+        if (nid == mid) {
+            ws.active_index = i;
+            return;
+        }
+    }
+}
+
 /// Switch to a workspace by index (0-8).
 pub fn switchWorkspace(self: *Multiplexer, idx: u8) void {
     self.layout_engine.switchWorkspace(idx);
     self.active_workspace = self.layout_engine.active_workspace;
+    // Clear attention on the workspace we're switching to
+    self.layout_engine.workspaces[self.active_workspace].attention = false;
 }
 
 /// Cycle the layout of the active workspace.
@@ -424,9 +452,31 @@ pub fn pollPtys(self: *Multiplexer, buf: []u8) bool {
     var any_output = false;
     for (self.panes.items) |*pane| {
         const n = pane.readAndProcess(buf) catch 0;
-        if (n > 0) any_output = true;
+        if (n > 0) {
+            any_output = true;
+            // Set attention on non-active workspaces with output.
+            // Cleared when the workspace becomes active (see switchWorkspace).
+            for (&self.layout_engine.workspaces, 0..) |*ws, wi| {
+                if (wi == self.active_workspace) continue;
+                for (ws.node_ids.items) |nid| {
+                    if (nid == pane.id) {
+                        ws.attention = true;
+                        break;
+                    }
+                }
+            }
+        }
     }
     return any_output;
+}
+
+/// Move the active pane to a target workspace.
+/// Returns true if the move succeeded.
+pub fn movePaneToWorkspace(self: *Multiplexer, target: u8) bool {
+    const ws = &self.layout_engine.workspaces[self.active_workspace];
+    const active_id = ws.getActiveNodeId() orelse return false;
+    self.layout_engine.moveNodeToWorkspace(active_id, target) catch return false;
+    return true;
 }
 
 // ── Rendering ──────────────────────────────────────────────────

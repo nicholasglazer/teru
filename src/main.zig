@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
+const compat = @import("compat.zig");
 const Pty = @import("pty/Pty.zig");
 const Multiplexer = @import("core/Multiplexer.zig");
 const ProcessGraph = @import("graph/ProcessGraph.zig");
@@ -22,10 +23,17 @@ const Clipboard = @import("core/Clipboard.zig");
 const KeyHandler = @import("core/KeyHandler.zig");
 const Grid = @import("core/Grid.zig");
 const Scrollback = @import("persist/Scrollback.zig");
-const Keyboard = if (builtin.os.tag == .linux and (build_options.enable_x11 or build_options.enable_wayland))
-    @import("platform/linux/keyboard.zig").Keyboard
-else
-    void;
+// Cross-platform keyboard: selected at comptime per OS.
+// macOS/Windows keyboard modules provide the same Keyboard interface as Linux.
+const Keyboard = switch (builtin.os.tag) {
+    .linux => if (build_options.enable_x11 or build_options.enable_wayland)
+        @import("platform/linux/keyboard.zig").Keyboard
+    else
+        void,
+    .macos => @import("platform/macos/keyboard.zig").Keyboard,
+    .windows => @import("platform/windows/keyboard.zig").Keyboard,
+    else => void,
+};
 
 const Session = @import("persist/Session.zig");
 const UrlDetector = @import("core/UrlDetector.zig");
@@ -37,7 +45,7 @@ const daemon_proto = @import("server/protocol.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
-const version = "0.2.8";
+const version = "0.3.5";
 
 const session_path = "/tmp/teru-session.bin";
 
@@ -72,7 +80,7 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, arg, "--help")) {
-            out("teru — AI-first terminal emulator\n\nUsage: teru [options]\n\nOptions:\n  --help                Show this help\n  --version             Show version\n  --raw                 Raw passthrough mode (no window)\n  --attach              Restore session from last detach\n  --daemon <name>       Start headless daemon session\n  --session <name>      Attach to daemon session (TTY)\n  --list                List active daemon sessions\n  --mcp-bridge          MCP stdio bridge\n  --config <path>       Use custom config file\n  --theme <name>        Override theme\n  --class <name>        Set WM_CLASS\n\nMultiplexer keys (prefix: Ctrl+Space):\n  c/\\   Vertical split        -     Horizontal split\n  x     Close pane             n/p   Next/prev pane\n  v     Vi/copy mode           /     Search\n  1-9   Switch workspace       d     Detach\n  Space Cycle layout            z     Zoom\n  H/L   Resize width           K/J   Resize height\n\n");
+            out("teru — AI-first terminal emulator\n\nUsage: teru [options]\n\nOptions:\n  --help                Show this help\n  --version             Show version\n  --raw                 Raw passthrough mode (no window)\n  --attach              Restore session from last detach\n  --daemon <name>       Start headless daemon session\n  --session <name>      Attach to daemon session (TTY)\n  --list                List active daemon sessions\n  --mcp-bridge          MCP stdio bridge\n  --config <path>       Use custom config file\n  --theme <name>        Override theme\n  --class <name>        Set WM_CLASS\n\nMultiplexer keys (prefix: Ctrl+Space):\n  c/\\   Vertical split        -     Horizontal split\n  x     Close pane             n/p   Next/prev pane\n  v     Vi/copy mode           /     Search\n  1-9   Switch workspace       d     Detach\n  Space Cycle layout            z     Zoom\n  H/L   Resize width           K/J   Resize height\n\nGlobal shortcuts (no prefix):\n  Alt+1-9         Switch workspace\n  RAlt+1-9        Move pane to workspace\n  Alt+J/K         Focus next/prev pane\n  RAlt+J/K        Swap pane down/up\n  Alt+C           New pane        RAlt+C  Horizontal split\n  Alt+X           Close pane\n  Alt+M           Focus master pane\n  RAlt+M          Mark pane as master\n  Alt+-/=         Zoom out/in (font size)\n\n");
             return;
         }
         if (std.mem.eql(u8, arg, "--raw")) { mode_raw = true; continue; }
@@ -199,11 +207,11 @@ fn runSessionAttach(session_name: []const u8) !void {
 
     // Set socket non-blocking
     const flags = std.c.fcntl(sock, posix.F.GETFL);
-    if (flags >= 0) _ = std.c.fcntl(sock, posix.F.SETFL, flags | 0x800);
+    if (flags >= 0) _ = std.c.fcntl(sock, posix.F.SETFL, flags | compat.O_NONBLOCK);
 
     // Set stdin non-blocking
     const stdin_flags = std.c.fcntl(0, posix.F.GETFL);
-    if (stdin_flags >= 0) _ = std.c.fcntl(0, posix.F.SETFL, stdin_flags | 0x800);
+    if (stdin_flags >= 0) _ = std.c.fcntl(0, posix.F.SETFL, stdin_flags | compat.O_NONBLOCK);
     defer _ = std.c.fcntl(0, posix.F.SETFL, stdin_flags); // restore
 
     // Relay loop: stdin → daemon, daemon → stdout
@@ -268,7 +276,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     defer win.deinit();
     win.setOpacity(config.opacity);
 
-    var atlas = try render.FontAtlas.init(allocator, config.font_path, config.font_size, io);
+    var font_size = config.font_size;
+    var atlas = try render.FontAtlas.init(allocator, config.font_path, font_size, io);
     defer atlas.deinit();
 
     // Load font variants for bold/italic (optional — silently fall back to primary)
@@ -312,7 +321,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     }
 
     const padding: u32 = config.padding;
-    const status_bar_h: u32 = if (config.show_status_bar) atlas.cell_height + 4 else 0;
+    var status_bar_h: u32 = if (config.show_status_bar) atlas.cell_height + 4 else 0;
     var grid_cols: u16 = @intCast((config.initial_width -| padding * 2) / atlas.cell_width);
     var grid_rows: u16 = @intCast((config.initial_height -| padding * 2 -| status_bar_h) / atlas.cell_height);
 
@@ -437,6 +446,12 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     _ = &selection;
     var vi_mode = ViMode{};
     _ = &vi_mode;
+    var ralt_held = false; // Right Alt tracked for pane manipulation shortcuts
+    _ = &ralt_held;
+    var zoom_pending_resize: bool = false; // deferred grid resize after font zoom
+    _ = &zoom_pending_resize;
+    var zoom_timestamp: i128 = 0; // last zoom event time (ns)
+    _ = &zoom_timestamp;
     var mouse_down = false;
     _ = &mouse_down;
     var mouse_start_row: u16 = 0;
@@ -471,11 +486,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
 
     // Cursor blink state (530ms on/off cycle)
     const BLINK_INTERVAL_NS: i128 = 530_000_000;
-    var last_blink_time: i128 = blk: {
-        var ts: std.os.linux.timespec = undefined;
-        _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
-        break :blk @as(i128, ts.sec) * 1_000_000_000 + ts.nsec;
-    };
+    var last_blink_time: i128 = compat.monotonicNow();
     var cursor_blink_visible: bool = true;
 
     // Scrollback state lives on mux (accessible from McpServer for teru_scroll)
@@ -601,9 +612,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     // Reset cursor blink on keypress (cursor stays solid while typing)
                     if (config.cursor_blink) {
                         cursor_blink_visible = true;
-                        var blink_reset_ts: std.os.linux.timespec = undefined;
-                        _ = std.os.linux.clock_gettime(.MONOTONIC, &blink_reset_ts);
-                        last_blink_time = @as(i128, blink_reset_ts.sec) * 1_000_000_000 + blink_reset_ts.nsec;
+                        last_blink_time = compat.monotonicNow();
                         switch (renderer) {
                             .cpu => |*cpu| cpu.cursor_blink_on = true,
                             .tty => {},
@@ -614,6 +623,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     const XKB_KEY_Return: u32 = 0xff0d;
                     const XKB_KEY_Escape: u32 = 0xff1b;
                     const XKB_KEY_BackSpace: u32 = 0xff08;
+
+                    if (key.keycode == platform.types.keycodes.RALT) ralt_held = true;
 
                     if (Keyboard != void) {
                         if (keyboard) |*kb| {
@@ -785,6 +796,97 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             var key_buf: [32]u8 = undefined;
                             const len = kb.processKey(key.keycode, &key_buf);
 
+                            // Global shortcuts: Alt+key (workspace, focus, zoom, split)
+                            // Checked before len==0 because xkbcommon may produce no
+                            // UTF-8 for Alt+symbol keys. Use keysym for the key identity.
+                            {
+                                const ks_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else 0;
+                                if (KeyHandler.handleGlobalKey(key.keycode, key.modifiers, ks_char, config.alt_workspace_switch, ralt_held, &mux)) |action| {
+                                    if (action == .panes_changed) {
+                                        const sz = win.getSize();
+                                        mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                    }
+                                    if (action == .close_pane) {
+                                        if (mux.getActivePane()) |pane| {
+                                            const id = pane.id;
+                                            mux.closePane(id);
+                                            hooks.fire(.close);
+                                            if (mux.panes.items.len == 0) {
+                                                running = false;
+                                                continue;
+                                            }
+                                            const sz = win.getSize();
+                                            mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                        }
+                                    }
+                                    if (action == .split_vertical or action == .split_horizontal) {
+                                        const dir: @import("tiling/LayoutEngine.zig").SplitDirection = if (action == .split_horizontal) .horizontal else .vertical;
+                                        const id = mux.spawnPane(grid_rows, grid_cols) catch continue;
+                                        if (mux.getPaneById(id)) |pane| {
+                                            _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.pty.child_pid }) catch {};
+                                        }
+                                        hooks.fire(.spawn);
+                                        const ws = &mux.layout_engine.workspaces[mux.active_workspace];
+                                        ws.addNodeSplit(mux.allocator, id, dir) catch {};
+                                        const sz = win.getSize();
+                                        mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                    }
+                                    if (action == .zoom_in or action == .zoom_out) {
+                                        const new_size: u16 = if (action == .zoom_in)
+                                            font_size +| 1
+                                        else
+                                            @max(6, font_size -| 1);
+                                        if (new_size != font_size) {
+                                            // Re-rasterize from memory (no file I/O)
+                                            const new_atlas = atlas.rasterizeAtSize(new_size) catch continue;
+                                            atlas.deinit();
+                                            atlas = new_atlas;
+                                            font_size = new_size;
+
+                                            // Reload bold/italic variants at new size
+                                            if (variant_bold) |*v| v.deinit(allocator);
+                                            if (variant_italic) |*v| v.deinit(allocator);
+                                            if (variant_bold_italic) |*v| v.deinit(allocator);
+                                            variant_bold = if (config.font_bold) |p| atlas.loadVariant(allocator, p, io) catch null else null;
+                                            variant_italic = if (config.font_italic) |p| atlas.loadVariant(allocator, p, io) catch null else null;
+                                            variant_bold_italic = if (config.font_bold_italic) |p| atlas.loadVariant(allocator, p, io) catch null else null;
+
+                                            // Update renderer with new atlas + variants
+                                            renderer.updateAtlas(atlas.atlas_data, atlas.atlas_width, atlas.atlas_height);
+                                            switch (renderer) {
+                                                .cpu => |*cpu| {
+                                                    cpu.cell_width = atlas.cell_width;
+                                                    cpu.cell_height = atlas.cell_height;
+                                                    cpu.glyph_atlas_bold = if (variant_bold) |v| v.data else &.{};
+                                                    cpu.glyph_atlas_italic = if (variant_italic) |v| v.data else &.{};
+                                                    cpu.glyph_atlas_bold_italic = if (variant_bold_italic) |v| v.data else &.{};
+                                                },
+                                                .tty => {},
+                                            }
+                                            status_bar_h = if (config.show_status_bar) atlas.cell_height + 4 else 0;
+
+                                            // Resize grids immediately so renderer + grid stay in sync.
+                                            // Only defer SIGWINCH (PTY resize) until zooming stops.
+                                            const sz = win.getSize();
+                                            grid_cols = @intCast((sz.width -| padding * 2) / atlas.cell_width);
+                                            grid_rows = @intCast((sz.height -| padding * 2 -| status_bar_h) / atlas.cell_height);
+                                            for (mux.panes.items) |*pane| {
+                                                if (grid_rows != pane.grid.rows or grid_cols != pane.grid.cols) {
+                                                    pane.grid.resize(allocator, grid_rows, grid_cols) catch {};
+                                                    pane.linkVt(allocator);
+                                                    pane.grid.dirty = true;
+                                                }
+                                            }
+
+                                            // Defer SIGWINCH until zooming stops (150ms debounce)
+                                            zoom_pending_resize = true;
+                                            zoom_timestamp = compat.monotonicNow();
+                                        }
+                                    }
+                                    continue;
+                                }
+                            }
+
                             // Modifier-only keys (Ctrl, Super, Shift, Alt) produce no output.
                             // Don't exit scroll mode or interfere with anything.
                             if (len == 0) continue;
@@ -889,6 +991,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     }
                 },
                 .key_release => |key| {
+                    if (key.keycode == platform.types.keycodes.RALT) ralt_held = false;
                     // Feed key release into xkbcommon for modifier/group tracking
                     if (Keyboard != void) {
                         if (keyboard) |*kb| {
@@ -1039,9 +1142,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             }
 
                             // Double-click: select word
-                            var click_ts: std.os.linux.timespec = undefined;
-                            _ = std.os.linux.clock_gettime(.MONOTONIC, &click_ts);
-                            const click_now: i128 = @as(i128, click_ts.sec) * 1_000_000_000 + click_ts.nsec;
+                            const click_now = compat.monotonicNow();
                             if (click_now - last_click_time < DOUBLE_CLICK_NS and
                                 row == last_click_row and col == last_click_col)
                             {
@@ -1324,6 +1425,17 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
         else
             0;
 
+        // Deferred PTY resize after font zoom (sends SIGWINCH 150ms after last zoom)
+        if (zoom_pending_resize) {
+            const now = compat.monotonicNow();
+            if (now - zoom_timestamp > 150_000_000) {
+                zoom_pending_resize = false;
+                // Grid already resized in zoom handler; just send SIGWINCH to PTYs
+                const sz = win.getSize();
+                mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+            }
+        }
+
         // Poll all PTYs (grid is never modified by scroll — no save/restore needed)
         const had_output = mux.pollPtys(&pty_buf);
 
@@ -1477,9 +1589,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
 
         // Cursor blink timer
         if (config.cursor_blink) {
-            var blink_ts: std.os.linux.timespec = undefined;
-            _ = std.os.linux.clock_gettime(.MONOTONIC, &blink_ts);
-            const now_blink: i128 = @as(i128, blink_ts.sec) * 1_000_000_000 + blink_ts.nsec;
+            const now_blink = compat.monotonicNow();
             if (now_blink - last_blink_time >= BLINK_INTERVAL_NS) {
                 cursor_blink_visible = !cursor_blink_visible;
                 last_blink_time = now_blink;

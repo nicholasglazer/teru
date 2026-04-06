@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const posix = std.posix;
+const compat = @import("../compat.zig");
 const Pty = @import("../pty/Pty.zig");
 const Grid = @import("Grid.zig");
 const VtParser = @import("VtParser.zig");
@@ -49,8 +50,7 @@ pub fn init(allocator: Allocator, rows: u16, cols: u16, id: u64, spawn_config: S
     // Set PTY master to non-blocking for event-loop polling
     const flags = std.c.fcntl(pty.master, posix.F.GETFL);
     if (flags < 0) return error.FcntlFailed;
-    const O_NONBLOCK = 0x800; // linux/fcntl.h
-    _ = std.c.fcntl(pty.master, posix.F.SETFL, flags | O_NONBLOCK);
+    _ = std.c.fcntl(pty.master, posix.F.SETFL, flags | compat.O_NONBLOCK);
 
     // VtParser needs a *Grid pointer. Since Pane will be moved by
     // ArrayList.append, we set grid to undefined here. Caller MUST
