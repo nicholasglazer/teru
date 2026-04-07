@@ -8,7 +8,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
   <a href="https://github.com/nicholasglazer/teru/actions"><img src="https://github.com/nicholasglazer/teru/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/zig-0.16-orange" alt="Zig 0.16">
-  <img src="https://img.shields.io/badge/tests-445-blue" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-451-blue" alt="Tests">
   <img src="https://img.shields.io/badge/binary-1.6MB-brightgreen" alt="Binary Size">
   <a href="https://aur.archlinux.org/packages/teru"><img src="https://img.shields.io/aur/version/teru" alt="AUR"></a>
 </p>
@@ -168,13 +168,13 @@ teru --list               # list active sessions
 | **URL opener** | xdg-open | /usr/bin/open | ShellExecuteW |
 | **Font discovery** | /usr/share/fonts | /System/Library/Fonts | C:\Windows\Fonts |
 | **Config watcher** | inotify (real-time) | kqueue (real-time) | stat polling |
-| **Session daemon** | Unix socket | Unix socket (/tmp) | Not yet |
-| **MCP server** | Unix socket | Unix socket (/tmp) | Not yet |
-| **Hooks listener** | Unix socket | Unix socket | Not yet |
+| **Session daemon** | Unix socket | Unix socket (/tmp) | Named pipes |
+| **MCP server** | Unix socket | Unix socket (/tmp) | Named pipes |
+| **Hooks listener** | Unix socket | Unix socket | Named pipes |
 | **Signal handling** | SIGWINCH | SIGWINCH | N/A (message pump) |
 | **Build deps** | xcb, xkbcommon, wayland | AppKit, CoreGraphics | user32, gdi32, kernel32 |
 
-**Status:** Linux is production-ready. macOS is feature-complete (needs hardware testing). Windows has all subsystems implemented individually (ConPTY, keyboard, clipboard, window) but the event loop integration is not yet wired — daemon/MCP require named pipes.
+**Status:** Linux is production-ready. macOS is feature-complete (needs hardware testing). Windows has all subsystems wired end-to-end (ConPTY, keyboard, clipboard, window, raw mode, IPC via named pipes) — needs hardware testing. Session listing on Windows requires explicit names.
 
 ---
 
@@ -384,6 +384,7 @@ teru tracks agents in the ProcessGraph, colors pane borders by status (cyan=runn
 src/
 ├── main.zig                Entry point, event loop, input handling
 ├── compat.zig              Cross-platform primitives (time, process, fork, O_NONBLOCK)
+├── lib.zig                 Library root + test runner (451+ tests)
 ├── lib.zig                 libteru C-ABI public API
 ├── core/
 │   ├── Grid.zig            Character grid (cells, cursor, scroll regions, alt-screen)
@@ -424,7 +425,8 @@ src/
 │   └── themes.zig          Built-in theme definitions
 ├── server/
 │   ├── daemon.zig          Headless session daemon (PTY persistence)
-│   └── protocol.zig        Wire protocol (5-byte header, Unix socket)
+│   ├── protocol.zig        Wire protocol (5-byte header)
+│   └── ipc.zig             Cross-platform IPC (Unix sockets / named pipes)
 ├── pty/
 │   ├── Pty.zig              POSIX PTY (posix_openpt, fork, exec)
 │   └── WinPty.zig           Windows ConPTY (CreatePseudoConsole)
@@ -472,7 +474,7 @@ Build with `-Dx11=false` for Wayland-only (drops xcb dep).
 git clone https://github.com/nicholasglazer/teru.git
 cd teru
 
-zig build test            # 445+ tests
+zig build test            # 451+ tests
 zig build                 # debug build
 zig build run             # run windowed
 zig build run -- --raw    # run TTY mode

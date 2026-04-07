@@ -12,6 +12,17 @@ stdin_write: HANDLE,
 /// Parent reads here; child stdout/stderr data arrives.
 stdout_read: HANDLE,
 
+// ── Pty.zig compatibility fields ────────────────────────────────
+// These match the POSIX Pty struct so consumers can use either
+// implementation without comptime switches at every access site.
+
+/// Unused on Windows (no fd-based I/O). Set to -1.
+master: i32 = -1,
+/// Unused on Windows (no slave fd). Set to -1.
+slave: i32 = -1,
+/// Windows uses process handles, not pids. Always null.
+child_pid: ?i32 = null,
+
 // Re-export SpawnOptions so callers see the same interface as Pty.zig.
 pub const SpawnOptions = struct {
     shell: ?[]const u8 = null,
@@ -126,11 +137,20 @@ pub fn spawn(opts: SpawnOptions) !WinPty {
     };
 }
 
+/// Non-blocking read via PeekNamedPipe + ReadFile.
+/// Returns error.WouldBlock when no data is available, matching POSIX O_NONBLOCK.
 pub fn read(self: *const WinPty, buf: []u8) !usize {
-    var bytes_read: u32 = 0;
-    if (ReadFile(self.stdout_read, buf.ptr, @intCast(buf.len), &bytes_read, null) == 0) {
+    // Check if data is available without blocking
+    var available: u32 = 0;
+    if (PeekNamedPipe(self.stdout_read, null, 0, null, &available, null) == 0)
         return error.ReadFailed;
-    }
+    if (available == 0) return error.WouldBlock;
+
+    // Read only what's available
+    var bytes_read: u32 = 0;
+    const to_read: u32 = @intCast(@min(buf.len, available));
+    if (ReadFile(self.stdout_read, buf.ptr, to_read, &bytes_read, null) == 0)
+        return error.ReadFailed;
     return @intCast(bytes_read);
 }
 
@@ -308,6 +328,15 @@ extern "kernel32" fn CreateProcessW(
 ) callconv(.c) c_int;
 
 extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.c) c_int;
+
+extern "kernel32" fn PeekNamedPipe(
+    hNamedPipe: HANDLE,
+    lpBuffer: ?[*]u8,
+    nBufferSize: u32,
+    lpBytesRead: ?*u32,
+    lpTotalBytesAvail: ?*u32,
+    lpBytesLeftThisMessage: ?*u32,
+) callconv(.c) c_int;
 
 extern "kernel32" fn ReadFile(
     hFile: HANDLE,

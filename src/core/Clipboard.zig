@@ -8,7 +8,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
 const compat = @import("../compat.zig");
-const Pty = @import("../pty/Pty.zig");
+const Pty = @import("../pty/pty.zig").Pty;
 
 /// Copy text to the system clipboard.
 pub fn copy(text: []const u8) void {
@@ -181,6 +181,6 @@ fn windowsPaste(pty: *const Pty) void {
     }
 
     if (utf8_len > 0) {
-        _ = std.c.write(pty.master, &utf8_buf, utf8_len);
+        _ = pty.write(utf8_buf[0..utf8_len]) catch {};
     }
 }

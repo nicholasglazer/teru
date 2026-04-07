@@ -15,6 +15,7 @@ const Multiplexer = @import("../core/Multiplexer.zig");
 const ProcessGraph = @import("../graph/ProcessGraph.zig");
 const Grid = @import("../core/Grid.zig");
 const compat = @import("../compat.zig");
+const ipc = @import("../server/ipc.zig");
 
 const McpServer = @This();
 
@@ -44,49 +45,17 @@ padding: u32 = 0,
 // ── Lifecycle ──────────────────────────────────────────────────
 
 pub fn init(allocator: Allocator, mux: *Multiplexer, graph: *ProcessGraph) !McpServer {
-    if (builtin.os.tag == .windows) return error.Unsupported;
-    const uid = compat.getUid();
     const pid = compat.getPid();
 
-    var path_buf: [socket_path_max]u8 = undefined;
-    const path = if (builtin.os.tag == .macos)
-        std.fmt.bufPrint(&path_buf, "/tmp/teru-{d}-{d}.sock", .{ uid, pid }) catch
-            return error.PathTooLong
-    else
-        std.fmt.bufPrint(&path_buf, "/run/user/{d}/teru-{d}.sock", .{ uid, pid }) catch
-            return error.PathTooLong;
+    // Build unique path: teru-mcp-{pid}
+    var pid_buf: [16]u8 = undefined;
+    const pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{pid}) catch return error.PathTooLong;
+    var ipc_path_buf: [256]u8 = undefined;
+    const path = ipc.buildPath(&ipc_path_buf, "mcp", pid_str) orelse return error.PathTooLong;
     const path_len = path.len;
 
-    // Remove stale socket if it exists
-    var unlink_buf: [socket_path_max + 1]u8 = undefined;
-    @memcpy(unlink_buf[0..path_len], path);
-    unlink_buf[path_len] = 0;
-    _ = std.c.unlink(@ptrCast(&unlink_buf));
-
-    // Create socket
-    const sock = std.c.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
-    if (sock < 0) return error.SocketFailed;
-    errdefer _ = posix.system.close(sock);
-
-    // Set non-blocking for event-loop polling (accept returns EAGAIN when idle)
-    const flags = std.c.fcntl(sock, posix.F.GETFL);
-    if (flags < 0) return error.FcntlFailed;
-    _ = std.c.fcntl(sock, posix.F.SETFL, flags | compat.O_NONBLOCK);
-
-    // Bind to path
-    var addr: posix.sockaddr.un = std.mem.zeroes(posix.sockaddr.un);
-    addr.family = posix.AF.UNIX;
-    @memcpy(addr.path[0..path_len], path);
-
-    const addr_ptr: *const posix.sockaddr = @ptrCast(&addr);
-    if (std.c.bind(sock, addr_ptr, @sizeOf(posix.sockaddr.un)) != 0)
-        return error.BindFailed;
-
-    // Allow owner + group read/write so same-user processes can connect
-    _ = std.c.chmod(@ptrCast(&unlink_buf), 0o660);
-
-    if (std.c.listen(sock, 5) != 0)
-        return error.ListenFailed;
+    const ipc_server = ipc.listen(path) catch return error.SocketFailed;
+    const sock = ipc_server.fd;
 
     var server = McpServer{
         .socket_path = undefined,
@@ -125,11 +94,10 @@ pub fn poll(self: *McpServer) void {
     if (!self.running) return;
 
     // Non-blocking accept
-    const conn = std.c.accept(self.socket_fd, null, null);
-    if (conn < 0) return; // EAGAIN / no connection
+    const client = ipc.accept(.{ .fd = self.socket_fd }) orelse return;
 
-    self.handleRequest(conn);
-    _ = posix.system.close(conn);
+    self.handleRequest(client.fd);
+    client.close();
 }
 
 // ── HTTP / JSON-RPC handling ───────────────────────────────────

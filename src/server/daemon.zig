@@ -11,6 +11,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
 const compat = @import("../compat.zig");
+const ipc = @import("ipc.zig");
 const Allocator = std.mem.Allocator;
 const Multiplexer = @import("../core/Multiplexer.zig");
 const ProcessGraph = @import("../graph/ProcessGraph.zig");
@@ -48,46 +49,13 @@ pub fn init(
     mcp: ?*McpServer,
     hooks: *const Hooks,
 ) !Daemon {
-    if (builtin.os.tag == .windows) return error.Unsupported;
-    const uid = compat.getUid();
-
-    var path_buf: [socket_path_max]u8 = undefined;
-    const path = if (builtin.os.tag == .macos)
-        std.fmt.bufPrint(&path_buf, "/tmp/teru-{d}-session-{s}.sock", .{ uid, session_name }) catch
-            return error.PathTooLong
-    else
-        std.fmt.bufPrint(&path_buf, "/run/user/{d}/teru-session-{s}.sock", .{ uid, session_name }) catch
-            return error.PathTooLong;
+    var ipc_path_buf: [256]u8 = undefined;
+    const path = ipc.buildPath(&ipc_path_buf, "session", session_name) orelse
+        return error.PathTooLong;
     const path_len = path.len;
 
-    // Remove stale socket
-    var unlink_buf: [socket_path_max + 1]u8 = undefined;
-    @memcpy(unlink_buf[0..path_len], path);
-    unlink_buf[path_len] = 0;
-    _ = std.c.unlink(@ptrCast(&unlink_buf));
-
-    // Create listening socket
-    const sock = std.c.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
-    if (sock < 0) return error.SocketFailed;
-    errdefer _ = posix.system.close(sock);
-
-    // Non-blocking for poll loop
-    const flags = std.c.fcntl(sock, posix.F.GETFL);
-    if (flags < 0) return error.FcntlFailed;
-    _ = std.c.fcntl(sock, posix.F.SETFL, flags | O_NONBLOCK);
-
-    // Bind
-    var addr: posix.sockaddr.un = std.mem.zeroes(posix.sockaddr.un);
-    addr.family = posix.AF.UNIX;
-    @memcpy(addr.path[0..path_len], path);
-
-    if (std.c.bind(sock, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)) != 0)
-        return error.BindFailed;
-
-    _ = std.c.chmod(@ptrCast(&unlink_buf), 0o660);
-
-    if (std.c.listen(sock, 1) != 0)
-        return error.ListenFailed;
+    const server = ipc.listen(path) catch return error.SocketFailed;
+    const sock = server.fd;
 
     var daemon = Daemon{
         .allocator = allocator,
@@ -210,21 +178,14 @@ pub fn getSocketPath(self: *const Daemon) []const u8 {
 // ── Client management ─────────────────────────────────────────────
 
 fn tryAcceptClient(self: *Daemon) void {
-    const conn = std.c.accept(self.socket_fd, null, null);
-    if (conn < 0) return; // EAGAIN
+    const client = ipc.accept(.{ .fd = self.socket_fd }) orelse return;
 
     // Only one client at a time — disconnect previous
     if (self.client_fd) |old| {
         _ = posix.system.close(old);
     }
 
-    // Set non-blocking
-    const flags = std.c.fcntl(conn, posix.F.GETFL);
-    if (flags >= 0) {
-        _ = std.c.fcntl(conn, posix.F.SETFL, flags | O_NONBLOCK);
-    }
-
-    self.client_fd = conn;
+    self.client_fd = client.fd;
 }
 
 fn handleClientData(self: *Daemon, recv_buf: []u8) void {
@@ -296,12 +257,11 @@ fn checkPaneAlive(self: *Daemon) void {
 
 /// Build the socket path for a given session name.
 pub fn sessionSocketPath(name: []const u8, buf: *[socket_path_max]u8) ?[]const u8 {
-    const uid = compat.getUid();
-    const path = if (builtin.os.tag == .macos)
-        std.fmt.bufPrint(buf, "/tmp/teru-{d}-session-{s}.sock", .{ uid, name }) catch return null
-    else
-        std.fmt.bufPrint(buf, "/run/user/{d}/teru-session-{s}.sock", .{ uid, name }) catch return null;
-    return path;
+    var ipc_buf: [256]u8 = undefined;
+    const path = ipc.buildPath(&ipc_buf, "session", name) orelse return null;
+    if (path.len > buf.len) return null;
+    @memcpy(buf[0..path.len], path);
+    return buf[0..path.len];
 }
 
 /// Connect to an existing daemon session. Returns the connected socket fd.
@@ -309,30 +269,33 @@ pub fn connectToSession(name: []const u8) !posix.fd_t {
     var path_buf: [socket_path_max]u8 = undefined;
     const path = sessionSocketPath(name, &path_buf) orelse return error.PathTooLong;
 
-    const sock = std.c.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
-    if (sock < 0) return error.SocketFailed;
-    errdefer _ = posix.system.close(sock);
-
-    var addr: posix.sockaddr.un = std.mem.zeroes(posix.sockaddr.un);
-    addr.family = posix.AF.UNIX;
-    @memcpy(addr.path[0..path.len], path);
-
-    if (std.c.connect(sock, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)) != 0)
-        return error.ConnectFailed;
-
-    return sock;
+    const conn = ipc.connect(path) catch return error.ConnectFailed;
+    return conn.fd;
 }
 
-/// List active session names by scanning /run/user/{uid}/teru-session-*.sock.
-/// Returns sessions via the callback. Uses raw opendir/readdir (no std.Io needed).
+/// List active session names by scanning socket/pipe directory.
+/// POSIX: scans /run/user/{uid}/ or /tmp/ for teru-session-*.sock
+/// Windows: scans \\.\pipe\ for teru-session-* named pipes
 pub fn listSessions(buf: *[1024]u8) ?[]const u8 {
-    if (builtin.os.tag == .windows) return null;
+    if (builtin.os.tag == .windows) return listSessionsWin32(buf);
+    return listSessionsPosix(buf);
+}
+
+fn listSessionsPosix(buf: *[1024]u8) ?[]const u8 {
     const uid = compat.getUid();
     var dir_path_buf: [64]u8 = undefined;
     const dir_path = if (builtin.os.tag == .macos)
         std.fmt.bufPrint(&dir_path_buf, "/tmp", .{}) catch return null
     else
         std.fmt.bufPrint(&dir_path_buf, "/run/user/{d}", .{uid}) catch return null;
+
+    // Build prefix to match: "teru-{uid}-session-" (macOS) or "teru-session-" (Linux)
+    var prefix_buf: [64]u8 = undefined;
+    const prefix = if (builtin.os.tag == .macos)
+        std.fmt.bufPrint(&prefix_buf, "teru-{d}-session-", .{uid}) catch return null
+    else
+        std.fmt.bufPrint(&prefix_buf, "teru-session-", .{}) catch return null;
+    const suffix = ".sock";
 
     // Null-terminate for C opendir
     var dir_path_z: [65]u8 = undefined;
@@ -344,8 +307,6 @@ pub fn listSessions(buf: *[1024]u8) ?[]const u8 {
     defer _ = std.c.closedir(dir.?);
 
     var len: usize = 0;
-    const prefix = "teru-session-";
-    const suffix = ".sock";
 
     while (std.c.readdir(dir.?)) |entry| {
         const name_ptr: [*:0]const u8 = @ptrCast(&entry.name);
@@ -355,14 +316,12 @@ pub fn listSessions(buf: *[1024]u8) ?[]const u8 {
             std.mem.startsWith(u8, name, prefix) and
             std.mem.endsWith(u8, name, suffix))
         {
-            // Extract session name between prefix and suffix
             const session_name = name[prefix.len .. name.len - suffix.len];
 
             // Try connecting to verify it's alive
             const sock = connectToSession(session_name) catch continue;
             _ = posix.system.close(sock);
 
-            // Append to output
             if (len + session_name.len + 1 < buf.len) {
                 @memcpy(buf[len .. len + session_name.len], session_name);
                 buf[len + session_name.len] = '\n';
@@ -373,6 +332,13 @@ pub fn listSessions(buf: *[1024]u8) ?[]const u8 {
 
     if (len == 0) return null;
     return buf[0..len];
+}
+
+fn listSessionsWin32(_: *[1024]u8) ?[]const u8 {
+    // Windows pipe enumeration requires NtQueryDirectoryFile on \Device\NamedPipe
+    // or FindFirstFileW on "\\.\pipe\teru-session-*".
+    // For now, Windows users must specify session names explicitly.
+    return null;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────

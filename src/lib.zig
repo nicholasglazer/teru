@@ -12,7 +12,7 @@
 //!   config   — Configuration file parser and plugin hooks
 //!   persist  — Session serialization and scrollback compression
 
-pub const Pty = @import("pty/Pty.zig");
+pub const Pty = @import("pty/pty.zig").Pty;
 pub const ProcessGraph = @import("graph/ProcessGraph.zig");
 pub const protocol = @import("agent/protocol.zig");
 pub const HookHandler = @import("agent/HookHandler.zig");
@@ -39,6 +39,7 @@ pub const Ui = @import("render/Ui.zig");
 pub const Config = @import("config/Config.zig");
 pub const Hooks = @import("config/Hooks.zig");
 pub const WinPty = @import("pty/WinPty.zig");
+pub const ipc = @import("server/ipc.zig");
 pub const compat = @import("compat.zig");
 
 test {
@@ -67,4 +68,5 @@ test {
     _ = Config;
     _ = Hooks;
     _ = WinPty;
+    _ = ipc;
 }

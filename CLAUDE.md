@@ -10,8 +10,8 @@ zig build run -- --raw  # run (TTY mode)
 
 ## Architecture
 - src/core/ -- VtParser, Grid, Pane, Multiplexer, Selection, KeyHandler, Clipboard, ViMode
-- src/server/ -- Daemon persistence (daemon.zig, protocol.zig)
-- src/pty/ -- PTY management (Linux: posix_openpt/forkpty)
+- src/server/ -- Daemon persistence (daemon.zig, protocol.zig, ipc.zig cross-platform IPC)
+- src/pty/ -- PTY management (pty.zig dispatch, Pty.zig POSIX, WinPty.zig ConPTY)
 - src/graph/ -- ProcessGraph (DAG of all processes/agents)
 - src/agent/ -- OSC 9999 protocol, HookHandler, HookListener, McpServer, PaneBackend
 - src/tiling/ -- Layout engine (master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion)
@@ -30,7 +30,7 @@ zig build run -- --raw  # run (TTY mode)
 Current: 0.3.5. Update in 3 files: `src/main.zig`, `build.zig.zon`, `src/agent/McpServer.zig`
 
 ## Testing
-All modules have inline tests (445+ test blocks). Run with `zig build test`.
+All modules have inline tests (451+ test blocks). Run with `zig build test`.
 
 ## Session Persistence
 ```bash

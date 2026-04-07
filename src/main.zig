@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
 const compat = @import("compat.zig");
-const Pty = @import("pty/Pty.zig");
+const Pty = @import("pty/pty.zig").Pty;
 const Multiplexer = @import("core/Multiplexer.zig");
 const ProcessGraph = @import("graph/ProcessGraph.zig");
 const Terminal = @import("core/Terminal.zig");
@@ -1889,7 +1889,7 @@ fn runRawMode(allocator: std.mem.Allocator, io: std.Io) !void {
 
     const node_id = try graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pty_inst.child_pid });
 
-    var sig = SignalManager.init(pty_inst.master, terminal.host_fd);
+    var sig = SignalManager.init(pty_inst.master, terminal.hostFd());
     sig.registerWinch();
 
     try terminal.enterRawMode();

@@ -22,6 +22,7 @@ const std = @import("std");
 const posix = std.posix;
 const HookHandler = @import("HookHandler.zig");
 const compat = @import("../compat.zig");
+const ipc = @import("../server/ipc.zig");
 
 const HookListener = @This();
 
@@ -51,46 +52,22 @@ queue_tail: usize = 0,
 // ── Init / Deinit ──────────────────────────────────────────────────
 
 pub fn init(allocator: std.mem.Allocator) !HookListener {
-    // Build socket path: /run/user/$UID/teru-hooks-$PID.sock
+    const pid = compat.getPid();
+    var pid_buf: [16]u8 = undefined;
+    const pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{pid}) catch return error.PathTooLong;
+
+    var ipc_path_buf: [256]u8 = undefined;
+    const path = ipc.buildPath(&ipc_path_buf, "hooks", pid_str) orelse return error.PathTooLong;
+
+    const server = ipc.listen(path) catch return error.SocketFailed;
+
     var path_buf: [108]u8 = [_]u8{0} ** 108;
-    var path_len: usize = 0;
-
-    const uid_str = compat.getenv("XDG_RUNTIME_DIR");
-    if (uid_str) |runtime_dir| {
-        path_len = (std.fmt.bufPrint(&path_buf, "{s}/teru-hooks-{d}.sock", .{
-            runtime_dir,
-            compat.getPid(),
-        }) catch return error.PathTooLong).len;
-    } else {
-        path_len = (std.fmt.bufPrint(&path_buf, "/tmp/teru-hooks-{d}.sock", .{
-            compat.getPid(),
-        }) catch return error.PathTooLong).len;
-    }
-
-    // Remove stale socket
-    _ = posix.system.unlink(@ptrCast(&path_buf));
-
-    // Create Unix stream socket
-    const raw_fd = std.c.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.NONBLOCK | posix.SOCK.CLOEXEC, 0);
-    if (raw_fd < 0) return error.SocketFailed;
-    const fd: posix.fd_t = @intCast(raw_fd);
-    errdefer _ = posix.system.close(fd);
-
-    // Bind
-    var addr: posix.sockaddr.un = std.mem.zeroes(posix.sockaddr.un);
-    addr.family = posix.AF.UNIX;
-    @memcpy(addr.path[0..path_len], path_buf[0..path_len]);
-
-    const bind_result = posix.system.bind(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un));
-    if (bind_result != 0) return error.BindFailed;
-
-    // Listen
-    const listen_result = posix.system.listen(fd, 4);
-    if (listen_result != 0) return error.ListenFailed;
+    const path_len = @min(path.len, path_buf.len);
+    @memcpy(path_buf[0..path_len], path[0..path_len]);
 
     return .{
         .allocator = allocator,
-        .server_fd = fd,
+        .server_fd = server.fd,
         .socket_path = path_buf,
         .socket_path_len = path_len,
     };
@@ -121,14 +98,9 @@ pub fn getSocketPath(self: *const HookListener) []const u8 {
 /// Accept and process one pending connection. Non-blocking.
 pub fn poll(self: *HookListener) void {
     // Accept connection
-    const client_fd = posix.system.accept4(
-        self.server_fd,
-        null,
-        null,
-        posix.SOCK.NONBLOCK | posix.SOCK.CLOEXEC,
-    );
-    if (client_fd < 0) return; // No pending connection
-    defer _ = posix.system.close(client_fd);
+    const client = ipc.accept(.{ .fd = self.server_fd }) orelse return;
+    const client_fd = client.fd;
+    defer client.close();
 
     // Read HTTP request (small — hook payloads are typically <2KB)
     var buf: [RECV_BUF_SIZE]u8 = undefined;

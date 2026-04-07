@@ -3,17 +3,26 @@
 ## 0.3.5 (2026-04-07)
 
 ### Cross-platform
-- **Windows ConPTY** (`src/pty/WinPty.zig`) — full CreatePseudoConsole implementation: pipe pairs, STARTUPINFOEX attribute list, CreateProcessW, ResizePseudoConsole, read/write/resize/isAlive API matching Pty.zig
-- **Windows clipboard** — Win32 OpenClipboard/SetClipboardData/GetClipboardData with UTF-8↔UTF-16 conversion, surrogate pair support
-- **Windows URL opener** — ShellExecuteW for opening URLs in default browser
-- **macOS PTY** — replaced `/dev/ptmx` open with `posix_openpt()` (works on both Linux and macOS)
-- **Portable O_NONBLOCK** — `compat.O_NONBLOCK` constant (0x800 Linux, 0x0004 macOS) replaces 8 hardcoded values across main.zig, Multiplexer, Pane, PaneBackend, McpServer, daemon
-- **Portable socket paths** — daemon, McpServer, PaneBackend now use `/tmp/teru-{uid}-*` on macOS, `/run/user/{uid}/teru-*` on Linux, Windows guards return `error.Unsupported`
-- **Portable readlink** — McpServer CWD detection uses `std.c.readlink` instead of `linux.readlinkat`
-- **Removed linux imports** — McpServer, PaneBackend, daemon.zig no longer import `std.os.linux` directly
+- **PTY comptime dispatch** (`src/pty/pty.zig`) — single import point selects POSIX Pty or WinPty per OS; all 6 consumers migrated
+- **Non-blocking WinPty read** — PeekNamedPipe + ReadFile replaces blocking ReadFile; returns `error.WouldBlock` matching POSIX O_NONBLOCK pattern; no threads needed
+- **IPC abstraction** (`src/server/ipc.zig`) — cross-platform listen/accept/connect/buildPath: Unix sockets (POSIX) / named pipes (Windows)
+- **All IPC consumers migrated** — daemon, McpServer, PaneBackend, HookListener, McpBridge use `ipc.zig` instead of raw socket calls
+- **Windows raw mode** (`Terminal.zig`) — SetConsoleMode + WaitForMultipleObjects event loop for `teru --raw`
+- **Windows ConPTY** (`src/pty/WinPty.zig`) — CreatePseudoConsole, pipe pairs, STARTUPINFOEX, ResizePseudoConsole
+- **Windows clipboard** — Win32 OpenClipboard/SetClipboardData/GetClipboardData with UTF-8/UTF-16 conversion
+- **Windows URL opener** — ShellExecuteW
+- **macOS PTY** — `posix_openpt()` replaces `/dev/ptmx` (works on both Linux and macOS)
+- **macOS HookListener fix** — replaced Linux-only `accept4` with portable `ipc.accept`
+- **Portable O_NONBLOCK** — `compat.O_NONBLOCK` (0x800 Linux, 0x0004 macOS) replaces all hardcoded values
+- **Portable IPC paths** — `ipc.buildPath`: `/run/user/{uid}/teru-*` (Linux), `/tmp/teru-{uid}-*` (macOS), `\\.\pipe\teru-*` (Windows)
+- **Portable readlink** — McpServer uses `std.c.readlink` instead of `linux.readlinkat`
+- **Pane.readAndProcess** — uses `self.pty.read()` instead of `posix.read(pty.master)`
+- **Clipboard paste** — uses `pty.write()` instead of `std.c.write(pty.master)`
+- **Zero raw socket calls** outside `ipc.zig` (all migrated)
 
 ### Fixes
-- **Stale version env** — `TERM_PROGRAM_VERSION` in Pty.zig updated from "0.1.4" to match current version
+- **Stale version env** — `TERM_PROGRAM_VERSION` in Pty.zig updated to match current version
+- **macOS listSessions** — prefix matching now accounts for `teru-{uid}-session-*` format
 
 ## 0.3.4 (2026-04-07)
 

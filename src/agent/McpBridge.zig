@@ -11,11 +11,12 @@
 //! error if no socket is found.
 
 const std = @import("std");
-const posix = std.posix;
+const builtin = @import("builtin");
+const posix = if (builtin.os.tag != .windows) std.posix else undefined;
+const ipc = @import("../server/ipc.zig");
 
 const max_line: usize = 65536;
 const max_response: usize = 65536;
-const socket_path_max: usize = 108;
 
 // ── Entry point ──────────────────────────────────────────────────
 
@@ -24,7 +25,7 @@ pub fn run(io: std.Io) !void {
 
     const socket_path = findSocket() orelse {
         const msg = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"No teru MCP socket found. Set TERU_MCP_SOCKET or run teru first.\"},\"id\":null}\n";
-        _ = std.c.write(posix.STDOUT_FILENO, msg.ptr, msg.len);
+        _ = std.c.write(1, msg.ptr, msg.len);
         return error.NoSocket;
     };
 
@@ -44,24 +45,24 @@ pub fn run(io: std.Io) !void {
         }
 
         // Connect to teru's MCP server
-        const sock = connectSocket(socket_path) orelse {
+        var conn = connectSocket(socket_path) orelse {
             const err_msg = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Cannot connect to teru socket\"},\"id\":null}\n";
-            _ = std.c.write(posix.STDOUT_FILENO, err_msg.ptr, err_msg.len);
+            _ = std.c.write(1, err_msg.ptr, err_msg.len);
             continue;
         };
 
         // Send HTTP POST with the JSON line as body
-        sendHttpRequest(sock, line);
+        sendHttpRequest(&conn, line);
 
         // Read HTTP response and extract JSON body
         var resp_buf: [max_response]u8 = undefined;
-        if (readHttpResponse(sock, &resp_buf)) |json_body| {
+        if (readHttpResponse(&conn, &resp_buf)) |json_body| {
             // Write JSON body + newline to stdout
-            _ = std.c.write(posix.STDOUT_FILENO, json_body.ptr, json_body.len);
-            _ = std.c.write(posix.STDOUT_FILENO, "\n", 1);
+            _ = std.c.write(1, json_body.ptr, json_body.len);
+            _ = std.c.write(1, "\n", 1);
         }
 
-        _ = posix.system.close(sock);
+        conn.close();
     }
 }
 
@@ -70,7 +71,7 @@ pub fn run(io: std.Io) !void {
 fn readLine(buf: []u8) ?[]const u8 {
     var pos: usize = 0;
     while (pos < buf.len) {
-        const rc = std.c.read(posix.STDIN_FILENO, buf[pos..].ptr, 1);
+        const rc = std.c.read(0, buf[pos..].ptr, 1);
         if (rc <= 0) {
             // EOF or error — return what we have, or null if nothing
             if (pos == 0) return null;
@@ -87,45 +88,28 @@ fn readLine(buf: []u8) ?[]const u8 {
 
 // ── Socket connection ────────────────────────────────────────────
 
-fn connectSocket(path: []const u8) ?posix.fd_t {
-    const sock = std.c.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
-    if (sock < 0) return null;
-
-    var addr: posix.sockaddr.un = std.mem.zeroes(posix.sockaddr.un);
-    addr.family = posix.AF.UNIX;
-    if (path.len > addr.path.len) {
-        _ = posix.system.close(sock);
-        return null;
-    }
-    @memcpy(addr.path[0..path.len], path);
-
-    const addr_ptr: *const posix.sockaddr = @ptrCast(&addr);
-    if (std.c.connect(sock, addr_ptr, @sizeOf(posix.sockaddr.un)) != 0) {
-        _ = posix.system.close(sock);
-        return null;
-    }
-
-    return sock;
+fn connectSocket(path: []const u8) ?ipc.IpcHandle {
+    return ipc.connect(path) catch null;
 }
 
 // ── HTTP wrapping ────────────────────────────────────────────────
 
-fn sendHttpRequest(sock: posix.fd_t, json: []const u8) void {
+fn sendHttpRequest(conn: *ipc.IpcHandle, json: []const u8) void {
     var header_buf: [256]u8 = undefined;
     const header = std.fmt.bufPrint(&header_buf, "POST / HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n", .{json.len}) catch return;
-    _ = std.c.write(sock, header.ptr, header.len);
-    _ = std.c.write(sock, json.ptr, json.len);
+    _ = conn.write(header) catch {};
+    _ = conn.write(json) catch {};
 }
 
 // ── HTTP response parsing ────────────────────────────────────────
 
-fn readHttpResponse(sock: posix.fd_t, buf: []u8) ?[]const u8 {
+fn readHttpResponse(conn: *ipc.IpcHandle, buf: []u8) ?[]const u8 {
     var total: usize = 0;
 
     while (total < buf.len) {
-        const rc = std.c.read(sock, buf[total..].ptr, buf.len - total);
-        if (rc <= 0) break;
-        total += @intCast(rc);
+        const n = conn.read(buf[total..]) catch break;
+        if (n == 0) break;
+        total += n;
 
         // Check if we have complete headers + body
         if (findHeaderEnd(buf[0..total])) |header_end| {
@@ -286,5 +270,5 @@ test "formatHttpRequest roundtrip with extractJsonFromHttp" {
 test "connectSocket returns null for bad path" {
     // Non-existent socket should fail to connect
     const result = connectSocket("/tmp/teru-nonexistent-test.sock");
-    try t.expectEqual(@as(?posix.fd_t, null), result);
+    try t.expect(result == null);
 }

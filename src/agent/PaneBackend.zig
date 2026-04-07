@@ -17,6 +17,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
 const compat = @import("../compat.zig");
+const ipc = @import("../server/ipc.zig");
 const Allocator = std.mem.Allocator;
 const Multiplexer = @import("../core/Multiplexer.zig");
 const ProcessGraph = @import("../graph/ProcessGraph.zig");
@@ -66,46 +67,13 @@ line_len: usize = 0,
 // ── Lifecycle ────────────────────────────────────────────────────
 
 pub fn init(allocator: Allocator, mux: *Multiplexer, graph: *ProcessGraph) !PaneBackend {
-    const uid = compat.getUid();
-
-    var path_buf: [socket_path_max]u8 = undefined;
-    const path = if (builtin.os.tag == .macos)
-        std.fmt.bufPrint(&path_buf, "/tmp/teru-{d}-pane-backend.sock", .{uid}) catch
-            return error.PathTooLong
-    else
-        std.fmt.bufPrint(&path_buf, "/run/user/{d}/teru-pane-backend.sock", .{uid}) catch
-            return error.PathTooLong;
+    var ipc_path_buf: [256]u8 = undefined;
+    const path = ipc.buildPath(&ipc_path_buf, "pane-backend", "") orelse
+        return error.PathTooLong;
     const path_len = path.len;
 
-    // Remove stale socket if it exists
-    var unlink_buf: [socket_path_max + 1]u8 = undefined;
-    @memcpy(unlink_buf[0..path_len], path);
-    unlink_buf[path_len] = 0;
-    _ = std.c.unlink(@ptrCast(&unlink_buf));
-
-    // Create socket
-    const sock = std.c.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
-    if (sock < 0) return error.SocketFailed;
-    errdefer _ = posix.system.close(sock);
-
-    // Set non-blocking
-    const flags = std.c.fcntl(sock, posix.F.GETFL);
-    if (flags < 0) return error.FcntlFailed;
-    _ = std.c.fcntl(sock, posix.F.SETFL, flags | compat.O_NONBLOCK);
-
-    // Bind
-    var addr: posix.sockaddr.un = std.mem.zeroes(posix.sockaddr.un);
-    addr.family = posix.AF.UNIX;
-    @memcpy(addr.path[0..path_len], path);
-
-    const addr_ptr: *const posix.sockaddr = @ptrCast(&addr);
-    if (std.c.bind(sock, addr_ptr, @sizeOf(posix.sockaddr.un)) != 0)
-        return error.BindFailed;
-
-    _ = std.c.chmod(@ptrCast(&unlink_buf), 0o660);
-
-    if (std.c.listen(sock, 2) != 0)
-        return error.ListenFailed;
+    const server = ipc.listen(path) catch return error.SocketFailed;
+    const sock = server.fd;
 
     var backend = PaneBackend{
         .socket_path = undefined,
@@ -146,14 +114,8 @@ pub fn getSocketPath(self: *const PaneBackend) []const u8 {
 pub fn poll(self: *PaneBackend) void {
     // Accept new client if we don't have one
     if (self.client_fd < 0) {
-        const conn = std.c.accept(self.socket_fd, null, null);
-        if (conn >= 0) {
-            // Set new client to non-blocking
-            const flags = std.c.fcntl(conn, posix.F.GETFL);
-            if (flags >= 0) {
-                _ = std.c.fcntl(conn, posix.F.SETFL, flags | compat.O_NONBLOCK);
-            }
-            self.client_fd = conn;
+        if (ipc.accept(.{ .fd = self.socket_fd })) |client| {
+            self.client_fd = client.fd;
             self.line_len = 0;
         }
     }

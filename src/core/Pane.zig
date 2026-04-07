@@ -2,7 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const posix = std.posix;
 const compat = @import("../compat.zig");
-const Pty = @import("../pty/Pty.zig");
+const Pty = @import("../pty/pty.zig").Pty;
 const Grid = @import("Grid.zig");
 const VtParser = @import("VtParser.zig");
 const Scrollback = @import("../persist/Scrollback.zig");
@@ -85,7 +85,7 @@ pub fn deinit(self: *Pane, allocator: Allocator) void {
 /// Read available data from the PTY and feed it through the VT parser.
 /// Returns the number of bytes read (0 if nothing available).
 pub fn readAndProcess(self: *Pane, buf: []u8) !usize {
-    const n = posix.read(self.pty.master, buf) catch |err| switch (err) {
+    const n = self.pty.read(buf) catch |err| switch (err) {
         error.WouldBlock => return 0,
         else => return err,
     };
