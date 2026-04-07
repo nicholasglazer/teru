@@ -2,14 +2,14 @@
 
 <h1>teru 照</h1>
 
-<p><strong>AI-first terminal emulator, multiplexer, and tiling manager.<br>One binary. No GPU. 1.6MB.</strong></p>
+<p><strong>AI-first terminal emulator, multiplexer, and tiling manager.<br>One binary. No GPU. 1.4MB.</strong></p>
 
 <p>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
   <a href="https://github.com/nicholasglazer/teru/actions"><img src="https://github.com/nicholasglazer/teru/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/zig-0.16-orange" alt="Zig 0.16">
   <img src="https://img.shields.io/badge/tests-451-blue" alt="Tests">
-  <img src="https://img.shields.io/badge/binary-1.6MB-brightgreen" alt="Binary Size">
+  <img src="https://img.shields.io/badge/binary-1.4MB-brightgreen" alt="Binary Size">
   <a href="https://aur.archlinux.org/packages/teru"><img src="https://img.shields.io/aur/version/teru" alt="AUR"></a>
 </p>
 
@@ -84,7 +84,7 @@ git clone https://github.com/nicholasglazer/teru.git
 cd teru
 
 # Release build (recommended)
-make release              # 1.6MB binary at zig-out/bin/teru
+make release              # 1.4MB binary at zig-out/bin/teru
 
 # Install system-wide
 sudo make install         # installs to /usr/local/bin/teru
@@ -116,7 +116,7 @@ teru --list               # list active sessions
 
 | Feature | teru | Ghostty | Alacritty | WezTerm | Zellij | Warp |
 |---------|:----:|:-------:|:---------:|:-------:|:------:|:----:|
-| **Binary size** | **1.6MB** | 30MB | 6MB | 25MB | 12MB | 80MB+ |
+| **Binary size** | **1.4MB** | 30MB | 6MB | 25MB | 12MB | 80MB+ |
 | **GPU required** | **No** | Yes | Yes | Yes | No | Yes |
 | **Built-in multiplexer** | **Yes** | No | No | Yes | Yes | Tabs |
 | **Tiling layouts** | **8** | No | No | No | 4 | No |
@@ -141,12 +141,12 @@ teru --list               # list active sessions
 - **Vi/copy mode** -- prefix + v for vim-like cursor navigation, visual selection, yank to clipboard
 - **Session persistence** -- `teru --daemon` starts headless sessions that survive terminal close, `teru --session` reattaches
 - **CustomPaneBackend** -- native Claude Code agent team protocol (7 operations)
-- **MCP server** -- 14 tools for cross-agent pane control over Unix socket
+- **MCP server** -- 14 tools for cross-agent pane control over IPC
 - **OSC 9999** -- agent self-declaration protocol (start/stop/status/progress)
 - **OSC 133** -- shell integration (command blocks, exit code tracking)
 - **Process graph** -- DAG of all processes/agents with lifecycle tracking
 - **Command-stream scrollback** -- keyframe/delta compression (20-50x vs expanded cells)
-- **Unicode fonts** -- ASCII, Latin-1, box-drawing, block elements (351 glyphs via stb_truetype)
+- **Unicode fonts** -- ASCII, Latin-1, Cyrillic, box-drawing, block elements (607 glyphs via stb_truetype)
 - **Keyboard** -- xkbcommon (Linux), IOKit tables (macOS), VK+ToUnicode (Windows); any layout
 - **Mouse** -- selection, word double-click, clipboard (X11 via xclip, Wayland via wl-clipboard), drag-to-resize borders
 - **Search** -- prefix + / highlights matches in visible grid
@@ -334,7 +334,7 @@ export CLAUDE_PANE_BACKEND_SOCKET=/run/user/1000/teru-pane-backend.sock
 
 ### MCP Server
 
-teru exposes 14 tools over Unix socket for agent-to-agent pane control:
+teru exposes 14 tools over IPC (Unix socket / named pipe) for agent-to-agent pane control:
 
 ```json
 {
@@ -384,8 +384,7 @@ teru tracks agents in the ProcessGraph, colors pane borders by status (cyan=runn
 src/
 ├── main.zig                Entry point, event loop, input handling
 ├── compat.zig              Cross-platform primitives (time, process, fork, O_NONBLOCK)
-├── lib.zig                 Library root + test runner (451+ tests)
-├── lib.zig                 libteru C-ABI public API
+├── lib.zig                 Library root, C-ABI API, test runner (451+ tests)
 ├── core/
 │   ├── Grid.zig            Character grid (cells, cursor, scroll regions, alt-screen)
 │   ├── VtParser.zig        VT100/xterm state machine (SIMD fast-path)
@@ -395,13 +394,13 @@ src/
 │   ├── Selection.zig       Text selection (absolute coords, scrollback-aware)
 │   ├── ViMode.zig          Vi/copy mode (cursor navigation, visual selection)
 │   ├── Clipboard.zig       Cross-platform clipboard (xclip, pbcopy, Win32 API)
-│   ├── Terminal.zig        Raw TTY mode, poll-based I/O
+│   ├── Terminal.zig        Raw mode (POSIX termios / Win32 console)
 │   └── UrlDetector.zig     URL detection (regex-free)
 ├── agent/
 │   ├── PaneBackend.zig     CustomPaneBackend protocol (Claude Code)
-│   ├── McpServer.zig       MCP server (14 tools, Unix socket)
+│   ├── McpServer.zig       MCP server (14 tools, IPC)
 │   ├── HookHandler.zig     Claude Code hook JSON parser
-│   ├── HookListener.zig    HTTP hook listener (Unix socket)
+│   ├── HookListener.zig    HTTP hook listener (IPC)
 │   └── protocol.zig        OSC 9999 agent protocol parser
 ├── graph/
 │   └── ProcessGraph.zig    Process DAG (nodes, edges, agent metadata)
@@ -415,7 +414,7 @@ src/
 │   └── Scrollback.zig      Command-stream compression (keyframe/delta)
 ├── render/
 │   ├── software.zig        CPU SIMD renderer (@Vector alpha blending)
-│   ├── FontAtlas.zig       stb_truetype glyph rasterization (351 glyphs)
+│   ├── FontAtlas.zig       stb_truetype glyph rasterization (607 glyphs)
 │   ├── Compositor.zig      Pane/border/glyph compositing into framebuffer
 │   ├── Ui.zig              Status bar, scroll overlay, search overlay
 │   └── tier.zig            Two-tier detection (CPU/TTY)
@@ -428,6 +427,7 @@ src/
 │   ├── protocol.zig        Wire protocol (5-byte header)
 │   └── ipc.zig             Cross-platform IPC (Unix sockets / named pipes)
 ├── pty/
+│   ├── pty.zig              Comptime dispatch (POSIX or ConPTY per OS)
 │   ├── Pty.zig              POSIX PTY (posix_openpt, fork, exec)
 │   └── WinPty.zig           Windows ConPTY (CreatePseudoConsole)
 └── platform/
@@ -458,8 +458,8 @@ src/
 - `wl-clipboard` -- Wayland clipboard (`wl-copy` / `wl-paste`)
 
 **Vendored** (compiled into binary):
-- `stb_truetype.h` -- font rasterization (5KB, public domain)
-- `xdg-shell-protocol.c` -- Wayland shell protocol (7KB, generated)
+- `stb_truetype.h` -- font rasterization (195KB single-header, public domain)
+- `xdg-shell-protocol.c` -- Wayland shell protocol (6KB, generated)
 
 No FreeType. No fontconfig. No OpenGL. No EGL. No GTK.
 
@@ -478,7 +478,7 @@ zig build test            # 451+ tests
 zig build                 # debug build
 zig build run             # run windowed
 zig build run -- --raw    # run TTY mode
-make release              # release build (1.6MB)
+make release              # release build (1.4MB)
 make deps                 # check runtime dependencies
 make size                 # compare build profiles
 make help                 # list all targets
@@ -507,8 +507,9 @@ Contributions welcome. Requires Zig 0.16.
 - **Full Unicode**: CJK characters, emoji (COLR/CPAL), font fallback chains
 - **Shell integration**: bash/zsh/fish scripts for OSC 133 command blocks
 - **macOS testing**: AppKit backend and keyboard are implemented but need hardware testing
-- **Windows daemon**: Named pipes IPC to replace Unix sockets for session persistence
+- **Windows testing**: ConPTY, Win32 window, named pipes IPC — all coded, need hardware testing
 - **macOS keyboard**: UCKeyTranslate for international layouts (currently US ANSI only)
+- **Windows session listing**: `teru --list` needs FindFirstFileW for pipe enumeration
 
 ### Reporting issues
 
