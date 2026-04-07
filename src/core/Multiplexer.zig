@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -240,10 +241,12 @@ pub fn spawnPaneWithCommand(self: *Multiplexer, rows: u16, cols: u16, command: [
     var pty = try Pty.spawn(.{ .rows = rows, .cols = cols, .shell = command, .cwd = cwd });
     errdefer pty.deinit();
 
-    // Set PTY master to non-blocking
-    const flags = std.c.fcntl(pty.master, posix.F.GETFL);
-    if (flags < 0) return error.FcntlFailed;
-    _ = std.c.fcntl(pty.master, posix.F.SETFL, flags | compat.O_NONBLOCK);
+    // Set PTY master to non-blocking (Windows ConPTY uses PeekNamedPipe)
+    if (builtin.os.tag != .windows) {
+        const flags = std.c.fcntl(pty.master, posix.F.GETFL);
+        if (flags < 0) return error.FcntlFailed;
+        _ = std.c.fcntl(pty.master, posix.F.SETFL, flags | compat.O_NONBLOCK);
+    }
 
     var pane = Pane{
         .pty = pty,

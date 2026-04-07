@@ -40,7 +40,7 @@ pub const Node = struct {
     children: std.ArrayListUnmanaged(NodeId) = .empty,
 
     // Process info
-    pid: ?std.posix.pid_t = null,
+    pid: ?i32 = null,
     exit_code: ?u8 = null,
     started_at: i128,
     ended_at: ?i128 = null,
@@ -85,7 +85,7 @@ pub fn spawn(self: *ProcessGraph, opts: struct {
     name: []const u8,
     kind: NodeKind = .shell,
     parent: ?NodeId = null,
-    pid: ?std.posix.pid_t = null,
+    pid: ?i32 = null,
     workspace: u8 = 1,
     agent: ?AgentMeta = null,
 }) !NodeId {

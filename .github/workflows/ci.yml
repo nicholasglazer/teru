@@ -6,8 +6,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0-dev.3039+b490412cd
@@ -15,20 +13,63 @@ jobs:
         run: sudo apt-get install -y libxcb1-dev libxcb-shm0-dev libxkbcommon-dev libwayland-dev
       - run: zig build test
 
-  build:
+  build-linux:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: linux-x86_64
+            flags: ""
+          - name: linux-x86_64-x11
+            flags: "-Dwayland=false"
+          - name: linux-x86_64-wayland
+            flags: "-Dx11=false"
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0-dev.3039+b490412cd
       - name: Install deps
         run: sudo apt-get install -y libxcb1-dev libxcb-shm0-dev libxkbcommon-dev libwayland-dev
-      - run: zig build -Doptimize=ReleaseSafe
+      - name: Build
+        run: zig build -Doptimize=ReleaseSafe ${{ matrix.flags }}
       - run: strip zig-out/bin/teru
       - uses: actions/upload-artifact@v4
         with:
-          name: teru-linux-x86_64
+          name: teru-${{ matrix.name }}
+          path: zig-out/bin/teru
+
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0-dev.3039+b490412cd
+      - name: Build
+        run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teru-windows-x86_64
+          path: zig-out/bin/teru.exe
+
+  build-macos:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-13
+            name: macos-x86_64
+          - runner: macos-14
+            name: macos-aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0-dev.3039+b490412cd
+      - name: Build
+        run: zig build -Doptimize=ReleaseSafe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teru-${{ matrix.name }}
           path: zig-out/bin/teru

@@ -51,7 +51,7 @@ const Context = struct {
 socket_path: [socket_path_max]u8,
 socket_path_len: usize,
 socket_fd: posix.fd_t,
-client_fd: posix.fd_t, // connected Claude Code client (-1 if none)
+client_fd: i32, // connected Claude Code client (-1 if none)
 multiplexer: *Multiplexer,
 graph: *ProcessGraph,
 allocator: Allocator,
@@ -73,7 +73,7 @@ pub fn init(allocator: Allocator, mux: *Multiplexer, graph: *ProcessGraph) !Pane
     const path_len = path.len;
 
     const server = ipc.listen(path) catch return error.SocketFailed;
-    const sock = server.fd;
+    const sock = server.rawFd();
 
     var backend = PaneBackend{
         .socket_path = undefined,
@@ -91,7 +91,7 @@ pub fn init(allocator: Allocator, mux: *Multiplexer, graph: *ProcessGraph) !Pane
 
 pub fn deinit(self: *PaneBackend) void {
     if (self.client_fd >= 0) {
-        _ = posix.system.close(self.client_fd);
+        if (builtin.os.tag != .windows) _ = posix.system.close(self.client_fd);
         self.client_fd = -1;
     }
     _ = posix.system.close(self.socket_fd);
@@ -112,10 +112,11 @@ pub fn getSocketPath(self: *const PaneBackend) []const u8 {
 
 /// Non-blocking: accept new client, read NDJSON lines, dispatch.
 pub fn poll(self: *PaneBackend) void {
+    if (builtin.os.tag == .windows) return;
     // Accept new client if we don't have one
     if (self.client_fd < 0) {
-        if (ipc.accept(.{ .fd = self.socket_fd })) |client| {
-            self.client_fd = client.fd;
+        if (ipc.accept(ipc.IpcHandle.fromRaw(self.socket_fd))) |client| {
+            self.client_fd = client.rawFd();
             self.line_len = 0;
         }
     }
@@ -131,7 +132,7 @@ pub fn poll(self: *PaneBackend) void {
     }
     if (rc == 0) {
         // Client disconnected
-        _ = posix.system.close(self.client_fd);
+        if (builtin.os.tag != .windows) _ = posix.system.close(self.client_fd);
         self.client_fd = -1;
         self.line_len = 0;
         return;
@@ -495,6 +496,7 @@ fn pushContextExited(self: *PaneBackend, context_id: u64, exit_code: u8) void {
 // ── Helpers ──────────────────────────────────────────────────────
 
 fn sendNdjson(self: *PaneBackend, data: []const u8) void {
+    if (builtin.os.tag == .windows) return;
     if (self.client_fd < 0) return;
     _ = std.c.write(self.client_fd, data.ptr, data.len);
     const nl = [1]u8{'\n'};

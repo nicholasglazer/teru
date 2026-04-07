@@ -54,8 +54,8 @@ pub fn init(
         return error.PathTooLong;
     const path_len = path.len;
 
-    const server = ipc.listen(path) catch return error.SocketFailed;
-    const sock = server.fd;
+    const ipc_server = ipc.listen(path) catch return error.SocketFailed;
+    const sock = ipc_server.rawFd();
 
     var daemon = Daemon{
         .allocator = allocator,
@@ -87,7 +87,8 @@ pub fn run(self: *Daemon) void {
             break;
         }
 
-        // Build poll fd set
+        // Build poll fd set (POSIX only — Windows daemon returns Unsupported in init)
+        if (builtin.os.tag == .windows) return;
         var fds: [34]posix.pollfd = undefined; // listen + client + up to 32 PTYs
         var nfds: usize = 0;
 
@@ -178,14 +179,14 @@ pub fn getSocketPath(self: *const Daemon) []const u8 {
 // ── Client management ─────────────────────────────────────────────
 
 fn tryAcceptClient(self: *Daemon) void {
-    const client = ipc.accept(.{ .fd = self.socket_fd }) orelse return;
+    const client = ipc.accept(ipc.IpcHandle.fromRaw(self.socket_fd)) orelse return;
 
     // Only one client at a time — disconnect previous
     if (self.client_fd) |old| {
         _ = posix.system.close(old);
     }
 
-    self.client_fd = client.fd;
+    self.client_fd = client.rawFd();
 }
 
 fn handleClientData(self: *Daemon, recv_buf: []u8) void {
@@ -270,7 +271,7 @@ pub fn connectToSession(name: []const u8) !posix.fd_t {
     const path = sessionSocketPath(name, &path_buf) orelse return error.PathTooLong;
 
     const conn = ipc.connect(path) catch return error.ConnectFailed;
-    return conn.fd;
+    return conn.rawFd();
 }
 
 /// List active session names by scanning socket/pipe directory.

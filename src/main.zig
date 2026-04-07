@@ -43,14 +43,25 @@ const SignalManager = @import("core/SignalManager.zig");
 const Daemon = @import("server/daemon.zig");
 const daemon_proto = @import("server/protocol.zig");
 
-extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+const setenv = if (builtin.os.tag == .windows) struct {
+    fn f(_: [*:0]const u8, _: [*:0]const u8, _: c_int) c_int { return 0; }
+}.f else struct {
+    extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+}.setenv;
 
 const version = "0.3.5";
 
 const session_path = "/tmp/teru-session.bin";
 
 fn out(msg: []const u8) void {
-    _ = std.c.write(posix.STDOUT_FILENO, msg.ptr, msg.len);
+    if (builtin.os.tag == .windows) {
+        const k = struct {
+            extern "kernel32" fn GetStdHandle(n: u32) callconv(.c) *anyopaque;
+        };
+        _ = std.c.write(k.GetStdHandle(@bitCast(@as(i32, -11))), msg.ptr, msg.len);
+    } else {
+        _ = std.c.write(posix.STDOUT_FILENO, msg.ptr, msg.len);
+    }
 }
 
 fn outFmt(buf: []u8, comptime fmt: []const u8, args: anytype) void {
@@ -62,8 +73,9 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.gpa;
 
-    // Parse command line args
-    var args_iter = std.process.Args.Iterator.init(init.minimal.args);
+    // Parse command line args (initAllocator required on Windows; works everywhere)
+    var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer args_iter.deinit();
     _ = args_iter.next(); // skip argv[0]
 
     var mode_raw = false;
@@ -181,8 +193,9 @@ fn runDaemonMode(allocator: std.mem.Allocator, io: std.Io, session_name: []const
     outFmt(&buf, "[teru] Daemon {s} exited\n", .{session_name});
 }
 
-/// Attach to a running daemon session in TTY raw mode.
+/// Attach to a running daemon session in TTY raw mode (POSIX only).
 fn runSessionAttach(session_name: []const u8) !void {
+    if (builtin.os.tag == .windows) return error.Unsupported;
     const sock = Daemon.connectToSession(session_name) catch {
         var buf: [128]u8 = undefined;
         outFmt(&buf, "[teru] Session '{s}' not found\n", .{session_name});
@@ -427,14 +440,18 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
 
     // Keyboard input: xkbcommon translates XCB keycodes → UTF-8
     // Uses the LIVE X11 keymap (supports dvorak, colemak, any layout)
-    var keyboard = if (Keyboard != void) blk: {
-        // Try to get X11 connection info for layout query
+    var keyboard: ?Keyboard = if (Keyboard != void) blk: {
         const x11_info = win.getX11Info();
         if (x11_info) |info| {
             break :blk Keyboard.initFromX11(info.conn, info.root) catch
-                Keyboard.init() catch null;
+                (Keyboard.init() catch null);
         } else {
-            break :blk Keyboard.init() catch null;
+            const result = Keyboard.init();
+            // Handle both error-union and plain return (depends on platform)
+            break :blk if (@typeInfo(@TypeOf(result)) == .error_union)
+                result catch null
+            else
+                result;
         }
     } else null;
     defer if (Keyboard != void) {
@@ -448,6 +465,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     _ = &vi_mode;
     var ralt_held = false; // Right Alt tracked for pane manipulation shortcuts
     _ = &ralt_held;
+    var force_redraw: bool = false; // force framebuffer update (workspace switch, etc.)
+    _ = &force_redraw;
     var zoom_pending_resize: bool = false; // deferred grid resize after font zoom
     _ = &zoom_pending_resize;
     var zoom_timestamp: i128 = 0; // last zoom event time (ns)
@@ -805,6 +824,10 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                     if (action == .panes_changed) {
                                         const sz = win.getSize();
                                         mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                        // Force redraw — empty workspaces have no dirty grids
+                                        // but the status bar and background still need updating.
+                                        for (mux.panes.items) |*p| p.grid.dirty = true;
+                                        force_redraw = true;
                                     }
                                     if (action == .close_pane) {
                                         if (mux.getActivePane()) |pane| {
@@ -928,6 +951,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 if (action == .panes_changed) {
                                     const sz = win.getSize();
                                     mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                    for (mux.panes.items) |*p| p.grid.dirty = true;
+                                    force_redraw = true;
                                 }
                                 if (action == .split_vertical or action == .split_horizontal) {
                                     const dir: @import("tiling/LayoutEngine.zig").SplitDirection = if (action == .split_horizontal) .horizontal else .vertical;
@@ -981,6 +1006,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             if (action == .panes_changed) {
                                 const sz = win.getSize();
                                 mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                for (mux.panes.items) |*p| p.grid.dirty = true;
+                                force_redraw = true;
                             }
                             continue;
                         }
@@ -1577,7 +1604,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
         }
 
         // Check if any pane's grid is dirty
-        var any_dirty = had_output;
+        var any_dirty = had_output or force_redraw;
+        force_redraw = false;
         if (!any_dirty) {
             for (mux.panes.items) |*pane| {
                 if (pane.grid.dirty) {
@@ -1887,7 +1915,7 @@ fn runRawMode(allocator: std.mem.Allocator, io: std.Io) !void {
     var pty_inst = try Pty.spawn(.{ .rows = size.rows, .cols = size.cols });
     defer pty_inst.deinit();
 
-    const node_id = try graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pty_inst.child_pid });
+    const node_id = try graph.spawn(.{ .name = "shell", .kind = .shell, .pid = if (builtin.os.tag == .windows) null else pty_inst.child_pid });
 
     var sig = SignalManager.init(pty_inst.master, terminal.hostFd());
     sig.registerWinch();

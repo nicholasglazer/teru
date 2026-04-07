@@ -5,34 +5,87 @@ on:
       - 'v*'
 
 jobs:
-  build:
+  build-linux:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: linux-x86_64
+            flags: ""
+          - name: linux-x86_64-x11
+            flags: "-Dwayland=false"
+          - name: linux-x86_64-wayland
+            flags: "-Dx11=false"
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0-dev.3039+b490412cd
       - name: Install deps
         run: sudo apt-get install -y libxcb1-dev libxcb-shm0-dev libxkbcommon-dev libwayland-dev
       - name: Build
-        run: zig build -Doptimize=ReleaseSafe
-      - name: Strip
-        run: strip zig-out/bin/teru
+        run: zig build -Doptimize=ReleaseSafe ${{ matrix.flags }}
+      - run: strip zig-out/bin/teru
       - name: Package
         run: |
           mkdir -p dist
           cp zig-out/bin/teru dist/
           cp LICENSE README.md CHANGELOG.md dist/
-          tar czf teru-x86_64-linux.tar.gz -C dist .
+          tar czf teru-${{ matrix.name }}.tar.gz -C dist .
       - uses: actions/upload-artifact@v4
         with:
-          name: teru-x86_64-linux
-          path: teru-x86_64-linux.tar.gz
+          name: teru-${{ matrix.name }}
+          path: teru-${{ matrix.name }}.tar.gz
+
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0-dev.3039+b490412cd
+      - name: Cross-compile for Windows
+        run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp zig-out/bin/teru.exe dist/
+          cp LICENSE README.md CHANGELOG.md dist/
+          cd dist && zip ../teru-windows-x86_64.zip *
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teru-windows-x86_64
+          path: teru-windows-x86_64.zip
+
+  build-macos:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-13
+            name: macos-x86_64
+          - runner: macos-14
+            name: macos-aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0-dev.3039+b490412cd
+      - name: Build
+        run: zig build -Doptimize=ReleaseSafe
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp zig-out/bin/teru dist/
+          cp LICENSE README.md CHANGELOG.md dist/
+          tar czf teru-${{ matrix.name }}.tar.gz -C dist .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teru-${{ matrix.name }}
+          path: teru-${{ matrix.name }}.tar.gz
 
   release:
-    needs: build
+    needs: [build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -41,5 +94,11 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: teru-x86_64-linux/teru-x86_64-linux.tar.gz
+          files: |
+            teru-linux-x86_64/teru-linux-x86_64.tar.gz
+            teru-linux-x86_64-x11/teru-linux-x86_64-x11.tar.gz
+            teru-linux-x86_64-wayland/teru-linux-x86_64-wayland.tar.gz
+            teru-windows-x86_64/teru-windows-x86_64.zip
+            teru-macos-x86_64/teru-macos-x86_64.tar.gz
+            teru-macos-aarch64/teru-macos-aarch64.tar.gz
           generate_release_notes: true

@@ -16,6 +16,14 @@ const Allocator = std.mem.Allocator;
 // Platform-specific imports
 const linux = if (builtin.os.tag == .linux) std.os.linux else undefined;
 
+// Win32 externs not in Zig 0.16's kernel32 bindings
+const win32 = if (builtin.os.tag == .windows) struct {
+    extern "kernel32" fn QueryPerformanceFrequency(lpFrequency: *i64) callconv(.c) c_int;
+    extern "kernel32" fn QueryPerformanceCounter(lpPerformanceCount: *i64) callconv(.c) c_int;
+    extern "kernel32" fn GetCurrentProcessId() callconv(.c) u32;
+    extern "kernel32" fn Sleep(dwMilliseconds: u32) callconv(.c) void;
+} else undefined;
+
 // ── In-memory stream (replaces removed std.io.fixedBufferStream) ──
 
 /// Minimal in-memory writer that provides writeAll/writeInt/writeByte.
@@ -133,12 +141,10 @@ pub fn monotonicNow() i128 {
 
 fn clockGettime(clock: anytype) i128 {
     if (builtin.os.tag == .windows) {
-        // Windows: QueryPerformanceCounter (monotonic, ~100ns resolution)
-        const windows = std.os.windows;
         var freq: i64 = undefined;
         var counter: i64 = undefined;
-        _ = windows.kernel32.QueryPerformanceFrequency(&freq);
-        _ = windows.kernel32.QueryPerformanceCounter(&counter);
+        _ = win32.QueryPerformanceFrequency(&freq);
+        _ = win32.QueryPerformanceCounter(&counter);
         const ns_per_count = @divFloor(@as(i128, 1_000_000_000), @as(i128, freq));
         return @as(i128, counter) * ns_per_count;
     } else {
@@ -153,7 +159,7 @@ fn clockGettime(clock: anytype) i128 {
 pub fn sleepNs(ns: u64) void {
     if (builtin.os.tag == .windows) {
         const ms: u32 = @intCast(@max(1, ns / 1_000_000));
-        std.os.windows.kernel32.Sleep(ms);
+        win32.Sleep(ms);
     } else {
         const req = std.c.timespec{
             .sec = @intCast(ns / std.time.ns_per_s),
@@ -166,7 +172,7 @@ pub fn sleepNs(ns: u64) void {
 /// Portable getpid.
 pub fn getPid() i32 {
     if (builtin.os.tag == .windows) {
-        return @intCast(std.os.windows.kernel32.GetCurrentProcessId());
+        return @intCast(win32.GetCurrentProcessId());
     } else if (builtin.os.tag == .linux) {
         return @intCast(std.os.linux.getpid());
     } else {

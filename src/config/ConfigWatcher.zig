@@ -12,7 +12,7 @@ const compat = @import("../compat.zig");
 
 const ConfigWatcher = @This();
 
-fd: posix.fd_t,
+fd: if (builtin.os.tag == .windows) i32 else posix.fd_t,
 wd: i32, // watch descriptor (inotify) or 0 (kqueue/poll)
 last_mtime: i128 = 0, // for polling fallback
 
@@ -42,9 +42,10 @@ pub fn deinit(self: *ConfigWatcher) void {
             _ = linux.inotify_rm_watch(@intCast(self.fd), self.wd);
             _ = posix.system.close(self.fd);
         },
-        else => {
+        .macos => {
             if (self.fd >= 0) _ = posix.system.close(self.fd);
         },
+        else => {},
     }
 }
 
@@ -152,6 +153,7 @@ fn initPolling() ?ConfigWatcher {
 }
 
 fn pollStat(self: *ConfigWatcher) bool {
+    if (builtin.os.tag == .windows) return false; // TODO: GetFileAttributesExW
     const home = compat.getenv("HOME") orelse return false;
     var path_buf: [512:0]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/.config/teru/teru.conf", .{home}) catch return false;

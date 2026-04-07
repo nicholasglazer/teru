@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const posix = std.posix;
 const compat = @import("../compat.zig");
@@ -48,9 +49,12 @@ pub fn init(allocator: Allocator, rows: u16, cols: u16, id: u64, spawn_config: S
     errdefer pty.deinit();
 
     // Set PTY master to non-blocking for event-loop polling
-    const flags = std.c.fcntl(pty.master, posix.F.GETFL);
-    if (flags < 0) return error.FcntlFailed;
-    _ = std.c.fcntl(pty.master, posix.F.SETFL, flags | compat.O_NONBLOCK);
+    // (Windows ConPTY uses PeekNamedPipe instead — no fcntl needed)
+    if (builtin.os.tag != .windows) {
+        const flags = std.c.fcntl(pty.master, posix.F.GETFL);
+        if (flags < 0) return error.FcntlFailed;
+        _ = std.c.fcntl(pty.master, posix.F.SETFL, flags | compat.O_NONBLOCK);
+    }
 
     // VtParser needs a *Grid pointer. Since Pane will be moved by
     // ArrayList.append, we set grid to undefined here. Caller MUST

@@ -5,6 +5,7 @@
 //! into these helpers rather than inlining the logic.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 const Io = std.Io;
 const Multiplexer = @import("Multiplexer.zig");
@@ -53,6 +54,7 @@ pub const MuxAction = enum {
 // ── Mux command dispatch ─────────────────────────────────────────
 
 fn writeMsg(msg: []const u8) void {
+    if (builtin.os.tag == .windows) return;
     _ = std.c.write(posix.STDOUT_FILENO, msg.ptr, msg.len);
 }
 

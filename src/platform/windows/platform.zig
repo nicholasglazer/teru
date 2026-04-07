@@ -243,7 +243,7 @@ fn GET_Y_LPARAM(lp: LPARAM) i32 {
 
 /// Extract wheel delta from wParam high word (WM_MOUSEWHEEL).
 fn GET_WHEEL_DELTA_WPARAM(wp: WPARAM) i16 {
-    return @as(i16, @truncate(@as(u64, @intCast(wp)) >> 16));
+    return @bitCast(@as(u16, @truncate(wp >> 16)));
 }
 
 // ── Shared types (from platform/types.zig) ──────────────────────────

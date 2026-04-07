@@ -5,26 +5,28 @@
 //! PTY master fd and host fd that the handler needs for the TIOCSWINSZ ioctl.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 
 const SignalManager = @This();
 
 // ── Module-level state (signal handlers can only access globals) ──
 
-var g_pty_master_fd: posix.fd_t = -1;
-var g_host_fd: posix.fd_t = posix.STDIN_FILENO;
+var g_pty_master_fd: i32 = -1;
+var g_host_fd: i32 = 0; // STDIN_FILENO
 
 // ── Instance (zero-size, provides a namespace for init/update) ──
 
 /// Initialize the signal manager with PTY and host file descriptors.
-pub fn init(pty_master_fd: posix.fd_t, host_fd: posix.fd_t) SignalManager {
+pub fn init(pty_master_fd: i32, host_fd: i32) SignalManager {
     g_pty_master_fd = pty_master_fd;
     g_host_fd = host_fd;
     return .{};
 }
 
-/// Register the SIGWINCH handler. Call after init().
+/// Register the SIGWINCH handler. Call after init(). No-op on Windows.
 pub fn registerWinch(_: SignalManager) void {
+    if (builtin.os.tag == .windows) return;
     const SA_RESTART = 0x10000000;
     const sa = posix.Sigaction{
         .handler = .{ .handler = handleSigwinch },
@@ -35,12 +37,12 @@ pub fn registerWinch(_: SignalManager) void {
 }
 
 /// Update the PTY master fd (e.g. when active pane changes).
-pub fn updatePtyFd(_: SignalManager, fd: posix.fd_t) void {
+pub fn updatePtyFd(_: SignalManager, fd: i32) void {
     g_pty_master_fd = fd;
 }
 
 /// Update the host fd.
-pub fn updateHostFd(_: SignalManager, fd: posix.fd_t) void {
+pub fn updateHostFd(_: SignalManager, fd: i32) void {
     g_host_fd = fd;
 }
 
@@ -58,8 +60,8 @@ fn handleSigwinch(_: posix.SIG) callconv(.c) void {
 test "SignalManager: init sets fds" {
     const sm = SignalManager.init(42, 7);
     _ = sm;
-    try std.testing.expectEqual(@as(posix.fd_t, 42), g_pty_master_fd);
-    try std.testing.expectEqual(@as(posix.fd_t, 7), g_host_fd);
+    try std.testing.expectEqual(@as(i32, 42), g_pty_master_fd);
+    try std.testing.expectEqual(@as(i32, 7), g_host_fd);
 }
 
 test "SignalManager: updatePtyFd" {

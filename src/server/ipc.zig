@@ -27,6 +27,15 @@ pub const IpcHandle = if (builtin.os.tag == .windows) WindowsHandle else PosixHa
 const PosixHandle = struct {
     fd: i32,
 
+    pub fn fromRaw(raw: i32) PosixHandle {
+        return .{ .fd = raw };
+    }
+
+    /// Raw platform fd (i32 on POSIX).
+    pub fn rawFd(self: PosixHandle) i32 {
+        return self.fd;
+    }
+
     pub fn close(self: PosixHandle) void {
         _ = posix.system.close(self.fd);
     }
@@ -44,6 +53,15 @@ const PosixHandle = struct {
 
 const WindowsHandle = struct {
     handle: HANDLE,
+
+    pub fn fromRaw(raw: anytype) WindowsHandle {
+        return .{ .handle = if (@TypeOf(raw) == HANDLE) raw else @ptrFromInt(@as(usize, @intCast(raw))) };
+    }
+
+    /// Raw platform handle (HANDLE = *anyopaque on Windows).
+    pub fn rawFd(self: WindowsHandle) HANDLE {
+        return self.handle;
+    }
 
     pub fn close(self: WindowsHandle) void {
         _ = CloseHandle(self.handle);

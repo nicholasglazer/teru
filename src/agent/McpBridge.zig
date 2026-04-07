@@ -18,6 +18,26 @@ const ipc = @import("../server/ipc.zig");
 const max_line: usize = 65536;
 const max_response: usize = 65536;
 
+/// Portable stdin/stdout for std.c.read / std.c.write.
+fn stdinFd() std.posix.fd_t {
+    if (builtin.os.tag == .windows) {
+        const k = struct {
+            extern "kernel32" fn GetStdHandle(n: u32) callconv(.c) *anyopaque;
+        };
+        return k.GetStdHandle(@bitCast(@as(i32, -10)));
+    }
+    return 0;
+}
+fn stdoutFd() std.posix.fd_t {
+    if (builtin.os.tag == .windows) {
+        const k = struct {
+            extern "kernel32" fn GetStdHandle(n: u32) callconv(.c) *anyopaque;
+        };
+        return k.GetStdHandle(@bitCast(@as(i32, -11)));
+    }
+    return 1;
+}
+
 // ── Entry point ──────────────────────────────────────────────────
 
 pub fn run(io: std.Io) !void {
@@ -25,7 +45,7 @@ pub fn run(io: std.Io) !void {
 
     const socket_path = findSocket() orelse {
         const msg = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"No teru MCP socket found. Set TERU_MCP_SOCKET or run teru first.\"},\"id\":null}\n";
-        _ = std.c.write(1, msg.ptr, msg.len);
+        _ = std.c.write(stdoutFd(), msg.ptr, msg.len);
         return error.NoSocket;
     };
 
@@ -47,7 +67,7 @@ pub fn run(io: std.Io) !void {
         // Connect to teru's MCP server
         var conn = connectSocket(socket_path) orelse {
             const err_msg = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Cannot connect to teru socket\"},\"id\":null}\n";
-            _ = std.c.write(1, err_msg.ptr, err_msg.len);
+            _ = std.c.write(stdoutFd(), err_msg.ptr, err_msg.len);
             continue;
         };
 
@@ -58,8 +78,8 @@ pub fn run(io: std.Io) !void {
         var resp_buf: [max_response]u8 = undefined;
         if (readHttpResponse(&conn, &resp_buf)) |json_body| {
             // Write JSON body + newline to stdout
-            _ = std.c.write(1, json_body.ptr, json_body.len);
-            _ = std.c.write(1, "\n", 1);
+            _ = std.c.write(stdoutFd(), json_body.ptr, json_body.len);
+            _ = std.c.write(stdoutFd(), "\n", 1);
         }
 
         conn.close();
@@ -71,7 +91,7 @@ pub fn run(io: std.Io) !void {
 fn readLine(buf: []u8) ?[]const u8 {
     var pos: usize = 0;
     while (pos < buf.len) {
-        const rc = std.c.read(0, buf[pos..].ptr, 1);
+        const rc = std.c.read(stdinFd(), buf[pos..].ptr, 1);
         if (rc <= 0) {
             // EOF or error — return what we have, or null if nothing
             if (pos == 0) return null;

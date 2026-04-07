@@ -55,7 +55,7 @@ pub fn init(allocator: Allocator, mux: *Multiplexer, graph: *ProcessGraph) !McpS
     const path_len = path.len;
 
     const ipc_server = ipc.listen(path) catch return error.SocketFailed;
-    const sock = ipc_server.fd;
+    const sock = ipc_server.rawFd();
 
     var server = McpServer{
         .socket_path = undefined,
@@ -94,9 +94,9 @@ pub fn poll(self: *McpServer) void {
     if (!self.running) return;
 
     // Non-blocking accept
-    const client = ipc.accept(.{ .fd = self.socket_fd }) orelse return;
+    const client = ipc.accept(ipc.IpcHandle.fromRaw(self.socket_fd)) orelse return;
 
-    self.handleRequest(client.fd);
+    self.handleRequest(client.rawFd());
     client.close();
 }
 

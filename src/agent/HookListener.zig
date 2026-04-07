@@ -67,7 +67,7 @@ pub fn init(allocator: std.mem.Allocator) !HookListener {
 
     return .{
         .allocator = allocator,
-        .server_fd = server.fd,
+        .server_fd = server.rawFd(),
         .socket_path = path_buf,
         .socket_path_len = path_len,
     };
@@ -98,8 +98,8 @@ pub fn getSocketPath(self: *const HookListener) []const u8 {
 /// Accept and process one pending connection. Non-blocking.
 pub fn poll(self: *HookListener) void {
     // Accept connection
-    const client = ipc.accept(.{ .fd = self.server_fd }) orelse return;
-    const client_fd = client.fd;
+    const client = ipc.accept(ipc.IpcHandle.fromRaw(self.server_fd)) orelse return;
+    const client_fd = client.rawFd();
     defer client.close();
 
     // Read HTTP request (small — hook payloads are typically <2KB)

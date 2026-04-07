@@ -43,7 +43,7 @@ allocator: std.mem.Allocator,
 
 /// File descriptor for sending responses back to the PTY (DA1, DSR, etc.)
 /// Set to the PTY master fd by the Pane after init. -1 = no responses.
-response_fd: std.posix.fd_t = -1,
+response_fd: i32 = -1,
 
 /// CSI parameter accumulation
 params: [MAX_PARAMS]u16 = [_]u16{0} ** MAX_PARAMS,
@@ -111,6 +111,7 @@ pub fn init(allocator: std.mem.Allocator, grid: *Grid) VtParser {
 /// creation, so response bytes written here are delivered to the shell's
 /// stdin without being echoed back to the master as output.
 fn sendResponse(self: *const VtParser, data: []const u8) void {
+    if (@import("builtin").os.tag == .windows) return; // ConPTY handles DA1/DSR internally
     if (self.response_fd >= 0) {
         _ = std.c.write(self.response_fd, data.ptr, data.len);
     }
