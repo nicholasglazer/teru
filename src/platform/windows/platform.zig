@@ -117,20 +117,30 @@ const CS_OWNDC: UINT = 0x0020;
 
 const WS_OVERLAPPEDWINDOW: DWORD = 0x00CF0000;
 const WS_VISIBLE: DWORD = 0x10000000;
+const WS_EX_LAYERED: DWORD = 0x00080000;
 
 const CW_USEDEFAULT: INT = @bitCast(@as(u32, 0x80000000));
 
 const WM_DESTROY: UINT = 0x0002;
 const WM_SIZE: UINT = 0x0005;
+const WM_SETFOCUS: UINT = 0x0007;
+const WM_KILLFOCUS: UINT = 0x0008;
 const WM_PAINT: UINT = 0x000F;
 const WM_CLOSE: UINT = 0x0010;
 const WM_QUIT: UINT = 0x0012;
 const WM_KEYDOWN: UINT = 0x0100;
 const WM_KEYUP: UINT = 0x0101;
+const WM_CHAR: UINT = 0x0102;
 const WM_SYSKEYDOWN: UINT = 0x0104;
 const WM_SYSKEYUP: UINT = 0x0105;
-const WM_SETFOCUS: UINT = 0x0007;
-const WM_KILLFOCUS: UINT = 0x0008;
+const WM_MOUSEMOVE: UINT = 0x0200;
+const WM_LBUTTONDOWN: UINT = 0x0201;
+const WM_LBUTTONUP: UINT = 0x0202;
+const WM_RBUTTONDOWN: UINT = 0x0204;
+const WM_RBUTTONUP: UINT = 0x0205;
+const WM_MBUTTONDOWN: UINT = 0x0207;
+const WM_MBUTTONUP: UINT = 0x0208;
+const WM_MOUSEWHEEL: UINT = 0x020A;
 
 const PM_REMOVE: UINT = 0x0001;
 
@@ -142,6 +152,12 @@ const SRCCOPY: DWORD = 0x00CC0020;
 const BI_RGB: DWORD = 0;
 
 const SW_SHOW: INT = 5;
+
+// SetLayeredWindowAttributes flags
+const LWA_ALPHA: DWORD = 0x00000002;
+
+// WHEEL_DELTA for WM_MOUSEWHEEL
+const WHEEL_DELTA: i16 = 120;
 
 // ── Win32 extern functions ──────────────────────────────────────────
 
@@ -177,6 +193,12 @@ extern "user32" fn EndPaint(hWnd: HWND, lpPaint: *const PAINTSTRUCT) callconv(.c
 extern "user32" fn LoadCursorW(hInstance: HINSTANCE, lpCursorName: LPCWSTR) callconv(.c) HCURSOR;
 extern "user32" fn SetWindowLongPtrW(hWnd: HWND, nIndex: INT, dwNewLong: LONG_PTR) callconv(.c) LONG_PTR;
 extern "user32" fn GetWindowLongPtrW(hWnd: HWND, nIndex: INT) callconv(.c) LONG_PTR;
+extern "user32" fn SetWindowTextW(hWnd: HWND, lpString: LPCWSTR) callconv(.c) BOOL;
+extern "user32" fn SetLayeredWindowAttributes(hWnd: HWND, crKey: DWORD, bAlpha: BYTE, dwFlags: DWORD) callconv(.c) BOOL;
+extern "user32" fn SetCursor(hCursor: HCURSOR) callconv(.c) HCURSOR;
+extern "user32" fn GetKeyState(nVirtKey: INT) callconv(.c) i16;
+extern "user32" fn SetWindowLongW(hWnd: HWND, nIndex: INT, dwNewLong: LONG) callconv(.c) LONG;
+extern "user32" fn GetWindowLongW(hWnd: HWND, nIndex: INT) callconv(.c) LONG;
 
 extern "gdi32" fn StretchDIBits(
     hdc: HDC,
@@ -196,20 +218,43 @@ extern "gdi32" fn StretchDIBits(
 extern "gdi32" fn GetDC(hWnd: HWND) callconv(.c) HDC;
 extern "gdi32" fn ReleaseDC(hWnd: HWND, hDC: HDC) callconv(.c) INT;
 
+// ── Win32 helper constants ──────────────────────────────────────────
+
 // GWLP_USERDATA
 const GWLP_USERDATA: INT = -21;
+
+// GWL_EXSTYLE
+const GWL_EXSTYLE: INT = -20;
 
 // IDC_ARROW = MAKEINTRESOURCE(32512)
 fn IDC_ARROW() LPCWSTR {
     return @ptrFromInt(32512);
 }
 
+/// Extract signed x-coordinate from lParam (low word, sign-extended).
+fn GET_X_LPARAM(lp: LPARAM) i32 {
+    return @as(i16, @truncate(@as(i64, @intCast(lp))));
+}
+
+/// Extract signed y-coordinate from lParam (high word, sign-extended).
+fn GET_Y_LPARAM(lp: LPARAM) i32 {
+    return @as(i16, @truncate(@as(i64, @intCast(lp)) >> 16));
+}
+
+/// Extract wheel delta from wParam high word (WM_MOUSEWHEEL).
+fn GET_WHEEL_DELTA_WPARAM(wp: WPARAM) i16 {
+    return @as(i16, @truncate(@as(u64, @intCast(wp)) >> 16));
+}
+
 // ── Shared types (from platform/types.zig) ──────────────────────────
 
 const types = @import("../types.zig");
 pub const KeyEvent = types.KeyEvent;
+pub const MouseButton = types.MouseButton;
+pub const MouseEvent = types.MouseEvent;
 pub const Event = types.Event;
 pub const Size = types.Size;
+pub const X11Info = types.X11Info;
 
 // ── Win32 window ────────────────────────────────────────────────────
 
@@ -225,6 +270,9 @@ pub const Win32Window = struct {
     hwnd: HWND,
     hinstance: HINSTANCE,
     state: *WindowState,
+    cursor_visible: bool,
+    blank_cursor: HCURSOR,
+    arrow_cursor: HCURSOR,
 
     // Static allocator for WindowState (one per window, freed on deinit)
     var state_storage: ?*WindowState = null;
@@ -232,7 +280,7 @@ pub const Win32Window = struct {
     pub fn init(width: u32, height: u32, title: []const u8) !Win32Window {
         const hinstance = GetModuleHandleW(null);
 
-        // Convert title to wide string (UTF-16)
+        // Convert title to wide string (UTF-16, ASCII subset)
         var wide_title: [256:0]u16 = [_:0]u16{0} ** 256;
         const len = @min(title.len, 255);
         for (0..len) |i| {
@@ -264,9 +312,9 @@ pub const Win32Window = struct {
         };
         state_storage = state;
 
-        // Create window
+        // Create window with WS_EX_LAYERED so setOpacity works
         const hwnd = CreateWindowExW(
-            0, // dwExStyle
+            WS_EX_LAYERED,
             class_name,
             @ptrCast(&wide_title),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
@@ -285,13 +333,21 @@ pub const Win32Window = struct {
         // Store state pointer in window's GWLP_USERDATA
         _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, @intCast(@intFromPtr(state)));
 
+        // Default to fully opaque
+        _ = SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+
         _ = ShowWindow(hwnd, SW_SHOW);
         _ = UpdateWindow(hwnd);
+
+        const arrow = LoadCursorW(null, IDC_ARROW());
 
         return Win32Window{
             .hwnd = hwnd,
             .hinstance = hinstance,
             .state = state,
+            .cursor_visible = true,
+            .blank_cursor = null, // TODO: create blank cursor for hideCursor on Windows
+            .arrow_cursor = arrow,
         };
     }
 
@@ -367,6 +423,46 @@ pub const Win32Window = struct {
         return .{ .width = self.state.width, .height = self.state.height };
     }
 
+    /// Set window opacity (0.0 = transparent, 1.0 = fully opaque).
+    /// Requires WS_EX_LAYERED extended style set at window creation.
+    pub fn setOpacity(self: *Win32Window, opacity: f32) void {
+        const alpha: u8 = @intFromFloat(@max(0.0, @min(1.0, opacity)) * 255.0);
+        _ = SetLayeredWindowAttributes(self.hwnd, 0, alpha, LWA_ALPHA);
+    }
+
+    /// Set window title. Converts UTF-8 to UTF-16 (ASCII subset).
+    pub fn setTitle(self: *Win32Window, title: []const u8) void {
+        var wide_title: [256:0]u16 = [_:0]u16{0} ** 256;
+        const len = @min(title.len, 255);
+        for (0..len) |i| {
+            // Handle ASCII subset; non-ASCII bytes become '?'
+            wide_title[i] = if (title[i] < 128) title[i] else '?';
+        }
+        wide_title[len] = 0;
+        _ = SetWindowTextW(self.hwnd, @ptrCast(&wide_title));
+    }
+
+    /// Hide the mouse cursor over this window.
+    pub fn hideCursor(self: *Win32Window) void {
+        if (!self.cursor_visible) return;
+        self.cursor_visible = false;
+        // Set cursor to null (blank) -- Win32 hides cursor when null is passed
+        _ = SetCursor(null);
+        // TODO: create a blank (1x1 transparent) cursor resource for robust hiding
+    }
+
+    /// Show the mouse cursor over this window.
+    pub fn showCursor(self: *Win32Window) void {
+        if (self.cursor_visible) return;
+        self.cursor_visible = true;
+        _ = SetCursor(self.arrow_cursor);
+    }
+
+    /// Get X11 connection info. Always null on Windows.
+    pub fn getX11Info(_: *const Win32Window) ?X11Info {
+        return null;
+    }
+
     // ── WndProc callback ────────────────────────────────────────────
 
     fn wndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.c) LRESULT {
@@ -386,8 +482,9 @@ pub const Win32Window = struct {
                 return 0;
             },
             WM_SIZE => {
-                const new_w: u32 = @truncate(@as(usize, @bitCast(lparam)));
-                const new_h: u32 = @truncate(@as(usize, @bitCast(lparam)) >> 16);
+                const lp_usize: usize = @bitCast(lparam);
+                const new_w: u32 = @truncate(lp_usize);
+                const new_h: u32 = @truncate(lp_usize >> 16);
                 if (new_w != state.width or new_h != state.height) {
                     state.width = new_w;
                     state.height = new_h;
@@ -395,6 +492,8 @@ pub const Win32Window = struct {
                 }
                 return 0;
             },
+
+            // ── Keyboard ────────────────────────────────────────────
             WM_KEYDOWN, WM_SYSKEYDOWN => {
                 const modifiers = getKeyModifiers();
                 state.pending_event = .{ .key_press = .{
@@ -411,6 +510,105 @@ pub const Win32Window = struct {
                 } };
                 return 0;
             },
+
+            // ── Mouse buttons ───────────────────────────────────────
+            WM_LBUTTONDOWN => {
+                const mx = GET_X_LPARAM(lparam);
+                const my = GET_Y_LPARAM(lparam);
+                state.pending_event = .{ .mouse_press = .{
+                    .x = if (mx >= 0) @intCast(mx) else 0,
+                    .y = if (my >= 0) @intCast(my) else 0,
+                    .button = .left,
+                    .modifiers = getKeyModifiers(),
+                } };
+                return 0;
+            },
+            WM_LBUTTONUP => {
+                const mx = GET_X_LPARAM(lparam);
+                const my = GET_Y_LPARAM(lparam);
+                state.pending_event = .{ .mouse_release = .{
+                    .x = if (mx >= 0) @intCast(mx) else 0,
+                    .y = if (my >= 0) @intCast(my) else 0,
+                    .button = .left,
+                    .modifiers = getKeyModifiers(),
+                } };
+                return 0;
+            },
+            WM_RBUTTONDOWN => {
+                const mx = GET_X_LPARAM(lparam);
+                const my = GET_Y_LPARAM(lparam);
+                state.pending_event = .{ .mouse_press = .{
+                    .x = if (mx >= 0) @intCast(mx) else 0,
+                    .y = if (my >= 0) @intCast(my) else 0,
+                    .button = .right,
+                    .modifiers = getKeyModifiers(),
+                } };
+                return 0;
+            },
+            WM_RBUTTONUP => {
+                const mx = GET_X_LPARAM(lparam);
+                const my = GET_Y_LPARAM(lparam);
+                state.pending_event = .{ .mouse_release = .{
+                    .x = if (mx >= 0) @intCast(mx) else 0,
+                    .y = if (my >= 0) @intCast(my) else 0,
+                    .button = .right,
+                    .modifiers = getKeyModifiers(),
+                } };
+                return 0;
+            },
+            WM_MBUTTONDOWN => {
+                const mx = GET_X_LPARAM(lparam);
+                const my = GET_Y_LPARAM(lparam);
+                state.pending_event = .{ .mouse_press = .{
+                    .x = if (mx >= 0) @intCast(mx) else 0,
+                    .y = if (my >= 0) @intCast(my) else 0,
+                    .button = .middle,
+                    .modifiers = getKeyModifiers(),
+                } };
+                return 0;
+            },
+            WM_MBUTTONUP => {
+                const mx = GET_X_LPARAM(lparam);
+                const my = GET_Y_LPARAM(lparam);
+                state.pending_event = .{ .mouse_release = .{
+                    .x = if (mx >= 0) @intCast(mx) else 0,
+                    .y = if (my >= 0) @intCast(my) else 0,
+                    .button = .middle,
+                    .modifiers = getKeyModifiers(),
+                } };
+                return 0;
+            },
+
+            // ── Mouse wheel ─────────────────────────────────────────
+            WM_MOUSEWHEEL => {
+                const delta = GET_WHEEL_DELTA_WPARAM(wparam);
+                const mx = GET_X_LPARAM(lparam);
+                const my = GET_Y_LPARAM(lparam);
+                // Note: WM_MOUSEWHEEL coords are screen-relative, not client-relative.
+                // TODO: convert to client coords via ScreenToClient on Windows
+                const button: MouseButton = if (delta > 0) .scroll_up else .scroll_down;
+                state.pending_event = .{ .mouse_press = .{
+                    .x = if (mx >= 0) @intCast(mx) else 0,
+                    .y = if (my >= 0) @intCast(my) else 0,
+                    .button = button,
+                    .modifiers = getKeyModifiers(),
+                } };
+                return 0;
+            },
+
+            // ── Mouse motion ────────────────────────────────────────
+            WM_MOUSEMOVE => {
+                const mx = GET_X_LPARAM(lparam);
+                const my = GET_Y_LPARAM(lparam);
+                state.pending_event = .{ .mouse_motion = .{
+                    .x = if (mx >= 0) @intCast(mx) else 0,
+                    .y = if (my >= 0) @intCast(my) else 0,
+                    .modifiers = getKeyModifiers(),
+                } };
+                return 0;
+            },
+
+            // ── Focus ───────────────────────────────────────────────
             WM_SETFOCUS => {
                 state.pending_event = .focus_in;
                 return 0;
@@ -419,6 +617,8 @@ pub const Win32Window = struct {
                 state.pending_event = .focus_out;
                 return 0;
             },
+
+            // ── Paint ───────────────────────────────────────────────
             WM_PAINT => {
                 var ps: PAINTSTRUCT = .{};
                 _ = BeginPaint(hwnd, &ps);
@@ -426,6 +626,7 @@ pub const Win32Window = struct {
                 state.pending_event = .expose;
                 return 0;
             },
+
             else => return DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
@@ -442,14 +643,12 @@ pub const Win32Window = struct {
     }
 
     fn getKeyStateDown(vk: INT) bool {
-        const state = GetKeyState(vk);
-        return (state & @as(i16, -0x7FFF - 1)) != 0; // high bit test
+        const s = GetKeyState(vk);
+        return (s & @as(i16, -0x7FFF - 1)) != 0; // high bit test
     }
 };
 
-extern "user32" fn GetKeyState(nVirtKey: INT) callconv(.c) i16;
-
-// ── Platform wrapper (single-backend, matches linux Platform shape) ─
+// ── Platform wrapper (single-backend, matches Linux Platform shape) ─
 
 pub const Platform = union(enum) {
     win32: Win32Window,
@@ -478,7 +677,37 @@ pub const Platform = union(enum) {
 
     pub fn getSize(self: *const Platform) Size {
         return switch (self.*) {
-            .win32 => |*w| .{ .width = w.state.width, .height = w.state.height },
+            .win32 => |*w| w.getSize(),
+        };
+    }
+
+    pub fn setOpacity(self: *Platform, opacity: f32) void {
+        switch (self.*) {
+            .win32 => |*w| w.setOpacity(opacity),
+        }
+    }
+
+    pub fn setTitle(self: *Platform, title: []const u8) void {
+        switch (self.*) {
+            .win32 => |*w| w.setTitle(title),
+        }
+    }
+
+    pub fn hideCursor(self: *Platform) void {
+        switch (self.*) {
+            .win32 => |*w| w.hideCursor(),
+        }
+    }
+
+    pub fn showCursor(self: *Platform) void {
+        switch (self.*) {
+            .win32 => |*w| w.showCursor(),
+        }
+    }
+
+    pub fn getX11Info(self: *const Platform) ?X11Info {
+        return switch (self.*) {
+            .win32 => |*w| w.getX11Info(),
         };
     }
 };

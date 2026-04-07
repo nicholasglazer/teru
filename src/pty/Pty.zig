@@ -1,6 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
-const linux = std.os.linux;
 const compat = @import("../compat.zig");
 
 const Pty = @This();
@@ -21,8 +21,10 @@ pub const SpawnOptions = struct {
 pub fn spawn(opts: SpawnOptions) !Pty {
     const shell = opts.shell orelse getDefaultShell();
 
-    // Open pseudoterminal master
-    const master = try posix.openatZ(posix.AT.FDCWD, "/dev/ptmx", .{ .ACCMODE = .RDWR, .NOCTTY = true }, 0);
+    // Open pseudoterminal master (posix_openpt works on both Linux and macOS)
+    const pt_flags: u32 = @bitCast(posix.O{ .ACCMODE = .RDWR, .NOCTTY = true });
+    const master = posix_openpt(@intCast(pt_flags));
+    if (master < 0) return error.OpenPtFailed;
     errdefer _ = posix.system.close(master);
 
     // Grant and unlock slave
@@ -42,8 +44,7 @@ pub fn spawn(opts: SpawnOptions) !Pty {
     _ = posix.system.ioctl(master, posix.T.IOCSWINSZ, @intFromPtr(&ws));
 
     // Fork child process for the shell
-    const fork_rc = linux.fork();
-    const fork_pid: isize = @bitCast(fork_rc);
+    const fork_pid = compat.posixFork();
     if (fork_pid < 0) return error.ForkFailed;
 
     if (fork_pid == 0) {
@@ -55,7 +56,7 @@ pub fn spawn(opts: SpawnOptions) !Pty {
 
         // Open slave as controlling terminal
         const slave = posix.openatZ(posix.AT.FDCWD, slave_path, .{ .ACCMODE = .RDWR }, 0) catch {
-            linux.exit(1);
+            compat.posixExit(1);
         };
 
         // Set controlling terminal
@@ -95,7 +96,7 @@ pub fn spawn(opts: SpawnOptions) !Pty {
         const argv = [_:null]?[*:0]const u8{ shell_z, null };
         const env = opts.env orelse std.c.environ;
         _ = posix.system.execve(shell_z, &argv, @ptrCast(env));
-        linux.exit(1);
+        compat.posixExit(1);
     }
 
     // ── Parent process ───────────────────────────────────────────
@@ -179,7 +180,7 @@ fn setChildEnv(cols: u16, rows: u16, term_override: ?[]const u8) void {
     }
     _ = setenv("COLORTERM", "truecolor", 1);
     _ = setenv("TERM_PROGRAM", "teru", 1);
-    _ = setenv("TERM_PROGRAM_VERSION", "0.1.4", 1);
+    _ = setenv("TERM_PROGRAM_VERSION", "0.3.5", 1);
 
     var cols_buf: [8:0]u8 = [_:0]u8{0} ** 8;
     var rows_buf: [8:0]u8 = [_:0]u8{0} ** 8;
@@ -191,6 +192,7 @@ fn setChildEnv(cols: u16, rows: u16, term_override: ?[]const u8) void {
 
 // ── C interop for PTY functions ──────────────────────────────────
 
+extern "c" fn posix_openpt(flags: c_int) c_int;
 extern "c" fn grantpt(fd: c_int) c_int;
 extern "c" fn unlockpt(fd: c_int) c_int;
 extern "c" fn ptsname(fd: c_int) ?[*:0]const u8;

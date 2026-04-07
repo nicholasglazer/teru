@@ -9,7 +9,7 @@
 
 const std = @import("std");
 const posix = std.posix;
-const linux = std.os.linux;
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Multiplexer = @import("../core/Multiplexer.zig");
 const ProcessGraph = @import("../graph/ProcessGraph.zig");
@@ -44,12 +44,17 @@ padding: u32 = 0,
 // ── Lifecycle ──────────────────────────────────────────────────
 
 pub fn init(allocator: Allocator, mux: *Multiplexer, graph: *ProcessGraph) !McpServer {
-    const uid = linux.getuid();
-    const pid = linux.getpid();
+    if (builtin.os.tag == .windows) return error.Unsupported;
+    const uid = compat.getUid();
+    const pid = compat.getPid();
 
     var path_buf: [socket_path_max]u8 = undefined;
-    const path = std.fmt.bufPrint(&path_buf, "/run/user/{d}/teru-{d}.sock", .{ uid, pid }) catch
-        return error.PathTooLong;
+    const path = if (builtin.os.tag == .macos)
+        std.fmt.bufPrint(&path_buf, "/tmp/teru-{d}-{d}.sock", .{ uid, pid }) catch
+            return error.PathTooLong
+    else
+        std.fmt.bufPrint(&path_buf, "/run/user/{d}/teru-{d}.sock", .{ uid, pid }) catch
+            return error.PathTooLong;
     const path_len = path.len;
 
     // Remove stale socket if it exists
@@ -66,8 +71,7 @@ pub fn init(allocator: Allocator, mux: *Multiplexer, graph: *ProcessGraph) !McpS
     // Set non-blocking for event-loop polling (accept returns EAGAIN when idle)
     const flags = std.c.fcntl(sock, posix.F.GETFL);
     if (flags < 0) return error.FcntlFailed;
-    const O_NONBLOCK = 0x800; // linux/fcntl.h
-    _ = std.c.fcntl(sock, posix.F.SETFL, flags | O_NONBLOCK);
+    _ = std.c.fcntl(sock, posix.F.SETFL, flags | compat.O_NONBLOCK);
 
     // Bind to path
     var addr: posix.sockaddr.un = std.mem.zeroes(posix.sockaddr.un);
@@ -200,7 +204,7 @@ fn handleInitialize(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
     _ = self;
     const id_str = id orelse "null";
     return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"protocolVersion":"2025-03-26","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"teru","version":"0.2.8"}}}},"id":{s}}}
+        \\{{"jsonrpc":"2.0","result":{{"protocolVersion":"2025-03-26","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"teru","version":"0.3.5"}}}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
 }
@@ -488,16 +492,13 @@ fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, command: ?[
         // Read active pane's CWD from /proc/<pid>/cwd
         if (self.multiplexer.getActivePane()) |pane| {
             if (pane.pty.child_pid) |pid| {
-                var path_buf: [64]u8 = undefined;
-                const proc_path = std.fmt.bufPrint(&path_buf, "/proc/{d}/cwd", .{pid}) catch break :blk null;
-                // Null-terminate for readlinkat
+                if (builtin.os.tag == .windows) break :blk null;
                 var path_z: [64:0]u8 = undefined;
-                @memcpy(path_z[0..proc_path.len], proc_path);
+                const proc_path = std.fmt.bufPrint(&path_z, "/proc/{d}/cwd", .{pid}) catch break :blk null;
                 path_z[proc_path.len] = 0;
-                const rc = linux.readlinkat(linux.AT.FDCWD, &path_z, &cwd_buf, cwd_buf.len);
-                const signed: isize = @bitCast(rc);
-                if (signed > 0) {
-                    break :blk cwd_buf[0..@intCast(signed)];
+                const rc = std.c.readlink(@ptrCast(&path_z), &cwd_buf, cwd_buf.len);
+                if (rc > 0) {
+                    break :blk cwd_buf[0..@intCast(rc)];
                 }
             }
         }
@@ -807,8 +808,7 @@ fn toolWaitFor(self: *McpServer, pane_id: u64, pattern: []const u8, lines: u32, 
         }
 
         // Not found this attempt — sleep 50ms and retry
-        var ts = std.os.linux.timespec{ .sec = 0, .nsec = 50_000_000 };
-        _ = std.os.linux.nanosleep(&ts, null);
+        compat.sleepNs(50_000_000); // 50ms
     }
 
     return std.fmt.bufPrint(buf,

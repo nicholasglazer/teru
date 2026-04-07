@@ -6,8 +6,9 @@
 
 const builtin = @import("builtin");
 
-pub const Event = @import("types.zig").Event;
-pub const KeyEvent = @import("types.zig").KeyEvent;
+pub const types = @import("types.zig");
+pub const Event = types.Event;
+pub const KeyEvent = types.KeyEvent;
 pub const MouseButton = @import("types.zig").MouseButton;
 pub const MouseEvent = @import("types.zig").MouseEvent;
 pub const Size = @import("types.zig").Size;

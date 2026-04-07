@@ -9,9 +9,12 @@
 //! File I/O has been migrated to native std.Io.Dir / std.Io.File APIs.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
-const linux = std.os.linux;
 const Allocator = std.mem.Allocator;
+
+// Platform-specific imports
+const linux = if (builtin.os.tag == .linux) std.os.linux else undefined;
 
 // ── In-memory stream (replaces removed std.io.fixedBufferStream) ──
 
@@ -115,40 +118,117 @@ pub const DynWriter = struct {
     }
 };
 
-// ── Time (replaces removed std.time.nanoTimestamp) ───────────────
+// ── Time (cross-platform, no Io required) ──────────────────────
 
+/// Wall-clock timestamp in nanoseconds (for PrefixState, etc).
 pub fn nanoTimestamp() i128 {
-    var ts: linux.timespec = undefined;
-    _ = linux.clock_gettime(.REALTIME, &ts);
-    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+    return clockGettime(.REALTIME);
 }
 
-// ── Fork + exec helpers (replaces duplicated fork/pipe/exec) ─────
+/// Monotonic timestamp in nanoseconds (for animations, debounce, etc).
+/// Use this instead of std.os.linux.clock_gettime(.MONOTONIC, ...) directly.
+pub fn monotonicNow() i128 {
+    return clockGettime(.MONOTONIC);
+}
+
+fn clockGettime(clock: anytype) i128 {
+    if (builtin.os.tag == .windows) {
+        // Windows: QueryPerformanceCounter (monotonic, ~100ns resolution)
+        const windows = std.os.windows;
+        var freq: i64 = undefined;
+        var counter: i64 = undefined;
+        _ = windows.kernel32.QueryPerformanceFrequency(&freq);
+        _ = windows.kernel32.QueryPerformanceCounter(&counter);
+        const ns_per_count = @divFloor(@as(i128, 1_000_000_000), @as(i128, freq));
+        return @as(i128, counter) * ns_per_count;
+    } else {
+        // POSIX: clock_gettime (Linux, macOS, FreeBSD)
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(clock, &ts);
+        return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+    }
+}
+
+/// Portable nanosleep. On Windows uses Sleep(), on POSIX uses nanosleep.
+pub fn sleepNs(ns: u64) void {
+    if (builtin.os.tag == .windows) {
+        const ms: u32 = @intCast(@max(1, ns / 1_000_000));
+        std.os.windows.kernel32.Sleep(ms);
+    } else {
+        const req = std.c.timespec{
+            .sec = @intCast(ns / std.time.ns_per_s),
+            .nsec = @intCast(ns % std.time.ns_per_s),
+        };
+        _ = std.c.nanosleep(&req, null);
+    }
+}
+
+/// Portable getpid.
+pub fn getPid() i32 {
+    if (builtin.os.tag == .windows) {
+        return @intCast(std.os.windows.kernel32.GetCurrentProcessId());
+    } else if (builtin.os.tag == .linux) {
+        return @intCast(std.os.linux.getpid());
+    } else {
+        return std.c.getpid();
+    }
+}
+
+/// Portable getuid (returns 0 on Windows).
+pub fn getUid() u32 {
+    if (builtin.os.tag == .windows) {
+        return 0;
+    } else if (builtin.os.tag == .linux) {
+        return std.os.linux.getuid();
+    } else {
+        return std.c.getuid();
+    }
+}
+
+// ── Fork + exec helpers (POSIX: Linux + macOS) ─────────────────
+
+/// Portable fork. Returns pid (>0 parent, 0 child, <0 error).
+pub fn posixFork() isize {
+    if (builtin.os.tag == .linux) {
+        return @bitCast(std.os.linux.fork());
+    } else {
+        // macOS, FreeBSD, etc.
+        const rc = std.c.fork();
+        return @intCast(rc);
+    }
+}
+
+/// Portable _exit (no atexit handlers).
+pub fn posixExit(status: u8) noreturn {
+    if (builtin.os.tag == .linux) {
+        std.os.linux.exit(status);
+    } else {
+        std.c._exit(status);
+    }
+}
 
 /// Fork and exec a command. Fire-and-forget — parent does NOT wait.
 /// The child's stdin/stdout are inherited from the parent.
 pub fn forkExec(argv: [*:null]const ?[*:0]const u8) void {
-    const fork_rc = linux.fork();
-    const pid: isize = @bitCast(fork_rc);
-    if (pid < 0) return; // fork failed
+    if (builtin.os.tag == .windows) return; // TODO: CreateProcessW
+    const pid = posixFork();
+    if (pid < 0) return;
     if (pid == 0) {
-        // Child
         const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
         _ = posix.system.execve(argv[0].?, argv, @ptrCast(envp));
-        linux.exit(1);
+        posixExit(1);
     }
-    // Parent: fire-and-forget
 }
 
 /// Fork, pipe `data` into the child's stdin, exec command. Fire-and-forget.
 pub fn forkExecPipeStdin(argv: [*:null]const ?[*:0]const u8, data: []const u8) void {
+    if (builtin.os.tag == .windows) return; // TODO: CreateProcessW
     var pipe_fds: [2]posix.fd_t = undefined;
     if (std.c.pipe(&pipe_fds) != 0) return;
     const read_end = pipe_fds[0];
     const write_end = pipe_fds[1];
 
-    const fork_rc = linux.fork();
-    const pid: isize = @bitCast(fork_rc);
+    const pid = posixFork();
     if (pid < 0) {
         _ = posix.system.close(read_end);
         _ = posix.system.close(write_end);
@@ -156,16 +236,14 @@ pub fn forkExecPipeStdin(argv: [*:null]const ?[*:0]const u8, data: []const u8) v
     }
 
     if (pid == 0) {
-        // Child: redirect stdin to read end of pipe
         _ = posix.system.close(write_end);
         _ = std.c.dup2(read_end, posix.STDIN_FILENO);
         _ = posix.system.close(read_end);
         const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
         _ = posix.system.execve(argv[0].?, argv, @ptrCast(envp));
-        linux.exit(1);
+        posixExit(1);
     }
 
-    // Parent: write data to pipe, then close
     _ = posix.system.close(read_end);
     _ = std.c.write(write_end, data.ptr, data.len);
     _ = posix.system.close(write_end);
@@ -173,13 +251,13 @@ pub fn forkExecPipeStdin(argv: [*:null]const ?[*:0]const u8, data: []const u8) v
 
 /// Fork, exec command, read child's stdout into `output_fd`. Blocks until child exits.
 pub fn forkExecReadStdout(argv: [*:null]const ?[*:0]const u8, output_fd: posix.fd_t) void {
+    if (builtin.os.tag == .windows) return; // TODO: CreateProcessW
     var pipe_fds: [2]posix.fd_t = undefined;
     if (std.c.pipe(&pipe_fds) != 0) return;
     const read_end = pipe_fds[0];
     const write_end = pipe_fds[1];
 
-    const fork_rc = linux.fork();
-    const pid: isize = @bitCast(fork_rc);
+    const pid = posixFork();
     if (pid < 0) {
         _ = posix.system.close(read_end);
         _ = posix.system.close(write_end);
@@ -187,13 +265,12 @@ pub fn forkExecReadStdout(argv: [*:null]const ?[*:0]const u8, output_fd: posix.f
     }
 
     if (pid == 0) {
-        // Child: redirect stdout to write end of pipe
         _ = posix.system.close(read_end);
         _ = std.c.dup2(write_end, posix.STDOUT_FILENO);
         _ = posix.system.close(write_end);
         const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
         _ = posix.system.execve(argv[0].?, argv, @ptrCast(envp));
-        linux.exit(1);
+        posixExit(1);
     }
 
     // Parent: read from pipe and write to output_fd
@@ -211,6 +288,11 @@ pub fn forkExecReadStdout(argv: [*:null]const ?[*:0]const u8, output_fd: posix.f
     var status: c_int = 0;
     _ = std.c.waitpid(@intCast(pid), &status, 0);
 }
+
+// ── POSIX constants (cross-platform) ─────────────────────────────
+
+/// O_NONBLOCK differs between Linux (0x800) and macOS (0x0004).
+pub const O_NONBLOCK: c_int = if (builtin.os.tag == .macos) 0x0004 else 0x800;
 
 // ── Environment (wraps std.c.getenv + sliceTo) ───────────────────
 

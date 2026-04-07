@@ -8,8 +8,9 @@
 //! Socket path: /run/user/{uid}/teru-session-{name}.sock
 
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
-const linux = std.os.linux;
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const Multiplexer = @import("../core/Multiplexer.zig");
 const ProcessGraph = @import("../graph/ProcessGraph.zig");
@@ -23,7 +24,7 @@ const socket_path_max: usize = 108;
 const POLLIN: i16 = 0x001;
 const POLLHUP: i16 = 0x010;
 const POLLERR: i16 = 0x008;
-const O_NONBLOCK: c_int = 0x800;
+const O_NONBLOCK = compat.O_NONBLOCK;
 
 allocator: Allocator,
 mux: *Multiplexer,
@@ -47,11 +48,16 @@ pub fn init(
     mcp: ?*McpServer,
     hooks: *const Hooks,
 ) !Daemon {
-    const uid = linux.getuid();
+    if (builtin.os.tag == .windows) return error.Unsupported;
+    const uid = compat.getUid();
 
     var path_buf: [socket_path_max]u8 = undefined;
-    const path = std.fmt.bufPrint(&path_buf, "/run/user/{d}/teru-session-{s}.sock", .{ uid, session_name }) catch
-        return error.PathTooLong;
+    const path = if (builtin.os.tag == .macos)
+        std.fmt.bufPrint(&path_buf, "/tmp/teru-{d}-session-{s}.sock", .{ uid, session_name }) catch
+            return error.PathTooLong
+    else
+        std.fmt.bufPrint(&path_buf, "/run/user/{d}/teru-session-{s}.sock", .{ uid, session_name }) catch
+            return error.PathTooLong;
     const path_len = path.len;
 
     // Remove stale socket
@@ -290,8 +296,11 @@ fn checkPaneAlive(self: *Daemon) void {
 
 /// Build the socket path for a given session name.
 pub fn sessionSocketPath(name: []const u8, buf: *[socket_path_max]u8) ?[]const u8 {
-    const uid = linux.getuid();
-    const path = std.fmt.bufPrint(buf, "/run/user/{d}/teru-session-{s}.sock", .{ uid, name }) catch return null;
+    const uid = compat.getUid();
+    const path = if (builtin.os.tag == .macos)
+        std.fmt.bufPrint(buf, "/tmp/teru-{d}-session-{s}.sock", .{ uid, name }) catch return null
+    else
+        std.fmt.bufPrint(buf, "/run/user/{d}/teru-session-{s}.sock", .{ uid, name }) catch return null;
     return path;
 }
 
@@ -317,9 +326,13 @@ pub fn connectToSession(name: []const u8) !posix.fd_t {
 /// List active session names by scanning /run/user/{uid}/teru-session-*.sock.
 /// Returns sessions via the callback. Uses raw opendir/readdir (no std.Io needed).
 pub fn listSessions(buf: *[1024]u8) ?[]const u8 {
-    const uid = linux.getuid();
+    if (builtin.os.tag == .windows) return null;
+    const uid = compat.getUid();
     var dir_path_buf: [64]u8 = undefined;
-    const dir_path = std.fmt.bufPrint(&dir_path_buf, "/run/user/{d}", .{uid}) catch return null;
+    const dir_path = if (builtin.os.tag == .macos)
+        std.fmt.bufPrint(&dir_path_buf, "/tmp", .{}) catch return null
+    else
+        std.fmt.bufPrint(&dir_path_buf, "/run/user/{d}", .{uid}) catch return null;
 
     // Null-terminate for C opendir
     var dir_path_z: [65]u8 = undefined;
@@ -368,8 +381,8 @@ test "sessionSocketPath: generates expected format" {
     var buf: [socket_path_max]u8 = undefined;
     const path = sessionSocketPath("test", &buf);
     try std.testing.expect(path != null);
-    try std.testing.expect(std.mem.startsWith(u8, path.?, "/run/user/"));
-    try std.testing.expect(std.mem.endsWith(u8, path.?, "/teru-session-test.sock"));
+    try std.testing.expect(std.mem.endsWith(u8, path.?, "teru-session-test.sock") or
+        std.mem.endsWith(u8, path.?, "session-test.sock"));
 }
 
 test "sessionSocketPath: long name returns null" {

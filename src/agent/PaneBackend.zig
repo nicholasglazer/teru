@@ -14,8 +14,9 @@
 //!   (push) context_exited(context_id, exit_code)
 
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
-const linux = std.os.linux;
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const Multiplexer = @import("../core/Multiplexer.zig");
 const ProcessGraph = @import("../graph/ProcessGraph.zig");
@@ -65,11 +66,15 @@ line_len: usize = 0,
 // ── Lifecycle ────────────────────────────────────────────────────
 
 pub fn init(allocator: Allocator, mux: *Multiplexer, graph: *ProcessGraph) !PaneBackend {
-    const uid = linux.getuid();
+    const uid = compat.getUid();
 
     var path_buf: [socket_path_max]u8 = undefined;
-    const path = std.fmt.bufPrint(&path_buf, "/run/user/{d}/teru-pane-backend.sock", .{uid}) catch
-        return error.PathTooLong;
+    const path = if (builtin.os.tag == .macos)
+        std.fmt.bufPrint(&path_buf, "/tmp/teru-{d}-pane-backend.sock", .{uid}) catch
+            return error.PathTooLong
+    else
+        std.fmt.bufPrint(&path_buf, "/run/user/{d}/teru-pane-backend.sock", .{uid}) catch
+            return error.PathTooLong;
     const path_len = path.len;
 
     // Remove stale socket if it exists
@@ -86,8 +91,7 @@ pub fn init(allocator: Allocator, mux: *Multiplexer, graph: *ProcessGraph) !Pane
     // Set non-blocking
     const flags = std.c.fcntl(sock, posix.F.GETFL);
     if (flags < 0) return error.FcntlFailed;
-    const O_NONBLOCK = 0x800;
-    _ = std.c.fcntl(sock, posix.F.SETFL, flags | O_NONBLOCK);
+    _ = std.c.fcntl(sock, posix.F.SETFL, flags | compat.O_NONBLOCK);
 
     // Bind
     var addr: posix.sockaddr.un = std.mem.zeroes(posix.sockaddr.un);
@@ -147,8 +151,7 @@ pub fn poll(self: *PaneBackend) void {
             // Set new client to non-blocking
             const flags = std.c.fcntl(conn, posix.F.GETFL);
             if (flags >= 0) {
-                const O_NONBLOCK = 0x800;
-                _ = std.c.fcntl(conn, posix.F.SETFL, flags | O_NONBLOCK);
+                _ = std.c.fcntl(conn, posix.F.SETFL, flags | compat.O_NONBLOCK);
             }
             self.client_fd = conn;
             self.line_len = 0;

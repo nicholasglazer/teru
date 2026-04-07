@@ -59,11 +59,11 @@ pub fn init(allocator: std.mem.Allocator) !HookListener {
     if (uid_str) |runtime_dir| {
         path_len = (std.fmt.bufPrint(&path_buf, "{s}/teru-hooks-{d}.sock", .{
             runtime_dir,
-            std.os.linux.getpid(),
+            compat.getPid(),
         }) catch return error.PathTooLong).len;
     } else {
         path_len = (std.fmt.bufPrint(&path_buf, "/tmp/teru-hooks-{d}.sock", .{
-            std.os.linux.getpid(),
+            compat.getPid(),
         }) catch return error.PathTooLong).len;
     }
 

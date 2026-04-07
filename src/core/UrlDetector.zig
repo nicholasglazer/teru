@@ -9,7 +9,8 @@
 
 const std = @import("std");
 const posix = std.posix;
-const linux = std.os.linux;
+const builtin = @import("builtin");
+const compat = @import("../compat.zig");
 const Grid = @import("Grid.zig");
 
 pub const UrlMatch = struct {
@@ -141,25 +142,52 @@ pub fn extractUrl(cells: []const Grid.Cell, match: UrlMatch, buf: []u8) usize {
     return len;
 }
 
-/// Open a URL with xdg-open (fire-and-forget).
+// Win32 shell API extern (link against shell32)
+extern "shell32" fn ShellExecuteW(
+    hwnd: ?*anyopaque,
+    lpOperation: ?[*:0]const u16,
+    lpFile: [*:0]const u16,
+    lpParameters: ?[*:0]const u16,
+    lpDirectory: ?[*:0]const u16,
+    nShowCmd: c_int,
+) callconv(.c) isize;
+const SW_SHOW: c_int = 5;
+
+/// Open a URL with the platform's default browser (fire-and-forget).
 pub fn openUrl(url: []const u8) void {
-    // We need a null-terminated copy for execve
+    if (builtin.os.tag == .windows) {
+        // Convert URL (ASCII) to UTF-16 for ShellExecuteW
+        var url_w: [2049]u16 = undefined;
+        var i: usize = 0;
+        for (url) |byte| {
+            if (i >= url_w.len - 1) break;
+            url_w[i] = byte;
+            i += 1;
+        }
+        url_w[i] = 0;
+        const open_str = std.unicode.utf8ToUtf16LeStringLiteral("open");
+        _ = ShellExecuteW(null, open_str, @ptrCast(url_w[0..i :0]), null, null, SW_SHOW);
+        return;
+    }
+
     var path_buf: [2048]u8 = undefined;
     if (url.len >= path_buf.len - 1) return;
     @memcpy(path_buf[0..url.len], url);
     path_buf[url.len] = 0;
 
+    const opener: [*:0]const u8 = switch (builtin.os.tag) {
+        .macos => "/usr/bin/open",
+        else => "/usr/bin/xdg-open", // Linux
+    };
     const argv = [_:null]?[*:0]const u8{
-        "/usr/bin/xdg-open",
+        opener,
         @ptrCast(path_buf[0..url.len :0]),
         null,
     };
 
-    const fork_rc = linux.fork();
-    const pid: isize = @bitCast(fork_rc);
-    if (pid < 0) return; // fork failed
+    const pid = compat.posixFork();
+    if (pid < 0) return;
     if (pid == 0) {
-        // Child: redirect stdout/stderr to /dev/null to suppress output
         const devnull = posix.system.open("/dev/null", .{ .ACCMODE = .WRONLY }, @as(std.posix.mode_t, 0));
         if (devnull >= 0) {
             _ = std.c.dup2(devnull, posix.STDOUT_FILENO);
@@ -168,9 +196,8 @@ pub fn openUrl(url: []const u8) void {
         }
         const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
         _ = posix.system.execve(argv[0].?, &argv, @ptrCast(envp));
-        linux.exit(1);
+        compat.posixExit(1);
     }
-    // Parent: fire-and-forget (child is orphaned, init reaps it)
 }
 
 /// Find a URL at a specific grid position.
