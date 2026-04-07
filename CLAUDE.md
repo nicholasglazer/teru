@@ -18,8 +18,8 @@ zig build run -- --raw  # run (TTY mode)
 - src/persist/ -- Session serialization, binary format
 - src/config/ -- Config file parser (key=value format)
 - src/render/ -- CPU SIMD renderer, stb_truetype FontAtlas
-- src/compat.zig -- Zig 0.16 compat: MemWriter/MemReader, nanoTimestamp, getenv, forkExec
-- src/platform/ -- Platform shells: X11+Wayland/Linux, AppKit/macOS, Win32/Windows (planned)
+- src/compat.zig -- Cross-platform primitives: monotonicNow, sleepNs, getPid, getUid, posixFork, forkExec, MemWriter/MemReader
+- src/platform/ -- Platform shells: X11+Wayland/Linux, AppKit/macOS, Win32/Windows; keyboard translation per OS
 
 ## Key Rules
 - Thread `io: std.Io` through every function that does I/O
@@ -27,10 +27,10 @@ zig build run -- --raw  # run (TTY mode)
 - See `.claude/rules/zig-terminal.md` for dev rules, anti-patterns, and perf targets
 
 ## Version
-Current: 0.2.8. Update in 3 files: `src/main.zig`, `build.zig.zon`, `src/agent/McpServer.zig`
+Current: 0.3.5. Update in 3 files: `src/main.zig`, `build.zig.zon`, `src/agent/McpServer.zig`
 
 ## Testing
-All modules have inline tests (384 test blocks). Run with `zig build test`.
+All modules have inline tests (445+ test blocks). Run with `zig build test`.
 
 ## Session Persistence
 ```bash

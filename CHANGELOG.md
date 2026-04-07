@@ -1,5 +1,81 @@
 # Changelog
 
+## 0.3.5 (2026-04-07)
+
+### Cross-platform
+- **Windows ConPTY** (`src/pty/WinPty.zig`) — full CreatePseudoConsole implementation: pipe pairs, STARTUPINFOEX attribute list, CreateProcessW, ResizePseudoConsole, read/write/resize/isAlive API matching Pty.zig
+- **Windows clipboard** — Win32 OpenClipboard/SetClipboardData/GetClipboardData with UTF-8↔UTF-16 conversion, surrogate pair support
+- **Windows URL opener** — ShellExecuteW for opening URLs in default browser
+- **macOS PTY** — replaced `/dev/ptmx` open with `posix_openpt()` (works on both Linux and macOS)
+- **Portable O_NONBLOCK** — `compat.O_NONBLOCK` constant (0x800 Linux, 0x0004 macOS) replaces 8 hardcoded values across main.zig, Multiplexer, Pane, PaneBackend, McpServer, daemon
+- **Portable socket paths** — daemon, McpServer, PaneBackend now use `/tmp/teru-{uid}-*` on macOS, `/run/user/{uid}/teru-*` on Linux, Windows guards return `error.Unsupported`
+- **Portable readlink** — McpServer CWD detection uses `std.c.readlink` instead of `linux.readlinkat`
+- **Removed linux imports** — McpServer, PaneBackend, daemon.zig no longer import `std.os.linux` directly
+
+### Fixes
+- **Stale version env** — `TERM_PROGRAM_VERSION` in Pty.zig updated from "0.1.4" to match current version
+
+## 0.3.4 (2026-04-07)
+
+### Cross-platform
+- **macOS keyboard translation** — IOKit keycode → UTF-8 via static lookup tables (no Carbon dependency), XKB-compatible keysyms, full modifier tracking (Shift, Ctrl, Option, Cmd, Caps Lock)
+- **Windows keyboard translation** — VK code → UTF-8 via ToUnicode Win32 API, dead key support, full modifier tracking, XKB-compatible keysyms
+- **Cross-platform config watcher** — Linux (inotify), macOS (kqueue EVFILT_VNODE), Windows (stat polling fallback)
+- **Cross-platform build.zig** — conditional library linking per OS: AppKit+CoreGraphics+Carbon (macOS), user32+gdi32+kernel32 (Windows), xcb+xkbcommon+wayland (Linux)
+- **Keyboard imports enabled** — main.zig comptime-selects Keyboard module per OS (Linux/macOS/Windows)
+
+## 0.3.3 (2026-04-07)
+
+### Cross-platform
+- **Cross-platform clipboard** — macOS uses `pbcopy`/`pbpaste`, Windows stub for Win32 clipboard API
+- **Cross-platform font discovery** — macOS searches `/System/Library/Fonts` (SF Mono, Menlo, Monaco), Windows searches `C:\Windows\Fonts` (Consolas, Cascadia)
+- **Cross-platform URL opener** — macOS uses `/usr/bin/open`, Linux uses `xdg-open`, Windows stub for `ShellExecuteW`
+- **Portable PTY** — replaced `linux.fork()`/`linux.exit()` with `compat.posixFork()`/`posixExit()` in Pty.zig (works on macOS)
+- **macOS platform** — added mouse events, focus tracking, cursor hide/show (pending agent)
+- **Windows platform** — Win32 window stub with full event handling (pending agent)
+
+## 0.3.2 (2026-04-07)
+
+### Cross-platform
+- **Portable time abstraction** — `compat.monotonicNow()` replaces all `std.os.linux.clock_gettime` calls across main.zig, Multiplexer, Ui, Hooks, McpServer (supports Linux, macOS, Windows)
+- **Portable process helpers** — `compat.getPid()`, `compat.getUid()`, `compat.sleepNs()` replace direct `linux.getpid/getuid/nanosleep` in daemon, McpServer, PaneBackend, HookListener
+- **Portable fork/exec** — `compat.forkExec*()` uses POSIX `fork()`/`_exit()` on macOS, with Windows `CreateProcessW` stubs
+- Zero `std.os.linux.*` references outside of `compat.zig` and `src/platform/linux/`
+
+## 0.3.1 (2026-04-07)
+
+### Features
+- **`include` directive** — split config across files: `include keybindings.conf` (relative to `~/.config/teru/`, absolute paths supported, max depth 4)
+
+### Fixes
+- **Viewport height** — reverted cell-aligned snapping that wasted up to cell_height-1 pixels at the bottom; panes now use full available space
+
+## 0.3.0 (2026-04-07)
+
+### Features
+- **Global shortcuts** — Alt+key actions without prefix key, Right Alt for pane manipulation
+  - `Alt+1-9` switch workspace, `RAlt+1-9` move pane to workspace
+  - `Alt+J/K` focus next/prev pane, `RAlt+J/K` swap pane down/up
+  - `Alt+C` vertical split, `RAlt+C` horizontal split, `Alt+X` close pane
+  - `Alt+M` focus master pane, `RAlt+M` mark pane as master
+  - `Alt+-` / `Alt+=` font size zoom out/in
+- **Master pane** — mark any pane as master per workspace, jump back from anywhere
+- **Font size zoom** — re-rasterizes from memory (no file I/O), deferred SIGWINCH (150ms debounce)
+- **Workspace attention colors** — non-active workspaces with output highlighted in red
+- **Cell-aligned layout rects** — pane grids fill available space exactly, no gaps
+- **Cross-platform keycode abstraction** — Linux (evdev), macOS (IOKit), Windows (VK) keycode tables
+
+### Config
+- `alt_workspace_switch = true` — enable/disable all Alt+key shortcuts
+- `attention_color = #EB3137` — workspace attention indicator color
+
+### Internal
+- `FontAtlas.rasterizeAtSize()` — re-rasterize from in-memory font data
+- `KeyHandler.handleGlobalKey()` — centralized global shortcut dispatch
+- Platform `keycodes` struct with `digitToWorkspace()` function per platform
+- `Workspace.master_id` and `Workspace.attention` fields
+- `Multiplexer.movePaneToWorkspace()`, `swapPaneNext/Prev()`, `setMaster()`, `focusMaster()`
+
 ## 0.2.8 (2026-04-06)
 
 ### Features

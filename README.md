@@ -8,7 +8,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
   <a href="https://github.com/nicholasglazer/teru/actions"><img src="https://github.com/nicholasglazer/teru/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/zig-0.16-orange" alt="Zig 0.16">
-  <img src="https://img.shields.io/badge/tests-375-blue" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-445-blue" alt="Tests">
   <img src="https://img.shields.io/badge/binary-1.6MB-brightgreen" alt="Binary Size">
   <a href="https://aur.archlinux.org/packages/teru"><img src="https://img.shields.io/aur/version/teru" alt="AUR"></a>
 </p>
@@ -147,21 +147,40 @@ teru --list               # list active sessions
 - **Process graph** -- DAG of all processes/agents with lifecycle tracking
 - **Command-stream scrollback** -- keyframe/delta compression (20-50x vs expanded cells)
 - **Unicode fonts** -- ASCII, Latin-1, box-drawing, block elements (351 glyphs via stb_truetype)
-- **Keyboard** -- xkbcommon, any layout (dvorak, colemak, Cyrillic, etc.), live layout switching
+- **Keyboard** -- xkbcommon (Linux), IOKit tables (macOS), VK+ToUnicode (Windows); any layout
 - **Mouse** -- selection, word double-click, clipboard (X11 via xclip, Wayland via wl-clipboard), drag-to-resize borders
 - **Search** -- prefix + / highlights matches in visible grid
 - **Themes** -- built-in miozu theme, base16 external theme files, per-color overrides
-- **Config file** -- `~/.config/teru/teru.conf`, hot-reload on file change (inotify)
+- **Config file** -- `~/.config/teru/teru.conf`, hot-reload (inotify/kqueue/polling), `include` directive
 - **Hook system** -- external commands on spawn/close/agent/save events
 - **Alt-screen** -- vim, htop, less work correctly (dual cell buffers)
 - **VT compatibility** -- CSI, SGR (256 + truecolor), DCS passthrough, DECSCUSR cursor styles, DEC Special Graphics
-- **Cross-platform** -- X11 (XCB), Wayland (xdg-shell), macOS (AppKit stub), Windows (Win32 stub)
+- **Cross-platform** -- Linux (X11+Wayland), macOS (AppKit), Windows (Win32+ConPTY)
+
+### Platform Support
+
+| Feature | Linux | macOS | Windows |
+|---------|:-----:|:-----:|:-------:|
+| **Window/Display** | X11 + Wayland | AppKit (Cocoa) | Win32 (GDI) |
+| **PTY/Shell** | posix_openpt + fork | posix_openpt + fork | ConPTY (CreatePseudoConsole) |
+| **Keyboard** | xkbcommon (any layout) | IOKit static tables (US) | Win32 ToUnicode (any layout) |
+| **Clipboard** | xclip / wl-clipboard | pbcopy / pbpaste | Win32 API (CF_UNICODETEXT) |
+| **URL opener** | xdg-open | /usr/bin/open | ShellExecuteW |
+| **Font discovery** | /usr/share/fonts | /System/Library/Fonts | C:\Windows\Fonts |
+| **Config watcher** | inotify (real-time) | kqueue (real-time) | stat polling |
+| **Session daemon** | Unix socket | Unix socket (/tmp) | Not yet |
+| **MCP server** | Unix socket | Unix socket (/tmp) | Not yet |
+| **Hooks listener** | Unix socket | Unix socket | Not yet |
+| **Signal handling** | SIGWINCH | SIGWINCH | N/A (message pump) |
+| **Build deps** | xcb, xkbcommon, wayland | AppKit, CoreGraphics | user32, gdi32, kernel32 |
+
+**Status:** Linux is production-ready. macOS is feature-complete (needs hardware testing). Windows has all subsystems implemented individually (ConPTY, keyboard, clipboard, window) but the event loop integration is not yet wired — daemon/MCP require named pipes.
 
 ---
 
 ## Keybindings
 
-Prefix: `Ctrl+Space` (configurable via `prefix_key`)
+Prefix: `Ctrl+Space` (configurable via `prefix_key`). Full reference: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md)
 
 ### Multiplexer
 
@@ -180,6 +199,21 @@ Prefix: `Ctrl+Space` (configurable via `prefix_key`)
 | prefix + `v` | Enter vi/copy mode |
 | prefix + `/` | Search in terminal output |
 | prefix + `d` | Detach (save session, exit) |
+
+### Global Shortcuts (no prefix)
+
+| Key | Action |
+|-----|--------|
+| `Alt+1`-`9` | Switch workspace |
+| `RAlt+1`-`9` | Move active pane to workspace |
+| `Alt+J` / `Alt+K` | Focus next / prev pane |
+| `RAlt+J` / `RAlt+K` | Swap pane down / up |
+| `Alt+C` | New pane (vertical split) |
+| `RAlt+C` | New pane (horizontal split) |
+| `Alt+X` | Close active pane |
+| `Alt+M` | Focus master pane |
+| `RAlt+M` | Mark active pane as master |
+| `Alt+-` / `Alt+=` | Zoom out / in (font size) |
 
 ### Scrolling
 
@@ -349,7 +383,7 @@ teru tracks agents in the ProcessGraph, colors pane borders by status (cyan=runn
 ```
 src/
 ├── main.zig                Entry point, event loop, input handling
-├── compat.zig              Zig 0.16 compatibility (time, fork helpers)
+├── compat.zig              Cross-platform primitives (time, process, fork, O_NONBLOCK)
 ├── lib.zig                 libteru C-ABI public API
 ├── core/
 │   ├── Grid.zig            Character grid (cells, cursor, scroll regions, alt-screen)
@@ -359,7 +393,7 @@ src/
 │   ├── KeyHandler.zig      Prefix key dispatch
 │   ├── Selection.zig       Text selection (absolute coords, scrollback-aware)
 │   ├── ViMode.zig          Vi/copy mode (cursor navigation, visual selection)
-│   ├── Clipboard.zig       Display-aware clipboard (xclip / wl-clipboard)
+│   ├── Clipboard.zig       Cross-platform clipboard (xclip, pbcopy, Win32 API)
 │   ├── Terminal.zig        Raw TTY mode, poll-based I/O
 │   └── UrlDetector.zig     URL detection (regex-free)
 ├── agent/
@@ -391,14 +425,23 @@ src/
 ├── server/
 │   ├── daemon.zig          Headless session daemon (PTY persistence)
 │   └── protocol.zig        Wire protocol (5-byte header, Unix socket)
+├── pty/
+│   ├── Pty.zig              POSIX PTY (posix_openpt, fork, exec)
+│   └── WinPty.zig           Windows ConPTY (CreatePseudoConsole)
 └── platform/
-    ├── types.zig            Shared Event/KeyEvent/Size/MouseEvent
+    ├── types.zig            Shared Event/KeyEvent/Size/MouseEvent + keycodes
     ├── platform.zig         Comptime platform selector
-    └── linux/
-        ├── platform.zig     Dual X11/Wayland dispatch
-        ├── x11.zig          Pure XCB windowing (hand-declared externs)
-        ├── wayland.zig      xdg-shell + wl_shm (hand-declared externs)
-        └── keyboard.zig     xkbcommon (live layout switching)
+    ├── linux/
+    │   ├── platform.zig     Dual X11/Wayland dispatch
+    │   ├── x11.zig          Pure XCB windowing (hand-declared externs)
+    │   ├── wayland.zig      xdg-shell + wl_shm (hand-declared externs)
+    │   └── keyboard.zig     xkbcommon (live layout switching)
+    ├── macos/
+    │   ├── platform.zig     AppKit/NSWindow via objc_msgSend
+    │   └── keyboard.zig     IOKit keycode tables
+    └── windows/
+        ├── platform.zig     Win32 window (CreateWindowExW, GDI blit)
+        └── keyboard.zig     VK code translation (ToUnicode)
 ```
 
 ### Dependencies
@@ -429,7 +472,7 @@ Build with `-Dx11=false` for Wayland-only (drops xcb dep).
 git clone https://github.com/nicholasglazer/teru.git
 cd teru
 
-zig build test            # 375 tests
+zig build test            # 445+ tests
 zig build                 # debug build
 zig build run             # run windowed
 zig build run -- --raw    # run TTY mode
@@ -461,8 +504,9 @@ Contributions welcome. Requires Zig 0.16.
 
 - **Full Unicode**: CJK characters, emoji (COLR/CPAL), font fallback chains
 - **Shell integration**: bash/zsh/fish scripts for OSC 133 command blocks
-- **macOS**: AppKit backend, PTY via forkpty, keyboard via Carbon
-- **Windows**: ConPTY implementation, Win32 keyboard translation
+- **macOS testing**: AppKit backend and keyboard are implemented but need hardware testing
+- **Windows daemon**: Named pipes IPC to replace Unix sockets for session persistence
+- **macOS keyboard**: UCKeyTranslate for international layouts (currently US ANSI only)
 
 ### Reporting issues
 

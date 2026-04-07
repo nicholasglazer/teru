@@ -6,6 +6,18 @@ teru reads `~/.config/teru/teru.conf` on startup. All settings are optional -- d
 
 Simple `key = value` pairs. Lines starting with `#` are comments. Sections use `[section]` headers. Unknown keys are silently ignored.
 
+### Include
+
+Split your config across multiple files:
+
+```conf
+include keybindings.conf        # relative to ~/.config/teru/
+include themes/custom.conf      # subdirectories work
+include /absolute/path.conf     # absolute paths work
+```
+
+Includes are recursive (max depth 4). Included files use the same `key = value` format.
+
 ## Complete Example
 
 ```conf
@@ -128,6 +140,7 @@ opacity = 0.95
 | `selection_bg` | hex color | `#3E4359` | Selection highlight background |
 | `border_active` | hex color | `#FF9837` | Active pane border color |
 | `border_inactive` | hex color | `#3E4359` | Inactive pane border color |
+| `attention_color` | hex color | `#EB3137` | Workspace attention indicator (activity in background) |
 | `bold_is_bright` | bool | `false` | Shift ANSI colors 0-7 to bright 8-15 when bold |
 | `color0`-`color15` | hex color | (miozu palette) | Override individual ANSI palette colors |
 
@@ -239,10 +252,12 @@ scroll_speed = 5
 |--------|------|---------|-------------|
 | `prefix_key` | string | `ctrl+space` | Prefix key for multiplexer commands. Accepts `ctrl+a` through `ctrl+z`, `ctrl+space`, or raw integer 0-31 |
 | `prefix_timeout_ms` | integer | `500` | Milliseconds to wait for a command after pressing the prefix key |
+| `alt_workspace_switch` | boolean | `true` | Enable Alt+1-9 workspace switch and Alt+Shift+1-9 move pane |
 
 ```conf
 prefix_key = ctrl+b
 prefix_timeout_ms = 1000
+alt_workspace_switch = true
 ```
 
 #### Prefix Key Bindings
@@ -251,15 +266,33 @@ Default prefix: `Ctrl+Space`
 
 | Key | Action |
 |-----|--------|
-| prefix + `c` | New pane |
+| prefix + `c` or `\` | Spawn pane (vertical split) |
+| prefix + `-` | Spawn pane (horizontal split) |
 | prefix + `x` | Close pane |
-| prefix + `h`/`j`/`k`/`l` | Navigate panes (left/down/up/right) |
-| prefix + `H`/`L` | Resize master ratio |
+| prefix + `n` / `p` | Focus next / prev pane |
+| prefix + `H` / `L` | Shrink / grow master width |
+| prefix + `K` / `J` | Shrink / grow master height (dishes) |
 | prefix + `Space` | Cycle layout (within workspace layout list) |
-| prefix + `z` | Zoom (toggle monocle layout) |
+| prefix + `z` | Toggle zoom (monocle layout) |
 | prefix + `1`-`9` | Switch workspace |
+| prefix + `v` | Enter vi/copy mode |
 | prefix + `/` | Search in scrollback |
-| prefix + `?` | Help |
+| prefix + `d` | Detach (save session, exit) |
+
+#### Global Shortcuts (no prefix)
+
+| Key | Action |
+|-----|--------|
+| `Alt+1`-`9` | Switch workspace |
+| `RAlt+1`-`9` | Move active pane to workspace |
+| `Alt+J` / `Alt+K` | Focus next / prev pane |
+| `RAlt+J` / `RAlt+K` | Swap pane down / up |
+| `Alt+C` | New pane (vertical split) |
+| `RAlt+C` | New pane (horizontal split) |
+| `Alt+X` | Close active pane |
+| `Alt+M` | Focus master pane |
+| `RAlt+M` | Mark active pane as master |
+| `Alt+-` / `Alt+=` | Zoom out / in (font size) |
 | `Ctrl+Shift+C` | Copy selection |
 | `Ctrl+Shift+V` | Paste from clipboard |
 | `Shift+PageUp/Down` | Scroll through scrollback |

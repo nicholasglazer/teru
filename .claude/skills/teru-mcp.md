@@ -158,4 +158,19 @@ Connection: close
 - `prefix + 1-9` — switch workspace
 - `prefix + Space` — cycle layout
 - `prefix + z` — zoom (monocle toggle)
+- `prefix + H/L` — resize master width
+- `prefix + K/J` — resize master height (dishes)
 - Drag pane borders to resize
+
+### Global shortcuts (no prefix)
+
+- `Alt+1-9` — switch workspace
+- `RAlt+1-9` — move pane to workspace
+- `Alt+J/K` — focus next/prev pane
+- `RAlt+J/K` — swap pane down/up
+- `Alt+C` — new pane (vertical split)
+- `RAlt+C` — new pane (horizontal split)
+- `Alt+X` — close active pane
+- `Alt+M` — focus master pane
+- `RAlt+M` — mark active pane as master
+- `Alt+-` / `Alt+=` — zoom out / in (font size)
