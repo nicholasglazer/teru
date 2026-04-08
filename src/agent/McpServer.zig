@@ -251,7 +251,10 @@ fn handleToolsCall(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u
         return jsonRpcError(buf, id, -32602, "Missing params");
 
     const params_body = body[params_start..];
-    const tool_name = extractNestedJsonString(params_body, "name") orelse
+    // Tool name is at params top level, NOT inside arguments.
+    // Use extractJsonString (not extractNestedJsonString) to avoid
+    // collision when an argument is also named "name".
+    const tool_name = extractJsonString(params_body, "name") orelse
         return jsonRpcError(buf, id, -32602, "Missing params.name");
 
     if (std.mem.eql(u8, tool_name, "teru_list_panes")) {
