@@ -1806,9 +1806,14 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
             for (mux.panes.items) |*pane| {
                 pane.grid.dirty = false;
             }
+
+            // Frame rate limiter: cap at ~120fps to prevent CPU spin.
+            // Without this, continuous PTY output (e.g., Claude Code) causes
+            // 100% CPU on one core because the loop never sleeps when dirty.
+            io.sleep(.fromMilliseconds(8), .awake) catch {};
         } else {
-            // 1ms idle sleep via native Io.sleep
-            io.sleep(.fromMilliseconds(1), .awake) catch {};
+            // Idle: sleep longer when nothing to render
+            io.sleep(.fromMilliseconds(16), .awake) catch {};
         }
     }
 }
