@@ -48,8 +48,8 @@ response_fd: i32 = -1,
 /// CSI parameter accumulation
 params: [MAX_PARAMS]u16 = [_]u16{0} ** MAX_PARAMS,
 param_count: u8 = 0,
-/// Whether a '?' prefix was seen in CSI (private mode)
-private_marker: bool = false,
+/// CSI prefix byte ('?', '>', '=', '<', or 0 for none)
+csi_prefix: u8 = 0,
 /// Intermediate byte (e.g., ' ', '!', '"', etc.)
 intermediate: u8 = 0,
 
@@ -445,9 +445,8 @@ fn handleCharsetG1(self: *VtParser, byte: u8) void {
 fn handleCsiEntry(self: *VtParser, byte: u8) void {
     switch (byte) {
         '?', '>', '=', '<' => {
-            // CSI private markers: ? (DEC private), > (Secondary DA),
-            // = (tertiary DA), < (DECRQM). All route to private dispatch.
-            self.private_marker = true;
+            // CSI prefix: ? (DEC private), > (DA2), = (DA3), < (KKP pop)
+            self.csi_prefix = byte;
             self.state = .csi_param;
         },
         '0'...'9' => {
@@ -693,7 +692,7 @@ pub fn consumeAgentEvent(self: *VtParser) ?[]const u8 {
 fn resetCsiState(self: *VtParser) void {
     self.params = [_]u16{0} ** MAX_PARAMS;
     self.param_count = 0;
-    self.private_marker = false;
+    self.csi_prefix = 0;
     self.intermediate = 0;
 }
 
@@ -705,7 +704,7 @@ fn getParam(self: *const VtParser, idx: u8, default: u16) u16 {
 }
 
 fn dispatchCsi(self: *VtParser, final: u8) void {
-    if (self.private_marker) {
+    if (self.csi_prefix != 0) {
         self.dispatchCsiPrivate(final);
         return;
     }
@@ -895,10 +894,42 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
             }
         },
         'c' => {
-            // DA1 (ESC[?c) — Primary Device Attributes
-            // DA2 (ESC[>c) — Secondary Device Attributes
-            // Both respond with VT220-compatible identifiers
-            self.sendResponse("\x1b[?62;22c");
+            if (self.csi_prefix == '>') {
+                // DA2 (ESC[>c) — Secondary Device Attributes
+                // Respond: ESC[>Pp;Pv;Pc c (VT100-class, version, 0)
+                self.sendResponse("\x1b[>0;0;0c");
+            } else {
+                // DA1 (ESC[?c or ESC[c) — Primary Device Attributes
+                // Respond: VT220 with ANSI color support
+                self.sendResponse("\x1b[?62;22c");
+            }
+        },
+        'u' => {
+            if (self.csi_prefix == '?') {
+                // Kitty keyboard protocol query (CSI ? u)
+                // Respond with current flags (0 = supported but inactive)
+                self.sendResponse("\x1b[?0u");
+            }
+            // CSI > flags u = KKP push (TODO: implement flag tracking)
+            // CSI < u = KKP pop (TODO: implement flag tracking)
+        },
+        'p' => {
+            if (self.intermediate == '$' and self.csi_prefix == '?') {
+                // DECRQM — request mode (CSI ? Pn $ p)
+                // Respond: CSI ? Pn ; Ps $ y
+                var buf: [32]u8 = undefined;
+                const ps: u8 = switch (mode) {
+                    2026 => if (self.sync_output) 1 else 2, // sync output
+                    2004 => if (self.bracketed_paste) 1 else 2, // bracketed paste
+                    1049 => if (self.alt_screen) 1 else 2, // alt screen
+                    25 => if (self.cursor_visible) 1 else 2, // cursor visible
+                    1 => if (self.app_cursor_keys) 1 else 2, // app cursor
+                    1000, 1002, 1003 => if (self.mouse_tracking != .none) 1 else 2,
+                    else => 0, // not recognized
+                };
+                const msg = std.fmt.bufPrint(&buf, "\x1b[?{d};{d}$y", .{ mode, ps }) catch return;
+                self.sendResponse(msg);
+            }
         },
         'n' => {
             // DSR — Device Status Report

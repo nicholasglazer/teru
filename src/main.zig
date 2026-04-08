@@ -929,17 +929,21 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                             }
                                             status_bar_h = if (config.show_status_bar) atlas.cell_height + 4 else 0;
 
-                                            // Resize WINDOW to maintain same grid dimensions.
-                                            // Same rows/cols * new cell size → no blank rows, no SIGWINCH.
-                                            // (WezTerm/Kitty/Ghostty approach for windowed mode)
-                                            const target_w = @as(u32, grid_cols) * atlas.cell_width + padding * 2;
-                                            const target_h = @as(u32, grid_rows) * atlas.cell_height + padding * 2 + status_bar_h;
-                                            win.setSize(target_w, target_h);
-
-                                            // Mark all panes dirty for redraw with new cell size
+                                            // Resize grid + send SIGWINCH immediately.
+                                            // The renderer framebuffer is resized by the
+                                            // ConfigureNotify handler, so we must NOT call
+                                            // win.setSize() here (would desync framebuffer).
+                                            const sz = win.getSize();
+                                            grid_cols = @intCast((sz.width -| padding * 2) / atlas.cell_width);
+                                            grid_rows = @intCast((sz.height -| padding * 2 -| status_bar_h) / atlas.cell_height);
                                             for (mux.panes.items) |*pane| {
+                                                if (grid_rows != pane.grid.rows or grid_cols != pane.grid.cols) {
+                                                    pane.grid.resize(allocator, grid_rows, grid_cols) catch {};
+                                                    pane.linkVt(allocator);
+                                                }
                                                 pane.grid.dirty = true;
                                             }
+                                            mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
 
                                             // Defer variant atlas rebuild (150ms after zoom stops)
                                             zoom_pending_resize = true;
