@@ -319,15 +319,15 @@ pub fn restore(def: *SessionDef, mux: *Multiplexer, graph: *ProcessGraph, rows: 
         ws.split_node_count = 0;
         ws.active_node = null;
 
-        // Set workspace name if provided
-        if (ws_def.name.len > 0) {
-            ws.name = ws_def.name;
-        }
+        // Note: workspace name not assigned here — ws_def is freed after restore().
+        // Workspace names should be set via teru.conf [workspace.N] name= instead.
 
         // Process panes
         for (ws_def.panes[0..ws_def.pane_count]) |*pane_def| {
-            // Check if a pane with this role already exists
-            if (pane_def.role.len > 0 and paneExistsByRole(mux, graph, ws_idx, pane_def.role)) {
+            // Check if a pane with this role already exists (idempotent restore).
+            // Panes without explicit roles use their command as implicit identity.
+            const role_key = if (pane_def.role.len > 0) pane_def.role else pane_def.cmd;
+            if (role_key.len > 0 and paneExistsByRole(mux, graph, ws_idx, role_key)) {
                 continue; // Idempotent: skip
             }
 
@@ -579,7 +579,7 @@ fn expandEnvVars(input: []const u8, buf: []u8) ?[]const u8 {
             }
             i = var_end;
         } else {
-            if (out_pos >= buf.len) break;
+            if (out_pos + 1 > buf.len) break;
             buf[out_pos] = input[i];
             out_pos += 1;
             i += 1;
@@ -625,13 +625,13 @@ fn getPaneCwd(pane: anytype, buf: []u8) []const u8 {
     var proc_path: [64:0]u8 = undefined;
     const path = std.fmt.bufPrint(&proc_path, "/proc/{d}/cwd", .{pid}) catch return "";
     proc_path[path.len] = 0;
-    const rc = std.c.readlink(@ptrCast(proc_path[0..path.len :0]), buf.ptr, buf.len);
+    const rc = std.c.readlink(&proc_path, buf.ptr, buf.len);
     if (rc > 0) return buf[0..@intCast(rc)];
     return "";
 }
 
 /// Get the command of a pane. On Linux, reads /proc/<pid>/cmdline.
-/// Falls back to "shell" on non-Linux or on error.
+/// Falls back to empty string on non-Linux or on error.
 fn getPaneCmd(pane: anytype, buf: []u8) []const u8 {
     if (builtin.os.tag != .linux) return "";
     const pid = pane.pty.child_pid orelse return "";
@@ -639,16 +639,17 @@ fn getPaneCmd(pane: anytype, buf: []u8) []const u8 {
     const path = std.fmt.bufPrint(&proc_path, "/proc/{d}/cmdline", .{pid}) catch return "";
     proc_path[path.len] = 0;
 
-    // Read /proc/<pid>/cmdline (null-separated args)
-    const posix = std.posix;
-    const fd = posix.openatZ(posix.AT.FDCWD, @ptrCast(proc_path[0..path.len :0]), .{ .ACCMODE = .RDONLY }, 0) catch return "";
-    defer _ = posix.system.close(fd);
+    // Read /proc/<pid>/cmdline (null-separated args) via C open/read
+    const fd = std.c.open(&proc_path, .{ .ACCMODE = .RDONLY }, @as(std.posix.mode_t, 0));
+    if (fd < 0) return "";
+    defer _ = std.posix.system.close(fd);
 
-    const n = posix.read(fd, buf) catch return "";
-    if (n == 0) return "";
+    const n = std.c.read(fd, buf.ptr, buf.len);
+    if (n <= 0) return "";
+    const len: usize = @intCast(n);
 
     // Replace null bytes with spaces, trim trailing
-    var end: usize = n;
+    var end: usize = len;
     while (end > 0 and buf[end - 1] == 0) end -= 1;
     for (buf[0..end]) |*c| {
         if (c.* == 0) c.* = ' ';
