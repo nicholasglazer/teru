@@ -1534,7 +1534,8 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
 
         // If user is scrolled up and new lines were added to scrollback,
         // advance scroll_offset to keep the viewport pinned to the same content.
-        if (had_output and (mux.getScrollOffset() > 0 or mux.getScrollPixel() > 0)) {
+        // Skip if scroll_offset is small (user is scrolling back to bottom).
+        if (had_output and mux.getScrollOffset() > config.scroll_speed) {
             if (mux.getActivePane()) |pane| {
                 if (pane.grid.scrollback) |sb| {
                     const sb_count_after = sb.lineCount();
