@@ -1159,7 +1159,9 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 if (click_ws.split_root != null) {
                                     if (mux.layout_engine.workspaces[mux.active_workspace].findSplitForBorder(click_screen, mouse.x, mouse.y, 4)) |hit| {
                                         border_dragging = true;
-                                        border_drag_x = mouse.x;
+                                        // Store the correct axis for drag delta
+                                        const split_dir = mux.layout_engine.workspaces[mux.active_workspace].split_nodes[hit.node_idx].split.dir;
+                                        border_drag_x = if (split_dir == .horizontal) mouse.y else mouse.x;
                                         border_drag_ratio = mux.layout_engine.workspaces[mux.active_workspace].split_nodes[hit.node_idx].split.ratio;
                                         border_drag_node = hit.node_idx;
                                         continue;
@@ -1365,11 +1367,19 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                         const sz = win.getSize();
                         const ws_mut = &mux.layout_engine.workspaces[mux.active_workspace];
                         if (ws_mut.split_root != null and border_drag_node != std.math.maxInt(u16)) {
-                            // Tree split drag
-                            const content_w = sz.width -| padding * 2;
-                            if (content_w > 0) {
-                                const delta_px: i32 = @as(i32, @intCast(motion.x)) - @as(i32, @intCast(border_drag_x));
-                                const delta_ratio: f32 = @as(f32, @floatFromInt(delta_px)) / @as(f32, @floatFromInt(content_w));
+                            // Tree split drag — use correct axis based on split direction
+                            const SplitNode = @import("tiling/types.zig").SplitNode;
+                            const node = ws_mut.split_nodes[border_drag_node];
+                            const is_h = switch (node) {
+                                .split => |s| s.dir == .horizontal,
+                                .leaf => false,
+                            };
+                            _ = SplitNode;
+                            const content_dim = if (is_h) sz.height -| padding * 2 else sz.width -| padding * 2;
+                            const mouse_pos = if (is_h) motion.y else motion.x;
+                            if (content_dim > 0) {
+                                const delta_px: i32 = @as(i32, @intCast(mouse_pos)) - @as(i32, @intCast(border_drag_x));
+                                const delta_ratio: f32 = @as(f32, @floatFromInt(delta_px)) / @as(f32, @floatFromInt(content_dim));
                                 ws_mut.resizeSplit(border_drag_node, std.math.clamp(border_drag_ratio + delta_ratio, 0.15, 0.85));
                             }
                         } else {
