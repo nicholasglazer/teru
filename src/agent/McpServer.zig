@@ -202,7 +202,9 @@ fn handleToolsList(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teru_wait_for","description":"Check if text pattern exists in pane output (non-blocking)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"pattern":{{"type":"string"}},"lines":{{"type":"integer","default":20}}}},"required":["pane_id","pattern"]}}}},
         \\{{"name":"teru_set_layout","description":"Set the layout for a workspace. Layouts: master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer","default":0}},"layout":{{"type":"string","enum":["master-stack","grid","monocle","dishes","spiral","three-col","columns","accordion"]}}}},"required":["layout"]}}}},
         \\{{"name":"teru_set_config","description":"Set a config value. Writes to teru.conf and triggers hot-reload. Keys: font_size, padding, opacity, theme, cursor_shape, cursor_blink, scroll_speed, bold_is_bright, bell, copy_on_select, bg, fg, cursor_color, attention_color","inputSchema":{{"type":"object","properties":{{"key":{{"type":"string"}},"value":{{"type":"string"}}}},"required":["key","value"]}}}},
-        \\{{"name":"teru_get_config","description":"Get current live config values as JSON","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}}
+        \\{{"name":"teru_get_config","description":"Get current live config values as JSON","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
+        \\{{"name":"teru_session_save","description":"Save current session state to a .tsess file. Captures workspaces, layouts, pane CWDs and commands.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"Session name (saved to ~/.config/teru/sessions/NAME.tsess)"}}}},"required":["name"]}}}},
+        \\{{"name":"teru_session_restore","description":"Restore a session from a .tsess file. Idempotent: panes matched by role are not duplicated.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"Session name to restore"}}}},"required":["name"]}}}}
         \\]}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
@@ -326,6 +328,14 @@ fn handleToolsCall(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u
         return self.toolSetConfig(key, value, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_get_config")) {
         return self.toolGetConfig(buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teru_session_save")) {
+        const name = extractNestedJsonString(params_body, "name") orelse
+            return jsonRpcError(buf, id, -32602, "Missing name");
+        return self.toolSessionSave(name, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teru_session_restore")) {
+        const name = extractNestedJsonString(params_body, "name") orelse
+            return jsonRpcError(buf, id, -32602, "Missing name");
+        return self.toolSessionRestore(name, buf, id);
     } else {
         return jsonRpcError(buf, id, -32602, "Unknown tool");
     }
@@ -859,6 +869,126 @@ fn toolGetConfig(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         id_str,
     }) catch
         jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolSessionSave(self: *McpServer, name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+    const SessionConfig = @import("../config/Session.zig");
+
+    // Generate .tsess content from live state
+    const content = SessionConfig.saveFromLive(self.allocator, self.multiplexer, self.graph) catch
+        return jsonRpcError(buf, id, -32603, "Failed to snapshot session");
+    defer self.allocator.free(content);
+
+    // Build path: ~/.config/teru/sessions/NAME.tsess
+    const path = SessionConfig.getSessionPath(self.allocator, name) catch
+        return jsonRpcError(buf, id, -32603, "Failed to build session path");
+    defer self.allocator.free(path);
+
+    // Write to file (using C fopen/fwrite since we don't have io here)
+    var path_z: [512:0]u8 = undefined;
+    if (path.len >= path_z.len) return jsonRpcError(buf, id, -32603, "Path too long");
+    @memcpy(path_z[0..path.len], path);
+    path_z[path.len] = 0;
+
+    // Ensure parent directory exists
+    ensureParentDirC(path);
+
+    const f = std.c.fopen(@ptrCast(path_z[0..path.len :0]), "w");
+    if (f == null) return jsonRpcError(buf, id, -32603, "Cannot write session file");
+    _ = std.c.fwrite(content.ptr, 1, content.len, f.?);
+    _ = std.c.fclose(f.?);
+
+    // JSON-escape the path for the response
+    var escaped_path: [1024]u8 = undefined;
+    const epath = jsonEscapeString(path, &escaped_path);
+
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"saved to {s}"}}]}},"id":{s}}}
+    , .{ epath, id_str }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolSessionRestore(self: *McpServer, name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+    const SessionConfig = @import("../config/Session.zig");
+
+    // Build path and read file
+    const path = SessionConfig.getSessionPath(self.allocator, name) catch
+        return jsonRpcError(buf, id, -32603, "Failed to build session path");
+    defer self.allocator.free(path);
+
+    // Read file using C fopen/fread
+    var path_z: [512:0]u8 = undefined;
+    if (path.len >= path_z.len) return jsonRpcError(buf, id, -32603, "Path too long");
+    @memcpy(path_z[0..path.len], path);
+    path_z[path.len] = 0;
+
+    var file_buf: [SessionConfig.max_file_size]u8 = undefined;
+    var file_len: usize = 0;
+    {
+        const f = std.c.fopen(@ptrCast(path_z[0..path.len :0]), "r");
+        if (f == null) return jsonRpcError(buf, id, -32602, "Session file not found");
+        file_len = std.c.fread(&file_buf, 1, file_buf.len, f.?);
+        _ = std.c.fclose(f.?);
+    }
+
+    if (file_len == 0) return jsonRpcError(buf, id, -32602, "Session file empty");
+
+    // Parse
+    var def = SessionConfig.parse(self.allocator, file_buf[0..file_len]) catch
+        return jsonRpcError(buf, id, -32603, "Failed to parse session file");
+    defer def.deinit();
+
+    // Restore — determine default rows/cols from active pane or fallback
+    var rows: u16 = 24;
+    var cols: u16 = 80;
+    if (self.multiplexer.getActivePane()) |pane| {
+        rows = pane.grid.rows;
+        cols = pane.grid.cols;
+    }
+
+    SessionConfig.restore(&def, self.multiplexer, self.graph, rows, cols);
+
+    // Resize PTYs after restore
+    if (self.screen_width > 0 and self.cell_width > 0) {
+        // Resize all workspaces that have panes
+        const prev_ws = self.multiplexer.active_workspace;
+        for (0..SessionConfig.max_workspaces) |wi| {
+            const ws = &self.multiplexer.layout_engine.workspaces[wi];
+            if (ws.node_ids.items.len > 0) {
+                self.multiplexer.switchWorkspace(@intCast(wi));
+                self.multiplexer.resizePanePtys(self.screen_width, self.screen_height, self.cell_width, self.cell_height, self.padding);
+            }
+        }
+        self.multiplexer.switchWorkspace(prev_ws);
+    }
+
+    // Mark all panes dirty
+    for (self.multiplexer.panes.items) |*pane| pane.grid.dirty = true;
+
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"restored session {s} ({d} workspaces)"}}]}},"id":{s}}}
+    , .{ name, def.workspace_count, id_str }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+/// Ensure parent directory exists using C mkdir.
+fn ensureParentDirC(path: []const u8) void {
+    // Find last '/' to get parent dir
+    const last_slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return;
+    if (last_slash == 0) return;
+
+    // Walk path components and create each one
+    var path_z: [512:0]u8 = undefined;
+    var i: usize = 1;
+    while (i <= last_slash and i < path_z.len) : (i += 1) {
+        if (path[i] == '/' or i == last_slash) {
+            @memcpy(path_z[0..i], path[0..i]);
+            path_z[i] = 0;
+            _ = std.c.mkdir(@ptrCast(path_z[0..i :0]), 0o755);
+        }
+    }
 }
 
 fn toolScroll(self: *McpServer, pane_id: u64, direction: []const u8, lines: u32, buf: []u8, id: ?[]const u8) []const u8 {
