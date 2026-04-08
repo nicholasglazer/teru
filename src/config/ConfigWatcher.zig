@@ -129,7 +129,8 @@ fn initKqueue() ?ConfigWatcher {
         .data = 0,
         .udata = 0,
     }};
-    const rc = std.posix.system.kevent(kq, &changelist, 1, null, 0, null);
+    var empty_events: [1]std.posix.Kevent = undefined;
+    const rc = std.posix.system.kevent(kq, &changelist, 1, &empty_events, 0, null);
     if (rc < 0) {
         _ = posix.system.close(file_fd);
         _ = posix.system.close(kq);
@@ -142,7 +143,8 @@ fn initKqueue() ?ConfigWatcher {
 fn pollKqueue(self: *ConfigWatcher) bool {
     const timeout = std.posix.timespec{ .sec = 0, .nsec = 0 }; // non-blocking
     var events: [4]std.posix.Kevent = undefined;
-    const n = std.posix.system.kevent(self.fd, null, 0, &events, events.len, &timeout);
+    var empty_changelist: [1]std.posix.Kevent = undefined;
+    const n = std.posix.system.kevent(self.fd, &empty_changelist, 0, &events, events.len, &timeout);
     return n > 0;
 }
 

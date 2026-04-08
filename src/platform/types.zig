@@ -56,6 +56,8 @@ pub const keycodes = switch (@import("builtin").os.tag) {
 const LinuxKeycodes = struct {
     pub const RALT: u32 = 108;
     pub const ALT_MASK: u32 = 8; // Mod1Mask
+    pub const CTRL_MASK: u32 = 4; // ControlMask
+    pub const SHIFT_MASK: u32 = 1; // ShiftMask
     pub fn digitToWorkspace(keycode: u32) ?u8 {
         return if (keycode >= 10 and keycode <= 18) @intCast(keycode - 10) else null;
     }
@@ -66,6 +68,8 @@ const LinuxKeycodes = struct {
 const MacosKeycodes = struct {
     pub const RALT: u32 = 61; // kVK_RightOption
     pub const ALT_MASK: u32 = 0x080000; // NSEventModifierFlagOption
+    pub const CTRL_MASK: u32 = 0x040000; // NSEventModifierFlagControl
+    pub const SHIFT_MASK: u32 = 0x020000; // NSEventModifierFlagShift
     pub fn digitToWorkspace(keycode: u32) ?u8 {
         return switch (keycode) {
             18 => 0, 19 => 1, 20 => 2, 21 => 3, 23 => 4, // kVK_ANSI_1-5
@@ -79,6 +83,8 @@ const MacosKeycodes = struct {
 const WindowsKeycodes = struct {
     pub const RALT: u32 = 0xA5; // VK_RMENU
     pub const ALT_MASK: u32 = 0x01; // MOD_ALT
+    pub const CTRL_MASK: u32 = 0x02; // MOD_CONTROL
+    pub const SHIFT_MASK: u32 = 0x04; // MOD_SHIFT
     pub fn digitToWorkspace(keycode: u32) ?u8 {
         return if (keycode >= 0x31 and keycode <= 0x39) @intCast(keycode - 0x31) else null;
     }

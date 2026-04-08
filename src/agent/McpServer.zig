@@ -154,6 +154,10 @@ fn dispatch(self: *McpServer, body: []const u8, resp_buf: []u8) []const u8 {
         return self.handleToolsList(resp_buf, id);
     } else if (std.mem.eql(u8, method, "tools/call")) {
         return self.handleToolsCall(body, resp_buf, id);
+    } else if (std.mem.eql(u8, method, "prompts/list")) {
+        return self.handlePromptsList(resp_buf, id);
+    } else if (std.mem.eql(u8, method, "prompts/get")) {
+        return self.handlePromptsGet(body, resp_buf, id);
     } else if (std.mem.eql(u8, method, "initialize")) {
         return self.handleInitialize(resp_buf, id);
     } else if (std.mem.startsWith(u8, method, "notifications/")) {
@@ -172,7 +176,7 @@ fn handleInitialize(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
     _ = self;
     const id_str = id orelse "null";
     return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"protocolVersion":"2025-03-26","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"teru","version":"0.3.5"}}}},"id":{s}}}
+        \\{{"jsonrpc":"2.0","result":{{"protocolVersion":"2025-03-26","capabilities":{{"tools":{{}},"prompts":{{}}}},"serverInfo":{{"name":"teru","version":"0.3.6"}}}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
 }
@@ -196,10 +200,47 @@ fn handleToolsList(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teru_switch_workspace","description":"Switch the active workspace (0-8)","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer"}}}},"required":["workspace"]}}}},
         \\{{"name":"teru_scroll","description":"Scroll a pane's scrollback (up/down/bottom)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"direction":{{"type":"string","enum":["up","down","bottom"]}},"lines":{{"type":"integer","default":10}}}},"required":["pane_id","direction"]}}}},
         \\{{"name":"teru_wait_for","description":"Check if text pattern exists in pane output (non-blocking)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"pattern":{{"type":"string"}},"lines":{{"type":"integer","default":20}}}},"required":["pane_id","pattern"]}}}},
-        \\{{"name":"teru_set_layout","description":"Set the layout for a workspace. Layouts: master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer","default":0}},"layout":{{"type":"string","enum":["master-stack","grid","monocle","dishes","spiral","three-col","columns","accordion"]}}}},"required":["layout"]}}}}
+        \\{{"name":"teru_set_layout","description":"Set the layout for a workspace. Layouts: master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer","default":0}},"layout":{{"type":"string","enum":["master-stack","grid","monocle","dishes","spiral","three-col","columns","accordion"]}}}},"required":["layout"]}}}},
+        \\{{"name":"teru_set_config","description":"Set a config value. Writes to teru.conf and triggers hot-reload. Keys: font_size, padding, opacity, theme, cursor_shape, cursor_blink, scroll_speed, bold_is_bright, bell, copy_on_select, bg, fg, cursor_color, attention_color","inputSchema":{{"type":"object","properties":{{"key":{{"type":"string"}},"value":{{"type":"string"}}}},"required":["key","value"]}}}},
+        \\{{"name":"teru_get_config","description":"Get current live config values as JSON","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}}
         \\]}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+// ── MCP Prompts ───────────────────────────────────────────────
+
+fn handlePromptsList(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
+    _ = self;
+    const id_str = id orelse "null";
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"prompts":[
+        \\{{"name":"workspace_setup","description":"Set up teru workspaces with panes, layouts, and commands. Describe your desired workspace configuration in natural language.","arguments":[{{"name":"description","description":"Natural language description of desired workspace setup (e.g. '4 workspaces, workspace 1 has 1 pane, workspace 2 has 2 panes, each running vim')","required":true}}]}}
+        \\]}},"id":{s}}}
+    , .{id_str}) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn handlePromptsGet(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    _ = self;
+    const id_str = id orelse "null";
+    const params_start = std.mem.indexOf(u8, body, "\"params\"") orelse
+        return jsonRpcError(buf, id, -32602, "Missing params");
+    const params_body = body[params_start..];
+    const name = extractNestedJsonString(params_body, "name") orelse
+        return jsonRpcError(buf, id, -32602, "Missing params.name");
+
+    if (std.mem.eql(u8, name, "workspace_setup")) {
+        const user_desc = extractNestedJsonString(params_body, "description") orelse "default setup";
+        return std.fmt.bufPrint(buf,
+            \\{{"jsonrpc":"2.0","result":{{"messages":[
+            \\{{"role":"user","content":{{"type":"text","text":"Set up teru workspaces as follows: {s}\n\nYou have these teru MCP tools:\n- teru_switch_workspace(workspace) — switch to workspace 0-8\n- teru_create_pane(workspace, direction) — spawn a new pane (starts user shell)\n- teru_send_input(pane_id, text) — type text into pane (omit \\n to leave command typed but not executed)\n- teru_send_keys(pane_id, keys) — send keystrokes like ['enter'], ['ctrl+c']\n- teru_set_layout(workspace, layout) — layouts: master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion\n- teru_set_config(key, value) — set appearance: font_size, opacity, theme, bg, fg, padding, cursor_shape\n- teru_focus_pane(pane_id) — focus a pane\n- teru_list_panes() — list all panes to get IDs\n\nWorkflow:\n1. For each workspace: switch to it, create panes, set layout\n2. To type a command without running it: teru_send_input(id, 'command') — no \\n\n3. To type and execute: teru_send_input(id, 'command') then teru_send_keys(id, ['enter'])\n4. After creating panes, call teru_list_panes() to get their IDs for send_input\n5. Workspace 0 already has 1 pane — create additional panes as needed"}}}}
+            \\]}},"id":{s}}}
+        , .{ user_desc, id_str }) catch
+            jsonRpcError(buf, id, -32603, "Internal error");
+    } else {
+        return jsonRpcError(buf, id, -32602, "Unknown prompt");
+    }
 }
 
 fn handleToolsCall(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -277,6 +318,14 @@ fn handleToolsCall(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u
             return jsonRpcError(buf, id, -32602, "Missing layout");
         const workspace = extractNestedJsonInt(params_body, "workspace") orelse 0;
         return self.toolSetLayout(@intCast(workspace), layout_str, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teru_set_config")) {
+        const key = extractNestedJsonString(params_body, "key") orelse
+            return jsonRpcError(buf, id, -32602, "Missing key");
+        const value = extractNestedJsonString(params_body, "value") orelse
+            return jsonRpcError(buf, id, -32602, "Missing value");
+        return self.toolSetConfig(key, value, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teru_get_config")) {
+        return self.toolGetConfig(buf, id);
     } else {
         return jsonRpcError(buf, id, -32602, "Unknown tool");
     }
@@ -691,6 +740,124 @@ fn toolSetLayout(self: *McpServer, workspace: u8, layout_str: []const u8, buf: [
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
     , .{id_str}) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolSetConfig(_: *McpServer, key: []const u8, value: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+
+    // Validate key is a known config option
+    const valid_keys = [_][]const u8{
+        "font_size", "padding", "opacity", "theme", "cursor_shape", "cursor_blink",
+        "scroll_speed", "bold_is_bright", "bell", "copy_on_select", "bg", "fg",
+        "cursor_color", "selection_bg", "border_active", "border_inactive",
+        "attention_color", "scrollback_lines", "mouse_hide_when_typing",
+        "show_status_bar", "alt_workspace_switch",
+    };
+    var is_valid = false;
+    for (valid_keys) |vk| {
+        if (std.mem.eql(u8, key, vk)) {
+            is_valid = true;
+            break;
+        }
+    }
+    if (!is_valid)
+        return jsonRpcError(buf, id, -32602, "Unknown config key");
+
+    // Read existing config, update or append the key
+    const home = compat.getenv("HOME") orelse
+        return jsonRpcError(buf, id, -32603, "HOME not set");
+
+    var path_buf: [512:0]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/.config/teru/teru.conf", .{home}) catch
+        return jsonRpcError(buf, id, -32603, "Path too long");
+    path_buf[path.len] = 0;
+
+    // Build the new line: "key = value\n"
+    var line_buf: [256]u8 = undefined;
+    const new_line = std.fmt.bufPrint(&line_buf, "{s} = {s}\n", .{ key, value }) catch
+        return jsonRpcError(buf, id, -32603, "Value too long");
+
+    // Read existing file content
+    var file_buf: [16384]u8 = undefined;
+    var file_len: usize = 0;
+    {
+        const f = std.c.fopen(@ptrCast(path_buf[0..path.len :0]), "r");
+        if (f != null) {
+            file_len = std.c.fread(&file_buf, 1, file_buf.len, f.?);
+            _ = std.c.fclose(f.?);
+        }
+    }
+
+    // Write back: replace existing key or append
+    {
+        const f = std.c.fopen(@ptrCast(path_buf[0..path.len :0]), "w");
+        if (f == null)
+            return jsonRpcError(buf, id, -32603, "Cannot write config file");
+
+        var replaced = false;
+        var pos: usize = 0;
+        while (pos < file_len) {
+            // Find end of current line
+            const line_end = std.mem.indexOfScalar(u8, file_buf[pos..file_len], '\n') orelse (file_len - pos);
+            const line = file_buf[pos .. pos + line_end];
+
+            // Check if this line starts with our key
+            if (lineMatchesKey(line, key)) {
+                _ = std.c.fwrite(new_line.ptr, 1, new_line.len, f.?);
+                replaced = true;
+            } else {
+                _ = std.c.fwrite(file_buf[pos..].ptr, 1, line_end, f.?);
+                _ = std.c.fwrite("\n", 1, 1, f.?);
+            }
+            pos += line_end + 1;
+        }
+
+        if (!replaced) {
+            _ = std.c.fwrite(new_line.ptr, 1, new_line.len, f.?);
+        }
+        _ = std.c.fclose(f.?);
+    }
+
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"set {s} = {s}"}}]}},"id":{s}}}
+    , .{ key, value, id_str }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn lineMatchesKey(line: []const u8, key: []const u8) bool {
+    // Trim leading whitespace
+    var start: usize = 0;
+    while (start < line.len and (line[start] == ' ' or line[start] == '\t')) start += 1;
+    const trimmed = line[start..];
+    if (trimmed.len < key.len) return false;
+    if (!std.mem.startsWith(u8, trimmed, key)) return false;
+    // After key, expect whitespace or '='
+    if (trimmed.len == key.len) return true;
+    const next = trimmed[key.len];
+    return next == ' ' or next == '=' or next == '\t';
+}
+
+fn toolGetConfig(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+    const mux = self.multiplexer;
+    const ws = &mux.layout_engine.workspaces[mux.active_workspace];
+
+    // Build JSON snapshot of current live config values
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\\"active_workspace\\":{d},\\"layout\\":\\"{s}\\",\\"master_ratio\\":{d},\\"pane_count\\":{d},\\"screen_width\\":{d},\\"screen_height\\":{d},\\"cell_width\\":{d},\\"cell_height\\":{d},\\"padding\\":{d}}}"}}]}},"id":{s}}}
+    , .{
+        mux.active_workspace,
+        @tagName(ws.layout),
+        @as(u32, @intFromFloat(ws.master_ratio * 100)),
+        mux.panes.items.len,
+        self.screen_width,
+        self.screen_height,
+        self.cell_width,
+        self.cell_height,
+        self.padding,
+        id_str,
+    }) catch
         jsonRpcError(buf, id, -32603, "Internal error");
 }
 

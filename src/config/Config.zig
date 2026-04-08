@@ -19,6 +19,7 @@ const compat = @import("../compat.zig");
 const Grid = @import("../core/Grid.zig");
 const LayoutEngine = @import("../tiling/LayoutEngine.zig");
 const themes = @import("themes.zig");
+pub const Keybinds = @import("Keybinds.zig");
 const Config = @This();
 
 pub const Bell = enum { visual, none };
@@ -187,6 +188,10 @@ workspace_names: [9]?[]const u8 = .{null} ** 9,
 workspace_layout_lists: [9][LayoutEngine.max_layouts]LayoutEngine.Layout = undefined,
 workspace_layout_counts: [9]u8 = .{0} ** 9,
 
+// Keybindings (loaded from [keybinds.*] sections or keybinds.conf)
+keybinds: Keybinds.Keybinds = .{},
+keybinds_loaded: bool = false, // true once any [keybinds.*] section is parsed
+
 allocator: Allocator,
 
 // ── Public API ────────────────────────────────────────────────────
@@ -195,6 +200,7 @@ allocator: Allocator,
 /// Returns defaults if the file does not exist.
 pub fn load(allocator: Allocator, io: Io) !Config {
     var config = Config{ .allocator = allocator };
+    config.keybinds.loadDefaults();
 
     const home = compat.getenv("HOME") orelse return config;
 
@@ -376,6 +382,7 @@ fn parseWithDepth(self: *Config, allocator: Allocator, content: []const u8, io: 
     if (depth > 4) return; // prevent infinite include cycles
 
     var current_section: ?[]const u8 = null;
+    var keybind_mode: ?Keybinds.Mode = null; // non-null when inside [keybinds.*]
     var line_iter = std.mem.splitScalar(u8, content, '\n');
     while (line_iter.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, &std.ascii.whitespace);
@@ -397,7 +404,26 @@ fn parseWithDepth(self: *Config, allocator: Allocator, content: []const u8, io: 
         if (line[0] == '[') {
             if (std.mem.indexOfScalar(u8, line, ']')) |end| {
                 current_section = line[1..end];
+                // Check for [keybinds.MODE]
+                if (std.mem.startsWith(u8, current_section.?, "keybinds.")) {
+                    const mode_str = current_section.?["keybinds.".len..];
+                    keybind_mode = Keybinds.Mode.fromString(mode_str);
+                    if (keybind_mode != null and !self.keybinds_loaded) {
+                        // First keybinds section: start fresh (user overrides all)
+                        self.keybinds.count = 0;
+                        self.keybinds.loadDefaults();
+                        self.keybinds_loaded = true;
+                    }
+                } else {
+                    keybind_mode = null;
+                }
             }
+            continue;
+        }
+
+        // If inside a [keybinds.*] section, route to keybind parser
+        if (keybind_mode) |mode| {
+            self.keybinds.parseLine(mode, line);
             continue;
         }
 

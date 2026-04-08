@@ -185,6 +185,7 @@ extern "xcb" fn xcb_free_pixmap(conn: *xcb_connection_t, pixmap: u32) callconv(.
 extern "xcb" fn xcb_create_cursor(conn: *xcb_connection_t, cid: u32, source: u32, mask: u32, fore_red: u16, fore_green: u16, fore_blue: u16, back_red: u16, back_green: u16, back_blue: u16, x: u16, y: u16) callconv(.c) xcb_void_cookie_t;
 extern "xcb" fn xcb_free_cursor(conn: *xcb_connection_t, cursor: u32) callconv(.c) xcb_void_cookie_t;
 extern "xcb" fn xcb_change_window_attributes(conn: *xcb_connection_t, window: xcb_window_t, value_mask: u32, value_list: ?*const anyopaque) callconv(.c) xcb_void_cookie_t;
+extern "xcb" fn xcb_configure_window(conn: *xcb_connection_t, window: xcb_window_t, value_mask: u16, value_list: *const anyopaque) callconv(.c) xcb_void_cookie_t;
 
 const XCB_CW_CURSOR: u32 = 0x4000;
 const XCB_EVENT_MASK_POINTER_MOTION: u32 = 0x40; // motion without button held
@@ -527,6 +528,15 @@ pub const X11Window = struct {
         _ = xcb_change_property(self.connection, XCB_PROP_MODE_REPLACE, self.window, net_wm_name, utf8_atom, 8, @intCast(title.len), title.ptr);
         _ = xcb_change_property(self.connection, XCB_PROP_MODE_REPLACE, self.window, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8, @intCast(title.len), title.ptr);
         _ = xcb_flush(self.connection);
+    }
+
+    pub fn setSize(self: *X11Window, width: u32, height: u32) void {
+        const values = [2]u32{ width, height };
+        // XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT = 0x04 | 0x08
+        _ = xcb_configure_window(self.connection, self.window, 0x04 | 0x08, &values);
+        _ = xcb_flush(self.connection);
+        self.width = width;
+        self.height = height;
     }
 
     pub fn getSize(self: *const X11Window) platform.Size {

@@ -105,6 +105,13 @@ const DualPlatform = union(enum) {
         }
     }
 
+    pub fn setSize(self: *DualPlatform, width: u32, height: u32) void {
+        switch (self.*) {
+            .x11 => |*w| w.setSize(width, height),
+            .wayland_ => |*w| w.setSize(width, height),
+        }
+    }
+
     pub fn getSize(self: *const DualPlatform) Size {
         return switch (self.*) {
             .x11 => |*w| w.getSize(),
@@ -153,6 +160,10 @@ const X11Only = struct {
         self.inner.setTitle(title);
     }
 
+    pub fn setSize(self: *X11Only, width: u32, height: u32) void {
+        self.inner.setSize(width, height);
+    }
+
     pub fn getSize(self: *const X11Only) Size {
         return self.inner.getSize();
     }
@@ -190,6 +201,10 @@ const WaylandOnly = struct {
 
     pub fn setTitle(self: *WaylandOnly, title: []const u8) void {
         self.inner.setTitle(title);
+    }
+
+    pub fn setSize(self: *WaylandOnly, width: u32, height: u32) void {
+        self.inner.setSize(width, height);
     }
 
     pub fn getSize(self: *const WaylandOnly) Size {

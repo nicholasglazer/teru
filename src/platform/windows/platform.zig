@@ -155,6 +155,8 @@ const SW_SHOW: INT = 5;
 
 // SetLayeredWindowAttributes flags
 const LWA_ALPHA: DWORD = 0x00000002;
+const SWP_NOMOVE: UINT = 0x0002;
+const SWP_NOZORDER: UINT = 0x0004;
 
 // WHEEL_DELTA for WM_MOUSEWHEEL
 const WHEEL_DELTA: i16 = 120;
@@ -195,6 +197,7 @@ extern "user32" fn SetWindowLongPtrW(hWnd: HWND, nIndex: INT, dwNewLong: LONG_PT
 extern "user32" fn GetWindowLongPtrW(hWnd: HWND, nIndex: INT) callconv(.c) LONG_PTR;
 extern "user32" fn SetWindowTextW(hWnd: HWND, lpString: LPCWSTR) callconv(.c) BOOL;
 extern "user32" fn SetLayeredWindowAttributes(hWnd: HWND, crKey: DWORD, bAlpha: BYTE, dwFlags: DWORD) callconv(.c) BOOL;
+extern "user32" fn SetWindowPos(hWnd: HWND, hWndInsertAfter: HWND, X: c_int, Y: c_int, cx: c_int, cy: c_int, uFlags: UINT) callconv(.c) BOOL;
 extern "user32" fn SetCursor(hCursor: HCURSOR) callconv(.c) HCURSOR;
 extern "user32" fn GetKeyState(nVirtKey: INT) callconv(.c) i16;
 extern "user32" fn SetWindowLongW(hWnd: HWND, nIndex: INT, dwNewLong: LONG) callconv(.c) LONG;
@@ -417,6 +420,13 @@ pub const Win32Window = struct {
             DIB_RGB_COLORS,
             SRCCOPY,
         );
+    }
+
+    pub fn setSize(self: *Win32Window, width: u32, height: u32) void {
+        // HWND_TOP = null cast to HWND — keep current Z-order
+        _ = SetWindowPos(self.hwnd, @ptrFromInt(0), 0, 0, @intCast(width), @intCast(height), SWP_NOMOVE | SWP_NOZORDER);
+        self.state.width = width;
+        self.state.height = height;
     }
 
     pub fn getSize(self: *const Win32Window) Size {
@@ -672,6 +682,12 @@ pub const Platform = union(enum) {
     pub fn putFramebuffer(self: *Platform, pixels: []const u32, width: u32, height: u32) void {
         switch (self.*) {
             .win32 => |*w| w.putFramebuffer(pixels, width, height),
+        }
+    }
+
+    pub fn setSize(self: *Platform, width: u32, height: u32) void {
+        switch (self.*) {
+            .win32 => |*w| w.setSize(width, height),
         }
     }
 

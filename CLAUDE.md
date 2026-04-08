@@ -11,12 +11,12 @@ zig build run -- --raw  # run (TTY mode)
 ## Architecture
 - src/core/ -- VtParser, Grid, Pane, Multiplexer, Selection, KeyHandler, Clipboard, ViMode
 - src/server/ -- Daemon persistence (daemon.zig, protocol.zig, ipc.zig cross-platform IPC)
-- src/pty/ -- PTY management (pty.zig dispatch, Pty.zig POSIX, WinPty.zig ConPTY)
+- src/pty/ -- PTY management (pty.zig dispatch, PosixPty.zig POSIX, WinPty.zig ConPTY)
 - src/graph/ -- ProcessGraph (DAG of all processes/agents)
 - src/agent/ -- OSC 9999 protocol, HookHandler, HookListener, McpServer, PaneBackend
 - src/tiling/ -- Layout engine (master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion)
 - src/persist/ -- Session serialization, binary format
-- src/config/ -- Config file parser (key=value format)
+- src/config/ -- Config file parser (key=value format), Keybinds.zig (configurable bindings), ConfigWatcher.zig
 - src/render/ -- CPU SIMD renderer, stb_truetype FontAtlas
 - src/compat.zig -- Cross-platform primitives: monotonicNow, sleepNs, getPid, getUid, posixFork, forkExec, MemWriter/MemReader
 - src/platform/ -- Platform shells: X11+Wayland/Linux, AppKit/macOS, Win32/Windows; keyboard translation per OS

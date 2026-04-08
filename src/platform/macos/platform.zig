@@ -6,11 +6,17 @@
 
 const std = @import("std");
 
-const c = @cImport({
-    @cInclude("objc/runtime.h");
-    @cInclude("objc/message.h");
-    @cInclude("CoreGraphics/CGGeometry.h");
-});
+// ── Objective-C runtime (hand-declared, no @cImport) ──────────────────
+//
+// Zig's C translator cannot handle Objective-C block syntax in
+// objc/runtime.h, so we declare the minimal set of externs we need.
+
+const SEL = *opaque {};
+
+extern "c" fn sel_registerName(name: [*:0]const u8) SEL;
+extern "c" fn objc_getClass(name: [*:0]const u8) ?*anyopaque;
+extern "c" fn objc_msgSend() callconv(.c) void;
+extern "c" fn objc_msgSend_stret() callconv(.c) void;
 
 // ── Objective-C runtime helpers ─────────────────────────────────────
 
@@ -18,63 +24,63 @@ const id = *anyopaque;
 
 // objc_msgSend has variable calling convention depending on return type.
 // We cast the function pointer to the signature we need at each call site.
-const objc_msgSend_fn = c.objc_msgSend;
-const objc_msgSend_stret_fn = c.objc_msgSend_stret;
+const objc_msgSend_fn = objc_msgSend;
+const objc_msgSend_stret_fn = objc_msgSend_stret;
 
-fn sel(name: [*:0]const u8) c.SEL {
-    return c.sel_registerName(name);
+fn sel(name: [*:0]const u8) SEL {
+    return sel_registerName(name);
 }
 
 fn cls(name: [*:0]const u8) id {
-    return @ptrCast(c.objc_getClass(name) orelse unreachable);
+    return @ptrCast(objc_getClass(name) orelse unreachable);
 }
 
 /// Typed objc_msgSend wrappers using concrete function pointer types.
 /// Avoids @Type (removed in Zig 0.16) by declaring explicit signatures per arity.
 
-fn msgSend(target: id, selector: c.SEL, args: anytype) id {
+fn msgSend(target: id, selector: SEL, args: anytype) id {
     return msgSendTyped(id, target, selector, args);
 }
 
-fn msgSendVoid(target: id, selector: c.SEL, args: anytype) void {
+fn msgSendVoid(target: id, selector: SEL, args: anytype) void {
     _ = msgSendTyped(id, target, selector, args);
 }
 
-fn msgSendBool(target: id, selector: c.SEL, args: anytype) bool {
+fn msgSendBool(target: id, selector: SEL, args: anytype) bool {
     return msgSendTyped(i8, target, selector, args) != 0;
 }
 
-fn msgSendU64(target: id, selector: c.SEL, args: anytype) u64 {
+fn msgSendU64(target: id, selector: SEL, args: anytype) u64 {
     return msgSendTyped(u64, target, selector, args);
 }
 
-fn msgSendI64(target: id, selector: c.SEL, args: anytype) i64 {
+fn msgSendI64(target: id, selector: SEL, args: anytype) i64 {
     return msgSendTyped(i64, target, selector, args);
 }
 
-fn msgSendU16(target: id, selector: c.SEL, args: anytype) u16 {
+fn msgSendU16(target: id, selector: SEL, args: anytype) u16 {
     return msgSendTyped(u16, target, selector, args);
 }
 
-fn msgSendF64(target: id, selector: c.SEL, args: anytype) f64 {
+fn msgSendF64(target: id, selector: SEL, args: anytype) f64 {
     return msgSendTyped(f64, target, selector, args);
 }
 
 /// Call objc_msgSend with concrete function pointer types per arity.
-inline fn msgSendTyped(comptime Ret: type, target: id, selector: c.SEL, args: anytype) Ret {
+inline fn msgSendTyped(comptime Ret: type, target: id, selector: SEL, args: anytype) Ret {
     const base = &objc_msgSend_fn;
     switch (args.len) {
-        0 => return @as(*const fn (id, c.SEL) callconv(.c) Ret, @ptrCast(base))(target, selector),
-        1 => return @as(*const fn (id, c.SEL, @TypeOf(args[0])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0]),
-        2 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1]),
-        3 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2]),
-        4 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3]),
-        5 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4]),
-        6 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4]), @TypeOf(args[5])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4], args[5]),
-        7 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4]), @TypeOf(args[5]), @TypeOf(args[6])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4], args[5], args[6]),
-        8 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4]), @TypeOf(args[5]), @TypeOf(args[6]), @TypeOf(args[7])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]),
-        9 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4]), @TypeOf(args[5]), @TypeOf(args[6]), @TypeOf(args[7]), @TypeOf(args[8])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]),
-        10 => return @as(*const fn (id, c.SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4]), @TypeOf(args[5]), @TypeOf(args[6]), @TypeOf(args[7]), @TypeOf(args[8]), @TypeOf(args[9])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9]),
+        0 => return @as(*const fn (id, SEL) callconv(.c) Ret, @ptrCast(base))(target, selector),
+        1 => return @as(*const fn (id, SEL, @TypeOf(args[0])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0]),
+        2 => return @as(*const fn (id, SEL, @TypeOf(args[0]), @TypeOf(args[1])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1]),
+        3 => return @as(*const fn (id, SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2]),
+        4 => return @as(*const fn (id, SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3]),
+        5 => return @as(*const fn (id, SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4]),
+        6 => return @as(*const fn (id, SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4]), @TypeOf(args[5])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4], args[5]),
+        7 => return @as(*const fn (id, SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4]), @TypeOf(args[5]), @TypeOf(args[6])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4], args[5], args[6]),
+        8 => return @as(*const fn (id, SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4]), @TypeOf(args[5]), @TypeOf(args[6]), @TypeOf(args[7])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]),
+        9 => return @as(*const fn (id, SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4]), @TypeOf(args[5]), @TypeOf(args[6]), @TypeOf(args[7]), @TypeOf(args[8])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]),
+        10 => return @as(*const fn (id, SEL, @TypeOf(args[0]), @TypeOf(args[1]), @TypeOf(args[2]), @TypeOf(args[3]), @TypeOf(args[4]), @TypeOf(args[5]), @TypeOf(args[6]), @TypeOf(args[7]), @TypeOf(args[8]), @TypeOf(args[9])) callconv(.c) Ret, @ptrCast(base))(target, selector, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9]),
         else => @compileError("msgSendTyped: too many arguments (max 10 extra args supported)"),
     }
 }
@@ -386,7 +392,7 @@ pub const MacosWindow = struct {
         const NSSize = extern struct { width: f64, height: f64 };
         const img_size = NSSize{ .width = @floatFromInt(blit_w), .height = @floatFromInt(blit_h) };
 
-        const FnInitSize = *const fn (id, c.SEL, NSSize) callconv(.c) id;
+        const FnInitSize = *const fn (id, SEL, NSSize) callconv(.c) id;
         const init_size_fn: FnInitSize = @ptrCast(&objc_msgSend_fn);
         const image = init_size_fn(alloc_image, img_size_sel, img_size);
 
@@ -400,7 +406,7 @@ pub const MacosWindow = struct {
         const zero_point = NSPoint{ .x = 0.0, .y = 0.0 };
         const zero_rect = CGRect{ .x = 0.0, .y = 0.0, .width = 0.0, .height = 0.0 };
 
-        const FnDraw = *const fn (id, c.SEL, NSPoint, CGRect, u64, f64) callconv(.c) void;
+        const FnDraw = *const fn (id, SEL, NSPoint, CGRect, u64, f64) callconv(.c) void;
         const draw_fn: FnDraw = @ptrCast(&objc_msgSend_fn);
         draw_fn(image, sel("drawAtPoint:fromRect:operation:fraction:"), zero_point, zero_rect, 1, // NSCompositingOperationCopy
             1.0);
@@ -413,6 +419,21 @@ pub const MacosWindow = struct {
         // Release
         msgSendVoid(bitmap, sel("release"), .{});
         msgSendVoid(image, sel("release"), .{});
+    }
+
+    pub fn setSize(self: *MacosWindow, width: u32, height: u32) void {
+        const frame = self.getViewFrame();
+        const new_rect = CGRect{
+            .x = frame.x,
+            .y = frame.y,
+            .width = @floatFromInt(width),
+            .height = @floatFromInt(height),
+        };
+        const FnSetFrame = *const fn (id, SEL, CGRect, i8) callconv(.c) void;
+        const set_fn: FnSetFrame = @ptrCast(&objc_msgSend_fn);
+        set_fn(self.ns_window, sel("setFrame:display:"), new_rect, 1);
+        self.width = width;
+        self.height = height;
     }
 
     pub fn getSize(self: *const MacosWindow) Size {
@@ -451,7 +472,7 @@ pub const MacosWindow = struct {
         // [event locationInWindow] returns NSPoint (two f64s).
         // On arm64 (Apple Silicon), small structs are returned in registers via objc_msgSend.
         // On x86_64, NSPoint (16 bytes) is returned in registers (not stret).
-        const FnLoc = *const fn (id, c.SEL) callconv(.c) NSPoint;
+        const FnLoc = *const fn (id, SEL) callconv(.c) NSPoint;
         const loc_fn: FnLoc = @ptrCast(&objc_msgSend_fn);
         const loc = loc_fn(event, sel("locationInWindow"));
 
@@ -480,7 +501,7 @@ pub const MacosWindow = struct {
     fn getViewFrame(self: *MacosWindow) CGRect {
         // [self.ns_view frame] returns CGRect — a large struct, needs stret on x86_64.
         // On arm64 (Apple Silicon), stret is not used.
-        const FnFrame = *const fn (id, c.SEL) callconv(.c) CGRect;
+        const FnFrame = *const fn (id, SEL) callconv(.c) CGRect;
         const frame_fn: FnFrame = @ptrCast(&objc_msgSend_stret_fn);
         return frame_fn(self.ns_view, sel("frame"));
     }
@@ -534,6 +555,12 @@ pub const Platform = union(enum) {
     pub fn showCursor(self: *Platform) void {
         switch (self.*) {
             .macos => |*w| w.showCursor(),
+        }
+    }
+
+    pub fn setSize(self: *Platform, width: u32, height: u32) void {
+        switch (self.*) {
+            .macos => |*w| w.setSize(width, height),
         }
     }
 

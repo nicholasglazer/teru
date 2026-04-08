@@ -3,4 +3,4 @@ const builtin = @import("builtin");
 pub const Pty = if (builtin.os.tag == .windows)
     @import("WinPty.zig")
 else
-    @import("Pty.zig");
+    @import("PosixPty.zig");

@@ -621,6 +621,10 @@ pub const WaylandWindow = struct {
         xdg_toplevel_set_title(self.xdg_toplevel_ptr, @ptrCast(&buf));
     }
 
+    /// Request window resize. On Wayland, the compositor controls size —
+    /// this is a no-op. The compositor sends configure events with actual size.
+    pub fn setSize(_: *WaylandWindow, _: u32, _: u32) void {}
+
     pub fn getSize(self: *const WaylandWindow) platform.Size {
         return .{ .width = self.width, .height = self.height };
     }

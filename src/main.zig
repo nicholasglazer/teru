@@ -820,7 +820,20 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                             // UTF-8 for Alt+symbol keys. Use keysym for the key identity.
                             {
                                 const ks_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else 0;
-                                if (KeyHandler.handleGlobalKey(key.keycode, key.modifiers, ks_char, config.alt_workspace_switch, ralt_held, &mux)) |action| {
+                                // Config-driven keybind lookup (normal mode for global shortcuts)
+                                const kb_mode: @import("config/Keybinds.zig").Mode = if (prefix.awaiting) .prefix else .normal;
+                                if (KeyHandler.lookupConfigAction(&config.keybinds, kb_mode, key.modifiers, ks_char, ralt_held)) |kb_action| {
+                                    if (prefix.awaiting) prefix.reset();
+                                    const action = KeyHandler.executeAction(kb_action, &mux);
+                                    // Handle mode transitions from KB action directly
+                                    if (kb_action == .mode_prefix) {
+                                        prefix.activate();
+                                        continue;
+                                    }
+                                    if (kb_action == .mode_normal) {
+                                        prefix.reset();
+                                        continue;
+                                    }
                                     if (action == .panes_changed) {
                                         const sz = win.getSize();
                                         mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
@@ -854,54 +867,81 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                         const sz = win.getSize();
                                         mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
                                     }
-                                    if (action == .zoom_in or action == .zoom_out) {
+                                    if (action == .enter_search) {
+                                        search_mode = true;
+                                        continue;
+                                    }
+                                    if (action == .enter_vi_mode) {
+                                        if (mux.getActivePane()) |pane| {
+                                            const sb_n: u32 = mux.getScrollbackLineCount();
+                                            vi_mode.enter(grid_rows, grid_cols, pane.grid.cursor_row, pane.grid.cursor_col, mux.getScrollOffset(), sb_n);
+                                            pane.grid.dirty = true;
+                                        }
+                                        continue;
+                                    }
+                                    if (action == .detach) {
+                                        const path = "/tmp/teru-session.bin";
+                                        mux.saveSession(&graph, path, io) catch {};
+                                        hooks.fire(.session_save);
+                                        running = false;
+                                        continue;
+                                    }
+                                    if (action == .toggle_zoom) {
+                                        const sz = win.getSize();
+                                        mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                        for (mux.panes.items) |*p| p.grid.dirty = true;
+                                        force_redraw = true;
+                                        continue;
+                                    }
+                                    if (action == .zoom_in or action == .zoom_out or action == .zoom_reset) {
                                         const new_size: u16 = if (action == .zoom_in)
                                             font_size +| 1
+                                        else if (action == .zoom_reset)
+                                            config.font_size
                                         else
                                             @max(6, font_size -| 1);
                                         if (new_size != font_size) {
-                                            // Re-rasterize from memory (no file I/O)
+                                            // Re-rasterize primary atlas from memory (no file I/O)
                                             const new_atlas = atlas.rasterizeAtSize(new_size) catch continue;
                                             atlas.deinit();
                                             atlas = new_atlas;
                                             font_size = new_size;
 
-                                            // Reload bold/italic variants at new size
-                                            if (variant_bold) |*v| v.deinit(allocator);
-                                            if (variant_italic) |*v| v.deinit(allocator);
-                                            if (variant_bold_italic) |*v| v.deinit(allocator);
-                                            variant_bold = if (config.font_bold) |p| atlas.loadVariant(allocator, p, io) catch null else null;
-                                            variant_italic = if (config.font_italic) |p| atlas.loadVariant(allocator, p, io) catch null else null;
-                                            variant_bold_italic = if (config.font_bold_italic) |p| atlas.loadVariant(allocator, p, io) catch null else null;
+                                            // Variants deferred to debounce timer — clear for now
+                                            // (renderer falls back to primary atlas for bold/italic)
+                                            switch (renderer) {
+                                                .cpu => |*cpu| {
+                                                    cpu.glyph_atlas_bold = &.{};
+                                                    cpu.glyph_atlas_italic = &.{};
+                                                    cpu.glyph_atlas_bold_italic = &.{};
+                                                },
+                                                .tty => {},
+                                            }
 
-                                            // Update renderer with new atlas + variants
+                                            // Update renderer with new primary atlas
                                             renderer.updateAtlas(atlas.atlas_data, atlas.atlas_width, atlas.atlas_height);
                                             switch (renderer) {
                                                 .cpu => |*cpu| {
                                                     cpu.cell_width = atlas.cell_width;
                                                     cpu.cell_height = atlas.cell_height;
-                                                    cpu.glyph_atlas_bold = if (variant_bold) |v| v.data else &.{};
-                                                    cpu.glyph_atlas_italic = if (variant_italic) |v| v.data else &.{};
-                                                    cpu.glyph_atlas_bold_italic = if (variant_bold_italic) |v| v.data else &.{};
                                                 },
                                                 .tty => {},
                                             }
                                             status_bar_h = if (config.show_status_bar) atlas.cell_height + 4 else 0;
 
-                                            // Resize grids immediately so renderer + grid stay in sync.
-                                            // Only defer SIGWINCH (PTY resize) until zooming stops.
-                                            const sz = win.getSize();
-                                            grid_cols = @intCast((sz.width -| padding * 2) / atlas.cell_width);
-                                            grid_rows = @intCast((sz.height -| padding * 2 -| status_bar_h) / atlas.cell_height);
+                                            // Resize WINDOW to maintain same grid dimensions.
+                                            // Same rows/cols * new cell size → no blank rows, no SIGWINCH.
+                                            // (WezTerm/Kitty/Ghostty approach for windowed mode)
+                                            const target_w = @as(u32, grid_cols) * atlas.cell_width + padding * 2;
+                                            const target_h = @as(u32, grid_rows) * atlas.cell_height + padding * 2 + status_bar_h;
+                                            win.setSize(target_w, target_h);
+
+                                            // Mark all panes dirty for redraw with new cell size
                                             for (mux.panes.items) |*pane| {
-                                                if (grid_rows != pane.grid.rows or grid_cols != pane.grid.cols) {
-                                                    pane.grid.resize(allocator, grid_rows, grid_cols) catch {};
-                                                    pane.linkVt(allocator);
-                                                    pane.grid.dirty = true;
-                                                }
+                                                pane.grid.dirty = true;
                                             }
 
-                                            // Defer SIGWINCH until zooming stops (150ms debounce)
+                                            // Defer variant atlas rebuild (150ms after zoom stops)
                                             zoom_pending_resize = true;
                                             zoom_timestamp = compat.monotonicNow();
                                         }
@@ -1452,14 +1492,36 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
         else
             0;
 
-        // Deferred PTY resize after font zoom (sends SIGWINCH 150ms after last zoom)
+        // Deferred variant atlas rebuild after font zoom (150ms after last zoom)
         if (zoom_pending_resize) {
             const now = compat.monotonicNow();
             if (now - zoom_timestamp > 150_000_000) {
                 zoom_pending_resize = false;
-                // Grid already resized in zoom handler; just send SIGWINCH to PTYs
-                const sz = win.getSize();
-                mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+
+                // Rebuild variant atlases from cached font data (no disk I/O)
+                if (variant_bold) |*v| {
+                    const new_v = atlas.rasterizeVariant(allocator, v) catch null;
+                    v.deinit(allocator);
+                    variant_bold = new_v;
+                }
+                if (variant_italic) |*v| {
+                    const new_v = atlas.rasterizeVariant(allocator, v) catch null;
+                    v.deinit(allocator);
+                    variant_italic = new_v;
+                }
+                if (variant_bold_italic) |*v| {
+                    const new_v = atlas.rasterizeVariant(allocator, v) catch null;
+                    v.deinit(allocator);
+                    variant_bold_italic = new_v;
+                }
+                switch (renderer) {
+                    .cpu => |*cpu| {
+                        cpu.glyph_atlas_bold = if (variant_bold) |v| v.data else &.{};
+                        cpu.glyph_atlas_italic = if (variant_italic) |v| v.data else &.{};
+                        cpu.glyph_atlas_bold_italic = if (variant_bold_italic) |v| v.data else &.{};
+                    },
+                    .tty => {},
+                }
             }
         }
 

@@ -136,7 +136,7 @@ teru --list               # list active sessions
 | **AI agent protocol** | **Yes** | No | No | No | No | Cloud |
 | **Process graph** | **Yes** | No | No | No | No | No |
 | **Claude Code native** | **Yes** | No | No | No | No | No |
-| **MCP server** | **14 tools** | No | No | No | No | No |
+| **MCP server** | **16 tools + prompts** | No | No | No | No | No |
 | **Session persistence** | **Daemon** | No | No | Yes | Yes | Cloud |
 | **Scrollback compression** | **20-50x** | Paged | Ring | Ring | Host | Block |
 | **Language** | Zig | Zig | Rust | Rust | Rust | Rust |
@@ -154,7 +154,7 @@ teru --list               # list active sessions
 - **Vi/copy mode** -- prefix + v for vim-like cursor navigation, visual selection, yank to clipboard
 - **Session persistence** -- `teru --daemon` starts headless sessions that survive terminal close, `teru --session` reattaches
 - **CustomPaneBackend** -- native Claude Code agent team protocol (7 operations)
-- **MCP server** -- 14 tools for cross-agent pane control over IPC
+- **MCP server** -- 16 tools for cross-agent pane control over IPC (including live config)
 - **OSC 9999** -- agent self-declaration protocol (start/stop/status/progress)
 - **OSC 133** -- shell integration (command blocks, exit code tracking)
 - **Process graph** -- DAG of all processes/agents with lifecycle tracking
@@ -164,7 +164,9 @@ teru --list               # list active sessions
 - **Mouse** -- selection, word double-click, clipboard (X11 via xclip, Wayland via wl-clipboard), drag-to-resize borders
 - **Search** -- prefix + / highlights matches in visible grid
 - **Themes** -- built-in miozu theme, base16 external theme files, per-color overrides
+- **Configurable keybindings** -- per-mode binding tables (`[keybinds.normal]`, `[keybinds.prefix]`, `[keybinds.scroll]`), shared bindings, unbind, namespaced actions
 - **Config file** -- `~/.config/teru/teru.conf`, hot-reload (inotify/kqueue/polling), `include` directive
+- **MCP prompts** -- `workspace_setup` prompt teaches AI clients how to compose tools for workspace configuration
 - **Hook system** -- external commands on spawn/close/agent/save events
 - **Alt-screen** -- vim, htop, less work correctly (dual cell buffers)
 - **VT compatibility** -- CSI, SGR (256 + truecolor), DCS passthrough, DECSCUSR cursor styles, DEC Special Graphics
@@ -193,40 +195,29 @@ teru --list               # list active sessions
 
 ## Keybindings
 
-Prefix: `Ctrl+Space` (configurable via `prefix_key`). Full reference: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md)
+All keybindings are **configurable** via `~/.config/teru/keybinds.conf`. Alt is the primary modifier -- no prefix key needed. Legacy prefix mode (`Ctrl+Space`) still works as fallback.
 
-### Multiplexer
-
-| Key | Action |
-|-----|--------|
-| prefix + `c` or `\` | Spawn pane (vertical split) |
-| prefix + `-` | Spawn pane (horizontal split) |
-| prefix + `x` | Close active pane |
-| prefix + `n` | Focus next pane |
-| prefix + `p` | Focus prev pane |
-| prefix + `Space` | Cycle layout |
-| prefix + `z` | Toggle zoom (monocle) |
-| prefix + `1`-`9` | Switch workspace |
-| prefix + `H` / `L` | Shrink / grow master width |
-| prefix + `K` / `J` | Shrink / grow master height (dishes) |
-| prefix + `v` | Enter vi/copy mode |
-| prefix + `/` | Search in terminal output |
-| prefix + `d` | Detach (save session, exit) |
-
-### Global Shortcuts (no prefix)
+### Alt Shortcuts (primary)
 
 | Key | Action |
 |-----|--------|
-| `Alt+1`-`9` | Switch workspace |
-| `RAlt+1`-`9` | Move active pane to workspace |
 | `Alt+J` / `Alt+K` | Focus next / prev pane |
-| `RAlt+J` / `RAlt+K` | Swap pane down / up |
-| `Alt+C` | New pane (vertical split) |
-| `RAlt+C` | New pane (horizontal split) |
-| `Alt+X` | Close active pane |
+| `Alt+1`-`9` | Switch workspace |
+| `Alt+C` | Split vertical |
+| `RAlt+C` | Split horizontal |
+| `Alt+X` | Close pane |
+| `Alt+Z` | Toggle pane zoom (maximize) |
+| `Alt+Space` | Cycle layout |
+| `Alt+/` | Search scrollback |
+| `Alt+V` | Vi/scroll mode |
+| `Alt+D` | Detach session |
 | `Alt+M` | Focus master pane |
-| `RAlt+M` | Mark active pane as master |
-| `Alt+-` / `Alt+=` | Zoom out / in (font size) |
+| `Alt+=` / `Alt+-` | Zoom in / out |
+| `Alt+0` | Reset zoom |
+| `RAlt+J` / `RAlt+K` | Swap pane next / prev |
+| `RAlt+H` / `RAlt+L` | Resize pane width |
+| `RAlt+1`-`9` | Move pane to workspace |
+| `RAlt+M` | Set active pane as master |
 
 ### Scrolling
 
@@ -268,48 +259,61 @@ Prefix: `Ctrl+Space` (configurable via `prefix_key`). Full reference: [docs/KEYB
 
 ## Configuration
 
-`~/.config/teru/teru.conf` (auto-reloads on change):
+Two config files, both auto-reload on change:
+
+- `~/.config/teru/teru.conf` -- appearance, behavior, workspaces
+- `~/.config/teru/keybinds.conf` -- all keybindings (included via `include keybinds.conf`)
 
 ```conf
-# Appearance
+# teru.conf — main config
+include keybinds.conf
+
 font_size = 16
 font_path = /usr/share/fonts/TTF/JetBrainsMono-Regular.ttf
 padding = 8
 opacity = 0.95
 theme = miozu
+copy_on_select = true
 
-# Terminal
-scrollback_lines = 10000
-shell = /usr/bin/fish
-cursor_shape = block
-cursor_blink = false
-
-# Keybindings
-prefix_key = ctrl+space
-prefix_timeout_ms = 500
-
-# Window
-initial_width = 960
-initial_height = 640
-
-# Workspaces with per-workspace layout lists
 [workspace.1]
 layouts = master-stack, grid, monocle
 master_ratio = 0.6
 name = code
+```
 
-[workspace.2]
-layouts = three-col, columns, spiral
-master_ratio = 0.5
-name = wide
+```conf
+# keybinds.conf — per-mode keybinding config
+#
+# Format: [keybinds.MODE] then trigger = action
+# Modes: normal, prefix, scroll, search, locked, shared
+# Triggers: alt+j, ctrl+shift+c, ralt+1, esc, space
+# Actions: pane:focus_next, workspace:3, zoom:in, mode:prefix, etc.
+# Unbind: trigger =  (empty RHS)
 
-[workspace.3]
-layout = monocle
-name = focus
+[keybinds.normal]
+alt+j           = pane:focus_next
+alt+k           = pane:focus_prev
+alt+c           = split:vertical
+ralt+c          = split:horizontal
+alt+x           = pane:close
+alt+z           = zoom:toggle
+alt+space       = layout:cycle
+alt+1           = workspace:1
+ctrl+space      = mode:prefix
 
-# Hooks
-hook_on_spawn = notify-send "teru" "New pane"
-hook_on_agent_start = ~/.config/teru/hooks/agent.sh
+[keybinds.prefix]
+c               = split:vertical
+x               = pane:close
+esc             = mode:normal
+
+[keybinds.scroll]
+j               = scroll:down:1
+k               = scroll:up:1
+q               = mode:normal
+
+[keybinds.shared]
+ctrl+shift+c    = copy:selection
+ctrl+shift+v    = paste:clipboard
 ```
 
 ### Layout Types
@@ -347,7 +351,7 @@ export CLAUDE_PANE_BACKEND_SOCKET=/run/user/1000/teru-pane-backend.sock
 
 ### MCP Server
 
-teru exposes 14 tools over IPC (Unix socket / named pipe) for agent-to-agent pane control:
+teru exposes 16 tools over IPC (Unix socket / named pipe) for agent-to-agent pane control:
 
 ```json
 {
@@ -376,6 +380,8 @@ teru exposes 14 tools over IPC (Unix socket / named pipe) for agent-to-agent pan
 | `teru_get_state` | Query terminal state (cursor, size, modes) |
 | `teru_scroll` | Scroll pane scrollback (up/down/bottom) |
 | `teru_wait_for` | Check if text pattern exists in pane output |
+| `teru_set_config` | Set a config value (writes to teru.conf, triggers hot-reload) |
+| `teru_get_config` | Get current live config values as JSON |
 
 ### Agent Protocol (OSC 9999)
 
@@ -403,7 +409,7 @@ src/
 │   ├── VtParser.zig        VT100/xterm state machine (SIMD fast-path)
 │   ├── Pane.zig            PTY+Grid+VtParser per pane
 │   ├── Multiplexer.zig     Multi-pane orchestrator + rendering
-│   ├── KeyHandler.zig      Prefix key dispatch
+│   ├── KeyHandler.zig      Config-driven keybind dispatch
 │   ├── Selection.zig       Text selection (absolute coords, scrollback-aware)
 │   ├── ViMode.zig          Vi/copy mode (cursor navigation, visual selection)
 │   ├── Clipboard.zig       Cross-platform clipboard (xclip, pbcopy, Win32 API)
@@ -411,7 +417,7 @@ src/
 │   └── UrlDetector.zig     URL detection (regex-free)
 ├── agent/
 │   ├── PaneBackend.zig     CustomPaneBackend protocol (Claude Code)
-│   ├── McpServer.zig       MCP server (14 tools, IPC)
+│   ├── McpServer.zig       MCP server (16 tools, IPC)
 │   ├── HookHandler.zig     Claude Code hook JSON parser
 │   ├── HookListener.zig    HTTP hook listener (IPC)
 │   └── protocol.zig        OSC 9999 agent protocol parser
@@ -432,7 +438,9 @@ src/
 │   ├── Ui.zig              Status bar, scroll overlay, search overlay
 │   └── tier.zig            Two-tier detection (CPU/TTY)
 ├── config/
-│   ├── Config.zig          Config parser + ColorScheme + hot-reload
+│   ├── Config.zig          Config parser + ColorScheme + hot-reload + include
+│   ├── Keybinds.zig        Configurable keybinding engine (modes, actions, lookup)
+│   ├── ConfigWatcher.zig   File watcher (inotify/kqueue/polling)
 │   ├── Hooks.zig           External command hooks (fork+exec)
 │   └── themes.zig          Built-in theme definitions
 ├── server/
@@ -441,7 +449,7 @@ src/
 │   └── ipc.zig             Cross-platform IPC (Unix sockets / named pipes)
 ├── pty/
 │   ├── pty.zig              Comptime dispatch (POSIX or ConPTY per OS)
-│   ├── Pty.zig              POSIX PTY (posix_openpt, fork, exec)
+│   ├── PosixPty.zig         POSIX PTY (posix_openpt, fork, exec)
 │   └── WinPty.zig           Windows ConPTY (CreatePseudoConsole)
 └── platform/
     ├── types.zig            Shared Event/KeyEvent/Size/MouseEvent + keycodes
