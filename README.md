@@ -73,6 +73,13 @@ Alt+V                     # vi/copy mode
 Alt+/                     # search scrollback
 ```
 
+Auto-persistence (set `persist_session = true` in config):
+
+```bash
+teru                      # auto-restores last session (pane count, layout)
+# just use it — state is saved on every meaningful change
+```
+
 Session persistence (tmux-style detach/attach):
 
 ```bash
@@ -177,7 +184,7 @@ teru --list               # list active sessions
 | **Process graph** | **Yes** | No | No | No | No | No |
 | **Claude Code native** | **Yes** | No | No | No | No | No |
 | **MCP server** | **19 tools + prompts** | No | No | No | No | No |
-| **Session persistence** | **Daemon** | No | No | Yes | Yes | Cloud |
+| **Session persistence** | **Auto + Daemon** | No | No | Yes | Yes | Cloud |
 | **Scrollback compression** | **20-50x** | Paged | Ring | Ring | Host | Block |
 | **Language** | Zig | Zig | Rust | Rust | Rust | Rust |
 | **License** | MIT | MIT | Apache | MIT | MIT | Proprietary |
@@ -194,7 +201,7 @@ teru --list               # list active sessions
 - **Binary split tree** -- arbitrary horizontal/vertical splits with mouse drag-to-resize
 - **9 workspaces** -- switch with prefix + 1-9, each with independent layout and pane list
 - **Vi/copy mode** -- prefix + v for vim-like cursor navigation, visual selection, yank to clipboard
-- **Session persistence** -- `teru --daemon` starts headless sessions that survive terminal close, `teru --session` reattaches
+- **Session persistence** -- `persist_session = true` auto-saves/restores on every meaningful change; `teru --daemon` for headless sessions that survive terminal close
 - **CustomPaneBackend** -- native Claude Code agent team protocol (7 operations)
 - **MCP server** -- 19 tools for cross-agent pane control over IPC (including live config)
 - **OSC 9999** -- agent self-declaration protocol (start/stop/status/progress)

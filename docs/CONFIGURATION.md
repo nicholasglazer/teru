@@ -253,12 +253,25 @@ scroll_speed = 5
 | `prefix_key` | string | `ctrl+space` | Prefix key for multiplexer commands. Accepts `ctrl+a` through `ctrl+z`, `ctrl+space`, or raw integer 0-31 |
 | `prefix_timeout_ms` | integer | `500` | Milliseconds to wait for a command after pressing the prefix key |
 | `alt_workspace_switch` | boolean | `true` | Enable Alt+1-9 workspace switch and Alt+Shift+1-9 move pane |
+| `persist_session` | boolean | `false` | Auto-save session state on every meaningful change and restore on next launch |
 
 ```conf
 prefix_key = ctrl+b
 prefix_timeout_ms = 1000
 alt_workspace_switch = true
+persist_session = true
 ```
+
+#### Session Persistence
+
+When `persist_session = true`, teru automatically saves session state (pane count, layout, workspace, focus) to `$XDG_STATE_HOME/teru/sessions/default.bin` whenever you spawn/close panes, switch workspaces, change layouts, resize, zoom, swap, or move panes. Saves are debounced (100ms) so rapid actions coalesce into a single write.
+
+On startup with `persist_session = true`:
+1. If a daemon session named "default" is running, teru auto-attaches to it
+2. Otherwise, if a session file exists, teru restores the pane count
+3. Otherwise, teru starts fresh
+
+Daemon sessions (`--daemon <name>`) also save to `sessions/<name>.bin` for crash resilience.
 
 #### Prefix Key Bindings
 
