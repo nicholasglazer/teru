@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.8 (2026-04-09)
+
+### Features
+- **Event-driven session persistence** — `persist_session = true` auto-saves session state on every meaningful change (pane spawn/close, layout cycle, workspace switch, focus, resize, zoom, swap, move). No polling — dirty flag with 100ms debounce.
+- **Workspace-aware restore** — on startup, restores pane count per workspace with correct layouts and master ratios (session format v2, backwards-compatible with v1).
+- **Auto-attach to daemon** — if a daemon session named "default" is running, teru auto-attaches instead of starting fresh.
+- **`ensureDirC()`** — recursive directory creation helper for session storage path.
+
+### Files
+- Session files stored at `$XDG_STATE_HOME/teru/sessions/{name}.bin`
+- 14 `markDirty()` call sites across all Multiplexer mutation methods
+- Debounced save in both windowed and daemon event loops
+- Final save on clean exit
+
 ## 0.3.7 (2026-04-09)
 
 ### Features
