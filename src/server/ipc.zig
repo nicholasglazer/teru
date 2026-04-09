@@ -295,12 +295,17 @@ fn connectWin32(path: []const u8) IpcError!IpcHandle {
 
 // ── Tests ───────────────────────────────────────────────────────
 
-test "buildPath: Linux format" {
+test "buildPath: POSIX format" {
     if (builtin.os.tag == .windows) return;
     var buf: [256]u8 = undefined;
     const path = buildPath(&buf, "session", "myproject");
     try std.testing.expect(path != null);
-    try std.testing.expect(std.mem.endsWith(u8, path.?, "teru-session-myproject.sock"));
+    // Linux: /run/user/{uid}/teru-session-myproject.sock
+    // macOS: /tmp/teru-{uid}-session-myproject.sock
+    try std.testing.expect(std.mem.endsWith(u8, path.?, ".sock"));
+    try std.testing.expect(std.mem.indexOf(u8, path.?, "teru") != null);
+    try std.testing.expect(std.mem.indexOf(u8, path.?, "session") != null);
+    try std.testing.expect(std.mem.indexOf(u8, path.?, "myproject") != null);
 }
 
 test "buildPath: returns null for overflow" {
