@@ -1200,6 +1200,20 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     }
                     switch (mouse.button) {
                         .left => {
+                            // Status bar click: switch workspace
+                            if (config.show_status_bar) {
+                                const sz = win.getSize();
+                                const bar_h: u32 = atlas.cell_height + 4;
+                                if (Ui.hitTestStatusBar(&mux, atlas.cell_width, padding, sz.height, bar_h, mouse.x, mouse.y)) |ws| {
+                                    mux.switchWorkspace(ws);
+                                    const sz2 = win.getSize();
+                                    mux.resizePanePtys(sz2.width, sz2.height, atlas.cell_width, atlas.cell_height, padding);
+                                    for (mux.panes.items) |*p| p.grid.dirty = true;
+                                    force_redraw = true;
+                                    continue;
+                                }
+                            }
+
                             const col: u16 = @intCast(@min(mouse.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
                             const row: u16 = @intCast(@min(mouse.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
 

@@ -284,6 +284,50 @@ pub fn renderTextStatusBar(
     }
 }
 
+/// Hit-test the status bar: if click_x falls on a workspace indicator, return its index.
+pub fn hitTestStatusBar(
+    mux: *const Multiplexer,
+    cell_width: u32,
+    padding: u32,
+    screen_height: u32,
+    bar_height: u32,
+    click_x: u32,
+    click_y: u32,
+) ?u8 {
+    // Only respond to clicks in the status bar region
+    if (screen_height < bar_height) return null;
+    if (click_y < screen_height - bar_height) return null;
+
+    const cw: u32 = cell_width;
+    if (cw == 0) return null;
+    var x: u32 = padding;
+
+    for (0..10) |wi| {
+        const ws = &mux.layout_engine.workspaces[wi];
+        const has_panes = ws.node_ids.items.len > 0;
+        const is_active = wi == mux.active_workspace;
+        if (!has_panes and !is_active) continue;
+
+        const region_start = x;
+        x += cw; // leading space
+        x += cw; // digit
+
+        // Optional :name
+        const ws_char: u8 = if (wi < 9) '1' + @as(u8, @intCast(wi)) else '0';
+        if (ws.name.len > 0 and ws.name[0] != ws_char) {
+            x += cw; // colon
+            for (ws.name) |c| {
+                if (c < 32 or c > 126) continue;
+                x += cw;
+            }
+        }
+        x += cw; // trailing space
+
+        if (click_x >= region_start and click_x < x) return @intCast(wi);
+    }
+    return null;
+}
+
 // ── Character blitting ────────────────────────────────────────────
 
 /// Blit a single character at a pixel position using the atlas.
