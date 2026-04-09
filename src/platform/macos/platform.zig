@@ -5,6 +5,7 @@
 //! NSBitmapImageRep, polls events via nextEventMatchingMask.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 // ── Objective-C runtime (hand-declared, no @cImport) ──────────────────
 //
