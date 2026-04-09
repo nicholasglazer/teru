@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.9 (2026-04-09)
+
+### Features
+- **10 workspaces** — Alt+0 switches to workspace 10 (was zoom_reset). Matches tmux `M-0 → window 10` pattern. All arrays expanded from [9] to [10] across LayoutEngine, Config, Session, Keybinds, platform keycodes (Linux/macOS/Windows).
+- **Example session: `claude-power.tsess`** — 10-workspace 34-pane session config replicating a production tmux setup with Claude Code instances, monitoring scripts, and dev servers.
+
+### Fixes
+- **Selection drift** — mouse selection highlight no longer drifts upward when new terminal output pushes lines to scrollback. Selection rows now track scrollback growth.
+- **macOS TIOCSWINSZ/TIOCSCTTY** — ioctl constants missing from Zig's std.posix.T added to compat.zig with correct c_int type for libc ioctl signature.
+- **macOS objc_msgSend_stret** — does not exist on arm64; use regular objc_msgSend on Apple Silicon.
+- **macOS builtin import** — missing in platform.zig, broke Windows cross-compile.
+- **IPC buildPath test** — works on macOS (path format differs per OS).
+
 ## 0.3.8 (2026-04-09)
 
 ### Features
