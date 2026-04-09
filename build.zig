@@ -4,6 +4,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // ── Single source of truth for version ────────────────────────
+    // Propagated to all modules via build_options.version.
+    // Bump with: make bump-version V=x.y.z (updates here + build.zig.zon)
+    const version = "0.3.7";
+
     // ── libteru (core library, pure Zig, no system deps) ─────────────
     const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),
@@ -35,8 +40,12 @@ pub fn build(b: *std.Build) void {
 
     // Build-time options passed to Zig source via @import("build_options")
     const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version);
     build_options.addOption(bool, "enable_x11", enable_x11);
     build_options.addOption(bool, "enable_wayland", enable_wayland);
+
+    // Attach build_options to library module (needed by McpServer.zig)
+    lib_mod.addOptions("build_options", build_options);
 
     // ── teru executable ──────────────────────────────────────────────
     const exe_mod = b.createModule(.{
@@ -107,10 +116,27 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    test_mod.addOptions("build_options", build_options);
     const lib_tests = b.addTest(.{
         .root_module = test_mod,
     });
     const run_lib_tests = b.addRunArtifact(lib_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
+
+    // ── check step (compile lib only, no linking/frameworks needed) ──
+    // Useful for cross-platform CI: `zig build check -Dtarget=x86_64-macos`
+    const check_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    check_mod.addOptions("build_options", build_options);
+    const check_lib = b.addLibrary(.{
+        .name = "teru-check",
+        .root_module = check_mod,
+    });
+    const check_step = b.step("check", "Compile lib for target (no linking)");
+    check_step.dependOn(&check_lib.step);
 }

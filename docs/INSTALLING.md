@@ -1,51 +1,74 @@
 # Installing teru
 
-## From Source (recommended)
+See also: [teru.sh](https://teru.sh)
 
-Requires Zig 0.16+ and a C compiler (for libc).
+## Pre-built Binaries
 
-```bash
-git clone https://github.com/nicholasglazer/teru.git
-cd teru
-zig build -Doptimize=ReleaseSafe
-strip zig-out/bin/teru          # optional, ~1.3MB
-sudo cp zig-out/bin/teru /usr/local/bin/
-```
+Download from [GitHub Releases](https://github.com/nicholasglazer/teru/releases):
 
-### Build Options
-
-```bash
-zig build -Dwayland=false       # X11-only (no libwayland dep)
-zig build -Dx11=false           # Wayland-only (no libxcb dep)
-```
-
-### Dependencies
-
-**Runtime** (linked dynamically):
-- `libxcb` + `libxcb-shm` — X11 display (skip with `-Dx11=false`)
-- `libxkbcommon` — keyboard translation
-- `libwayland-client` — Wayland display (skip with `-Dwayland=false`)
-
-**Build-time** (vendored, no downloads):
-- `stb_truetype.h` — font rasterization
-- `xdg-shell-protocol.h` — Wayland protocol
+| Platform | File | Notes |
+|----------|------|-------|
+| Linux x86_64 | `teru-linux-x86_64.tar.gz` | X11 + Wayland |
+| Linux x86_64 (X11 only) | `teru-linux-x86_64-x11.tar.gz` | No wayland dep |
+| Linux x86_64 (Wayland only) | `teru-linux-x86_64-wayland.tar.gz` | No xcb dep |
+| Windows x86_64 | `teru-windows-x86_64.zip` | Win10+ (ConPTY) |
+| macOS x86_64 | `teru-macos-x86_64.tar.gz` | Intel Mac |
+| macOS aarch64 | `teru-macos-aarch64.tar.gz` | Apple Silicon |
 
 ## Arch Linux (AUR)
 
 ```bash
-yay -S teru        # stable release
-yay -S teru-git    # latest main branch
+paru -S teru        # stable release
+paru -S teru-git    # latest main branch
 ```
 
-## Homebrew (macOS + Linux)
+Optional clipboard support: `paru -S xclip` (X11) or `paru -S wl-clipboard` (Wayland).
+
+## macOS
 
 ```bash
-brew tap nicholasglazer/homebrew-tap
-brew install teru
+curl -L https://github.com/nicholasglazer/teru/releases/latest/download/teru-macos-aarch64.tar.gz | tar xz
+sudo mv teru /usr/local/bin/
 ```
 
-## Nix
+## Windows
+
+Download `teru-windows-x86_64.zip` from [Releases](https://github.com/nicholasglazer/teru/releases), extract, and run `teru.exe`. Requires Windows 10 1809+ (ConPTY support).
+
+## Build from Source
+
+Requires **Zig 0.16+**. Linux builds need system libraries.
+
+### Linux dependencies
+
+| Package | Arch Linux | Debian/Ubuntu | Fedora |
+|---------|------------|---------------|--------|
+| libxcb | `libxcb` | `libxcb1-dev` | `libxcb-devel` |
+| libxkbcommon | `libxkbcommon` | `libxkbcommon-dev` | `libxkbcommon-devel` |
+| wayland | `wayland` | `libwayland-dev` | `wayland-devel` |
 
 ```bash
-nix-shell -p teru
+git clone https://github.com/nicholasglazer/teru.git
+cd teru
+make release              # 1.4MB binary at zig-out/bin/teru
+sudo make install         # /usr/local/bin/teru
+```
+
+### Minimal builds (fewer dependencies)
+
+```bash
+make release-x11          # X11-only (no wayland-client dep)
+make release-wayland      # Wayland-only (no libxcb dep)
+```
+
+### macOS (no system deps needed)
+
+```bash
+zig build -Doptimize=ReleaseSafe
+```
+
+### Windows (cross-compile from Linux)
+
+```bash
+zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu
 ```

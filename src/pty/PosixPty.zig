@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
 const compat = @import("../compat.zig");
+const build_options = @import("build_options");
 
 const Pty = @This();
 
@@ -180,7 +181,7 @@ fn setChildEnv(cols: u16, rows: u16, term_override: ?[]const u8) void {
     }
     _ = setenv("COLORTERM", "truecolor", 1);
     _ = setenv("TERM_PROGRAM", "teru", 1);
-    _ = setenv("TERM_PROGRAM_VERSION", "0.3.5", 1);
+    _ = setenv("TERM_PROGRAM_VERSION", @ptrCast(build_options.version.ptr), 1);
 
     var cols_buf: [8:0]u8 = [_:0]u8{0} ** 8;
     var rows_buf: [8:0]u8 = [_:0]u8{0} ** 8;

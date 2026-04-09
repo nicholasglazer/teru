@@ -1,6 +1,6 @@
 .{
     .name = .teru,
-    .version = "0.3.5",
+    .version = "0.3.7",
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0xb6637fdb179e7a3c,
 
@@ -11,4 +11,7 @@
         "README.md",
         "LICENSE",
     },
+
+    // Homepage: https://teru.sh
+    // Repository: https://github.com/nicholasglazer/teru
 }

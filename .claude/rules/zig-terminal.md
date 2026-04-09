@@ -146,10 +146,10 @@ This project has ZERO Zig package dependencies (no build.zig.zon deps). Any new 
 
 ## Version Bumping
 
-When bumping the version, update ALL 3 locations:
-1. `src/main.zig` -- `const version = "X.Y.Z";`
-2. `build.zig.zon` -- `.version = "X.Y.Z"`
-3. `src/agent/McpServer.zig` -- MCP server info `"version":"X.Y.Z"`
+Single source of truth: `build.zig` line 10 (`const version = "X.Y.Z"`).
+Propagated to `main.zig` and `McpServer.zig` via `build_options.version` at compile time.
+
+Bump with: `make bump-version V=x.y.z` (updates `build.zig` + `build.zig.zon`).
 
 Convention: `0.1.x` = patch (small features/fixes), `0.x.0` = minor (major features).
 

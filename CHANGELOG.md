@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.7 (2026-04-09)
+
+### Features
+- **Native PNG screenshots** (`src/png.zig`) — pure Zig PNG encoder (stored deflate, CRC32, Adler-32). Zero external dependencies. Captures ARGB framebuffer directly.
+- **`teru_screenshot` MCP tool** — agents capture the terminal framebuffer as PNG via MCP. Returns file path and dimensions. Windowed mode only (X11/Wayland).
+- **19 MCP tools** — added `teru_session_save`, `teru_session_restore`, `teru_screenshot`
+- **SECURITY.md** — vulnerability reporting policy and scope documentation
+- **CONTRIBUTING.md** — contributor guide with setup, workflow, and help-wanted areas
+
+### Build system
+- **Single version source of truth** — `build.zig` line 10 defines version, propagated via `build_options.version` to main.zig, McpServer.zig, and PosixPty.zig at compile time. No more manual multi-file version syncing.
+- **`make bump-version V=x.y.z`** — updates build.zig + build.zig.zon in one command
+- **`zig build check`** — semantic analysis without linking, for cross-platform CI
+
+### Fixes
+- **MCP JSON escaping** — 6 tool responses had broken JSON from raw string `\\"` semantics; all fixed
+- **VI mode crash** — replaced `unreachable` with null guard when active pane closes during keypress
+- **Windows cross-compile** — SignalManager tests use `i32` instead of `posix.fd_t` (which is `*anyopaque` on Windows)
+- **`TERM_PROGRAM_VERSION`** — now set from `build_options.version` instead of hardcoded string
+
+### Documentation
+- **README rewrite** — etymology, comparison table, quick start, AI integration guide, accurate feature counts
+- **docs/AI-INTEGRATION.md** — complete MCP tool reference (19 tools), socket paths per platform, OSC 9999 protocol
+- **docs/ARCHITECTURE.md** — rewritten to match current codebase
+- **docs/INSTALLING.md** — removed stale Homebrew/Nix references
+- **site/index.html** — landing page for teru.sh with structured data
+
+### Stats
+- 480+ inline tests (up from 451)
+- 19 MCP tools (up from 16)
+
 ## 0.3.5 (2026-04-07)
 
 ### Cross-platform

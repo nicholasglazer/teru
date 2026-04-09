@@ -16,7 +16,10 @@ const ProcessGraph = @import("../graph/ProcessGraph.zig");
 const Grid = @import("../core/Grid.zig");
 const compat = @import("../compat.zig");
 const ipc = @import("../server/ipc.zig");
+const png = @import("../png.zig");
+const tier = @import("../render/tier.zig");
 
+const build_options = @import("build_options");
 const McpServer = @This();
 
 // TODO: Migrate to std.Io.net.UnixAddress.listen() once the Io.net API supports
@@ -41,6 +44,7 @@ screen_height: u32 = 0,
 cell_width: u32 = 0,
 cell_height: u32 = 0,
 padding: u32 = 0,
+renderer: ?*tier.Renderer = null,
 
 // ── Lifecycle ──────────────────────────────────────────────────
 
@@ -176,8 +180,8 @@ fn handleInitialize(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
     _ = self;
     const id_str = id orelse "null";
     return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"protocolVersion":"2025-03-26","capabilities":{{"tools":{{}},"prompts":{{}}}},"serverInfo":{{"name":"teru","version":"0.3.6"}}}},"id":{s}}}
-    , .{id_str}) catch
+        \\{{"jsonrpc":"2.0","result":{{"protocolVersion":"2025-03-26","capabilities":{{"tools":{{}},"prompts":{{}}}},"serverInfo":{{"name":"teru","version":"{s}"}}}},"id":{s}}}
+    , .{ build_options.version, id_str }) catch
         jsonRpcError(buf, id, -32603, "Internal error");
 }
 
@@ -204,7 +208,8 @@ fn handleToolsList(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teru_set_config","description":"Set a config value. Writes to teru.conf and triggers hot-reload. Keys: font_size, padding, opacity, theme, cursor_shape, cursor_blink, scroll_speed, bold_is_bright, bell, copy_on_select, bg, fg, cursor_color, attention_color","inputSchema":{{"type":"object","properties":{{"key":{{"type":"string"}},"value":{{"type":"string"}}}},"required":["key","value"]}}}},
         \\{{"name":"teru_get_config","description":"Get current live config values as JSON","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
         \\{{"name":"teru_session_save","description":"Save current session state to a .tsess file. Captures workspaces, layouts, pane CWDs and commands.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"Session name (saved to ~/.config/teru/sessions/NAME.tsess)"}}}},"required":["name"]}}}},
-        \\{{"name":"teru_session_restore","description":"Restore a session from a .tsess file. Idempotent: panes matched by role are not duplicated.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"Session name to restore"}}}},"required":["name"]}}}}
+        \\{{"name":"teru_session_restore","description":"Restore a session from a .tsess file. Idempotent: panes matched by role are not duplicated.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"Session name to restore"}}}},"required":["name"]}}}},
+        \\{{"name":"teru_screenshot","description":"Capture the terminal framebuffer as a PNG image file. Returns the file path and dimensions. Only works in windowed mode (X11/Wayland).","inputSchema":{{"type":"object","properties":{{"path":{{"type":"string","description":"Output file path (default: /tmp/teru-screenshot.png)"}}}},"required":[]}}}}
         \\]}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
@@ -339,6 +344,9 @@ fn handleToolsCall(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u
         const name = extractNestedJsonString(params_body, "name") orelse
             return jsonRpcError(buf, id, -32602, "Missing name");
         return self.toolSessionRestore(name, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teru_screenshot")) {
+        const path = extractNestedJsonString(params_body, "path") orelse "/tmp/teru-screenshot.png";
+        return self.toolScreenshot(path, buf, id);
     } else {
         return jsonRpcError(buf, id, -32602, "Unknown tool");
     }
@@ -370,12 +378,12 @@ fn toolListPanes(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         const workspace = self.findPaneWorkspace(pane.id);
 
         const entry = std.fmt.bufPrint(buf[pos..],
-            \\{{"id":{d},"workspace":{d},"name":\"{s}\","status":\"{s}\","rows":{d},"cols":{d}}}
+            \\{{\"id\":{d},\"workspace\":{d},\"name\":\"{s}\",\"status\":\"{s}\",\"rows\":{d},\"cols\":{d}}}
         , .{ pane.id, workspace, proc_name, status, pane.grid.rows, pane.grid.cols }) catch break;
         pos += entry.len;
     }
 
-    const suffix = std.fmt.bufPrint(buf[pos..], "]\"}}}},\"id\":{s}}}", .{id_str}) catch
+    const suffix = std.fmt.bufPrint(buf[pos..], "]\"}}]}},\"id\":{s}}}", .{id_str}) catch
         return jsonRpcError(buf, id, -32603, "Internal error");
     pos += suffix.len;
 
@@ -460,7 +468,7 @@ fn toolGetGraph(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         const state_str = @tagName(node.state);
 
         const entry_json = std.fmt.bufPrint(buf[pos..],
-            \\{{\\"id\\":{d},\\"name\\":\\"{s}\\",\\"kind\\":\\"{s}\\",\\"state\\":\\"{s}\\"
+            \\{{\"id\":{d},\"name\":\"{s}\",\"kind\":\"{s}\",\"state\":\"{s}\"
         , .{ node.id, node.name, kind_str, state_str }) catch break;
         pos += entry_json.len;
 
@@ -638,8 +646,10 @@ fn toolGetState(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []co
     var title_escaped_buf: [512]u8 = undefined;
     const title_escaped = jsonEscapeString(vt.title[0..vt.title_len], &title_escaped_buf);
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{"cursor_row":{d},"cursor_col":{d},"cursor_visible":{s},"rows":{d},"cols":{d},"alt_screen":{s},"bracketed_paste":{s},"app_cursor_keys":{s},"title":\"{s}\","scroll_top":{d},"scroll_bottom":{d}}}"}}]}},"id":{s}}}
+    // Build inner JSON in temp buffer, then escape for embedding in text field
+    var inner_buf: [2048]u8 = undefined;
+    const inner_json = std.fmt.bufPrint(&inner_buf,
+        \\{{"cursor_row":{d},"cursor_col":{d},"cursor_visible":{s},"rows":{d},"cols":{d},"alt_screen":{s},"bracketed_paste":{s},"app_cursor_keys":{s},"title":"{s}","scroll_top":{d},"scroll_bottom":{d}}}
     , .{
         grid.cursor_row,
         grid.cursor_col,
@@ -652,8 +662,16 @@ fn toolGetState(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []co
         title_escaped,
         grid.scroll_top,
         grid.scroll_bottom,
-        id_str,
     }) catch
+        return jsonRpcError(buf, id, -32603, "Internal error");
+
+    // Escape for embedding inside JSON "text" string value
+    var escaped_buf: [4096]u8 = undefined;
+    const escaped = jsonEscapeString(inner_json, &escaped_buf);
+
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{s}"}}]}},"id":{s}}}
+    , .{ escaped, id_str }) catch
         jsonRpcError(buf, id, -32603, "Internal error");
 }
 
@@ -858,7 +876,7 @@ fn toolGetConfig(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
 
     // Build JSON snapshot of current live config values
     return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\\"active_workspace\\":{d},\\"layout\\":\\"{s}\\",\\"master_ratio\\":{d},\\"pane_count\\":{d},\\"screen_width\\":{d},\\"screen_height\\":{d},\\"cell_width\\":{d},\\"cell_height\\":{d},\\"padding\\":{d}}}"}}]}},"id":{s}}}
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"active_workspace\":{d},\"layout\":\"{s}\",\"master_ratio\":{d},\"pane_count\":{d},\"screen_width\":{d},\"screen_height\":{d},\"cell_width\":{d},\"cell_height\":{d},\"padding\":{d}}}"}}]}},"id":{s}}}
     , .{
         mux.active_workspace,
         @tagName(ws.layout),
@@ -976,6 +994,43 @@ fn toolSessionRestore(self: *McpServer, name: []const u8, buf: []u8, id: ?[]cons
         jsonRpcError(buf, id, -32603, "Internal error");
 }
 
+fn toolScreenshot(self: *McpServer, path: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+
+    const r = self.renderer orelse
+        return jsonRpcError(buf, id, -32603, "No renderer (TTY mode has no framebuffer)");
+
+    const pixels = r.getFramebuffer() orelse
+        return jsonRpcError(buf, id, -32603, "No framebuffer available");
+
+    const width: u32 = switch (r.*) {
+        .cpu => |cpu| cpu.width,
+        .tty => return jsonRpcError(buf, id, -32603, "No framebuffer in TTY mode"),
+    };
+    const height: u32 = switch (r.*) {
+        .cpu => |cpu| cpu.height,
+        .tty => return jsonRpcError(buf, id, -32603, "No framebuffer in TTY mode"),
+    };
+
+    // Null-terminate path for C fopen
+    var path_z: [512:0]u8 = undefined;
+    if (path.len >= path_z.len) return jsonRpcError(buf, id, -32602, "Path too long");
+    @memcpy(path_z[0..path.len], path);
+    path_z[path.len] = 0;
+
+    png.write(self.allocator, @ptrCast(path_z[0..path.len :0]), pixels, width, height) catch |err| {
+        return switch (err) {
+            error.FileOpenFailed => jsonRpcError(buf, id, -32603, "Failed to open output file"),
+            error.OutOfMemory => jsonRpcError(buf, id, -32603, "Out of memory"),
+        };
+    };
+
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"screenshot saved to {s} ({d}x{d})"}}]}},"id":{s}}}
+    , .{ path, width, height, id_str }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
 /// Ensure parent directory exists using C mkdir.
 fn ensureParentDirC(path: []const u8) void {
     // Find last '/' to get parent dir
@@ -1069,7 +1124,7 @@ fn toolWaitFor(self: *McpServer, pane_id: u64, pattern: []const u8, lines: u32, 
                 elen += 1;
             }
             return std.fmt.bufPrint(buf,
-                \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{"matched\":true,\"line\":\"{s}\"}}"}}]}},"id":{s}}}
+                \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"matched\":true,\"line\":\"{s}\"}}"}}]}},"id":{s}}}
             , .{ escaped[0..elen], id_str }) catch
                 jsonRpcError(buf, id, -32603, "Internal error");
             }
@@ -1080,7 +1135,7 @@ fn toolWaitFor(self: *McpServer, pane_id: u64, pattern: []const u8, lines: u32, 
     }
 
     return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{"matched\":false}}"}}]}},"id":{s}}}
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"matched\":false}}"}}]}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
 }
@@ -1636,4 +1691,16 @@ test "JsonArrayIterator" {
 test "JsonArrayIterator empty" {
     var iter = JsonArrayIterator.init("");
     try t.expectEqual(@as(?[]const u8, null), iter.next());
+}
+
+test "jsonEscapeString quotes and backslash" {
+    var buf: [256]u8 = undefined;
+    const result = jsonEscapeString("hello \"world\"", &buf);
+    try t.expectEqualStrings("hello \\\"world\\\"", result);
+
+    const result2 = jsonEscapeString("path\\to\\file", &buf);
+    try t.expectEqualStrings("path\\\\to\\\\file", result2);
+
+    const result3 = jsonEscapeString("{\"key\":\"val\"}", &buf);
+    try t.expectEqualStrings("{\\\"key\\\":\\\"val\\\"}", result3);
 }

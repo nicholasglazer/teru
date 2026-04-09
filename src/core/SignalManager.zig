@@ -67,11 +67,11 @@ test "SignalManager: init sets fds" {
 test "SignalManager: updatePtyFd" {
     var sm = SignalManager.init(1, 0);
     sm.updatePtyFd(99);
-    try std.testing.expectEqual(@as(posix.fd_t, 99), g_pty_master_fd);
+    try std.testing.expectEqual(@as(i32, 99), g_pty_master_fd);
 }
 
 test "SignalManager: updateHostFd" {
     var sm = SignalManager.init(1, 0);
     sm.updateHostFd(55);
-    try std.testing.expectEqual(@as(posix.fd_t, 55), g_host_fd);
+    try std.testing.expectEqual(@as(i32, 55), g_host_fd);
 }

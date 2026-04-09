@@ -8,3 +8,4 @@ Type=Application
 Categories=System;TerminalEmulator;
 Keywords=terminal;multiplexer;ai;zig;tiling;
 StartupWMClass=teru
+URL=https://teru.sh

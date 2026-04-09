@@ -49,7 +49,7 @@ const setenv = if (builtin.os.tag == .windows) struct {
     extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 }.setenv;
 
-const version = "0.3.5";
+const version = build_options.version;
 
 const session_path = "/tmp/teru-session.bin";
 
@@ -391,13 +391,14 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     };
     defer if (mcp) |*m| m.deinit();
 
-    // Set screen dimensions for MCP pane creation
+    // Set screen dimensions and renderer for MCP pane creation + screenshots
     if (mcp) |*m| {
         m.screen_width = config.initial_width;
         m.screen_height = config.initial_height;
         m.cell_width = atlas.cell_width;
         m.cell_height = atlas.cell_height;
         m.padding = padding;
+        m.renderer = &renderer;
     }
 
     // PaneBackend: Claude Code agent team protocol (NDJSON over Unix socket)
@@ -694,8 +695,9 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                                 var vi_key_buf: [32]u8 = undefined;
                                 const vi_len = kb.processKey(key.keycode, &vi_key_buf);
                                 if (vi_len > 0) {
+                                    const active_pane = mux.getActivePane() orelse continue;
                                     vi_scroll = mux.getScrollOffset();
-                                    const vi_action = vi_mode.handleKey(vi_key_buf[0], if (mux.getActivePane()) |p| &p.grid else unreachable, &vi_scroll, sb_lines);
+                                    const vi_action = vi_mode.handleKey(vi_key_buf[0], &active_pane.grid, &vi_scroll, sb_lines);
                                     mux.setScrollOffset(vi_scroll);
                                     switch (vi_action) {
                                         .exit => {

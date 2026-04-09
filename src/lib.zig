@@ -43,6 +43,7 @@ pub const SessionDef = @import("config/Session.zig");
 pub const WinPty = @import("pty/WinPty.zig");
 pub const ipc = @import("server/ipc.zig");
 pub const compat = @import("compat.zig");
+pub const png = @import("png.zig");
 
 test {
     _ = Pty;
@@ -73,4 +74,5 @@ test {
     _ = SessionDef;
     _ = WinPty;
     _ = ipc;
+    _ = png;
 }

@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>teru -- AI-first terminal emulator</title>
+    <meta name="description" content="teru is an AI-first terminal emulator, multiplexer, and tiling manager. A tmux replacement that speaks the same protocols as your AI agents. One binary, no GPU, 1.4MB. Written in Zig.">
+    <meta name="keywords" content="terminal emulator, tmux alternative, tmux replacement, AI terminal, Claude Code, tiling terminal, multiplexer, Zig, MCP, lightweight terminal">
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="teru -- AI-first terminal emulator">
+    <meta property="og:description" content="Terminal emulator, multiplexer, and tiling manager in 1.4MB. A tmux replacement built for AI agent workflows.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://teru.sh">
+    <!-- <meta property="og:image" content="https://teru.sh/assets/hero.png"> -->
+
+    <!-- Structured data for SEO/AEO -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "teru",
+        "alternateName": "teru terminal emulator",
+        "description": "AI-first terminal emulator, multiplexer, and tiling manager. A tmux replacement that speaks the same protocols as AI agents. Built-in 8-layout tiling, 16-tool MCP server, session persistence, CPU SIMD rendering.",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Linux, macOS, Windows",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "license": "https://opensource.org/licenses/MIT",
+        "programmingLanguage": "Zig",
+        "url": "https://teru.sh",
+        "downloadUrl": "https://github.com/nicholasglazer/teru/releases",
+        "softwareVersion": "0.3.7",
+        "fileSize": "1.4MB"
+    }
+    </script>
+
+    <style>
+        :root {
+            --bg: #1a1b26;
+            --bg2: #24283b;
+            --fg: #c0caf5;
+            --fg-dim: #565f89;
+            --accent: #7aa2f7;
+            --accent2: #bb9af7;
+            --green: #9ece6a;
+            --red: #f7768e;
+            --orange: #ff9e64;
+            --cyan: #7dcfff;
+            --border: #3b4261;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+            background: var(--bg);
+            color: var(--fg);
+            line-height: 1.6;
+        }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        /* Hero */
+        .hero {
+            text-align: center;
+            padding: 4rem 2rem 3rem;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .hero h1 {
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 0.3rem;
+        }
+        .hero h1 span { color: var(--fg-dim); font-weight: 400; }
+        .hero .kanji { color: var(--accent2); }
+        .hero .etymology {
+            color: var(--fg-dim);
+            font-size: 0.9rem;
+            margin-bottom: 1rem;
+        }
+        .hero .tagline {
+            font-size: 1.2rem;
+            color: var(--fg);
+            margin-bottom: 0.5rem;
+        }
+        .hero .sub {
+            color: var(--fg-dim);
+            font-size: 0.95rem;
+            margin-bottom: 2rem;
+        }
+        .badges {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-bottom: 2rem;
+        }
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.7rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            border: 1px solid var(--border);
+            background: var(--bg2);
+        }
+        .badge.green { border-color: var(--green); color: var(--green); }
+        .badge.accent { border-color: var(--accent); color: var(--accent); }
+        .badge.orange { border-color: var(--orange); color: var(--orange); }
+        .badge.cyan { border-color: var(--cyan); color: var(--cyan); }
+
+        .install-box {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem 1.5rem;
+            display: inline-block;
+            font-size: 0.95rem;
+            margin-bottom: 1rem;
+        }
+        .install-box .prompt { color: var(--green); }
+        .install-box .cmd { color: var(--fg); }
+        .cta-links {
+            display: flex;
+            gap: 1.5rem;
+            justify-content: center;
+            margin-top: 1rem;
+            font-size: 0.9rem;
+        }
+
+        /* Screenshot placeholder */
+        .screenshot {
+            max-width: 900px;
+            margin: 0 auto 3rem;
+            padding: 0 2rem;
+        }
+        .screenshot-placeholder {
+            background: var(--bg2);
+            border: 2px dashed var(--border);
+            border-radius: 8px;
+            padding: 4rem 2rem;
+            text-align: center;
+            color: var(--fg-dim);
+        }
+
+        /* Sections */
+        section {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 3rem 2rem;
+        }
+        section h2 {
+            font-size: 1.5rem;
+            margin-bottom: 1.5rem;
+            color: var(--accent);
+        }
+
+        /* Why teru */
+        .why-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+        @media (max-width: 600px) { .why-grid { grid-template-columns: 1fr; } }
+        .why-card {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+        }
+        .why-card h3 {
+            color: var(--accent2);
+            font-size: 1rem;
+            margin-bottom: 0.5rem;
+        }
+        .why-card p { color: var(--fg-dim); font-size: 0.9rem; }
+
+        /* Comparison */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+        th, td {
+            padding: 0.5rem 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        th { color: var(--accent); font-weight: 600; }
+        td:first-child { color: var(--fg); font-weight: 500; }
+        .highlight { color: var(--green); font-weight: 700; }
+
+        /* Features */
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1rem;
+        }
+        .feature {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 1rem;
+        }
+        .feature h4 { color: var(--cyan); font-size: 0.9rem; margin-bottom: 0.3rem; }
+        .feature p { color: var(--fg-dim); font-size: 0.85rem; }
+
+        /* Footer */
+        footer {
+            text-align: center;
+            padding: 3rem 2rem;
+            color: var(--fg-dim);
+            font-size: 0.85rem;
+            border-top: 1px solid var(--border);
+        }
+        footer a { color: var(--fg-dim); }
+    </style>
+</head>
+<body>
+
+<div class="hero">
+    <h1>teru <span class="kanji">照</span></h1>
+    <p class="etymology">teru (照) -- to shine, to illuminate</p>
+    <p class="tagline">AI-first terminal emulator, multiplexer, and tiling manager.</p>
+    <p class="sub">A tmux replacement that speaks the same protocols as your AI agents.<br>One binary. No GPU. 1.4MB.</p>
+
+    <div class="badges">
+        <span class="badge green">MIT License</span>
+        <span class="badge accent">Zig 0.16</span>
+        <span class="badge orange">480+ tests</span>
+        <span class="badge cyan">1.4MB binary</span>
+    </div>
+
+    <div class="install-box">
+        <span class="prompt">$</span> <span class="cmd">paru -S teru</span>
+    </div>
+
+    <div class="cta-links">
+        <a href="https://github.com/nicholasglazer/teru">GitHub</a>
+        <a href="https://github.com/nicholasglazer/teru/releases">Downloads</a>
+        <a href="https://github.com/nicholasglazer/teru/blob/main/docs/AI-INTEGRATION.md">AI Integration</a>
+        <a href="https://github.com/nicholasglazer/teru/blob/main/docs/CONFIGURATION.md">Config</a>
+    </div>
+</div>
+
+<!-- <div class="screenshot">
+    <img src="assets/hero.png" alt="teru terminal emulator with multi-pane layout" width="100%">
+</div> -->
+<div class="screenshot">
+    <div class="screenshot-placeholder">
+        Screenshot coming soon -- multi-pane layout with miozu theme
+    </div>
+</div>
+
+<section>
+    <h2>Why teru?</h2>
+    <div class="why-grid">
+        <div class="why-card">
+            <h3>AI Agent Orchestration</h3>
+            <p>When Claude Code spawns agent teams, teru manages panes natively. Process graph tracks parent-child relationships. Pane borders color-code by status. 19 MCP tools for cross-agent coordination.</p>
+        </div>
+        <div class="why-card">
+            <h3>Built-in Multiplexer</h3>
+            <p>8 tiling layouts (master-stack, grid, spiral, accordion...), 9 workspaces, session persistence. Replaces tmux entirely. One config file instead of three.</p>
+        </div>
+        <div class="why-card">
+            <h3>No GPU, Faster</h3>
+            <p>CPU SIMD rendering via @Vector. GPU terminals idle 99.9% on text -- uploading textures for two triangles. SIMD blitting is faster and works over SSH, VMs, containers.</p>
+        </div>
+        <div class="why-card">
+            <h3>1.4MB Total</h3>
+            <p>Single binary. No FreeType, no fontconfig, no OpenGL, no EGL, no GTK. Compare: Ghostty 30MB, WezTerm 25MB, Zellij 12MB, Alacritty 6MB + tmux 4MB.</p>
+        </div>
+    </div>
+</section>
+
+<section>
+    <h2>How teru compares</h2>
+    <div style="overflow-x: auto;">
+    <table>
+        <tr><th>Feature</th><th>teru</th><th>Ghostty</th><th>Alacritty</th><th>WezTerm</th><th>Zellij</th></tr>
+        <tr><td>Binary size</td><td class="highlight">1.4MB</td><td>30MB</td><td>6MB</td><td>25MB</td><td>12MB</td></tr>
+        <tr><td>GPU required</td><td class="highlight">No</td><td>Yes</td><td>Yes</td><td>Yes</td><td>No</td></tr>
+        <tr><td>Multiplexer</td><td class="highlight">Built-in</td><td>No</td><td>No</td><td>Yes</td><td>Yes</td></tr>
+        <tr><td>Tiling layouts</td><td class="highlight">8</td><td>No</td><td>No</td><td>No</td><td>4</td></tr>
+        <tr><td>AI agent protocol</td><td class="highlight">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
+        <tr><td>MCP server</td><td class="highlight">19 tools</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
+        <tr><td>Session persistence</td><td class="highlight">Daemon</td><td>No</td><td>No</td><td>Yes</td><td>Yes</td></tr>
+        <tr><td>Scrollback compression</td><td class="highlight">20-50x</td><td>Paged</td><td>Ring</td><td>Ring</td><td>Host</td></tr>
+        <tr><td>Language</td><td>Zig</td><td>Zig</td><td>Rust</td><td>Rust</td><td>Rust</td></tr>
+        <tr><td>License</td><td>MIT</td><td>MIT</td><td>Apache</td><td>MIT</td><td>MIT</td></tr>
+    </table>
+    </div>
+</section>
+
+<section>
+    <h2>Features</h2>
+    <div class="features-grid">
+        <div class="feature">
+            <h4>CPU SIMD Rendering</h4>
+            <p>@Vector alpha blending, no GPU. Sub-millisecond frame times for 200x50 grids.</p>
+        </div>
+        <div class="feature">
+            <h4>8 Tiling Layouts</h4>
+            <p>Master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion. Per-workspace layout lists.</p>
+        </div>
+        <div class="feature">
+            <h4>16 MCP Tools</h4>
+            <p>Agent-to-agent pane control. Read output, send input, manage layouts, query process graph.</p>
+        </div>
+        <div class="feature">
+            <h4>Session Persistence</h4>
+            <p>Daemon mode with detach/attach. Sessions survive terminal close. .tsess format with restart policies.</p>
+        </div>
+        <div class="feature">
+            <h4>Configurable Keybindings</h4>
+            <p>Per-mode tables (normal, prefix, scroll, search). Alt-primary shortcuts. Namespaced actions.</p>
+        </div>
+        <div class="feature">
+            <h4>Cross-Platform</h4>
+            <p>Linux (X11+Wayland), macOS (AppKit), Windows (Win32+ConPTY). Single codebase.</p>
+        </div>
+        <div class="feature">
+            <h4>Vi/Copy Mode</h4>
+            <p>Vim-like navigation, visual selection, word/line motions, yank to clipboard.</p>
+        </div>
+        <div class="feature">
+            <h4>Process Graph</h4>
+            <p>DAG of all processes and agents. Parent-child tracking. Status-colored borders.</p>
+        </div>
+        <div class="feature">
+            <h4>Scrollback Compression</h4>
+            <p>Keyframe+delta stream compression. 20-50x smaller than traditional ring buffers.</p>
+        </div>
+    </div>
+</section>
+
+<section>
+    <h2>Quick Start</h2>
+    <div class="install-box" style="display: block; text-align: left;">
+        <span class="prompt">$</span> <span class="cmd">paru -S teru</span> &nbsp;&nbsp;&nbsp;<span style="color: var(--fg-dim)"># Arch Linux</span><br>
+        <span class="prompt">$</span> <span class="cmd">teru</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: var(--fg-dim)"># launch</span><br>
+        <br>
+        <span style="color: var(--fg-dim)"># Essential keys</span><br>
+        <span style="color: var(--cyan)">Alt+C</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;split vertical<br>
+        <span style="color: var(--cyan)">Alt+J/K</span> &nbsp;&nbsp;&nbsp;&nbsp;focus next/prev pane<br>
+        <span style="color: var(--cyan)">Alt+Space</span> &nbsp;&nbsp;cycle layout<br>
+        <span style="color: var(--cyan)">Alt+1-9</span> &nbsp;&nbsp;&nbsp;&nbsp;switch workspace<br>
+        <span style="color: var(--cyan)">Alt+Z</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;zoom pane<br>
+        <span style="color: var(--cyan)">Alt+V</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;vi/copy mode<br>
+    </div>
+</section>
+
+<footer>
+    <p>
+        <a href="https://github.com/nicholasglazer/teru">GitHub</a> &middot;
+        <a href="https://github.com/nicholasglazer/teru/releases">Releases</a> &middot;
+        <a href="https://github.com/nicholasglazer/teru/blob/main/CHANGELOG.md">Changelog</a> &middot;
+        <a href="https://github.com/nicholasglazer/teru/blob/main/LICENSE">MIT License</a>
+    </p>
+    <p style="margin-top: 0.5rem;">teru 照 -- AI-first terminal emulator written in Zig</p>
+</footer>
+
+</body>
+</html>

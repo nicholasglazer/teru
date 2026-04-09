@@ -45,6 +45,15 @@ install: release ## Install to PREFIX (default: /usr/local)
 uninstall: ## Remove installed binary
 	rm -f $(DESTDIR)$(BINDIR)/teru
 
+# ── Version ─────────────────────────────────────────────────────
+.PHONY: bump-version
+bump-version: ## Bump version: make bump-version V=x.y.z
+	@test -n "$(V)" || (echo "Usage: make bump-version V=x.y.z" && exit 1)
+	@sed -i 's/const version = ".*"/const version = "$(V)"/' build.zig
+	@sed -i 's/\.version = ".*"/.version = "$(V)"/' build.zig.zon
+	@echo "Bumped to $(V) in build.zig + build.zig.zon"
+	@echo "  main.zig and McpServer.zig read build_options.version at compile time"
+
 # ── Clean ───────────────────────────────────────────────────────────
 .PHONY: clean
 clean: ## Remove build artifacts

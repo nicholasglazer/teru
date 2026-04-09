@@ -2,45 +2,85 @@
 
 <h1>teru 照</h1>
 
-<p><strong>AI-first terminal emulator, multiplexer, and tiling manager.<br>One binary. No GPU. 1.4MB.</strong></p>
+<p><em>teru (照) -- to shine, to illuminate</em></p>
+
+<p><strong>AI-first terminal emulator, multiplexer, and tiling manager.<br>A tmux replacement that speaks the same protocols as your AI agents.<br>One binary. No GPU. 1.4MB.</strong></p>
 
 <p>
+  <a href="https://teru.sh"><img src="https://img.shields.io/badge/web-teru.sh-blue" alt="Website"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
   <a href="https://github.com/nicholasglazer/teru/actions"><img src="https://github.com/nicholasglazer/teru/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/zig-0.16-orange" alt="Zig 0.16">
-  <img src="https://img.shields.io/badge/tests-451-blue" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-480-blue" alt="Tests">
   <img src="https://img.shields.io/badge/binary-1.4MB-brightgreen" alt="Binary Size">
   <a href="https://aur.archlinux.org/packages/teru"><img src="https://img.shields.io/aur/version/teru" alt="AUR"></a>
 </p>
 
 <p>
+  <a href="https://teru.sh">Website</a> &middot;
+  <a href="#quick-start">Quick Start</a> &middot;
   <a href="#installation">Installation</a> &middot;
   <a href="#features">Features</a> &middot;
-  <a href="#architecture">Architecture</a> &middot;
   <a href="#keybindings">Keybindings</a> &middot;
   <a href="#configuration">Configuration</a> &middot;
   <a href="#ai-integration">AI Integration</a> &middot;
-  <a href="#development">Development</a> &middot;
   <a href="#contributing">Contributing</a>
 </p>
+
+<!-- TODO: Add hero screenshot showing multi-pane layout with miozu theme -->
+<!-- <img src="docs/assets/hero.png" alt="teru terminal emulator" width="800"> -->
 
 </div>
 
 ---
 
-### Without teru
+### What is "AI-first"?
 
-- tmux panes break when Claude Code spawns agent teams
-- 3 config layers (tmux.conf + shell scripts + WM keybindings) that don't compose
-- GPU-accelerated terminals waste resources on text rendering
-- No terminal understands process relationships or AI agents
+teru speaks the same protocols as Claude Code. When AI agents spawn subprocesses, teru manages them as first-class panes -- auto-assigning workspaces, tracking status in a process graph, and letting any agent read another agent's terminal output via MCP. No configuration needed. No tmux. It just works.
 
-### With teru
+### Why not tmux + Ghostty/Alacritty/WezTerm?
 
-- Native Claude Code agent team protocol -- agents auto-organize into workspaces
-- Single config file, built-in multiplexer, 8 tiling layouts with per-workspace lists
-- CPU SIMD rendering at sub-millisecond frame times -- works everywhere, no GPU
-- Process graph tracks every process/agent with parent-child relationships
+| Problem | tmux + terminal | teru |
+|---------|----------------|------|
+| Claude Code agent teams | Spawns break layouts, no process awareness | Native protocol -- agents auto-organize |
+| Configuration | 3 layers (tmux.conf + shell + WM bindings) | Single config file, everything built-in |
+| GPU dependency | GPU-accelerated rendering idles 99.9% of the time on text | CPU SIMD -- works over SSH, VMs, containers, headless |
+| Process relationships | No terminal knows what's running or why | Process graph tracks parent-child + agent metadata |
+| Binary size | 30-80MB terminal + 4MB tmux | **1.4MB total** |
+
+teru is a **tmux alternative** that replaces your multiplexer, tiling manager, and terminal in one binary. If you use Claude Code, Cursor, or any AI coding tool that spawns agents, teru is built for you.
+
+---
+
+## Quick Start
+
+```bash
+# Install (Arch Linux)
+paru -S teru
+
+# Launch
+teru
+
+# Essential keys
+Alt+C                     # split vertical
+RAlt+C                    # split horizontal
+Alt+J / Alt+K             # focus next / prev pane
+Alt+1-9                   # switch workspace
+Alt+Space                 # cycle layout (8 layouts)
+Alt+Z                     # zoom pane (maximize)
+Alt+X                     # close pane
+Alt+V                     # vi/copy mode
+Alt+/                     # search scrollback
+```
+
+Session persistence (tmux-style detach/attach):
+
+```bash
+teru --daemon myproject   # start headless (PTYs persist)
+teru --session myproject  # attach from any terminal
+# Alt+D to detach
+teru --list               # list sessions
+```
 
 ---
 
@@ -133,14 +173,16 @@ teru --list               # list active sessions
 | **GPU required** | **No** | Yes | Yes | Yes | No | Yes |
 | **Built-in multiplexer** | **Yes** | No | No | Yes | Yes | Tabs |
 | **Tiling layouts** | **8** | No | No | No | 4 | No |
-| **AI agent protocol** | **Yes** | No | No | No | No | Cloud |
+| **AI agent protocol** | **Agent orchestration** | No | No | No | No | Command suggestions* |
 | **Process graph** | **Yes** | No | No | No | No | No |
 | **Claude Code native** | **Yes** | No | No | No | No | No |
-| **MCP server** | **16 tools + prompts** | No | No | No | No | No |
+| **MCP server** | **19 tools + prompts** | No | No | No | No | No |
 | **Session persistence** | **Daemon** | No | No | Yes | Yes | Cloud |
 | **Scrollback compression** | **20-50x** | Paged | Ring | Ring | Host | Block |
 | **Language** | Zig | Zig | Rust | Rust | Rust | Rust |
 | **License** | MIT | MIT | Apache | MIT | MIT | Proprietary |
+
+*Warp's AI provides command suggestions and shell completions (cloud-based). teru's AI integration is agent orchestration -- managing multi-agent panes, process graphs, and cross-agent MCP communication (local, no cloud).
 
 ---
 
@@ -154,7 +196,7 @@ teru --list               # list active sessions
 - **Vi/copy mode** -- prefix + v for vim-like cursor navigation, visual selection, yank to clipboard
 - **Session persistence** -- `teru --daemon` starts headless sessions that survive terminal close, `teru --session` reattaches
 - **CustomPaneBackend** -- native Claude Code agent team protocol (7 operations)
-- **MCP server** -- 16 tools for cross-agent pane control over IPC (including live config)
+- **MCP server** -- 19 tools for cross-agent pane control over IPC (including live config)
 - **OSC 9999** -- agent self-declaration protocol (start/stop/status/progress)
 - **OSC 133** -- shell integration (command blocks, exit code tracking)
 - **Process graph** -- DAG of all processes/agents with lifecycle tracking
@@ -351,14 +393,14 @@ export CLAUDE_PANE_BACKEND_SOCKET=/run/user/1000/teru-pane-backend.sock
 
 ### MCP Server
 
-teru exposes 16 tools over IPC (Unix socket / named pipe) for agent-to-agent pane control:
+teru exposes 19 tools over IPC (Unix socket / named pipe) for agent-to-agent pane control:
 
 ```json
 {
   "mcpServers": {
     "teru": {
       "command": "socat",
-      "args": ["UNIX-CONNECT:/run/user/1000/teru-PID.sock", "STDIO"]
+      "args": ["UNIX-CONNECT:/run/user/1000/teru-mcp-PID.sock", "STDIO"]
     }
   }
 }
@@ -382,6 +424,9 @@ teru exposes 16 tools over IPC (Unix socket / named pipe) for agent-to-agent pan
 | `teru_wait_for` | Check if text pattern exists in pane output |
 | `teru_set_config` | Set a config value (writes to teru.conf, triggers hot-reload) |
 | `teru_get_config` | Get current live config values as JSON |
+| `teru_session_save` | Save session state to .tsess file |
+| `teru_session_restore` | Restore session from .tsess file |
+| `teru_screenshot` | Capture framebuffer as PNG file |
 
 ### Agent Protocol (OSC 9999)
 
@@ -403,7 +448,7 @@ teru tracks agents in the ProcessGraph, colors pane borders by status (cyan=runn
 src/
 ├── main.zig                Entry point, event loop, input handling
 ├── compat.zig              Cross-platform primitives (time, process, fork, O_NONBLOCK)
-├── lib.zig                 Library root, C-ABI API, test runner (451+ tests)
+├── lib.zig                 Library root, C-ABI API, test runner (480+ tests)
 ├── core/
 │   ├── Grid.zig            Character grid (cells, cursor, scroll regions, alt-screen)
 │   ├── VtParser.zig        VT100/xterm state machine (SIMD fast-path)
@@ -417,7 +462,7 @@ src/
 │   └── UrlDetector.zig     URL detection (regex-free)
 ├── agent/
 │   ├── PaneBackend.zig     CustomPaneBackend protocol (Claude Code)
-│   ├── McpServer.zig       MCP server (16 tools, IPC)
+│   ├── McpServer.zig       MCP server (19 tools, IPC)
 │   ├── HookHandler.zig     Claude Code hook JSON parser
 │   ├── HookListener.zig    HTTP hook listener (IPC)
 │   └── protocol.zig        OSC 9999 agent protocol parser
@@ -495,7 +540,7 @@ Build with `-Dx11=false` for Wayland-only (drops xcb dep).
 git clone https://github.com/nicholasglazer/teru.git
 cd teru
 
-zig build test            # 451+ tests
+zig build test            # 480+ tests
 zig build                 # debug build
 zig build run             # run windowed
 zig build run -- --raw    # run TTY mode
