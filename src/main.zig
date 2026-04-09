@@ -92,7 +92,7 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, arg, "--help")) {
-            out("teru — AI-first terminal emulator\n\nUsage: teru [options]\n\nOptions:\n  --help                Show this help\n  --version             Show version\n  --raw                 Raw passthrough mode (no window)\n  --attach              Restore session from last detach\n  --daemon <name>       Start headless daemon session\n  --session <name>      Attach to daemon session (TTY)\n  --list                List active daemon sessions\n  --mcp-bridge          MCP stdio bridge\n  --config <path>       Use custom config file\n  --theme <name>        Override theme\n  --class <name>        Set WM_CLASS\n\nMultiplexer keys (prefix: Ctrl+Space):\n  c/\\   Vertical split        -     Horizontal split\n  x     Close pane             n/p   Next/prev pane\n  v     Vi/copy mode           /     Search\n  1-9   Switch workspace       d     Detach\n  Space Cycle layout            z     Zoom\n  H/L   Resize width           K/J   Resize height\n\nGlobal shortcuts (no prefix):\n  Alt+1-9         Switch workspace\n  RAlt+1-9        Move pane to workspace\n  Alt+J/K         Focus next/prev pane\n  RAlt+J/K        Swap pane down/up\n  Alt+C           New pane        RAlt+C  Horizontal split\n  Alt+X           Close pane\n  Alt+M           Focus master pane\n  RAlt+M          Mark pane as master\n  Alt+-/=         Zoom out/in (font size)\n\n");
+            out("teru — AI-first terminal emulator\n\nUsage: teru [options]\n\nOptions:\n  --help                Show this help\n  --version             Show version\n  --raw                 Raw passthrough mode (no window)\n  --attach              Restore session from last detach\n  --daemon <name>       Start headless daemon session\n  --session <name>      Attach to daemon session (TTY)\n  --list                List active daemon sessions\n  --mcp-bridge          MCP stdio bridge\n  --config <path>       Use custom config file\n  --theme <name>        Override theme\n  --class <name>        Set WM_CLASS\n\nMultiplexer keys (prefix: Ctrl+Space):\n  c/\\   Vertical split        -     Horizontal split\n  x     Close pane             n/p   Next/prev pane\n  v     Vi/copy mode           /     Search\n  1-9   Switch workspace       d     Detach\n  Space Cycle layout            z     Zoom\n  H/L   Resize width           K/J   Resize height\n\nGlobal shortcuts (no prefix):\n  Alt+1-9,0       Switch workspace\n  RAlt+1-9,0      Move pane to workspace\n  Alt+J/K         Focus next/prev pane\n  RAlt+J/K        Swap pane down/up\n  Alt+C           New pane        RAlt+C  Horizontal split\n  Alt+X           Close pane\n  Alt+M           Focus master pane\n  RAlt+M          Mark pane as master\n  Alt+-/=         Zoom out/in (font size)\n\n");
             return;
         }
         if (std.mem.eql(u8, arg, "--raw")) { mode_raw = true; continue; }
@@ -146,8 +146,14 @@ pub fn main(init: std.process.Init) !void {
 }
 
 /// Session restore info passed from --attach to runWindowedMode.
+const LayoutEngine = @import("tiling/LayoutEngine.zig");
+
 const RestoreInfo = struct {
     pane_count: u16,
+    workspace_panes: [10]u16 = .{0} ** 10,
+    workspace_layouts: [10]u8 = .{0} ** 10,
+    workspace_ratios: [10]f32 = .{0.55} ** 10,
+    active_workspace: u8 = 0,
 };
 
 fn runAttachMode(allocator: std.mem.Allocator, io: std.Io) !void {
@@ -191,16 +197,21 @@ fn runPersistentMode(allocator: std.mem.Allocator, io: std.Io) !void {
         return runWindowedMode(allocator, io, null);
     defer sess.deinit();
 
-    var shell_count: u16 = 0;
-    for (sess.graph_snapshot) |node| {
-        if (node.kind == 0) shell_count += 1;
+    // Extract workspace info from session
+    var restore = RestoreInfo{ .pane_count = 0 };
+    restore.active_workspace = sess.active_workspace;
+    for (sess.workspace_states, 0..) |ws, i| {
+        restore.workspace_panes[i] = ws.pane_count;
+        restore.workspace_layouts[i] = ws.layout;
+        restore.workspace_ratios[i] = ws.master_ratio;
+        restore.pane_count += ws.pane_count;
     }
-    if (shell_count == 0) shell_count = 1;
+    if (restore.pane_count == 0) restore.pane_count = 1;
 
     var msg_buf: [128]u8 = undefined;
-    outFmt(&msg_buf, "[teru] Restoring persistent session ({d} panes)\n", .{shell_count});
+    outFmt(&msg_buf, "[teru] Restoring persistent session ({d} panes)\n", .{restore.pane_count});
 
-    return runWindowedMode(allocator, io, .{ .pane_count = shell_count });
+    return runWindowedMode(allocator, io, restore);
 }
 
 /// Start a headless daemon session. PTYs persist after this process forks.
@@ -410,7 +421,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     mux.persist_session_name = "default";
 
     // Apply per-workspace config
-    for (0..9) |i| {
+    for (0..10) |i| {
         // Layout list takes priority over single layout
         if (config.workspace_layout_counts[i] > 0) {
             mux.layout_engine.workspaces[i].setLayouts(
@@ -479,8 +490,39 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     }
 
     // Spawn panes (restore or fresh)
-    const pane_count: u16 = if (restore) |r| r.pane_count else 1;
-    for (0..pane_count) |_| {
+    if (restore) |r| {
+        if (r.pane_count > 1 or r.workspace_panes[0] > 0) {
+            // Workspace-aware restore: spawn panes into their original workspaces
+            for (0..10) |wi| {
+                const ws_panes = r.workspace_panes[wi];
+                if (ws_panes == 0) continue;
+
+                // Set layout and ratio for this workspace
+                mux.layout_engine.workspaces[wi].layout = @enumFromInt(r.workspace_layouts[wi]);
+                mux.layout_engine.workspaces[wi].master_ratio = r.workspace_ratios[wi];
+
+                // Switch to this workspace to spawn panes into it
+                mux.switchWorkspace(@intCast(wi));
+                for (0..ws_panes) |_| {
+                    const pid = try mux.spawnPane(grid_rows, grid_cols);
+                    if (mux.getPaneById(pid)) |pane| {
+                        _ = try graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.pty.child_pid, .workspace = @intCast(wi) });
+                    }
+                    hooks.fire(.spawn);
+                }
+            }
+            // Switch back to the active workspace
+            mux.switchWorkspace(r.active_workspace);
+        } else {
+            // Simple restore: just pane count on workspace 0
+            const pid = try mux.spawnPane(grid_rows, grid_cols);
+            if (mux.getPaneById(pid)) |pane| {
+                _ = try graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.pty.child_pid });
+            }
+            hooks.fire(.spawn);
+        }
+    } else {
+        // Fresh start: single pane
         const pid = try mux.spawnPane(grid_rows, grid_cols);
         if (mux.getPaneById(pid)) |pane| {
             _ = try graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.pty.child_pid });
@@ -1708,7 +1750,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
 
                     // Hot-reload per-workspace layout lists and ratios
                     // (names are not hot-reloaded — they're owned by Config and freed below)
-                    for (0..9) |i| {
+                    for (0..10) |i| {
                         if (new_config.workspace_layout_counts[i] > 0) {
                             mux.layout_engine.workspaces[i].setLayouts(
                                 new_config.workspace_layout_lists[i][0..new_config.workspace_layout_counts[i]],

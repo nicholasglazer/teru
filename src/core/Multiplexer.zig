@@ -611,10 +611,19 @@ pub fn renderAllWithSelection(
 
 // ── Session persistence ────────────────────────────────────────
 
-/// Save session state to a file. This serializes the process graph.
+/// Save session state to a file. Serializes the process graph and workspace metadata.
 pub fn saveSession(self: *Multiplexer, graph: *const ProcessGraph, path: []const u8, io: Io) !void {
-    _ = self;
-    try Session.saveToFile(graph, path, io);
+    // Build workspace metadata from live state
+    var ws_meta: [10]Session.WorkspaceMeta = undefined;
+    for (&self.layout_engine.workspaces, 0..) |*ws, i| {
+        ws_meta[i] = .{
+            .layout = @intFromEnum(ws.layout),
+            .master_ratio = ws.master_ratio,
+            .pane_count = @intCast(ws.nodeCount()),
+            .active_workspace = self.active_workspace,
+        };
+    }
+    try Session.saveToFileWithWorkspaces(graph, path, io, &ws_meta);
 }
 
 

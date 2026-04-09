@@ -15,7 +15,7 @@ const Session = @This();
 // ── Constants ───────────────────────────────────────────────────
 
 const magic = "TERU".*;
-const format_version: u16 = 1;
+const format_version: u16 = 2;
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -45,6 +45,7 @@ pub const WorkspaceState = struct {
     layout: u8,
     active_index: u16,
     master_ratio: f32,
+    pane_count: u16 = 0,
     node_ids: []u64,
 };
 
@@ -54,7 +55,8 @@ name: []const u8,
 created_at: i128,
 last_saved: i128,
 graph_snapshot: []SerializedNode,
-workspace_states: [9]WorkspaceState,
+workspace_states: [10]WorkspaceState,
+active_workspace: u8 = 0,
 allocator: Allocator,
 
 // ── Serialization ───────────────────────────────────────────────
@@ -67,7 +69,18 @@ allocator: Allocator,
 ///   [16] timestamp i128 LE
 ///   [4]  node_count u32 LE
 ///   ...  nodes (variable-length per node)
+pub const WorkspaceMeta = struct {
+    layout: u8 = 0,
+    master_ratio: f32 = 0.55,
+    pane_count: u16 = 0,
+    active_workspace: u8 = 0,
+};
+
 pub fn serialize(graph: *const ProcessGraph, writer: anytype) !void {
+    return serializeWithWorkspaces(graph, writer, null);
+}
+
+pub fn serializeWithWorkspaces(graph: *const ProcessGraph, writer: anytype, ws_meta: ?*const [10]WorkspaceMeta) !void {
     // Magic + version
     try writer.writeAll(&magic);
     try writer.writeInt(u16, format_version, .little);
@@ -85,6 +98,24 @@ pub fn serialize(graph: *const ProcessGraph, writer: anytype) !void {
     while (it.next()) |entry| {
         const node = entry.value_ptr;
         try serializeNode(node, writer);
+    }
+
+    // v2: workspace metadata (10 workspaces)
+    if (ws_meta) |meta| {
+        try writer.writeByte(meta[0].active_workspace);
+        for (meta) |ws| {
+            try writer.writeByte(ws.layout);
+            try writer.writeInt(u32, @bitCast(ws.master_ratio), .little);
+            try writer.writeInt(u16, ws.pane_count, .little);
+        }
+    } else {
+        // Write defaults
+        try writer.writeByte(0); // active_workspace
+        for (0..10) |_| {
+            try writer.writeByte(0); // layout
+            try writer.writeInt(u32, @bitCast(@as(f32, 0.55)), .little); // master_ratio
+            try writer.writeInt(u16, 0, .little); // pane_count
+        }
     }
 }
 
@@ -169,9 +200,9 @@ pub fn deserialize(reader: anytype, allocator: Allocator) !Session {
         return error.InvalidFormat;
     }
 
-    // Version
+    // Version (accept v1 and v2)
     const version = try reader.readInt(u16, .little);
-    if (version != format_version) {
+    if (version != 1 and version != 2) {
         return error.UnsupportedVersion;
     }
 
@@ -194,16 +225,36 @@ pub fn deserialize(reader: anytype, allocator: Allocator) !Session {
         nodes[i] = try deserializeNode(reader, allocator);
     }
 
-    // Default workspace states
-    var ws: [9]WorkspaceState = undefined;
-    for (0..9) |i| {
-        ws[i] = .{
-            .name = "",
-            .layout = 0,
-            .active_index = 0,
-            .master_ratio = 0.55,
-            .node_ids = &.{},
-        };
+    // Workspace states
+    var ws: [10]WorkspaceState = undefined;
+    var active_ws: u8 = 0;
+    if (version >= 2) {
+        // v2: read workspace metadata
+        active_ws = try reader.readByte();
+        for (0..10) |i| {
+            const layout = try reader.readByte();
+            const ratio_bits = try reader.readInt(u32, .little);
+            const pane_count = try reader.readInt(u16, .little);
+            ws[i] = .{
+                .name = "",
+                .layout = layout,
+                .active_index = 0,
+                .master_ratio = @bitCast(ratio_bits),
+                .pane_count = pane_count,
+                .node_ids = &.{},
+            };
+        }
+    } else {
+        for (0..10) |i| {
+            ws[i] = .{
+                .name = "",
+                .layout = 0,
+                .active_index = 0,
+                .master_ratio = 0.55,
+                .pane_count = 0,
+                .node_ids = &.{},
+            };
+        }
     }
 
     return .{
@@ -212,6 +263,7 @@ pub fn deserialize(reader: anytype, allocator: Allocator) !Session {
         .last_saved = timestamp,
         .graph_snapshot = nodes,
         .workspace_states = ws,
+        .active_workspace = active_ws,
         .allocator = allocator,
     };
 }
@@ -302,10 +354,15 @@ fn deserializeNode(reader: anytype, allocator: Allocator) !SerializedNode {
 
 /// Serialize the graph and write to a file at the given path.
 pub fn saveToFile(graph: *const ProcessGraph, path: []const u8, io: Io) !void {
+    return saveToFileWithWorkspaces(graph, path, io, null);
+}
+
+/// Serialize the graph with workspace metadata and write to a file.
+pub fn saveToFileWithWorkspaces(graph: *const ProcessGraph, path: []const u8, io: Io, ws_meta: ?*const [10]WorkspaceMeta) !void {
     // Serialize to dynamic memory buffer
     var dyn = compat.DynWriter{ .allocator = std.heap.page_allocator };
     defer dyn.deinit();
-    try serialize(graph, &dyn);
+    try serializeWithWorkspaces(graph, &dyn, ws_meta);
 
     // Write to file
     const file = Dir.cwd().createFile(io, path, .{}) catch return error.CreateFailed;
