@@ -1635,16 +1635,21 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
         // Poll all PTYs (grid is never modified by scroll — no save/restore needed)
         const had_output = mux.pollPtys(&pty_buf);
 
-        // If user is scrolled up and new lines were added to scrollback,
-        // advance scroll_offset to keep the viewport pinned to the same content.
-        // Skip if scroll_offset is small (user is scrolling back to bottom).
-        if (had_output and mux.getScrollOffset() > config.scroll_speed) {
+        // If new lines were added to scrollback, adjust scroll_offset and
+        // active selection to keep them pinned to the same content.
+        if (had_output) {
             if (mux.getActivePane()) |pane| {
                 if (pane.grid.scrollback) |sb| {
                     const sb_count_after = sb.lineCount();
                     if (sb_count_after > sb_count_before) {
                         const new_lines: u32 = @intCast(sb_count_after - sb_count_before);
-                        pane.scroll_offset += new_lines;
+                        if (mux.getScrollOffset() > config.scroll_speed) {
+                            pane.scroll_offset += new_lines;
+                        }
+                        if (selection.active) {
+                            selection.start_row += new_lines;
+                            selection.end_row += new_lines;
+                        }
                     }
                 }
             }
