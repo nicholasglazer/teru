@@ -16,7 +16,13 @@ const SEL = *opaque {};
 extern "c" fn sel_registerName(name: [*:0]const u8) SEL;
 extern "c" fn objc_getClass(name: [*:0]const u8) ?*anyopaque;
 extern "c" fn objc_msgSend() callconv(.c) void;
-extern "c" fn objc_msgSend_stret() callconv(.c) void;
+// objc_msgSend_stret only exists on x86_64; arm64 returns structs via registers.
+const objc_msgSend_stret_fn = if (builtin.cpu.arch == .x86_64) blk: {
+    const f = struct {
+        extern "c" fn objc_msgSend_stret() callconv(.c) void;
+    };
+    break :blk f.objc_msgSend_stret;
+} else objc_msgSend;
 
 // ── Objective-C runtime helpers ─────────────────────────────────────
 
@@ -25,7 +31,6 @@ const id = *anyopaque;
 // objc_msgSend has variable calling convention depending on return type.
 // We cast the function pointer to the signature we need at each call site.
 const objc_msgSend_fn = objc_msgSend;
-const objc_msgSend_stret_fn = objc_msgSend_stret;
 
 fn sel(name: [*:0]const u8) SEL {
     return sel_registerName(name);
