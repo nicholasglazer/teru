@@ -24,7 +24,22 @@ Execute all phases in order. Stop and report if any phase fails.
 1. Run `make bump-version V=$ARGUMENTS`
 2. Verify: `grep 'const version' build.zig | head -1` should show the new version
 
-### Phase 3: Changelog
+### Phase 3: Documentation
+
+Run the docs audit before releasing. This ensures all docs match the shipping code.
+
+1. Cross-reference `docs/CONFIGURATION.md` against `src/config/Config.zig` — every config field must have a doc entry
+2. Cross-reference `docs/KEYBINDINGS.md` against `src/core/KeyHandler.zig` — every action must be listed
+3. Cross-reference `docs/AI-INTEGRATION.md` against `src/agent/McpServer.zig` — every MCP tool must be documented
+4. Check `docs/ARCHITECTURE.md` module list against `ls -d src/*/`
+5. Check `docs/INSTALLING.md` binary targets against `.github/workflows/release.yml`
+6. Update `README.md` feature list if new features were added
+7. Fix any gaps found. Keep it concise — tables over prose, examples over explanation.
+8. Stage doc changes: `git add docs/ README.md`
+
+See `.claude/commands/docs.md` for the full audit protocol.
+
+### Phase 4: Changelog
 
 1. Find the previous release tag: `git describe --tags --abbrev=0`
 2. Read commits since that tag: `git log --oneline <prev-tag>..HEAD`
@@ -37,7 +52,7 @@ Execute all phases in order. Stop and report if any phase fails.
    - **Documentation** — docs, README, comments
 6. Write concise bullet points (not raw commit messages)
 
-### Phase 4: Commit, tag, push
+### Phase 5: Commit, tag, push
 
 1. Stage: `git add build.zig build.zig.zon CHANGELOG.md`
 2. Also stage any other files modified as part of the release prep
@@ -47,7 +62,7 @@ Execute all phases in order. Stop and report if any phase fails.
    - `git push origin && git push origin v$ARGUMENTS`
    - `git push codeberg && git push codeberg v$ARGUMENTS`
 
-### Phase 5: Monitor CI
+### Phase 6: Monitor CI
 
 1. Find the Release workflow: `gh run list --limit 3`
 2. Get the run ID for the Release workflow
@@ -63,7 +78,7 @@ Execute all phases in order. Stop and report if any phase fails.
    - If fixable: fix, delete tag (`git tag -d v$ARGUMENTS && git push origin :refs/tags/v$ARGUMENTS`), re-commit, re-tag, re-push
    - If not fixable: report and stop
 
-### Phase 6: Verify
+### Phase 7: Verify
 
 1. `gh release view v$ARGUMENTS` — show the release page summary
 2. Report the release URL: `https://github.com/nicholasglazer/teru/releases/tag/v$ARGUMENTS`
