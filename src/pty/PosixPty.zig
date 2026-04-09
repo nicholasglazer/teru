@@ -42,7 +42,7 @@ pub fn spawn(opts: SpawnOptions) !Pty {
         .xpixel = 0,
         .ypixel = 0,
     };
-    _ = posix.system.ioctl(master, posix.T.IOCSWINSZ, @intFromPtr(&ws));
+    _ = posix.system.ioctl(master, compat.TIOCSWINSZ, @intFromPtr(&ws));
 
     // Fork child process for the shell
     const fork_pid = compat.posixFork();
@@ -61,7 +61,7 @@ pub fn spawn(opts: SpawnOptions) !Pty {
         };
 
         // Set controlling terminal
-        _ = posix.system.ioctl(slave, posix.T.IOCSCTTY, @as(usize, 0));
+        _ = posix.system.ioctl(slave, compat.TIOCSCTTY, @as(usize, 0));
 
         // Redirect stdin/stdout/stderr to slave PTY
         _ = std.c.dup2(slave, posix.STDIN_FILENO);
@@ -70,7 +70,7 @@ pub fn spawn(opts: SpawnOptions) !Pty {
         if (slave > posix.STDERR_FILENO) _ = posix.system.close(slave);
 
         // Set window size on the slave side (via stdin which now points to the PTY)
-        _ = posix.system.ioctl(posix.STDIN_FILENO, posix.T.IOCSWINSZ, @intFromPtr(&ws));
+        _ = posix.system.ioctl(posix.STDIN_FILENO, compat.TIOCSWINSZ, @intFromPtr(&ws));
 
         // Note: Do NOT disable ECHO here. The shell (bash/fish/zsh) sets
         // its own termios on startup including ECHO. Disabling it before
@@ -130,7 +130,7 @@ pub fn resize(self: *const Pty, rows: u16, cols: u16) void {
         .xpixel = 0,
         .ypixel = 0,
     };
-    _ = posix.system.ioctl(self.master, posix.T.IOCSWINSZ, @intFromPtr(&ws));
+    _ = posix.system.ioctl(self.master, compat.TIOCSWINSZ, @intFromPtr(&ws));
 }
 
 pub fn waitForExit(self: *const Pty) !u32 {

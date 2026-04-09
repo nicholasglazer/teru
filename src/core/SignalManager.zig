@@ -7,6 +7,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
+const compat = @import("../compat.zig");
 
 const SignalManager = @This();
 
@@ -52,7 +53,7 @@ fn handleSigwinch(_: posix.SIG) callconv(.c) void {
     if (g_pty_master_fd < 0) return;
     var ws: posix.winsize = undefined;
     if (posix.system.ioctl(g_host_fd, posix.T.IOCGWINSZ, @intFromPtr(&ws)) != 0) return;
-    _ = posix.system.ioctl(g_pty_master_fd, posix.T.IOCSWINSZ, @intFromPtr(&ws));
+    _ = posix.system.ioctl(g_pty_master_fd, compat.TIOCSWINSZ, @intFromPtr(&ws));
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
