@@ -55,4 +55,5 @@ When invoked with `/release <version>`:
 - macOS builds run on `macos-15` (aarch64 only, Intel Macs are EOL)
 - Windows is cross-compiled from Ubuntu
 - Never skip tests before releasing
-- If CI fails, fix the issue, delete the tag (`git tag -d v<version> && git push origin :refs/tags/v<version>`), re-tag, and re-push
+- If CI fails, fix the issue, delete the tag (`git tag -d v<version> && git push origin :refs/tags/v<version> && git push codeberg :refs/tags/v<version>`), re-tag, and re-push
+- Always push to both remotes: `origin` (GitHub) and `codeberg`

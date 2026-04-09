@@ -43,7 +43,9 @@ Execute all phases in order. Stop and report if any phase fails.
 2. Also stage any other files modified as part of the release prep
 3. Commit: `git commit -m "release: v$ARGUMENTS"`
 4. Tag: `git tag v$ARGUMENTS`
-5. Push: `git push && git push origin v$ARGUMENTS`
+5. Push to both remotes:
+   - `git push origin && git push origin v$ARGUMENTS`
+   - `git push codeberg && git push codeberg v$ARGUMENTS`
 
 ### Phase 5: Monitor CI
 
