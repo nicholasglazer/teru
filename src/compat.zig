@@ -16,16 +16,17 @@ const Allocator = std.mem.Allocator;
 // Platform-specific imports
 const linux = if (builtin.os.tag == .linux) std.os.linux else undefined;
 
-/// ioctl constants missing from Zig's std.posix.T on macOS.
-pub const TIOCSWINSZ: usize = switch (builtin.os.tag) {
-    .linux => posix.T.IOCSWINSZ,
-    .macos => 0x80087467, // _IOW('t', 103, struct winsize)
-    else => if (@hasDecl(posix.T, "IOCSWINSZ")) posix.T.IOCSWINSZ else 0x80087467,
+/// ioctl request constants — macOS std.posix.T is incomplete.
+/// Type is c_int to match libc ioctl(fd, request: c_int, ...) signature.
+pub const TIOCSWINSZ: c_int = switch (builtin.os.tag) {
+    .linux => @bitCast(@as(c_uint, posix.T.IOCSWINSZ)),
+    .macos => @bitCast(@as(c_uint, 0x80087467)), // _IOW('t', 103, struct winsize)
+    else => if (@hasDecl(posix.T, "IOCSWINSZ")) @bitCast(@as(c_uint, posix.T.IOCSWINSZ)) else @bitCast(@as(c_uint, 0x80087467)),
 };
-pub const TIOCSCTTY: usize = switch (builtin.os.tag) {
-    .linux => posix.T.IOCSCTTY,
-    .macos => 0x20007461, // _IO('t', 97)
-    else => if (@hasDecl(posix.T, "IOCSCTTY")) posix.T.IOCSCTTY else 0x20007461,
+pub const TIOCSCTTY: c_int = switch (builtin.os.tag) {
+    .linux => @bitCast(@as(c_uint, posix.T.IOCSCTTY)),
+    .macos => @bitCast(@as(c_uint, 0x20007461)), // _IO('t', 97)
+    else => if (@hasDecl(posix.T, "IOCSCTTY")) @bitCast(@as(c_uint, posix.T.IOCSCTTY)) else @bitCast(@as(c_uint, 0x20007461)),
 };
 
 // Win32 externs not in Zig 0.16's kernel32 bindings
