@@ -125,6 +125,18 @@ pub fn main(init: std.process.Init) !void {
     if (mode_mcp_bridge) return McpBridge.run(io);
     if (mode_attach) return runAttachMode(allocator, io);
 
+    // Auto-persistence: if enabled and no explicit mode flags, auto-restore or auto-attach
+    if (!mode_raw) {
+        if (Config.load(allocator, io)) |early_config_val| {
+            var ec = early_config_val;
+            const persist = ec.persist_session;
+            ec.deinit();
+            if (persist) {
+                return runPersistentMode(allocator, io);
+            }
+        } else |_| {}
+    }
+
     // Detect rendering tier
     const tier = render.detectTier();
     if (tier == .tty or mode_raw) {
@@ -158,6 +170,39 @@ fn runAttachMode(allocator: std.mem.Allocator, io: std.Io) !void {
     return runWindowedMode(allocator, io, .{ .pane_count = shell_count });
 }
 
+/// Auto-persistence startup: check daemon → session file → fresh start.
+fn runPersistentMode(allocator: std.mem.Allocator, io: std.Io) !void {
+    // 1. Check if daemon "default" is alive → auto-attach
+    if (Daemon.connectToSession("default")) |sock| {
+        _ = posix.system.close(sock);
+        return runSessionAttach("default");
+    } else |_| {}
+
+    // 2. Check if session file exists → restore pane count
+    const sess_dir = Session.getSessionDir(allocator) catch
+        return runWindowedMode(allocator, io, null);
+    defer allocator.free(sess_dir);
+
+    var path_buf: [512]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/default.bin", .{sess_dir}) catch
+        return runWindowedMode(allocator, io, null);
+
+    var sess = Session.loadFromFile(path, allocator, io) catch
+        return runWindowedMode(allocator, io, null);
+    defer sess.deinit();
+
+    var shell_count: u16 = 0;
+    for (sess.graph_snapshot) |node| {
+        if (node.kind == 0) shell_count += 1;
+    }
+    if (shell_count == 0) shell_count = 1;
+
+    var msg_buf: [128]u8 = undefined;
+    outFmt(&msg_buf, "[teru] Restoring persistent session ({d} panes)\n", .{shell_count});
+
+    return runWindowedMode(allocator, io, .{ .pane_count = shell_count });
+}
+
 /// Start a headless daemon session. PTYs persist after this process forks.
 fn runDaemonMode(allocator: std.mem.Allocator, io: std.Io, session_name: []const u8) !void {
     var config = try Config.load(allocator, io);
@@ -183,6 +228,9 @@ fn runDaemonMode(allocator: std.mem.Allocator, io: std.Io, session_name: []const
     // Create daemon
     var daemon = try Daemon.init(allocator, session_name, &mux, &graph, if (mcp) |*m| m else null, &hooks);
     defer daemon.deinit();
+    daemon.persist_session = config.persist_session;
+    daemon.io = io;
+    mux.persist_session_name = session_name;
 
     var buf: [128]u8 = undefined;
     outFmt(&buf, "[teru] Daemon started: {s}\n", .{daemon.getSocketPath()});
@@ -359,6 +407,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
         .cursor_shape = config.cursor_shape,
     };
     mux.notification_duration_ns = @as(i128, config.notification_duration_ms) * 1_000_000;
+    mux.persist_session_name = "default";
 
     // Apply per-workspace config
     for (0..9) |i| {
@@ -1576,6 +1625,15 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
             }
         }
 
+        // Persist session: debounced save (100ms after last mutation)
+        if (config.persist_session and mux.persist_dirty) {
+            const elapsed = compat.monotonicNow() - mux.persist_dirty_since;
+            if (elapsed >= 100_000_000) { // 100ms
+                mux.persist_dirty = false;
+                persistSave(&mux, &graph, allocator, io);
+            }
+        }
+
         // Check for agent protocol events on all panes
         for (mux.panes.items) |*pane| {
             if (pane.vt.consumeAgentEvent()) |payload| {
@@ -1669,6 +1727,7 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
                     config.bell = new_config.bell;
                     config.copy_on_select = new_config.copy_on_select;
                     config.mouse_hide_when_typing = new_config.mouse_hide_when_typing;
+                    config.persist_session = new_config.persist_session;
                     config.show_status_bar = new_config.show_status_bar;
 
                     // Force full redraw
@@ -1833,6 +1892,21 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
             io.sleep(.fromMilliseconds(16), .awake) catch {};
         }
     }
+
+    // Final persist save on exit
+    if (config.persist_session) {
+        persistSave(&mux, &graph, allocator, io);
+    }
+}
+
+/// Save session state to the persist directory (best-effort, errors silently ignored).
+fn persistSave(mux: *Multiplexer, graph: *const ProcessGraph, allocator: std.mem.Allocator, io: std.Io) void {
+    const sess_dir = Session.getSessionDir(allocator) catch return;
+    defer allocator.free(sess_dir);
+    compat.ensureDirC(sess_dir);
+    var path_buf: [512]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/{s}.bin", .{ sess_dir, mux.persist_session_name }) catch return;
+    mux.saveSession(graph, path, io) catch {};
 }
 
 /// Fill the grid with scrollback + saved screen content for browsing mode.

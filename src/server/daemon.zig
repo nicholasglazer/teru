@@ -17,6 +17,7 @@ const Multiplexer = @import("../core/Multiplexer.zig");
 const ProcessGraph = @import("../graph/ProcessGraph.zig");
 const McpServer = @import("../agent/McpServer.zig");
 const Hooks = @import("../config/Hooks.zig");
+const Session = @import("../persist/Session.zig");
 const proto = @import("protocol.zig");
 
 const Daemon = @This();
@@ -38,6 +39,8 @@ socket_path: [socket_path_max]u8,
 socket_path_len: usize,
 session_name: []const u8,
 running: bool,
+persist_session: bool = false,
+io: ?std.Io = null,
 
 // ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -155,6 +158,20 @@ pub fn run(self: *Daemon) void {
 
         // Check for dead panes
         self.checkPaneAlive();
+
+        // Persist session: debounced save (100ms after last mutation)
+        if (self.persist_session and self.mux.persist_dirty) {
+            const elapsed = compat.monotonicNow() - self.mux.persist_dirty_since;
+            if (elapsed >= 100_000_000) { // 100ms
+                self.mux.persist_dirty = false;
+                self.persistSave();
+            }
+        }
+    }
+
+    // Final save on daemon exit
+    if (self.persist_session) {
+        self.persistSave();
     }
 }
 
@@ -247,11 +264,22 @@ fn checkPaneAlive(self: *Daemon) void {
                 _ = self.mux.panes.orderedRemove(i);
                 // Re-link remaining panes after removal
                 for (self.mux.panes.items) |*p| p.linkVt(self.allocator);
+                self.mux.markDirty();
                 continue; // don't increment i
             }
         }
         i += 1;
     }
+}
+
+fn persistSave(self: *Daemon) void {
+    const io = self.io orelse return;
+    const sess_dir = Session.getSessionDir(self.allocator) catch return;
+    defer self.allocator.free(sess_dir);
+    compat.ensureDirC(sess_dir);
+    var path_buf: [512]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/{s}.bin", .{ sess_dir, self.session_name }) catch return;
+    self.mux.saveSession(self.graph, path, io) catch {};
 }
 
 // ── Session socket utilities ──────────────────────────────────────

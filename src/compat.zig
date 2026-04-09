@@ -322,3 +322,23 @@ pub fn getenv(name: [*:0]const u8) ?[]const u8 {
     return std.mem.sliceTo(ptr, 0);
 }
 
+// ── Directory helpers ───────────────────────────────────────────
+
+/// Create a directory and all parent components (like mkdir -p).
+/// Uses C mkdir, ignoring EEXIST. No Io required.
+pub fn ensureDirC(path: []const u8) void {
+    var path_z: [512:0]u8 = undefined;
+    if (path.len >= path_z.len) return;
+    var i: usize = 1;
+    while (i < path.len) : (i += 1) {
+        if (path[i] == '/') {
+            @memcpy(path_z[0..i], path[0..i]);
+            path_z[i] = 0;
+            _ = std.c.mkdir(@ptrCast(path_z[0..i :0]), 0o755);
+        }
+    }
+    @memcpy(path_z[0..path.len], path);
+    path_z[path.len] = 0;
+    _ = std.c.mkdir(@ptrCast(path_z[0..path.len :0]), 0o755);
+}
+

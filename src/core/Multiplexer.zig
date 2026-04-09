@@ -40,6 +40,11 @@ notification_len: u8 = 0,
 notification_time: i128 = 0,
 notification_duration_ns: i128 = 5_000_000_000,
 
+// Session persistence (dirty flag checked by event loop when persist_session is enabled)
+persist_dirty: bool = false,
+persist_dirty_since: i128 = 0,
+persist_session_name: []const u8 = "default",
+
 // --- Methods ---
 
 /// Get scroll offset for the active pane.
@@ -183,6 +188,14 @@ pub fn notify(self: *Multiplexer, msg: []const u8) void {
     if (self.getActivePane()) |pane| pane.grid.dirty = true;
 }
 
+/// Mark session state as dirty (triggers debounced save when persist_session is enabled).
+pub fn markDirty(self: *Multiplexer) void {
+    if (!self.persist_dirty) {
+        self.persist_dirty = true;
+        self.persist_dirty_since = compat.monotonicNow();
+    }
+}
+
 pub fn init(allocator: Allocator) Multiplexer {
     return .{
         .panes = .empty,
@@ -222,6 +235,7 @@ pub fn spawnPane(self: *Multiplexer, rows: u16, cols: u16) !u64 {
     for (self.panes.items) |*p| p.linkVt(self.allocator);
 
     try self.layout_engine.workspaces[self.active_workspace].addNode(self.allocator, id);
+    self.markDirty();
 
     return id;
 }
@@ -264,6 +278,7 @@ pub fn spawnPaneWithCommand(self: *Multiplexer, rows: u16, cols: u16, command: [
     for (self.panes.items) |*p| p.linkVt(self.allocator);
 
     try self.layout_engine.workspaces[self.active_workspace].addNode(self.allocator, id);
+    self.markDirty();
 
     return id;
 }
@@ -284,6 +299,7 @@ pub fn closePane(self: *Multiplexer, pane_id: u64) void {
             break;
         }
     }
+    self.markDirty();
 }
 
 /// Get the currently focused pane (active pane in active workspace).
@@ -306,27 +322,32 @@ pub fn getPaneById(self: *Multiplexer, id: u64) ?*Pane {
 /// Focus the next pane in the active workspace.
 pub fn focusNext(self: *Multiplexer) void {
     self.layout_engine.workspaces[self.active_workspace].focusNext();
+    self.markDirty();
 }
 
 /// Focus the previous pane in the active workspace.
 pub fn focusPrev(self: *Multiplexer) void {
     self.layout_engine.workspaces[self.active_workspace].focusPrev();
+    self.markDirty();
 }
 
 /// Swap active pane with next in the workspace pane list.
 pub fn swapPaneNext(self: *Multiplexer) void {
     self.layout_engine.workspaces[self.active_workspace].swapWithNext();
+    self.markDirty();
 }
 
 /// Swap active pane with previous in the workspace pane list.
 pub fn swapPanePrev(self: *Multiplexer) void {
     self.layout_engine.workspaces[self.active_workspace].swapWithPrev();
+    self.markDirty();
 }
 
 /// Mark the active pane as the master pane for its workspace.
 pub fn setMaster(self: *Multiplexer) void {
     const ws = &self.layout_engine.workspaces[self.active_workspace];
     ws.master_id = ws.getActiveNodeId();
+    self.markDirty();
 }
 
 /// Focus the master pane in the active workspace.
@@ -336,6 +357,7 @@ pub fn focusMaster(self: *Multiplexer) void {
     for (ws.node_ids.items, 0..) |nid, i| {
         if (nid == mid) {
             ws.active_index = i;
+            self.markDirty();
             return;
         }
     }
@@ -347,6 +369,7 @@ pub fn switchWorkspace(self: *Multiplexer, idx: u8) void {
     self.active_workspace = self.layout_engine.active_workspace;
     // Clear attention on the workspace we're switching to
     self.layout_engine.workspaces[self.active_workspace].attention = false;
+    self.markDirty();
 }
 
 /// Cycle the layout of the active workspace.
@@ -359,6 +382,7 @@ pub fn cycleLayout(self: *Multiplexer) void {
     ws.split_root = null;
     ws.split_node_count = 0;
     ws.active_node = null;
+    self.markDirty();
 }
 
 /// Toggle zoom: switch between current layout and monocle.
@@ -377,6 +401,7 @@ pub fn toggleZoom(self: *Multiplexer) void {
     ws.split_root = null;
     ws.split_node_count = 0;
     ws.active_node = null;
+    self.markDirty();
 }
 
 /// Resize the active pane by adjusting the master ratio.
@@ -446,6 +471,7 @@ pub fn resizeActive(self: *Multiplexer, dx: i8, dy: i8) void {
         },
         else => {},
     }
+    self.markDirty();
 }
 
 // ── PTY polling ────────────────────────────────────────────────
@@ -479,6 +505,7 @@ pub fn movePaneToWorkspace(self: *Multiplexer, target: u8) bool {
     const ws = &self.layout_engine.workspaces[self.active_workspace];
     const active_id = ws.getActiveNodeId() orelse return false;
     self.layout_engine.moveNodeToWorkspace(active_id, target) catch return false;
+    self.markDirty();
     return true;
 }
 
