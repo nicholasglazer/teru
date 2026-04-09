@@ -219,13 +219,15 @@ pub fn executeAction(action: KB.Action, mux: *Multiplexer) MuxAction {
         .paste_clipboard => .none, // TODO: implement in main
         .workspace_1, .workspace_2, .workspace_3,
         .workspace_4, .workspace_5, .workspace_6,
-        .workspace_7, .workspace_8, .workspace_9 => {
+        .workspace_7, .workspace_8, .workspace_9,
+        .workspace_0 => {
             if (action.workspaceIndex()) |ws| mux.switchWorkspace(ws);
             return .panes_changed;
         },
         .pane_move_to_1, .pane_move_to_2, .pane_move_to_3,
         .pane_move_to_4, .pane_move_to_5, .pane_move_to_6,
-        .pane_move_to_7, .pane_move_to_8, .pane_move_to_9 => {
+        .pane_move_to_7, .pane_move_to_8, .pane_move_to_9,
+        .pane_move_to_0 => {
             if (action.moveToIndex()) |ws| _ = mux.movePaneToWorkspace(ws);
             return .panes_changed;
         },
@@ -252,7 +254,7 @@ pub fn executeAction(action: KB.Action, mux: *Multiplexer) MuxAction {
 ///   Alt+m           — focus master pane
 ///   Alt+=           — zoom in (increase font size)
 ///   Alt+-           — zoom out (decrease font size)
-///   Alt+0           — zoom reset (default font size)
+///   Alt+0           — workspace 10
 ///
 /// ── RAlt (modify / move) ────────────────────────────────────
 ///   RAlt+j / RAlt+k — swap pane next / prev
@@ -287,7 +289,6 @@ pub fn handleGlobalKey(keycode: u32, modifiers: u32, key_char: u8, alt_enabled: 
         'm' => { if (ralt) mux.setMaster() else mux.focusMaster(); return .panes_changed; },
         '-' => .zoom_out,
         '=' => .zoom_in,
-        '0' => .zoom_reset,
         else => null,
     };
 }
@@ -363,7 +364,7 @@ test "handleGlobalKey Alt+z/Space/d/v actions" {
     try std.testing.expect(handleGlobalKey(0, kc.ALT_MASK, '/', true, false, &mux).? == .enter_search);
     try std.testing.expect(handleGlobalKey(0, kc.ALT_MASK, 'v', true, false, &mux).? == .enter_vi_mode);
     try std.testing.expect(handleGlobalKey(0, kc.ALT_MASK, 'd', true, false, &mux).? == .detach);
-    try std.testing.expect(handleGlobalKey(0, kc.ALT_MASK, '0', true, false, &mux).? == .zoom_reset);
+    // Alt+0 is now workspace 10 (tested via digitToWorkspace with real keycode)
 }
 
 test "handleGlobalKey RAlt+j/k swaps panes" {

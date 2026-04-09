@@ -181,13 +181,13 @@ bar_left: ?[]const u8 = null, // format string (null = workspace tabs)
 bar_center: ?[]const u8 = null, // format string (null = layout + title)
 bar_right: ?[]const u8 = null, // format string (null = dimensions)
 
-// Per-workspace config (9 workspaces, 1-indexed in config, 0-indexed in array)
-workspace_layouts: [9]?LayoutEngine.Layout = .{null} ** 9,
-workspace_ratios: [9]?f32 = .{null} ** 9,
-workspace_names: [9]?[]const u8 = .{null} ** 9,
+// Per-workspace config (10 workspaces, 1-indexed in config, 0-indexed in array)
+workspace_layouts: [10]?LayoutEngine.Layout = .{null} ** 10,
+workspace_ratios: [10]?f32 = .{null} ** 10,
+workspace_names: [10]?[]const u8 = .{null} ** 10,
 // Per-workspace layout lists (layouts = master-stack, grid, monocle)
-workspace_layout_lists: [9][LayoutEngine.max_layouts]LayoutEngine.Layout = undefined,
-workspace_layout_counts: [9]u8 = .{0} ** 9,
+workspace_layout_lists: [10][LayoutEngine.max_layouts]LayoutEngine.Layout = undefined,
+workspace_layout_counts: [10]u8 = .{0} ** 10,
 
 // Keybindings (loaded from [keybinds.*] sections or keybinds.conf)
 keybinds: Keybinds.Keybinds = .{},
@@ -577,7 +577,7 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
 }
 
 fn applyWorkspaceField(self: *Config, allocator: Allocator, ws_idx: usize, key: []const u8, value: []const u8) void {
-    if (ws_idx >= 9) return;
+    if (ws_idx >= 10) return;
     if (std.mem.eql(u8, key, "layout")) {
         self.workspace_layouts[ws_idx] = parseLayout(value);
     } else if (std.mem.eql(u8, key, "layouts")) {

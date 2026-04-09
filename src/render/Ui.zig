@@ -169,7 +169,7 @@ pub fn renderTextStatusBar(
 
     // ── Left: workspace tabs ──
     // Show all workspaces that have panes or are active
-    for (0..9) |wi| {
+    for (0..10) |wi| {
         const ws = &mux.layout_engine.workspaces[wi];
         const has_panes = ws.node_ids.items.len > 0;
         const is_active = wi == mux.active_workspace;
@@ -178,8 +178,8 @@ pub fn renderTextStatusBar(
         blitCharAt(cpu, ' ', x, text_y, s.bg);
         x += cw;
 
-        // Workspace number
-        const ws_char: u8 = '1' + @as(u8, @intCast(wi));
+        // Workspace number (1-9 then 0 for workspace 10)
+        const ws_char: u8 = if (wi < 9) '1' + @as(u8, @intCast(wi)) else '0';
         const ws_color = if (is_active) s.cursor else if (ws.attention) s.attention else s.ansi[8];
         blitCharAt(cpu, ws_char, x, text_y, ws_color);
         x += cw;

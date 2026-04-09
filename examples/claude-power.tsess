@@ -1,0 +1,364 @@
+# Claude Power User Session — 10 workspaces, 34 panes
+# teru equivalent of tmux claude-power setup (catt)
+#
+# Restore with:  teru_session_restore("claude-power")  (MCP)
+#   or:          teru --session claude-power
+#
+# ┌──────────────────────────────────────────────────────────────┐
+# │ 1: landing  (1 Claude)    │ 6: qa       (2 Claude+monitor)  │
+# │ 2: server   (2 Claude)    │ 7: docs     (4 Claude loops)    │
+# │ 3: admin    (3 Claude)    │ 8: deploy   (Claude+devs+mon)   │
+# │ 4: dash     (4 Claude)    │ 9: app-heal (monitors+channel)  │
+# │ 5: git      (2 Claude+2)  │ 0: ops-heal (monitors+channel)  │
+# └──────────────────────────────────────────────────────────────┘
+#
+# Alt+1..9 switches workspaces (same as tmux M-1..M-9)
+# Panes auto-start commands. Claude instances use --dangerously-skip-permissions.
+
+[session]
+name = claude-power
+description = 10-workspace Claude dev environment (selify.ai production)
+
+# ═══════════════════════════════════════════════════════════════
+# WORKSPACE 1: Landing — single Claude Opus instance
+# ═══════════════════════════════════════════════════════════════
+
+[workspace.1]
+name = landing
+layout = monocle
+
+[workspace.1.pane.1]
+role = landing
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose -n landing
+cwd = /home/ng/prod
+auto_start = false
+
+# ═══════════════════════════════════════════════════════════════
+# WORKSPACE 2: Server — 2 Claude instances side by side
+# ┌─────────────┬─────────────┐
+# │  server-1   │  server-2   │
+# └─────────────┴─────────────┘
+# ═══════════════════════════════════════════════════════════════
+
+[workspace.2]
+name = server
+layout = columns
+
+[workspace.2.pane.1]
+role = server-1
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose -n server-1
+cwd = /home/ng/prod
+auto_start = false
+
+[workspace.2.pane.2]
+role = server-2
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose -n server-2
+cwd = /home/ng/prod
+auto_start = false
+
+# ═══════════════════════════════════════════════════════════════
+# WORKSPACE 3: Admin — 3 Claude instances
+# ┌─────────────┬─────────────┐
+# │  admin-1    │             │
+# ├─────────────┤  admin-3    │
+# │  admin-2    │             │
+# └─────────────┴─────────────┘
+# ═══════════════════════════════════════════════════════════════
+
+[workspace.3]
+name = admin
+layout = master-stack
+
+[workspace.3.pane.1]
+role = admin-1
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose -n admin-1
+cwd = /home/ng/prod
+auto_start = false
+
+[workspace.3.pane.2]
+role = admin-2
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose -n admin-2
+cwd = /home/ng/prod
+auto_start = false
+
+[workspace.3.pane.3]
+role = admin-3
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose -n admin-3
+cwd = /home/ng/prod
+auto_start = false
+
+# ═══════════════════════════════════════════════════════════════
+# WORKSPACE 4: Dash — 4 Claude instances (grid layout)
+# ┌─────────────┬─────────────┐
+# │  dash-1     │  dash-3     │
+# ├─────────────┼─────────────┤
+# │  dash-2     │  dash-4     │
+# └─────────────┴─────────────┘
+# ═══════════════════════════════════════════════════════════════
+
+[workspace.4]
+name = dash
+layout = grid
+
+[workspace.4.pane.1]
+role = dash-1
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose -n dash-1
+cwd = /home/ng/prod
+auto_start = false
+
+[workspace.4.pane.2]
+role = dash-2
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose -n dash-2
+cwd = /home/ng/prod
+auto_start = false
+
+[workspace.4.pane.3]
+role = dash-3
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose -n dash-3
+cwd = /home/ng/prod
+auto_start = false
+
+[workspace.4.pane.4]
+role = dash-4
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose -n dash-4
+cwd = /home/ng/prod
+auto_start = false
+
+# ═══════════════════════════════════════════════════════════════
+# WORKSPACE 5: Git — 2 Claude + git-monitor + git-branches
+# ┌───────────┬──────────────────────┐
+# │           │ git-monitor    25%h  │
+# │  Claude   ├──────────────────────┤
+# ├───────────┤                      │
+# │  Claude   │ git-branches   75%h  │
+# │   65%w    │         35%w         │
+# └───────────┴──────────────────────┘
+# ═══════════════════════════════════════════════════════════════
+
+[workspace.5]
+name = git
+layout = master-stack
+ratio = 0.65
+
+[workspace.5.pane.1]
+role = git-claude-1
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/prod
+auto_start = false
+
+[workspace.5.pane.2]
+role = git-claude-2
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/prod
+auto_start = false
+
+[workspace.5.pane.3]
+role = git-monitor
+cmd = /home/ng/prod/.claude/scripts/git-monitor.sh
+cwd = /home/ng/prod
+auto_start = true
+restart = on-exit
+
+[workspace.5.pane.4]
+role = git-branches
+cmd = /home/ng/prod/.claude/scripts/git-branches.sh
+cwd = /home/ng/prod
+auto_start = true
+restart = on-exit
+
+# ═══════════════════════════════════════════════════════════════
+# WORKSPACE 6: QA — 2 Claude + qa-monitor + terminal
+# ┌──────────┬──────────┬──────────┐
+# │          │          │ monitor  │
+# │ Claude   │ Claude   ├──────────┤
+# │ build    │ browser  │ terminal │
+# └──────────┴──────────┴──────────┘
+# ═══════════════════════════════════════════════════════════════
+
+[workspace.6]
+name = qa
+layout = columns
+
+[workspace.6.pane.1]
+role = qa-test
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/prod
+auto_start = true
+
+[workspace.6.pane.2]
+role = qa-browser
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/prod
+auto_start = true
+
+[workspace.6.pane.3]
+role = qa-monitor
+cmd = /home/ng/prod/.claude/scripts/qa-monitor.sh
+cwd = /home/ng/prod
+auto_start = true
+restart = on-exit
+
+# ═══════════════════════════════════════════════════════════════
+# WORKSPACE 7: Docs — 4 Claude instances with loops
+# ┌─────────────┬─────────────┐
+# │ docs-loop   │ client-loop │
+# ├─────────────┼─────────────┤
+# │ marketing   │ jera-audit  │
+# └─────────────┴─────────────┘
+# ═══════════════════════════════════════════════════════════════
+
+[workspace.7]
+name = docs
+layout = grid
+
+[workspace.7.pane.1]
+role = docs-loop
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/prod
+auto_start = true
+
+[workspace.7.pane.2]
+role = docs-client-loop
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/prod
+auto_start = true
+
+[workspace.7.pane.3]
+role = docs-marketing
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/prod
+auto_start = true
+
+[workspace.7.pane.4]
+role = docs-jera
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/prod
+auto_start = true
+
+# ═══════════════════════════════════════════════════════════════
+# WORKSPACE 8: Deploy — Claude + deploy-monitor + dev servers + terminal
+# ┌──────────┬──────────┬──────────┐
+# │          │          │ dash dev │
+# │          │  deploy  ├──────────┤
+# │ Claude   │  monitor │ admin dev│
+# │          │          ├──────────┤
+# │          │          │ terminal │
+# └──────────┴──────────┴──────────┘
+# ═══════════════════════════════════════════════════════════════
+
+[workspace.8]
+name = deploy
+layout = three-col
+
+[workspace.8.pane.1]
+role = deploy-claude
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/prod
+auto_start = true
+
+[workspace.8.pane.2]
+role = deploy-monitor
+cmd = /home/ng/prod/.claude/scripts/deploy-monitor.sh
+cwd = /home/ng/prod
+auto_start = true
+restart = on-exit
+
+[workspace.8.pane.3]
+role = dash-dev
+cmd = pnpm dev
+cwd = /home/ng/prod/dash.selify.ai
+auto_start = true
+restart = on-exit
+
+[workspace.8.pane.4]
+role = admin-dev
+cmd = pnpm dev
+cwd = /home/ng/prod/admin.selify.ai
+auto_start = true
+restart = on-exit
+
+[workspace.8.pane.5]
+role = deploy-terminal
+cwd = /home/ng/prod
+
+# ═══════════════════════════════════════════════════════════════
+# WORKSPACE 9: App Self-Heal — app-channel + docker logs + monitors
+# ┌──────────┬──────────┬──────────┐
+# │          │          │ error    │
+# │ app      │ docker   │ monitor  │
+# │ channel  │ logs -f  ├──────────┤
+# │          │          │ modal-dev│
+# └──────────┴──────────┴──────────┘
+# ═══════════════════════════════════════════════════════════════
+
+[workspace.9]
+name = app-heal
+layout = columns
+
+[workspace.9.pane.1]
+role = app-channel
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose --dangerously-load-development-channels server:app-channel
+cwd = /home/ng/prod
+auto_start = true
+
+[workspace.9.pane.2]
+role = docker-logs
+cmd = docker compose logs -f --tail 30 mcp-gateway webmail-api agent-api
+cwd = /home/ng/prod/backend-selify.ai
+auto_start = true
+restart = on-exit
+
+[workspace.9.pane.3]
+role = error-monitor
+cmd = /home/ng/prod/.claude/scripts/error-monitor.sh
+cwd = /home/ng/prod
+auto_start = true
+restart = on-exit
+
+[workspace.9.pane.4]
+role = modal-dev-monitor
+cmd = /home/ng/prod/.claude/scripts/modal-dev-monitor.sh
+cwd = /home/ng/prod
+auto_start = true
+restart = on-exit
+
+# ═══════════════════════════════════════════════════════════════
+# WORKSPACE 0 (Alt+0): Ops Self-Heal — ops-channel + prometheus + monitors
+# ┌──────────┬──────────┬──────────┐
+# │          │          │ temporal │
+# │ ops      │ promethe │ monitor  │
+# │ channel  │ us       ├──────────┤
+# │          │          │ infra    │
+# └──────────┴──────────┴──────────┘
+# ═══════════════════════════════════════════════════════════════
+
+[workspace.0]
+name = ops-heal
+layout = columns
+
+[workspace.0.pane.1]
+role = ops-channel
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose --dangerously-load-development-channels server:ops-channel
+cwd = /home/ng/prod
+auto_start = true
+
+[workspace.0.pane.2]
+role = prometheus-monitor
+cmd = /home/ng/prod/.claude/scripts/prometheus-monitor.sh
+cwd = /home/ng/prod
+auto_start = true
+restart = on-exit
+
+[workspace.0.pane.3]
+role = temporal-monitor
+cmd = /home/ng/prod/.claude/scripts/temporal-monitor.sh
+cwd = /home/ng/prod
+auto_start = true
+restart = on-exit
+
+[workspace.0.pane.4]
+role = infra-monitor
+cmd = /home/ng/prod/.claude/scripts/infra-monitor.sh
+cwd = /home/ng/prod
+auto_start = true
+restart = on-exit

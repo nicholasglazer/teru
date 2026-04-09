@@ -36,7 +36,7 @@ const Session = @This();
 
 // ── Constants ───────────────────────────────────────────────────
 
-pub const max_workspaces = 9;
+pub const max_workspaces = 10;
 pub const max_panes_per_workspace = 16;
 pub const max_string = 256;
 pub const max_file_size = 65536;

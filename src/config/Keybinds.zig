@@ -100,6 +100,7 @@ pub const Action = enum(u8) {
     pane_move_to_7,
     pane_move_to_8,
     pane_move_to_9,
+    pane_move_to_0,
 
     // Split
     split_vertical,
@@ -115,6 +116,7 @@ pub const Action = enum(u8) {
     workspace_7,
     workspace_8,
     workspace_9,
+    workspace_0,
 
     // Layout
     layout_cycle,
@@ -217,6 +219,7 @@ pub const Action = enum(u8) {
                 1 => .workspace_1, 2 => .workspace_2, 3 => .workspace_3,
                 4 => .workspace_4, 5 => .workspace_5, 6 => .workspace_6,
                 7 => .workspace_7, 8 => .workspace_8, 9 => .workspace_9,
+                0 => .workspace_0,
                 else => null,
             };
         }
@@ -226,6 +229,7 @@ pub const Action = enum(u8) {
                 1 => .pane_move_to_1, 2 => .pane_move_to_2, 3 => .pane_move_to_3,
                 4 => .pane_move_to_4, 5 => .pane_move_to_5, 6 => .pane_move_to_6,
                 7 => .pane_move_to_7, 8 => .pane_move_to_8, 9 => .pane_move_to_9,
+                0 => .pane_move_to_0,
                 else => null,
             };
         }
@@ -238,6 +242,7 @@ pub const Action = enum(u8) {
             .workspace_1 => 0, .workspace_2 => 1, .workspace_3 => 2,
             .workspace_4 => 3, .workspace_5 => 4, .workspace_6 => 5,
             .workspace_7 => 6, .workspace_8 => 7, .workspace_9 => 8,
+            .workspace_0 => 9,
             else => null,
         };
     }
@@ -248,6 +253,7 @@ pub const Action = enum(u8) {
             .pane_move_to_1 => 0, .pane_move_to_2 => 1, .pane_move_to_3 => 2,
             .pane_move_to_4 => 3, .pane_move_to_5 => 4, .pane_move_to_6 => 5,
             .pane_move_to_7 => 6, .pane_move_to_8 => 7, .pane_move_to_9 => 8,
+            .pane_move_to_0 => 9,
             else => null,
         };
     }
@@ -423,7 +429,6 @@ pub const Keybinds = struct {
         _ = self.add(n, A, 'd', .session_detach);
         _ = self.add(n, A, '=', .zoom_in);
         _ = self.add(n, A, '-', .zoom_out);
-        _ = self.add(n, A, '0', .zoom_reset);
 
         // Alt+1-9 workspaces, RAlt+1-9 move pane
         for (0..9) |i| {
@@ -433,6 +438,9 @@ pub const Keybinds = struct {
             _ = self.add(n, A, digit, ws);
             _ = self.add(n, R, digit, mv);
         }
+        // Alt+0 = workspace 10, RAlt+0 = move pane to workspace 10
+        _ = self.add(n, A, '0', .workspace_0);
+        _ = self.add(n, R, '0', .pane_move_to_0);
 
         // Ctrl+Space enters prefix mode
         _ = self.add(n, Mods.CTRL, ' ', .mode_prefix);
@@ -459,6 +467,7 @@ pub const Keybinds = struct {
             const ws: Action = @enumFromInt(@intFromEnum(Action.workspace_1) + @as(u8, @intCast(i)));
             _ = self.add(p, N, digit, ws);
         }
+        _ = self.add(p, N, '0', .workspace_0);
 
         // Resize in prefix mode (shifted H/J/K/L)
         _ = self.add(p, Mods.SHIFT, 'h', .resize_shrink_w);
@@ -528,7 +537,9 @@ test "parseTrigger named keys" {
 test "Action.fromString" {
     try std.testing.expect(Action.fromString("pane:focus_next").? == .pane_focus_next);
     try std.testing.expect(Action.fromString("workspace:3").? == .workspace_3);
+    try std.testing.expect(Action.fromString("workspace:0").? == .workspace_0);
     try std.testing.expect(Action.fromString("pane:move_to:5").? == .pane_move_to_5);
+    try std.testing.expect(Action.fromString("pane:move_to:0").? == .pane_move_to_0);
     try std.testing.expect(Action.fromString("zoom:in").? == .zoom_in);
     try std.testing.expect(Action.fromString("mode:prefix").? == .mode_prefix);
     try std.testing.expect(Action.fromString("resize:-2:0").? == .resize_shrink_w);

@@ -29,7 +29,7 @@ pub const autoSelectLayout = Workspace.autoSelectLayout;
 // ── Layout engine state ─────────────────────────────────────────
 
 allocator: Allocator,
-workspaces: [9]Workspace,
+workspaces: [10]Workspace,
 active_workspace: u8 = 0,
 
 pub fn init(allocator: Allocator) LayoutEngine {
@@ -37,7 +37,7 @@ pub fn init(allocator: Allocator) LayoutEngine {
         .allocator = allocator,
         .workspaces = undefined,
     };
-    const names = [_][]const u8{ "1", "2", "3", "4", "5", "6", "7", "8", "9" };
+    const names = [_][]const u8{ "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" };
     for (&engine.workspaces, 0..) |*ws, i| {
         ws.* = Workspace.init(names[i]);
     }
@@ -57,7 +57,7 @@ pub fn deinit(self: *LayoutEngine) void {
 /// to the flat-list layout algorithm selected by ws.layout.
 /// Caller owns the returned slice and must free it with the same allocator.
 pub fn calculate(self: *LayoutEngine, workspace_index: u8, screen: Rect) ![]Rect {
-    if (workspace_index >= 9) return error.InvalidWorkspace;
+    if (workspace_index >= 10) return error.InvalidWorkspace;
     const ws = &self.workspaces[workspace_index];
 
     if (ws.split_root != null) {
@@ -84,13 +84,13 @@ pub fn calculate(self: *LayoutEngine, workspace_index: u8, screen: Rect) ![]Rect
 // ── Workspace management ────────────────────────────────────────
 
 pub fn switchWorkspace(self: *LayoutEngine, index: u8) void {
-    if (index < 9) {
+    if (index < 10) {
         self.active_workspace = index;
     }
 }
 
 pub fn moveNodeToWorkspace(self: *LayoutEngine, node_id: u64, target: u8) !void {
-    if (target >= 9) return error.InvalidWorkspace;
+    if (target >= 10) return error.InvalidWorkspace;
     for (&self.workspaces) |*ws| {
         ws.removeNode(node_id);
     }
@@ -164,17 +164,21 @@ test "calculate — zero nodes and invalid workspace" {
     defer s.allocator.free(rects);
     try t.expectEqual(@as(usize, 0), rects.len);
 
-    try t.expectError(error.InvalidWorkspace, s.engine.calculate(9, screen));
+    try t.expectError(error.InvalidWorkspace, s.engine.calculate(10, screen));
     try t.expectError(error.InvalidWorkspace, s.engine.calculate(255, screen));
 }
 
-test "engine init — 9 workspaces with correct names" {
+test "engine init — 10 workspaces with correct names" {
     var s = testEngine();
     defer s.engine.deinit();
     try t.expectEqual(@as(u8, 0), s.engine.active_workspace);
     for (s.engine.workspaces, 0..) |ws, i| {
-        const expected_name = [_]u8{'1' + @as(u8, @intCast(i))};
-        try t.expect(std.mem.eql(u8, &expected_name, ws.name));
+        if (i < 9) {
+            const expected_name = [_]u8{'1' + @as(u8, @intCast(i))};
+            try t.expect(std.mem.eql(u8, &expected_name, ws.name));
+        } else {
+            try t.expect(std.mem.eql(u8, "0", ws.name));
+        }
         try t.expectEqual(@as(usize, 0), ws.node_ids.items.len);
         try t.expectEqual(Layout.monocle, ws.layout);
     }
@@ -192,9 +196,12 @@ test "switchWorkspace" {
     s.engine.switchWorkspace(8);
     try t.expectEqual(@as(u8, 8), s.engine.active_workspace);
 
-    // Out of range — no change
     s.engine.switchWorkspace(9);
-    try t.expectEqual(@as(u8, 8), s.engine.active_workspace);
+    try t.expectEqual(@as(u8, 9), s.engine.active_workspace);
+
+    // Out of range — no change
+    s.engine.switchWorkspace(10);
+    try t.expectEqual(@as(u8, 9), s.engine.active_workspace);
 }
 
 test "moveNodeToWorkspace" {
@@ -209,7 +216,7 @@ test "moveNodeToWorkspace" {
     try t.expectEqual(@as(usize, 1), s.engine.workspaces[3].nodeCount());
     try t.expectEqual(@as(?u64, 2), s.engine.workspaces[3].getActiveNodeId());
 
-    try t.expectError(error.InvalidWorkspace, s.engine.moveNodeToWorkspace(1, 9));
+    try t.expectError(error.InvalidWorkspace, s.engine.moveNodeToWorkspace(1, 10));
 }
 
 test "calculate uses tree when split_root is set" {

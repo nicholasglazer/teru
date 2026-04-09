@@ -201,7 +201,7 @@ fn handleToolsList(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teru_get_state","description":"Query terminal state for a pane (cursor, size, modes, title)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}}}},"required":["pane_id"]}}}},
         \\{{"name":"teru_focus_pane","description":"Focus a specific pane by ID","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}}}},"required":["pane_id"]}}}},
         \\{{"name":"teru_close_pane","description":"Close a pane by ID","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}}}},"required":["pane_id"]}}}},
-        \\{{"name":"teru_switch_workspace","description":"Switch the active workspace (0-8)","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer"}}}},"required":["workspace"]}}}},
+        \\{{"name":"teru_switch_workspace","description":"Switch the active workspace (0-9)","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer"}}}},"required":["workspace"]}}}},
         \\{{"name":"teru_scroll","description":"Scroll a pane's scrollback (up/down/bottom)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"direction":{{"type":"string","enum":["up","down","bottom"]}},"lines":{{"type":"integer","default":10}}}},"required":["pane_id","direction"]}}}},
         \\{{"name":"teru_wait_for","description":"Check if text pattern exists in pane output (non-blocking)","inputSchema":{{"type":"object","properties":{{"pane_id":{{"type":"integer"}},"pattern":{{"type":"string"}},"lines":{{"type":"integer","default":20}}}},"required":["pane_id","pattern"]}}}},
         \\{{"name":"teru_set_layout","description":"Set the layout for a workspace. Layouts: master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer","default":0}},"layout":{{"type":"string","enum":["master-stack","grid","monocle","dishes","spiral","three-col","columns","accordion"]}}}},"required":["layout"]}}}},
@@ -241,7 +241,7 @@ fn handlePromptsGet(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const 
         const user_desc = extractNestedJsonString(params_body, "description") orelse "default setup";
         return std.fmt.bufPrint(buf,
             \\{{"jsonrpc":"2.0","result":{{"messages":[
-            \\{{"role":"user","content":{{"type":"text","text":"Set up teru workspaces as follows: {s}\n\nYou have these teru MCP tools:\n- teru_switch_workspace(workspace) — switch to workspace 0-8\n- teru_create_pane(workspace, direction) — spawn a new pane (starts user shell)\n- teru_send_input(pane_id, text) — type text into pane (omit \\n to leave command typed but not executed)\n- teru_send_keys(pane_id, keys) — send keystrokes like ['enter'], ['ctrl+c']\n- teru_set_layout(workspace, layout) — layouts: master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion\n- teru_set_config(key, value) — set appearance: font_size, opacity, theme, bg, fg, padding, cursor_shape\n- teru_focus_pane(pane_id) — focus a pane\n- teru_list_panes() — list all panes to get IDs\n\nWorkflow:\n1. For each workspace: switch to it, create panes, set layout\n2. To type a command without running it: teru_send_input(id, 'command') — no \\n\n3. To type and execute: teru_send_input(id, 'command') then teru_send_keys(id, ['enter'])\n4. After creating panes, call teru_list_panes() to get their IDs for send_input\n5. Workspace 0 already has 1 pane — create additional panes as needed"}}}}
+            \\{{"role":"user","content":{{"type":"text","text":"Set up teru workspaces as follows: {s}\n\nYou have these teru MCP tools:\n- teru_switch_workspace(workspace) — switch to workspace 0-9\n- teru_create_pane(workspace, direction) — spawn a new pane (starts user shell)\n- teru_send_input(pane_id, text) — type text into pane (omit \\n to leave command typed but not executed)\n- teru_send_keys(pane_id, keys) — send keystrokes like ['enter'], ['ctrl+c']\n- teru_set_layout(workspace, layout) — layouts: master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion\n- teru_set_config(key, value) — set appearance: font_size, opacity, theme, bg, fg, padding, cursor_shape\n- teru_focus_pane(pane_id) — focus a pane\n- teru_list_panes() — list all panes to get IDs\n\nWorkflow:\n1. For each workspace: switch to it, create panes, set layout\n2. To type a command without running it: teru_send_input(id, 'command') — no \\n\n3. To type and execute: teru_send_input(id, 'command') then teru_send_keys(id, ['enter'])\n4. After creating panes, call teru_list_panes() to get their IDs for send_input\n5. Workspace 0 already has 1 pane — create additional panes as needed"}}}}
             \\]}},"id":{s}}}
         , .{ user_desc, id_str }) catch
             jsonRpcError(buf, id, -32603, "Internal error");
@@ -713,8 +713,8 @@ fn toolClosePane(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []c
 fn toolSwitchWorkspace(self: *McpServer, workspace: u8, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
 
-    if (workspace > 8)
-        return jsonRpcError(buf, id, -32602, "Workspace must be 0-8");
+    if (workspace > 9)
+        return jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
 
     self.multiplexer.switchWorkspace(workspace);
 
@@ -728,8 +728,8 @@ fn toolSetLayout(self: *McpServer, workspace: u8, layout_str: []const u8, buf: [
     const id_str = id orelse "null";
     const LayoutEngine = @import("../tiling/LayoutEngine.zig");
 
-    if (workspace > 8)
-        return jsonRpcError(buf, id, -32602, "Workspace must be 0-8");
+    if (workspace > 9)
+        return jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
 
     const layout: LayoutEngine.Layout = if (std.mem.eql(u8, layout_str, "master-stack") or std.mem.eql(u8, layout_str, "master_stack"))
         .master_stack

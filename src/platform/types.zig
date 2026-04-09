@@ -59,7 +59,7 @@ const LinuxKeycodes = struct {
     pub const CTRL_MASK: u32 = 4; // ControlMask
     pub const SHIFT_MASK: u32 = 1; // ShiftMask
     pub fn digitToWorkspace(keycode: u32) ?u8 {
-        return if (keycode >= 10 and keycode <= 18) @intCast(keycode - 10) else null;
+        return if (keycode >= 10 and keycode <= 19) @intCast(keycode - 10) else null;
     }
 };
 
@@ -74,19 +74,22 @@ const MacosKeycodes = struct {
         return switch (keycode) {
             18 => 0, 19 => 1, 20 => 2, 21 => 3, 23 => 4, // kVK_ANSI_1-5
             22 => 5, 26 => 6, 28 => 7, 25 => 8, // kVK_ANSI_6-9
+            29 => 9, // kVK_ANSI_0
             else => null,
         };
     }
 };
 
-// Windows: virtual key codes (VK_*). Digits are 0x31-0x39.
+// Windows: virtual key codes (VK_*). Digits are 0x31-0x39, VK_0 = 0x30.
 const WindowsKeycodes = struct {
     pub const RALT: u32 = 0xA5; // VK_RMENU
     pub const ALT_MASK: u32 = 0x01; // MOD_ALT
     pub const CTRL_MASK: u32 = 0x02; // MOD_CONTROL
     pub const SHIFT_MASK: u32 = 0x04; // MOD_SHIFT
     pub fn digitToWorkspace(keycode: u32) ?u8 {
-        return if (keycode >= 0x31 and keycode <= 0x39) @intCast(keycode - 0x31) else null;
+        if (keycode >= 0x31 and keycode <= 0x39) return @intCast(keycode - 0x31);
+        if (keycode == 0x30) return 9; // VK_0 → workspace 10
+        return null;
     }
 };
 
