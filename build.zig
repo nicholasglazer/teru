@@ -85,6 +85,7 @@ pub fn build(b: *std.Build) void {
         exe_mod.linkSystemLibrary("gdi32", .{});
         exe_mod.linkSystemLibrary("kernel32", .{});
         exe_mod.linkSystemLibrary("shell32", .{});
+        exe_mod.linkSystemLibrary("imm32", .{});
     }
 
     // Embedded: stb_truetype (compiled from vendored source)

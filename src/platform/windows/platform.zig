@@ -185,6 +185,7 @@ extern "user32" fn ShowWindow(hWnd: HWND, nCmdShow: INT) callconv(.c) BOOL;
 extern "user32" fn UpdateWindow(hWnd: HWND) callconv(.c) BOOL;
 extern "user32" fn PeekMessageW(lpMsg: *MSG, hWnd: HWND, wMsgFilterMin: UINT, wMsgFilterMax: UINT, wRemoveMsg: UINT) callconv(.c) BOOL;
 extern "user32" fn TranslateMessage(lpMsg: *const MSG) callconv(.c) BOOL;
+extern "imm32" fn ImmDisableIME(idThread: DWORD) callconv(.c) BOOL;
 extern "user32" fn DispatchMessageW(lpMsg: *const MSG) callconv(.c) LRESULT;
 extern "user32" fn DefWindowProcW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.c) LRESULT;
 extern "user32" fn PostQuitMessage(nExitCode: INT) callconv(.c) void;
@@ -333,6 +334,11 @@ pub const Win32Window = struct {
 
         if (hwnd == null) return error.CreateWindowFailed;
 
+        // Disable IME for this thread — terminal emulators handle keyboard
+        // input directly via ToUnicode. IME intercepts keystrokes and
+        // produces CJK characters, which breaks ASCII input.
+        _ = ImmDisableIME(0xFFFFFFFF); // -1 = current thread
+
         // Store state pointer in window's GWLP_USERDATA
         _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, @intCast(@intFromPtr(state)));
 
@@ -374,7 +380,15 @@ pub const Win32Window = struct {
                 self.state.is_open = false;
                 return .close;
             }
-            _ = TranslateMessage(&msg);
+            // Skip TranslateMessage for keyboard events — we handle them
+            // directly via ToUnicode in keyboard.zig. TranslateMessage
+            // routes through IME which produces CJK characters on systems
+            // with East Asian input methods enabled.
+            if (msg.message != WM_KEYDOWN and msg.message != WM_SYSKEYDOWN and
+                msg.message != WM_KEYUP and msg.message != WM_SYSKEYUP)
+            {
+                _ = TranslateMessage(&msg);
+            }
             _ = DispatchMessageW(&msg);
 
             // Check if WndProc produced a pending event

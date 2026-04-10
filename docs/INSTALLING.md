@@ -35,6 +35,8 @@ sudo mv teru /usr/local/bin/
 
 Download `teru-windows-x86_64.zip` from [Releases](https://github.com/nicholasglazer/teru/releases), extract, and run `teru.exe`. Requires Windows 10 1809+ (ConPTY support).
 
+**Windows SmartScreen:** Downloaded executables are blocked by default. Right-click `teru.exe` > Properties > check "Unblock" > OK. Or run `Unblock-File teru.exe` in PowerShell.
+
 ## Build from Source
 
 Requires **Zig 0.16+**. Linux builds need system libraries.
