@@ -19,6 +19,7 @@ const ipc = @import("../server/ipc.zig");
 const png = @import("../png.zig");
 const tier = @import("../render/tier.zig");
 
+const tools = @import("McpTools.zig");
 const build_options = @import("build_options");
 const McpServer = @This();
 
@@ -150,8 +151,8 @@ fn handleRequest(self: *McpServer, conn_fd: posix.fd_t) void {
 
 fn dispatch(self: *McpServer, body: []const u8, resp_buf: []u8) []const u8 {
     // Parse JSON-RPC request manually (no JSON library)
-    const method = extractJsonString(body, "method") orelse {
-        return jsonRpcError(resp_buf, null, -32600, "Invalid Request: missing method");
+    const method = tools.extractJsonString(body, "method") orelse {
+        return tools.jsonRpcError(resp_buf, null, -32600, "Invalid Request: missing method");
     };
     const id = extractJsonId(body);
 
@@ -171,7 +172,7 @@ fn dispatch(self: *McpServer, body: []const u8, resp_buf: []u8) []const u8 {
             \\{{"jsonrpc":"2.0","result":{{}},"id":{s}}}
         , .{id orelse "null"}) catch "{}";
     } else {
-        return jsonRpcError(resp_buf, id, -32601, "Method not found");
+        return tools.jsonRpcError(resp_buf, id, -32601, "Method not found");
     }
 }
 
@@ -183,7 +184,7 @@ fn handleInitialize(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"protocolVersion":"2025-03-26","capabilities":{{"tools":{{}},"prompts":{{}}}},"serverInfo":{{"name":"teru","version":"{s}"}}}},"id":{s}}}
     , .{ build_options.version, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn handleToolsList(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
@@ -213,7 +214,7 @@ fn handleToolsList(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teru_screenshot","description":"Capture the terminal framebuffer as a PNG image file. Returns the file path and dimensions. Only works in windowed mode (X11/Wayland).","inputSchema":{{"type":"object","properties":{{"path":{{"type":"string","description":"Output file path (default: /tmp/teru-screenshot.png)"}}}},"required":[]}}}}
         \\]}},"id":{s}}}
     , .{id_str}) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 // ── MCP Prompts ───────────────────────────────────────────────
@@ -226,130 +227,130 @@ fn handlePromptsList(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"workspace_setup","description":"Set up teru workspaces with panes, layouts, and commands. Describe your desired workspace configuration in natural language.","arguments":[{{"name":"description","description":"Natural language description of desired workspace setup (e.g. '4 workspaces, workspace 1 has 1 pane, workspace 2 has 2 panes, each running vim')","required":true}}]}}
         \\]}},"id":{s}}}
     , .{id_str}) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn handlePromptsGet(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     _ = self;
     const id_str = id orelse "null";
     const params_start = std.mem.indexOf(u8, body, "\"params\"") orelse
-        return jsonRpcError(buf, id, -32602, "Missing params");
+        return tools.jsonRpcError(buf, id, -32602, "Missing params");
     const params_body = body[params_start..];
-    const name = extractNestedJsonString(params_body, "name") orelse
-        return jsonRpcError(buf, id, -32602, "Missing params.name");
+    const name = tools.extractNestedJsonString(params_body, "name") orelse
+        return tools.jsonRpcError(buf, id, -32602, "Missing params.name");
 
     if (std.mem.eql(u8, name, "workspace_setup")) {
-        const user_desc = extractNestedJsonString(params_body, "description") orelse "default setup";
+        const user_desc = tools.extractNestedJsonString(params_body, "description") orelse "default setup";
         return std.fmt.bufPrint(buf,
             \\{{"jsonrpc":"2.0","result":{{"messages":[
             \\{{"role":"user","content":{{"type":"text","text":"Set up teru workspaces as follows: {s}\n\nYou have these teru MCP tools:\n- teru_switch_workspace(workspace) — switch to workspace 0-9\n- teru_create_pane(workspace, direction) — spawn a new pane (starts user shell)\n- teru_send_input(pane_id, text) — type text into pane (omit \\n to leave command typed but not executed)\n- teru_send_keys(pane_id, keys) — send keystrokes like ['enter'], ['ctrl+c']\n- teru_set_layout(workspace, layout) — layouts: master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion\n- teru_set_config(key, value) — set appearance: font_size, opacity, theme, bg, fg, padding, cursor_shape\n- teru_focus_pane(pane_id) — focus a pane\n- teru_list_panes() — list all panes to get IDs\n\nWorkflow:\n1. For each workspace: switch to it, create panes, set layout\n2. To type a command without running it: teru_send_input(id, 'command') — no \\n\n3. To type and execute: teru_send_input(id, 'command') then teru_send_keys(id, ['enter'])\n4. After creating panes, call teru_list_panes() to get their IDs for send_input\n5. Workspace 0 already has 1 pane — create additional panes as needed"}}}}
             \\]}},"id":{s}}}
         , .{ user_desc, id_str }) catch
-            jsonRpcError(buf, id, -32603, "Internal error");
+            tools.jsonRpcError(buf, id, -32603, "Internal error");
     } else {
-        return jsonRpcError(buf, id, -32602, "Unknown prompt");
+        return tools.jsonRpcError(buf, id, -32602, "Unknown prompt");
     }
 }
 
 fn handleToolsCall(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     // Extract params.name from the JSON body
     const params_start = std.mem.indexOf(u8, body, "\"params\"") orelse
-        return jsonRpcError(buf, id, -32602, "Missing params");
+        return tools.jsonRpcError(buf, id, -32602, "Missing params");
 
     const params_body = body[params_start..];
     // Tool name is at params top level, NOT inside arguments.
     // Use extractJsonString (not extractNestedJsonString) to avoid
     // collision when an argument is also named "name".
-    const tool_name = extractJsonString(params_body, "name") orelse
-        return jsonRpcError(buf, id, -32602, "Missing params.name");
+    const tool_name = tools.extractJsonString(params_body, "name") orelse
+        return tools.jsonRpcError(buf, id, -32602, "Missing params.name");
 
     if (std.mem.eql(u8, tool_name, "teru_list_panes")) {
         return self.toolListPanes(buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_read_output")) {
-        const pane_id = extractNestedJsonInt(params_body, "pane_id") orelse
-            return jsonRpcError(buf, id, -32602, "Missing pane_id");
-        const lines = extractNestedJsonInt(params_body, "lines") orelse 50;
+        const pane_id = tools.extractNestedJsonInt(params_body, "pane_id") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing pane_id");
+        const lines = tools.extractNestedJsonInt(params_body, "lines") orelse 50;
         return self.toolReadOutput(pane_id, @intCast(lines), buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_get_graph")) {
         return self.toolGetGraph(buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_send_input")) {
-        const pane_id = extractNestedJsonInt(params_body, "pane_id") orelse
-            return jsonRpcError(buf, id, -32602, "Missing pane_id");
-        const text = extractNestedJsonString(params_body, "text") orelse
-            return jsonRpcError(buf, id, -32602, "Missing text");
+        const pane_id = tools.extractNestedJsonInt(params_body, "pane_id") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing pane_id");
+        const text = tools.extractNestedJsonString(params_body, "text") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing text");
         return self.toolSendInput(pane_id, text, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_create_pane")) {
-        const workspace = extractNestedJsonInt(params_body, "workspace") orelse 0;
-        const dir_str = extractNestedJsonString(params_body, "direction");
+        const workspace = tools.extractNestedJsonInt(params_body, "workspace") orelse 0;
+        const dir_str = tools.extractNestedJsonString(params_body, "direction");
         const is_horizontal = if (dir_str) |d| std.mem.eql(u8, d, "horizontal") else false;
-        const command = extractNestedJsonString(params_body, "command");
-        const cwd = extractNestedJsonString(params_body, "cwd");
+        const command = tools.extractNestedJsonString(params_body, "command");
+        const cwd = tools.extractNestedJsonString(params_body, "cwd");
         return self.toolCreatePane(@intCast(workspace), is_horizontal, command, cwd, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_broadcast")) {
-        const workspace = extractNestedJsonInt(params_body, "workspace") orelse
-            return jsonRpcError(buf, id, -32602, "Missing workspace");
-        const text = extractNestedJsonString(params_body, "text") orelse
-            return jsonRpcError(buf, id, -32602, "Missing text");
+        const workspace = tools.extractNestedJsonInt(params_body, "workspace") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing workspace");
+        const text = tools.extractNestedJsonString(params_body, "text") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing text");
         return self.toolBroadcast(@intCast(workspace), text, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_send_keys")) {
-        const pane_id = extractNestedJsonInt(params_body, "pane_id") orelse
-            return jsonRpcError(buf, id, -32602, "Missing pane_id");
+        const pane_id = tools.extractNestedJsonInt(params_body, "pane_id") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing pane_id");
         return self.toolSendKeys(pane_id, params_body, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_get_state")) {
-        const pane_id = extractNestedJsonInt(params_body, "pane_id") orelse
-            return jsonRpcError(buf, id, -32602, "Missing pane_id");
+        const pane_id = tools.extractNestedJsonInt(params_body, "pane_id") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing pane_id");
         return self.toolGetState(pane_id, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_focus_pane")) {
-        const pane_id = extractNestedJsonInt(params_body, "pane_id") orelse
-            return jsonRpcError(buf, id, -32602, "Missing pane_id");
+        const pane_id = tools.extractNestedJsonInt(params_body, "pane_id") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing pane_id");
         return self.toolFocusPane(pane_id, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_close_pane")) {
-        const pane_id = extractNestedJsonInt(params_body, "pane_id") orelse
-            return jsonRpcError(buf, id, -32602, "Missing pane_id");
+        const pane_id = tools.extractNestedJsonInt(params_body, "pane_id") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing pane_id");
         return self.toolClosePane(pane_id, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_switch_workspace")) {
-        const workspace = extractNestedJsonInt(params_body, "workspace") orelse
-            return jsonRpcError(buf, id, -32602, "Missing workspace");
+        const workspace = tools.extractNestedJsonInt(params_body, "workspace") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing workspace");
         return self.toolSwitchWorkspace(@intCast(workspace), buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_scroll")) {
-        const pane_id = extractNestedJsonInt(params_body, "pane_id") orelse
-            return jsonRpcError(buf, id, -32602, "Missing pane_id");
-        const direction = extractNestedJsonString(params_body, "direction") orelse "up";
-        const lines = extractNestedJsonInt(params_body, "lines") orelse 10;
+        const pane_id = tools.extractNestedJsonInt(params_body, "pane_id") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing pane_id");
+        const direction = tools.extractNestedJsonString(params_body, "direction") orelse "up";
+        const lines = tools.extractNestedJsonInt(params_body, "lines") orelse 10;
         return self.toolScroll(@intCast(pane_id), direction, @intCast(lines), buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_wait_for")) {
-        const pane_id = extractNestedJsonInt(params_body, "pane_id") orelse
-            return jsonRpcError(buf, id, -32602, "Missing pane_id");
-        const pattern = extractNestedJsonString(params_body, "pattern") orelse
-            return jsonRpcError(buf, id, -32602, "Missing pattern");
-        const lines = extractNestedJsonInt(params_body, "lines") orelse 20;
+        const pane_id = tools.extractNestedJsonInt(params_body, "pane_id") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing pane_id");
+        const pattern = tools.extractNestedJsonString(params_body, "pattern") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing pattern");
+        const lines = tools.extractNestedJsonInt(params_body, "lines") orelse 20;
         return self.toolWaitFor(@intCast(pane_id), pattern, @intCast(lines), buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_set_layout")) {
-        const layout_str = extractNestedJsonString(params_body, "layout") orelse
-            return jsonRpcError(buf, id, -32602, "Missing layout");
-        const workspace = extractNestedJsonInt(params_body, "workspace") orelse 0;
+        const layout_str = tools.extractNestedJsonString(params_body, "layout") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing layout");
+        const workspace = tools.extractNestedJsonInt(params_body, "workspace") orelse 0;
         return self.toolSetLayout(@intCast(workspace), layout_str, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_set_config")) {
-        const key = extractNestedJsonString(params_body, "key") orelse
-            return jsonRpcError(buf, id, -32602, "Missing key");
-        const value = extractNestedJsonString(params_body, "value") orelse
-            return jsonRpcError(buf, id, -32602, "Missing value");
+        const key = tools.extractNestedJsonString(params_body, "key") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing key");
+        const value = tools.extractNestedJsonString(params_body, "value") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing value");
         return self.toolSetConfig(key, value, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_get_config")) {
         return self.toolGetConfig(buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_session_save")) {
-        const name = extractNestedJsonString(params_body, "name") orelse
-            return jsonRpcError(buf, id, -32602, "Missing name");
+        const name = tools.extractNestedJsonString(params_body, "name") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing name");
         return self.toolSessionSave(name, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_session_restore")) {
-        const name = extractNestedJsonString(params_body, "name") orelse
-            return jsonRpcError(buf, id, -32602, "Missing name");
+        const name = tools.extractNestedJsonString(params_body, "name") orelse
+            return tools.jsonRpcError(buf, id, -32602, "Missing name");
         return self.toolSessionRestore(name, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teru_screenshot")) {
-        const path = extractNestedJsonString(params_body, "path") orelse "/tmp/teru-screenshot.png";
+        const path = tools.extractNestedJsonString(params_body, "path") orelse "/tmp/teru-screenshot.png";
         return self.toolScreenshot(path, buf, id);
     } else {
-        return jsonRpcError(buf, id, -32602, "Unknown tool");
+        return tools.jsonRpcError(buf, id, -32602, "Unknown tool");
     }
 }
 
@@ -363,7 +364,7 @@ fn toolListPanes(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
     const prefix = std.fmt.bufPrint(buf[pos..], "{s}{s}", .{
         "{\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"[",
         "",
-    }) catch return jsonRpcError(buf, id, -32603, "Internal error");
+    }) catch return tools.jsonRpcError(buf, id, -32603, "Internal error");
     pos += prefix.len;
 
     for (self.multiplexer.panes.items, 0..) |*pane, i| {
@@ -376,7 +377,7 @@ fn toolListPanes(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         // Find process name from graph (escape for JSON safety)
         const proc_name = self.findPaneName(pane.id);
         var proc_esc: [256]u8 = undefined;
-        const proc_safe = jsonEscapeString(proc_name, &proc_esc);
+        const proc_safe = tools.jsonEscapeString(proc_name, &proc_esc);
         const status = if (pane.isAlive()) "running" else "exited";
         const workspace = self.findPaneWorkspace(pane.id);
 
@@ -387,7 +388,7 @@ fn toolListPanes(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
     }
 
     const suffix = std.fmt.bufPrint(buf[pos..], "]\"}}]}},\"id\":{s}}}", .{id_str}) catch
-        return jsonRpcError(buf, id, -32603, "Internal error");
+        return tools.jsonRpcError(buf, id, -32603, "Internal error");
     pos += suffix.len;
 
     return buf[0..pos];
@@ -397,7 +398,7 @@ fn toolReadOutput(self: *McpServer, pane_id: u64, lines: u32, buf: []u8, id: ?[]
     const id_str = id orelse "null";
 
     const pane = self.multiplexer.getPaneById(pane_id) orelse
-        return jsonRpcError(buf, id, -32602, "Pane not found");
+        return tools.jsonRpcError(buf, id, -32602, "Pane not found");
 
     // Extract text from grid rows (bottom N lines, walking upward)
     var text_buf: [32768]u8 = undefined;
@@ -438,12 +439,12 @@ fn toolReadOutput(self: *McpServer, pane_id: u64, lines: u32, buf: []u8, id: ?[]
 
     // JSON-escape the text and build response
     var escaped_buf: [max_response - 256]u8 = undefined;
-    const escaped = jsonEscapeString(text_buf[0..text_pos], &escaped_buf);
+    const escaped = tools.jsonEscapeString(text_buf[0..text_pos], &escaped_buf);
 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{s}"}}]}},"id":{s}}}
     , .{ escaped, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolGetGraph(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
@@ -451,7 +452,7 @@ fn toolGetGraph(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
     var pos: usize = 0;
 
     const prefix = "{\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"nodes\\\":[";
-    if (pos + prefix.len > buf.len) return jsonRpcError(buf, id, -32603, "Internal error");
+    if (pos + prefix.len > buf.len) return tools.jsonRpcError(buf, id, -32603, "Internal error");
     @memcpy(buf[pos..][0..prefix.len], prefix);
     pos += prefix.len;
 
@@ -470,7 +471,7 @@ fn toolGetGraph(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         const kind_str = @tagName(node.kind);
         const state_str = @tagName(node.state);
         var name_esc: [256]u8 = undefined;
-        const name_safe = jsonEscapeString(node.name, &name_esc);
+        const name_safe = tools.jsonEscapeString(node.name, &name_esc);
 
         const entry_json = std.fmt.bufPrint(buf[pos..],
             \\{{\"id\":{d},\"name\":\"{s}\",\"kind\":\"{s}\",\"state\":\"{s}\"
@@ -496,7 +497,7 @@ fn toolGetGraph(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
     }
 
     const suffix_str = "]}\"}]},\"id\":";
-    if (pos + suffix_str.len + id_str.len + 1 > buf.len) return jsonRpcError(buf, id, -32603, "Internal error");
+    if (pos + suffix_str.len + id_str.len + 1 > buf.len) return tools.jsonRpcError(buf, id, -32603, "Internal error");
     @memcpy(buf[pos..][0..suffix_str.len], suffix_str);
     pos += suffix_str.len;
     @memcpy(buf[pos..][0..id_str.len], id_str);
@@ -511,19 +512,19 @@ fn toolSendInput(self: *McpServer, pane_id: u64, text: []const u8, buf: []u8, id
     const id_str = id orelse "null";
 
     const pane = self.multiplexer.getPaneById(pane_id) orelse
-        return jsonRpcError(buf, id, -32602, "Pane not found");
+        return tools.jsonRpcError(buf, id, -32602, "Pane not found");
 
     // Unescape JSON string sequences before writing to PTY
     var unesc: [4096]u8 = undefined;
-    const unesc_text = unescapeJson(text, &unesc);
+    const unesc_text = tools.unescapeJson(text, &unesc);
 
     _ = pane.ptyWrite(unesc_text) catch
-        return jsonRpcError(buf, id, -32603, "Write failed");
+        return tools.jsonRpcError(buf, id, -32603, "Write failed");
 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
     , .{id_str}) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, command: ?[]const u8, cwd_param: ?[]const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -558,7 +559,7 @@ fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, command: ?[
     // When command is null, pass the default shell explicitly.
     const shell = command orelse compat.getenv("SHELL") orelse "/bin/sh";
     const pane_id = self.multiplexer.spawnPaneWithCommand(24, 80, shell, cwd) catch
-        return jsonRpcError(buf, id, -32603, "Spawn failed");
+        return tools.jsonRpcError(buf, id, -32603, "Spawn failed");
 
     // Add to split tree if active
     const ws = &self.multiplexer.layout_engine.workspaces[workspace];
@@ -588,7 +589,7 @@ fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, command: ?[
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{d}"}}]}},"id":{s}}}
     , .{ pane_id, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolBroadcast(self: *McpServer, workspace: u8, text: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -608,20 +609,20 @@ fn toolBroadcast(self: *McpServer, workspace: u8, text: []const u8, buf: []u8, i
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"sent to {d} panes"}}]}},"id":{s}}}
     , .{ sent, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolSendKeys(self: *McpServer, pane_id: u64, params_body: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
 
     const pane = self.multiplexer.getPaneById(pane_id) orelse
-        return jsonRpcError(buf, id, -32602, "Pane not found");
+        return tools.jsonRpcError(buf, id, -32602, "Pane not found");
 
     const app_cursor = pane.vt.app_cursor_keys;
 
     // Find the "keys" array in the arguments
     const keys_json = extractNestedJsonArray(params_body, "keys") orelse
-        return jsonRpcError(buf, id, -32602, "Missing keys array");
+        return tools.jsonRpcError(buf, id, -32602, "Missing keys array");
 
     // Iterate over string elements in the JSON array
     var sent: u32 = 0;
@@ -635,21 +636,21 @@ fn toolSendKeys(self: *McpServer, pane_id: u64, params_body: []const u8, buf: []
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"sent {d} keys"}}]}},"id":{s}}}
     , .{ sent, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolGetState(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
 
     const pane = self.multiplexer.getPaneById(pane_id) orelse
-        return jsonRpcError(buf, id, -32602, "Pane not found");
+        return tools.jsonRpcError(buf, id, -32602, "Pane not found");
 
     const grid = &pane.grid;
     const vt = &pane.vt;
 
     // JSON-escape the title
     var title_escaped_buf: [512]u8 = undefined;
-    const title_escaped = jsonEscapeString(vt.title[0..vt.title_len], &title_escaped_buf);
+    const title_escaped = tools.jsonEscapeString(vt.title[0..vt.title_len], &title_escaped_buf);
 
     // Build inner JSON in temp buffer, then escape for embedding in text field
     var inner_buf: [2048]u8 = undefined;
@@ -668,16 +669,16 @@ fn toolGetState(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []co
         grid.scroll_top,
         grid.scroll_bottom,
     }) catch
-        return jsonRpcError(buf, id, -32603, "Internal error");
+        return tools.jsonRpcError(buf, id, -32603, "Internal error");
 
     // Escape for embedding inside JSON "text" string value
     var escaped_buf: [4096]u8 = undefined;
-    const escaped = jsonEscapeString(inner_json, &escaped_buf);
+    const escaped = tools.jsonEscapeString(inner_json, &escaped_buf);
 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{s}"}}]}},"id":{s}}}
     , .{ escaped, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolFocusPane(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []const u8 {
@@ -692,12 +693,12 @@ fn toolFocusPane(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []c
                 return std.fmt.bufPrint(buf,
                     \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
                 , .{id_str}) catch
-                    jsonRpcError(buf, id, -32603, "Internal error");
+                    tools.jsonRpcError(buf, id, -32603, "Internal error");
             }
         }
     }
 
-    return jsonRpcError(buf, id, -32602, "Pane not found");
+    return tools.jsonRpcError(buf, id, -32602, "Pane not found");
 }
 
 fn toolClosePane(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []const u8 {
@@ -705,28 +706,28 @@ fn toolClosePane(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []c
 
     // Verify pane exists before closing
     if (self.multiplexer.getPaneById(pane_id) == null)
-        return jsonRpcError(buf, id, -32602, "Pane not found");
+        return tools.jsonRpcError(buf, id, -32602, "Pane not found");
 
     self.multiplexer.closePane(pane_id);
 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
     , .{id_str}) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolSwitchWorkspace(self: *McpServer, workspace: u8, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
 
     if (workspace > 9)
-        return jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
+        return tools.jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
 
     self.multiplexer.switchWorkspace(workspace);
 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
     , .{id_str}) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolSetLayout(self: *McpServer, workspace: u8, layout_str: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -734,10 +735,10 @@ fn toolSetLayout(self: *McpServer, workspace: u8, layout_str: []const u8, buf: [
     const LayoutEngine = @import("../tiling/LayoutEngine.zig");
 
     if (workspace > 9)
-        return jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
+        return tools.jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
 
     const layout: LayoutEngine.Layout = LayoutEngine.parseLayout(layout_str) orelse
-        return jsonRpcError(buf, id, -32602, "Unknown layout");
+        return tools.jsonRpcError(buf, id, -32602, "Unknown layout");
 
     const ws = &self.multiplexer.layout_engine.workspaces[workspace];
     ws.layout = layout;
@@ -760,7 +761,7 @@ fn toolSetLayout(self: *McpServer, workspace: u8, layout_str: []const u8, buf: [
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
     , .{id_str}) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolSetConfig(_: *McpServer, key: []const u8, value: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -782,21 +783,21 @@ fn toolSetConfig(_: *McpServer, key: []const u8, value: []const u8, buf: []u8, i
         }
     }
     if (!is_valid)
-        return jsonRpcError(buf, id, -32602, "Unknown config key");
+        return tools.jsonRpcError(buf, id, -32602, "Unknown config key");
 
     // Read existing config, update or append the key
     const home = compat.getenv("HOME") orelse
-        return jsonRpcError(buf, id, -32603, "HOME not set");
+        return tools.jsonRpcError(buf, id, -32603, "HOME not set");
 
     var path_buf: [512:0]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/.config/teru/teru.conf", .{home}) catch
-        return jsonRpcError(buf, id, -32603, "Path too long");
+        return tools.jsonRpcError(buf, id, -32603, "Path too long");
     path_buf[path.len] = 0;
 
     // Build the new line: "key = value\n"
     var line_buf: [256]u8 = undefined;
     const new_line = std.fmt.bufPrint(&line_buf, "{s} = {s}\n", .{ key, value }) catch
-        return jsonRpcError(buf, id, -32603, "Value too long");
+        return tools.jsonRpcError(buf, id, -32603, "Value too long");
 
     // Read existing file content
     var file_buf: [16384]u8 = undefined;
@@ -813,7 +814,7 @@ fn toolSetConfig(_: *McpServer, key: []const u8, value: []const u8, buf: []u8, i
     {
         const f = std.c.fopen(@ptrCast(path_buf[0..path.len :0]), "w");
         if (f == null)
-            return jsonRpcError(buf, id, -32603, "Cannot write config file");
+            return tools.jsonRpcError(buf, id, -32603, "Cannot write config file");
 
         var replaced = false;
         var pos: usize = 0;
@@ -823,7 +824,7 @@ fn toolSetConfig(_: *McpServer, key: []const u8, value: []const u8, buf: []u8, i
             const line = file_buf[pos .. pos + line_end];
 
             // Check if this line starts with our key
-            if (lineMatchesKey(line, key)) {
+            if (tools.lineMatchesKey(line, key)) {
                 _ = std.c.fwrite(new_line.ptr, 1, new_line.len, f.?);
                 replaced = true;
             } else {
@@ -843,21 +844,8 @@ fn toolSetConfig(_: *McpServer, key: []const u8, value: []const u8, buf: []u8, i
     var val_esc: [256]u8 = undefined;
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"set {s} = {s}"}}]}},"id":{s}}}
-    , .{ jsonEscapeString(key, &key_esc), jsonEscapeString(value, &val_esc), id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
-}
-
-fn lineMatchesKey(line: []const u8, key: []const u8) bool {
-    // Trim leading whitespace
-    var start: usize = 0;
-    while (start < line.len and (line[start] == ' ' or line[start] == '\t')) start += 1;
-    const trimmed = line[start..];
-    if (trimmed.len < key.len) return false;
-    if (!std.mem.startsWith(u8, trimmed, key)) return false;
-    // After key, expect whitespace or '='
-    if (trimmed.len == key.len) return true;
-    const next = trimmed[key.len];
-    return next == ' ' or next == '=' or next == '\t';
+    , .{ tools.jsonEscapeString(key, &key_esc), tools.jsonEscapeString(value, &val_esc), id_str }) catch
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolGetConfig(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
@@ -880,7 +868,7 @@ fn toolGetConfig(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
         self.padding,
         id_str,
     }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolSessionSave(self: *McpServer, name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -889,36 +877,36 @@ fn toolSessionSave(self: *McpServer, name: []const u8, buf: []u8, id: ?[]const u
 
     // Generate .tsess content from live state
     const content = SessionConfig.saveFromLive(self.allocator, self.multiplexer, self.graph) catch
-        return jsonRpcError(buf, id, -32603, "Failed to snapshot session");
+        return tools.jsonRpcError(buf, id, -32603, "Failed to snapshot session");
     defer self.allocator.free(content);
 
     // Build path: ~/.config/teru/sessions/NAME.tsess
     const path = SessionConfig.getSessionPath(self.allocator, name) catch
-        return jsonRpcError(buf, id, -32603, "Failed to build session path");
+        return tools.jsonRpcError(buf, id, -32603, "Failed to build session path");
     defer self.allocator.free(path);
 
     // Write to file (using C fopen/fwrite since we don't have io here)
     var path_z: [512:0]u8 = undefined;
-    if (path.len >= path_z.len) return jsonRpcError(buf, id, -32603, "Path too long");
+    if (path.len >= path_z.len) return tools.jsonRpcError(buf, id, -32603, "Path too long");
     @memcpy(path_z[0..path.len], path);
     path_z[path.len] = 0;
 
     // Ensure parent directory exists
-    ensureParentDirC(path);
+    tools.ensureParentDirC(path);
 
     const f = std.c.fopen(@ptrCast(path_z[0..path.len :0]), "w");
-    if (f == null) return jsonRpcError(buf, id, -32603, "Cannot write session file");
+    if (f == null) return tools.jsonRpcError(buf, id, -32603, "Cannot write session file");
     _ = std.c.fwrite(content.ptr, 1, content.len, f.?);
     _ = std.c.fclose(f.?);
 
     // JSON-escape the path for the response
     var escaped_path: [1024]u8 = undefined;
-    const epath = jsonEscapeString(path, &escaped_path);
+    const epath = tools.jsonEscapeString(path, &escaped_path);
 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"saved to {s}"}}]}},"id":{s}}}
     , .{ epath, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolSessionRestore(self: *McpServer, name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -927,12 +915,12 @@ fn toolSessionRestore(self: *McpServer, name: []const u8, buf: []u8, id: ?[]cons
 
     // Build path and read file
     const path = SessionConfig.getSessionPath(self.allocator, name) catch
-        return jsonRpcError(buf, id, -32603, "Failed to build session path");
+        return tools.jsonRpcError(buf, id, -32603, "Failed to build session path");
     defer self.allocator.free(path);
 
     // Read file using C fopen/fread
     var path_z: [512:0]u8 = undefined;
-    if (path.len >= path_z.len) return jsonRpcError(buf, id, -32603, "Path too long");
+    if (path.len >= path_z.len) return tools.jsonRpcError(buf, id, -32603, "Path too long");
     @memcpy(path_z[0..path.len], path);
     path_z[path.len] = 0;
 
@@ -940,16 +928,16 @@ fn toolSessionRestore(self: *McpServer, name: []const u8, buf: []u8, id: ?[]cons
     var file_len: usize = 0;
     {
         const f = std.c.fopen(@ptrCast(path_z[0..path.len :0]), "r");
-        if (f == null) return jsonRpcError(buf, id, -32602, "Session file not found");
+        if (f == null) return tools.jsonRpcError(buf, id, -32602, "Session file not found");
         file_len = std.c.fread(&file_buf, 1, file_buf.len, f.?);
         _ = std.c.fclose(f.?);
     }
 
-    if (file_len == 0) return jsonRpcError(buf, id, -32602, "Session file empty");
+    if (file_len == 0) return tools.jsonRpcError(buf, id, -32602, "Session file empty");
 
     // Parse
     var def = SessionConfig.parse(self.allocator, file_buf[0..file_len]) catch
-        return jsonRpcError(buf, id, -32603, "Failed to parse session file");
+        return tools.jsonRpcError(buf, id, -32603, "Failed to parse session file");
     defer def.deinit();
 
     // Restore — determine default rows/cols from active pane or fallback
@@ -982,68 +970,52 @@ fn toolSessionRestore(self: *McpServer, name: []const u8, buf: []u8, id: ?[]cons
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"restored session {s} ({d} workspaces)"}}]}},"id":{s}}}
     , .{ name, def.workspace_count, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolScreenshot(self: *McpServer, path: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
 
     const r = self.renderer orelse
-        return jsonRpcError(buf, id, -32603, "No renderer (TTY mode has no framebuffer)");
+        return tools.jsonRpcError(buf, id, -32603, "No renderer (TTY mode has no framebuffer)");
 
     const pixels = r.getFramebuffer() orelse
-        return jsonRpcError(buf, id, -32603, "No framebuffer available");
+        return tools.jsonRpcError(buf, id, -32603, "No framebuffer available");
 
     const width: u32 = switch (r.*) {
         .cpu => |cpu| cpu.width,
-        .tty => return jsonRpcError(buf, id, -32603, "No framebuffer in TTY mode"),
+        .tty => return tools.jsonRpcError(buf, id, -32603, "No framebuffer in TTY mode"),
     };
     const height: u32 = switch (r.*) {
         .cpu => |cpu| cpu.height,
-        .tty => return jsonRpcError(buf, id, -32603, "No framebuffer in TTY mode"),
+        .tty => return tools.jsonRpcError(buf, id, -32603, "No framebuffer in TTY mode"),
     };
 
     // Null-terminate path for C fopen
     var path_z: [512:0]u8 = undefined;
-    if (path.len >= path_z.len) return jsonRpcError(buf, id, -32602, "Path too long");
+    if (path.len >= path_z.len) return tools.jsonRpcError(buf, id, -32602, "Path too long");
     @memcpy(path_z[0..path.len], path);
     path_z[path.len] = 0;
 
     png.write(self.allocator, @ptrCast(path_z[0..path.len :0]), pixels, width, height) catch |err| {
         return switch (err) {
-            error.FileOpenFailed => jsonRpcError(buf, id, -32603, "Failed to open output file"),
-            error.OutOfMemory => jsonRpcError(buf, id, -32603, "Out of memory"),
+            error.FileOpenFailed => tools.jsonRpcError(buf, id, -32603, "Failed to open output file"),
+            error.OutOfMemory => tools.jsonRpcError(buf, id, -32603, "Out of memory"),
         };
     };
 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"screenshot saved to {s} ({d}x{d})"}}]}},"id":{s}}}
     , .{ path, width, height, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 /// Ensure parent directory exists using C mkdir.
-fn ensureParentDirC(path: []const u8) void {
-    // Find last '/' to get parent dir
-    const last_slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return;
-    if (last_slash == 0) return;
-
-    // Walk path components and create each one
-    var path_z: [512:0]u8 = undefined;
-    var i: usize = 1;
-    while (i <= last_slash and i < path_z.len) : (i += 1) {
-        if (path[i] == '/' or i == last_slash) {
-            @memcpy(path_z[0..i], path[0..i]);
-            path_z[i] = 0;
-            _ = std.c.mkdir(@ptrCast(path_z[0..i :0]), 0o755);
-        }
-    }
-}
 
 fn toolScroll(self: *McpServer, pane_id: u64, direction: []const u8, lines: u32, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
     const pane = self.multiplexer.getPaneById(pane_id) orelse
-        return jsonRpcError(buf, id, -32602, "Pane not found");
+        return tools.jsonRpcError(buf, id, -32602, "Pane not found");
 
     if (std.mem.eql(u8, direction, "up")) {
         const max_offset: u32 = if (pane.grid.scrollback) |sb|
@@ -1056,7 +1028,7 @@ fn toolScroll(self: *McpServer, pane_id: u64, direction: []const u8, lines: u32,
     } else if (std.mem.eql(u8, direction, "bottom")) {
         pane.scroll_offset = 0;
     } else {
-        return jsonRpcError(buf, id, -32602, "direction must be up/down/bottom");
+        return tools.jsonRpcError(buf, id, -32602, "direction must be up/down/bottom");
     }
 
     pane.grid.dirty = true;
@@ -1064,13 +1036,13 @@ fn toolScroll(self: *McpServer, pane_id: u64, direction: []const u8, lines: u32,
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"scroll_offset={d}"}}]}},"id":{s}}}
     , .{ pane.scroll_offset, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolWaitFor(self: *McpServer, pane_id: u64, pattern: []const u8, lines: u32, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
     const pane = self.multiplexer.getPaneById(pane_id) orelse
-        return jsonRpcError(buf, id, -32602, "Pane not found");
+        return tools.jsonRpcError(buf, id, -32602, "Pane not found");
 
     const grid = &pane.grid;
 
@@ -1117,7 +1089,7 @@ fn toolWaitFor(self: *McpServer, pane_id: u64, pattern: []const u8, lines: u32, 
             return std.fmt.bufPrint(buf,
                 \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"matched\":true,\"line\":\"{s}\"}}"}}]}},"id":{s}}}
             , .{ escaped[0..elen], id_str }) catch
-                jsonRpcError(buf, id, -32603, "Internal error");
+                tools.jsonRpcError(buf, id, -32603, "Internal error");
             }
         }
 
@@ -1128,7 +1100,7 @@ fn toolWaitFor(self: *McpServer, pane_id: u64, pattern: []const u8, lines: u32, 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"matched\":false}}"}}]}},"id":{s}}}
     , .{id_str}) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+        tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 // ── Key mapping for teru_send_keys ────────────────────────────
@@ -1323,61 +1295,8 @@ fn parseContentLength(data: []const u8) ?usize {
 }
 
 /// Unescape JSON string escape sequences: \n \r \t \\ \"
-fn unescapeJson(src: []const u8, dst: []u8) []const u8 {
-    var di: usize = 0;
-    var si: usize = 0;
-    while (si < src.len and di < dst.len) {
-        if (src[si] == '\\' and si + 1 < src.len) {
-            switch (src[si + 1]) {
-                'n' => { dst[di] = '\n'; di += 1; si += 2; },
-                'r' => { dst[di] = '\r'; di += 1; si += 2; },
-                't' => { dst[di] = '\t'; di += 1; si += 2; },
-                '\\' => { dst[di] = '\\'; di += 1; si += 2; },
-                '"' => { dst[di] = '"'; di += 1; si += 2; },
-                else => { dst[di] = src[si]; di += 1; si += 1; },
-            }
-        } else {
-            dst[di] = src[si];
-            di += 1;
-            si += 1;
-        }
-    }
-    return dst[0..di];
-}
 
-fn extractJsonString(json: []const u8, key: []const u8) ?[]const u8 {
-    // Find "key":"value" pattern
-    // Build the search pattern "key":"
-    var needle_buf: [64]u8 = undefined;
-    const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\":", .{key}) catch return null;
 
-    const key_pos = std.mem.indexOf(u8, json, needle) orelse return null;
-    const after_key = key_pos + needle.len;
-
-    // Skip whitespace
-    var i = after_key;
-    while (i < json.len and (json[i] == ' ' or json[i] == '\t')) : (i += 1) {}
-
-    if (i >= json.len or json[i] != '"') return null;
-    i += 1; // skip opening quote
-
-    const start = i;
-    while (i < json.len and json[i] != '"') : (i += 1) {
-        if (json[i] == '\\') i += 1; // skip escaped char
-    }
-    if (i >= json.len) return null;
-
-    return json[start..i];
-}
-
-fn extractNestedJsonString(json: []const u8, key: []const u8) ?[]const u8 {
-    // Same as extractJsonString but searches for the key within "arguments" or at top level
-    // First try within "arguments" block
-    if (std.mem.indexOf(u8, json, "\"arguments\"")) |args_pos| {
-        if (extractJsonString(json[args_pos..], key)) |val| return val;
-    }
-    return extractJsonString(json, key);
-}
 
 fn extractJsonId(json: []const u8) ?[]const u8 {
     // Extract the "id" field value (could be number or string)
@@ -1410,84 +1329,8 @@ fn extractJsonId(json: []const u8) ?[]const u8 {
     }
 }
 
-fn extractNestedJsonInt(json: []const u8, key: []const u8) ?u64 {
-    // Find "key":N pattern (number value)
-    var needle_buf: [64]u8 = undefined;
-    const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\":", .{key}) catch return null;
 
-    // Search in "arguments" first, then top-level
-    const search_start = if (std.mem.indexOf(u8, json, "\"arguments\"")) |ap| ap else 0;
-    const key_pos = std.mem.indexOf(u8, json[search_start..], needle) orelse
-        std.mem.indexOf(u8, json, needle) orelse return null;
 
-    const after_key = search_start + key_pos + needle.len;
-
-    var i = after_key;
-    while (i < json.len and (json[i] == ' ' or json[i] == '\t')) : (i += 1) {}
-
-    if (i >= json.len) return null;
-
-    // Could be a number
-    const start = i;
-    while (i < json.len and json[i] >= '0' and json[i] <= '9') : (i += 1) {}
-    if (i == start) return null;
-
-    return std.fmt.parseInt(u64, json[start..i], 10) catch null;
-}
-
-fn jsonEscapeString(input: []const u8, output: []u8) []const u8 {
-    var out_pos: usize = 0;
-    for (input) |c| {
-        if (out_pos + 2 > output.len) break;
-        switch (c) {
-            '"' => {
-                output[out_pos] = '\\';
-                out_pos += 1;
-                output[out_pos] = '"';
-                out_pos += 1;
-            },
-            '\\' => {
-                output[out_pos] = '\\';
-                out_pos += 1;
-                output[out_pos] = '\\';
-                out_pos += 1;
-            },
-            '\n' => {
-                output[out_pos] = '\\';
-                out_pos += 1;
-                output[out_pos] = 'n';
-                out_pos += 1;
-            },
-            '\r' => {
-                output[out_pos] = '\\';
-                out_pos += 1;
-                output[out_pos] = 'r';
-                out_pos += 1;
-            },
-            '\t' => {
-                output[out_pos] = '\\';
-                out_pos += 1;
-                output[out_pos] = 't';
-                out_pos += 1;
-            },
-            else => {
-                if (c >= 0x20) {
-                    output[out_pos] = c;
-                    out_pos += 1;
-                }
-                // Skip control chars
-            },
-        }
-    }
-    return output[0..out_pos];
-}
-
-fn jsonRpcError(buf: []u8, id: ?[]const u8, code: i32, message: []const u8) []const u8 {
-    const id_str = id orelse "null";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","error":{{"code":{d},"message":"{s}"}},"id":{s}}}
-    , .{ code, message, id_str }) catch "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}";
-}
 
 // ── Tests ──────────────────────────────────────────────────────
 
@@ -1495,21 +1338,21 @@ const t = std.testing;
 
 test "extractJsonString basic" {
     const json = "{\"method\":\"tools/list\",\"id\":1}";
-    const method = extractJsonString(json, "method");
+    const method = tools.extractJsonString(json, "method");
     try t.expect(method != null);
     try t.expectEqualStrings("tools/list", method.?);
 }
 
 test "extractJsonString with spaces" {
     const json = "{\"method\": \"tools/call\", \"id\": 2}";
-    const method = extractJsonString(json, "method");
+    const method = tools.extractJsonString(json, "method");
     try t.expect(method != null);
     try t.expectEqualStrings("tools/call", method.?);
 }
 
 test "extractJsonString missing key" {
     const json = "{\"method\":\"tools/list\"}";
-    try t.expectEqual(@as(?[]const u8, null), extractJsonString(json, "missing"));
+    try t.expectEqual(@as(?[]const u8, null), tools.extractJsonString(json, "missing"));
 }
 
 test "extractJsonId numeric" {
@@ -1528,22 +1371,22 @@ test "extractJsonId null" {
 
 test "extractNestedJsonInt" {
     const json = "{\"params\":{\"name\":\"teru_read_output\",\"arguments\":{\"pane_id\":3,\"lines\":20}}}";
-    const pane_id = extractNestedJsonInt(json, "pane_id");
+    const pane_id = tools.extractNestedJsonInt(json, "pane_id");
     try t.expect(pane_id != null);
     try t.expectEqual(@as(u64, 3), pane_id.?);
 
-    const lines = extractNestedJsonInt(json, "lines");
+    const lines = tools.extractNestedJsonInt(json, "lines");
     try t.expect(lines != null);
     try t.expectEqual(@as(u64, 20), lines.?);
 }
 
 test "extractNestedJsonString" {
     const json = "{\"params\":{\"name\":\"teru_send_input\",\"arguments\":{\"pane_id\":1,\"text\":\"hello\"}}}";
-    const text = extractNestedJsonString(json, "text");
+    const text = tools.extractNestedJsonString(json, "text");
     try t.expect(text != null);
     try t.expectEqualStrings("hello", text.?);
 
-    const name = extractNestedJsonString(json, "name");
+    const name = tools.extractNestedJsonString(json, "name");
     try t.expect(name != null);
     try t.expectEqualStrings("teru_send_input", name.?);
 }
@@ -1551,19 +1394,19 @@ test "extractNestedJsonString" {
 test "jsonEscapeString" {
     var buf: [256]u8 = undefined;
 
-    const result1 = jsonEscapeString("hello world", &buf);
+    const result1 = tools.jsonEscapeString("hello world", &buf);
     try t.expectEqualStrings("hello world", result1);
 
-    const result2 = jsonEscapeString("line1\nline2", &buf);
+    const result2 = tools.jsonEscapeString("line1\nline2", &buf);
     try t.expectEqualStrings("line1\\nline2", result2);
 
-    const result3 = jsonEscapeString("a\"b\\c", &buf);
+    const result3 = tools.jsonEscapeString("a\"b\\c", &buf);
     try t.expectEqualStrings("a\\\"b\\\\c", result3);
 }
 
 test "jsonRpcError" {
     var buf: [512]u8 = undefined;
-    const result = jsonRpcError(&buf, "1", -32601, "Method not found");
+    const result = tools.jsonRpcError(&buf, "1", -32601, "Method not found");
     try t.expect(std.mem.indexOf(u8, result, "-32601") != null);
     try t.expect(std.mem.indexOf(u8, result, "Method not found") != null);
     try t.expect(std.mem.indexOf(u8, result, "\"id\":1") != null);
@@ -1686,12 +1529,12 @@ test "JsonArrayIterator empty" {
 
 test "jsonEscapeString quotes and backslash" {
     var buf: [256]u8 = undefined;
-    const result = jsonEscapeString("hello \"world\"", &buf);
+    const result = tools.jsonEscapeString("hello \"world\"", &buf);
     try t.expectEqualStrings("hello \\\"world\\\"", result);
 
-    const result2 = jsonEscapeString("path\\to\\file", &buf);
+    const result2 = tools.jsonEscapeString("path\\to\\file", &buf);
     try t.expectEqualStrings("path\\\\to\\\\file", result2);
 
-    const result3 = jsonEscapeString("{\"key\":\"val\"}", &buf);
+    const result3 = tools.jsonEscapeString("{\"key\":\"val\"}", &buf);
     try t.expectEqualStrings("{\\\"key\\\":\\\"val\\\"}", result3);
 }
