@@ -319,3 +319,138 @@ test "sendMessage: empty payload (detach)" {
     try std.testing.expectEqual(Tag.detach, hdr.tag);
     try std.testing.expectEqual(@as(usize, 0), received.?.len);
 }
+
+// ── Robustness tests ─────────────────────────────────────────────
+
+test "recvMessage: partial header (1 byte)" {
+    var fds: [2]posix.fd_t = undefined;
+    const rc = std.c.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
+    if (rc != 0) return;
+
+    defer _ = posix.system.close(fds[0]);
+    defer _ = posix.system.close(fds[1]);
+
+    // Write only 1 byte of a 5-byte header, then close sender so reader gets EOF.
+    const one_byte = [_]u8{0};
+    _ = std.c.write(fds[0], &one_byte, 1);
+    _ = posix.system.close(fds[0]);
+
+    // recvMessage should see a short read (1 != 5) and return null.
+    var hdr: Header = undefined;
+    var buf: [max_payload]u8 = undefined;
+    try std.testing.expect(recvMessage(fds[1], &hdr, &buf) == null);
+}
+
+test "recvMessage: invalid tag byte" {
+    var fds: [2]posix.fd_t = undefined;
+    const rc = std.c.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
+    if (rc != 0) return;
+
+    defer _ = posix.system.close(fds[0]);
+    defer _ = posix.system.close(fds[1]);
+
+    // Send a full 5-byte header with tag=255 (invalid).
+    const bad_hdr = [_]u8{ 255, 0, 0, 0, 0 };
+    try std.testing.expect(writeAll(fds[0], &bad_hdr));
+
+    var hdr: Header = undefined;
+    var buf: [max_payload]u8 = undefined;
+    try std.testing.expect(recvMessage(fds[1], &hdr, &buf) == null);
+}
+
+test "recvMessage: payload larger than buffer" {
+    var fds: [2]posix.fd_t = undefined;
+    const rc = std.c.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
+    if (rc != 0) return;
+
+    defer _ = posix.system.close(fds[0]);
+    defer _ = posix.system.close(fds[1]);
+
+    // Craft a header claiming len=100000, which exceeds the 65536-byte recv buffer.
+    const hdr_obj = Header{ .tag = .output, .len = 100000 };
+    const hdr_bytes = hdr_obj.toBytes();
+    try std.testing.expect(writeAll(fds[0], &hdr_bytes));
+
+    var hdr: Header = undefined;
+    var buf: [max_payload]u8 = undefined;
+    try std.testing.expect(recvMessage(fds[1], &hdr, &buf) == null);
+}
+
+test "recvMessage: zero-length payload" {
+    var fds: [2]posix.fd_t = undefined;
+    const rc = std.c.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
+    if (rc != 0) return;
+
+    defer _ = posix.system.close(fds[0]);
+    defer _ = posix.system.close(fds[1]);
+
+    // Send a valid message with zero-length payload.
+    try std.testing.expect(sendMessage(fds[0], .request_sync, ""));
+
+    var hdr: Header = undefined;
+    var buf: [max_payload]u8 = undefined;
+    const received = recvMessage(fds[1], &hdr, &buf);
+    try std.testing.expect(received != null);
+    try std.testing.expectEqual(Tag.request_sync, hdr.tag);
+    try std.testing.expectEqual(@as(usize, 0), received.?.len);
+}
+
+test "sendMessage: payload exceeds max_payload" {
+    var fds: [2]posix.fd_t = undefined;
+    const rc = std.c.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
+    if (rc != 0) return;
+
+    defer _ = posix.system.close(fds[0]);
+    defer _ = posix.system.close(fds[1]);
+
+    // 70000 bytes exceeds max_payload (65536), sendMessage must return false.
+    const oversized = [_]u8{0xAA} ** 70000;
+    try std.testing.expect(!sendMessage(fds[0], .output, &oversized));
+}
+
+test "encodePanePayload/decodePanePayload: round-trip" {
+    const pane_id: u64 = 0xDEAD_BEEF_CAFE_1234;
+    const data = "terminal output bytes";
+    var encode_buf: [256]u8 = undefined;
+
+    const encoded = encodePanePayload(pane_id, data, &encode_buf).?;
+    try std.testing.expectEqual(@as(usize, 8 + data.len), encoded.len);
+
+    const decoded = decodePanePayload(encoded).?;
+    try std.testing.expectEqual(pane_id, decoded.pane_id);
+    try std.testing.expectEqualStrings(data, decoded.data);
+}
+
+test "decodePanePayload: too short" {
+    // Anything shorter than 8 bytes must return null.
+    const short7 = [_]u8{ 1, 2, 3, 4, 5, 6, 7 };
+    try std.testing.expect(decodePanePayload(&short7) == null);
+
+    const short0: []const u8 = &.{};
+    try std.testing.expect(decodePanePayload(short0) == null);
+
+    const short1 = [_]u8{0xFF};
+    try std.testing.expect(decodePanePayload(&short1) == null);
+}
+
+test "Command.fromByte: valid and invalid" {
+    // All values 0..11 are valid commands.
+    try std.testing.expectEqual(Command.switch_workspace, Command.fromByte(0).?);
+    try std.testing.expectEqual(Command.focus_next, Command.fromByte(1).?);
+    try std.testing.expectEqual(Command.focus_prev, Command.fromByte(2).?);
+    try std.testing.expectEqual(Command.split_vertical, Command.fromByte(3).?);
+    try std.testing.expectEqual(Command.split_horizontal, Command.fromByte(4).?);
+    try std.testing.expectEqual(Command.close_pane, Command.fromByte(5).?);
+    try std.testing.expectEqual(Command.cycle_layout, Command.fromByte(6).?);
+    try std.testing.expectEqual(Command.zoom_toggle, Command.fromByte(7).?);
+    try std.testing.expectEqual(Command.swap_next, Command.fromByte(8).?);
+    try std.testing.expectEqual(Command.swap_prev, Command.fromByte(9).?);
+    try std.testing.expectEqual(Command.focus_master, Command.fromByte(10).?);
+    try std.testing.expectEqual(Command.set_master, Command.fromByte(11).?);
+
+    // 12+ must return null.
+    try std.testing.expect(Command.fromByte(12) == null);
+    try std.testing.expect(Command.fromByte(13) == null);
+    try std.testing.expect(Command.fromByte(128) == null);
+    try std.testing.expect(Command.fromByte(255) == null);
+}
