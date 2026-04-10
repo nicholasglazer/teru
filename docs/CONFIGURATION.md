@@ -255,6 +255,7 @@ scroll_speed = 5
 | `alt_workspace_switch` | boolean | `true` | Enable Alt+1-9 workspace switch and Alt+Shift+1-9 move pane |
 | `restore_layout` | boolean | `false` | Save layout on exit, restore on launch (fresh shells, no daemon) |
 | `persist_session` | boolean | `false` | Keep processes alive between window closes (auto-daemon) |
+| `show_status_bar` | boolean | `true` | Show the status bar at the bottom of the window. Toggle at runtime with `Alt+B` |
 
 ```conf
 prefix_key = ctrl+b
@@ -311,12 +312,16 @@ Default prefix: `Ctrl+Space`
 | `RAlt+1`-`9` | Move active pane to workspace |
 | `Alt+J` / `Alt+K` | Focus next / prev pane |
 | `RAlt+J` / `RAlt+K` | Swap pane down / up |
+| `Alt+Enter` | New pane (vertical split) |
+| `RAlt+Enter` | New pane (horizontal split) |
 | `Alt+C` | New pane (vertical split) |
 | `RAlt+C` | New pane (horizontal split) |
 | `Alt+X` | Close active pane |
 | `Alt+M` | Focus master pane |
 | `RAlt+M` | Mark active pane as master |
+| `Alt+B` | Toggle status bar |
 | `Alt+-` / `Alt+=` | Zoom out / in (font size) |
+| `Alt+\` | Reset zoom (restore config font size) |
 | `Ctrl+Shift+C` | Copy selection |
 | `Ctrl+Shift+V` | Paste from clipboard |
 | `Shift+PageUp/Down` | Scroll through scrollback |

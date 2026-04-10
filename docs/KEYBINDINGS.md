@@ -30,6 +30,8 @@ No prefix required. These work instantly from any state.
 
 | Key | Action |
 |-----|--------|
+| `Alt+Enter` | New pane (vertical split) |
+| `RAlt+Enter` | New pane (horizontal split) |
 | `Alt+C` | New pane (vertical split) |
 | `RAlt+C` | New pane (horizontal split) |
 | `Alt+X` | Close active pane |
@@ -49,6 +51,13 @@ Mark any pane as "master" per workspace. Press `Alt+M` from anywhere to jump bac
 |-----|--------|
 | `Alt+-` | Zoom out (decrease font size by 1px) |
 | `Alt+=` | Zoom in (increase font size by 1px) |
+| `Alt+\` | Reset zoom (restore config font size) |
+
+### UI
+
+| Key | Action |
+|-----|--------|
+| `Alt+B` | Toggle status bar visibility |
 
 Font zoom re-rasterizes glyphs from memory (no disk I/O). Grid resize and SIGWINCH are deferred 150ms after the last zoom event, so rapid zooming is smooth.
 
@@ -179,7 +188,7 @@ teru's Alt+key shortcuts are designed to avoid conflicts with Claude Code's keyb
 | `Alt+T` (thinking) | unused | none |
 | `Alt+P` (model switch) | unused | none |
 | `Alt+O` (fast mode) | unused | none |
-| `Alt+B` (word back) | unused | none |
+| `Alt+B` (word back) | toggle status bar | conflict — remap if needed |
 | `Alt+F` (word forward) | unused | none |
 | `Shift+Tab` (permissions) | unused | none |
 

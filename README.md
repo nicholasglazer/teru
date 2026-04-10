@@ -62,6 +62,7 @@ paru -S teru
 teru
 
 # Essential keys
+Alt+Enter                 # new pane (vertical split)
 Alt+C                     # split vertical
 RAlt+C                    # split horizontal
 Alt+J / Alt+K             # focus next / prev pane
@@ -158,6 +159,9 @@ make release-wayland      # Wayland-only (no libxcb dep)
 
 ```bash
 teru                              # fresh terminal (windowed, X11/Wayland auto-detected)
+teru -e htop                      # run a command instead of shell
+teru -e ~/.miozu/bin/script.sh    # run a script (window closes on exit)
+teru --no-bar                     # start with status bar hidden (scratchpad mode)
 teru -n myproject                 # persistent named session (daemon auto-started)
 teru -n myproject -t claude-power # start from template
 teru -l                           # list active sessions
@@ -247,8 +251,9 @@ All keybindings are **configurable** via `~/.config/teru/keybinds.conf`. Alt is 
 |-----|--------|
 | `Alt+J` / `Alt+K` | Focus next / prev pane |
 | `Alt+1`-`9` | Switch workspace |
+| `Alt+Enter` | New pane (vertical split) |
 | `Alt+C` | Split vertical |
-| `RAlt+C` | Split horizontal |
+| `RAlt+Enter` / `RAlt+C` | Split horizontal |
 | `Alt+X` | Close pane |
 | `Alt+Z` | Toggle pane zoom (maximize) |
 | `Alt+Space` | Cycle layout |
@@ -256,8 +261,9 @@ All keybindings are **configurable** via `~/.config/teru/keybinds.conf`. Alt is 
 | `Alt+V` | Vi/scroll mode |
 | `Alt+D` | Detach session |
 | `Alt+M` | Focus master pane |
+| `Alt+B` | Toggle status bar |
 | `Alt+=` / `Alt+-` | Zoom in / out |
-| `Alt+0` | Reset zoom |
+| `Alt+\` | Reset zoom |
 | `RAlt+J` / `RAlt+K` | Swap pane next / prev |
 | `RAlt+H` / `RAlt+L` | Resize pane width |
 | `RAlt+1`-`9` | Move pane to workspace |

@@ -35,6 +35,8 @@ All modules have inline tests (526+ test blocks). Run with `zig build test`.
 ## Session Persistence
 ```bash
 teru                              # fresh terminal (scratchpad)
+teru -e htop                      # run command instead of shell
+teru --no-bar                     # start with status bar hidden
 teru -n myproject                 # persistent named session (daemon auto-started)
 teru -n myproject -t claude-power # start from template
 teru -l                           # list active sessions

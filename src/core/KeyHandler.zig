@@ -257,8 +257,10 @@ pub fn executeAction(action: KB.Action, mux: *Multiplexer) MuxAction {
 ///   Alt+d           — detach session
 ///   Alt+m           — focus master pane
 ///   Alt+b           — toggle status bar
+///   Alt+Enter       — new pane (vertical split)
 ///   Alt+=           — zoom in (increase font size)
 ///   Alt+-           — zoom out (decrease font size)
+///   Alt+\           — zoom reset (restore config font size)
 ///   Alt+0           — workspace 10
 ///
 /// ── RAlt (modify / move) ────────────────────────────────────
@@ -266,6 +268,7 @@ pub fn executeAction(action: KB.Action, mux: *Multiplexer) MuxAction {
 ///   RAlt+h / RAlt+l — resize pane width (-2 / +2)
 ///   RAlt+c          — new pane (horizontal split)
 ///   RAlt+1-9        — move active pane to workspace
+///   RAlt+Enter      — new pane (horizontal split)
 ///   RAlt+m          — mark active pane as master
 ///
 /// Returns null if the key should pass through to the PTY.
@@ -293,6 +296,8 @@ pub fn handleGlobalKey(keycode: u32, modifiers: u32, key_char: u8, alt_enabled: 
         'd' => .detach,
         'm' => { if (ralt) mux.setMaster() else mux.focusMaster(); return .panes_changed; },
         'b' => .toggle_status_bar,
+        '\\' => .zoom_reset,
+        '\r' => if (ralt) .split_horizontal else .split_vertical,
         '-' => .zoom_out,
         '=' => .zoom_in,
         else => null,

@@ -148,11 +148,11 @@ pub fn main(init: std.process.Init) !void {
                 \\  Export current session: teru_session_save via MCP
                 \\
                 \\Keybindings:
-                \\  Alt+1-9,0   Switch workspace     Alt+C       New pane
-                \\  Alt+J/K     Focus next/prev       Alt+X       Close pane
-                \\  Alt+Space   Cycle layout          Alt+Z       Zoom pane
+                \\  Alt+Enter   New pane              Alt+X       Close pane
+                \\  Alt+J/K     Focus next/prev       Alt+Z       Zoom pane
+                \\  Alt+1-9,0   Switch workspace      Alt+Space   Cycle layout
                 \\  Alt+V       Vi/copy mode          Alt+D       Detach
-                \\  Alt+B       Toggle status bar
+                \\  Alt+B       Toggle status bar     Alt+\       Reset zoom
                 \\  RAlt+J/K    Swap pane              RAlt+H/L   Resize
                 \\
                 \\
@@ -1093,7 +1093,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             // Checked before len==0 because xkbcommon may produce no
                             // UTF-8 for Alt+symbol keys. Use keysym for the key identity.
                             {
-                                const ks_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else 0;
+                                const ks_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else if (keysym == ks.Return) '\r' else 0;
                                 // Config-driven keybind lookup (normal mode for global shortcuts)
                                 const kb_mode: @import("config/Keybinds.zig").Mode = if (prefix.awaiting) .prefix else .normal;
                                 if (KeyHandler.lookupConfigAction(&config.keybinds, kb_mode, key.modifiers, ks_char, ralt_held)) |kb_action| {

@@ -434,6 +434,8 @@ pub const Keybinds = struct {
         _ = self.add(n, A, '=', .zoom_in);
         _ = self.add(n, A, '-', .zoom_out);
         _ = self.add(n, A, 'b', .toggle_status_bar);
+        _ = self.add(n, A, '\\', .zoom_reset);
+        _ = self.add(n, A, '\r', .split_vertical);
 
         // Alt+1-9 workspaces, RAlt+1-9 move pane
         for (0..9) |i| {
