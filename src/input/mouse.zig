@@ -101,8 +101,8 @@ fn reportMousePress(mux: *Multiplexer, mouse: platform_types.MouseEvent, lp: Lay
     const pane = mux.getActivePaneMut() orelse return false;
     if (pane.vt.mouse_tracking == .none) return false;
 
-    const mcol: u16 = @intCast(@min(mouse.x / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
-    const mrow: u16 = @intCast(@min(mouse.y / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
+    const mcol: u16 = @intCast(@min((mouse.x -| lp.padding) / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
+    const mrow: u16 = @intCast(@min((mouse.y -| lp.padding) / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
     const btn: u8 = switch (mouse.button) {
         .left => 0,
         .middle => 1,
@@ -137,8 +137,8 @@ fn reportMouseRelease(mux: *Multiplexer, mouse: platform_types.MouseEvent, lp: L
     const pane = mux.getActivePaneMut() orelse return;
     if (pane.vt.mouse_tracking == .none) return;
 
-    const mcol: u16 = @intCast(@min(mouse.x / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
-    const mrow: u16 = @intCast(@min(mouse.y / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
+    const mcol: u16 = @intCast(@min((mouse.x -| lp.padding) / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
+    const mrow: u16 = @intCast(@min((mouse.y -| lp.padding) / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
     var mbuf: [32]u8 = undefined;
     if (pane.vt.mouse_sgr) {
         const btn: u8 = switch (mouse.button) {
@@ -172,8 +172,8 @@ fn reportMouseMotion(mux: *Multiplexer, motion_x: u32, motion_y: u32, lp: Layout
     };
     if (!report_motion) return;
 
-    const mcol: u16 = @intCast(@min(motion_x / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
-    const mrow: u16 = @intCast(@min(motion_y / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
+    const mcol: u16 = @intCast(@min((motion_x -| lp.padding) / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
+    const mrow: u16 = @intCast(@min((motion_y -| lp.padding) / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
     var mbuf: [32]u8 = undefined;
     if (pane.vt.mouse_sgr) {
         const btn: u8 = if (mouse_down) 32 else 35; // 32 = motion + left button
@@ -223,8 +223,8 @@ fn handleUrlClick(mux: *Multiplexer, row: u16, col: u16) bool {
 /// Update URL hover state for Shift+hover underline.
 fn updateUrlHover(mux: *Multiplexer, motion_x: u32, motion_y: u32, modifiers: u32, lp: LayoutParams, ms: *MouseState) void {
     if (modifiers & SHIFT_MASK != 0) {
-        const hcol: u16 = @intCast(@min(motion_x / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
-        const hrow: u16 = @intCast(@min(motion_y / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
+        const hcol: u16 = @intCast(@min((motion_x -| lp.padding) / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
+        const hrow: u16 = @intCast(@min((motion_y -| lp.padding) / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
         if (mux.getActivePane()) |pane| {
             if (UrlDetector.findUrlAt(&pane.grid, hrow, hcol)) |match| {
                 if (!ms.hover_url_active or ms.hover_url_row != match.row or ms.hover_url_start != match.start_col or ms.hover_url_end != match.end_col) {
@@ -384,8 +384,8 @@ pub fn handleMousePress(
                 }
             }
 
-            const col: u16 = @intCast(@min(mouse.x / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
-            const row: u16 = @intCast(@min(mouse.y / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
+            const col: u16 = @intCast(@min((mouse.x -| lp.padding) / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
+            const row: u16 = @intCast(@min((mouse.y -| lp.padding) / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
 
             // Shift+click: open URL under cursor
             if (mouse.modifiers & SHIFT_MASK != 0) {
@@ -505,8 +505,8 @@ pub fn handleMouseRelease(
         const track_active = if (mux.getActivePane()) |pane| pane.vt.mouse_tracking != .none else false;
         if (track_active) return .{ .consumed = true };
 
-        const col: u16 = @intCast(@min(mouse.x / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
-        const row: u16 = @intCast(@min(mouse.y / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
+        const col: u16 = @intCast(@min((mouse.x -| lp.padding) / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
+        const row: u16 = @intCast(@min((mouse.y -| lp.padding) / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
         {
             const so = mux.getScrollOffset();
             const sbl: u32 = mux.getScrollbackLineCount();
@@ -593,8 +593,8 @@ pub fn handleMouseMotion(
     // Only handle selection when mouse tracking is off (app handles mouse)
     const tracking_active = if (mux.getActivePane()) |pane| pane.vt.mouse_tracking != .none else false;
     if (ms.mouse_down and !tracking_active) {
-        const col: u16 = @intCast(@min(motion_x / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
-        const row: u16 = @intCast(@min(motion_y / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
+        const col: u16 = @intCast(@min((motion_x -| lp.padding) / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
+        const row: u16 = @intCast(@min((motion_y -| lp.padding) / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
 
         // Start selection on first drag movement
         if (!selection.active) {
