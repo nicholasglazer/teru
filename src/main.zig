@@ -624,6 +624,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
         m.cell_width = atlas.cell_width;
         m.cell_height = atlas.cell_height;
         m.padding = padding;
+        m.status_bar_h = status_bar_h;
         m.renderer = &renderer;
     }
 
@@ -1091,7 +1092,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                     }
                                     if (action == .panes_changed) {
                                         const sz = win.getSize();
-                                        mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                        mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
                                         // Force redraw — empty workspaces have no dirty grids
                                         // but the status bar and background still need updating.
                                         for (mux.panes.items) |*p| p.grid.dirty = true;
@@ -1107,7 +1108,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                                 continue;
                                             }
                                             const sz = win.getSize();
-                                            mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                            mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
                                         }
                                     }
                                     if (action == .split_vertical or action == .split_horizontal) {
@@ -1120,7 +1121,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                         const ws = &mux.layout_engine.workspaces[mux.active_workspace];
                                         ws.addNodeSplit(mux.allocator, id, dir) catch {};
                                         const sz = win.getSize();
-                                        mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                        mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
                                     }
                                     if (action == .enter_search) {
                                         search_mode = true;
@@ -1143,7 +1144,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                     }
                                     if (action == .toggle_zoom) {
                                         const sz = win.getSize();
-                                        mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                        mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
                                         for (mux.panes.items) |*p| p.grid.dirty = true;
                                         force_redraw = true;
                                         continue;
@@ -1198,7 +1199,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                                 }
                                                 pane.grid.dirty = true;
                                             }
-                                            mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                            mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
 
                                             // Defer variant atlas rebuild (150ms after zoom stops)
                                             zoom_pending_resize = true;
@@ -1249,7 +1250,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                 }
                                 if (action == .panes_changed) {
                                     const sz = win.getSize();
-                                    mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                    mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
                                     for (mux.panes.items) |*p| p.grid.dirty = true;
                                     force_redraw = true;
                                 }
@@ -1265,7 +1266,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                     ws.addNodeSplit(mux.allocator, id, dir) catch {};
                                     // Resize all PTYs to match new layout
                                     const sz = win.getSize();
-                                    mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                    mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
                                 }
                                 continue;
                             }
@@ -1304,7 +1305,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             }
                             if (action == .panes_changed) {
                                 const sz = win.getSize();
-                                mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                                mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
                                 for (mux.panes.items) |*p| p.grid.dirty = true;
                                 force_redraw = true;
                             }
@@ -1369,7 +1370,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                 if (Ui.hitTestStatusBar(&mux, atlas.cell_width, padding, sz.height, bar_h, mouse.x, mouse.y)) |ws| {
                                     mux.switchWorkspace(ws);
                                     const sz2 = win.getSize();
-                                    mux.resizePanePtys(sz2.width, sz2.height, atlas.cell_width, atlas.cell_height, padding);
+                                    mux.resizePanePtys(sz2.width, sz2.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
                                     for (mux.panes.items) |*p| p.grid.dirty = true;
                                     force_redraw = true;
                                     continue;
@@ -1589,7 +1590,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                     if (mouse.button == .left and border_dragging) {
                         border_dragging = false;
                         const sz = win.getSize();
-                        mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding);
+                        mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
                         continue;
                     }
                     if (mouse.button == .left and mouse_down) {
@@ -1734,7 +1735,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                         const in_alt = if (mux.getActivePane()) |pane| pane.vt.alt_screen else false;
                         if (!in_alt) {
                             const sz_scroll = win.getSize();
-                            const pane_rect = mux.getActivePaneRect(sz_scroll.width, sz_scroll.height, padding);
+                            const pane_rect = mux.getActivePaneRect(sz_scroll.width, sz_scroll.height, padding, status_bar_h);
                             const edge_zone = atlas.cell_height;
                             const top_edge = if (pane_rect) |pr| @as(u32, pr.y) else 0;
                             const bot_edge = if (pane_rect) |pr| @as(u32, pr.y) + pr.height else grid_rows * atlas.cell_height;
@@ -2042,7 +2043,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                     const vi_sb: u32 = mux.getScrollbackLineCount();
                     var vi_sel = if (vi_mode.active) vi_mode.toSelection(mux.getScrollOffset(), vi_sb) else null;
                     const sel_ptr: ?*const Selection = if (vi_sel != null) &vi_sel.? else if (selection.active) &selection else null;
-                    mux.renderAllWithSelection(cpu, sz.width, sz.height, atlas.cell_width, atlas.cell_height, sel_ptr);
+                    mux.renderAllWithSelection(cpu, sz.width, sz.height, atlas.cell_width, atlas.cell_height, sel_ptr, status_bar_h);
 
                     // Search overlay: highlight matches + draw search bar
                     if (search_mode or search_len > 0) {
@@ -2055,7 +2056,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                     if (mux.getScrollOffset() > 0 or mux.getScrollPixel() > 0) {
                         if (mux.getActivePane()) |pane| {
                             if (pane.grid.scrollback) |sb| {
-                                if (mux.getActivePaneRect(sz.width, sz.height, cpu.padding)) |pane_rect| {
+                                if (mux.getActivePaneRect(sz.width, sz.height, cpu.padding, status_bar_h)) |pane_rect| {
                                     Ui.renderScrollOverlay(cpu, sb, mux.getScrollOffset(), atlas.cell_width, atlas.cell_height, pane_rect, mux.getScrollPixel(), sel_ptr);
                                 }
                             }
@@ -2064,7 +2065,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
 
                     // Shift+hover URL underline
                     if (hover_url_active) {
-                        if (mux.getActivePaneRect(sz.width, sz.height, cpu.padding)) |pr| {
+                        if (mux.getActivePaneRect(sz.width, sz.height, cpu.padding, status_bar_h)) |pr| {
                             const cw = atlas.cell_width;
                             const ch = atlas.cell_height;
                             // Draw 1px underline at the bottom of each cell in the URL
@@ -2086,7 +2087,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                     // Vi mode cursor overlay (inverted block)
                     if (vi_mode.active) {
                         if (vi_mode.viewportRow(mux.getScrollOffset(), vi_sb)) |vrow| {
-                            if (mux.getActivePaneRect(sz.width, sz.height, cpu.padding)) |pr| {
+                            if (mux.getActivePaneRect(sz.width, sz.height, cpu.padding, status_bar_h)) |pr| {
                                 const cx = pr.x + @as(u16, vi_mode.cursor_col) * atlas.cell_width;
                                 const cy = pr.y + vrow * atlas.cell_height;
                                 const max_x = @min(cx + atlas.cell_width, pr.x + pr.width);

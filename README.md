@@ -377,6 +377,88 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full reference.
 
 ---
 
+## Session Persistence
+
+teru has three levels of session persistence:
+
+| Mode | Command | What persists | Daemon? |
+|------|---------|---------------|---------|
+| **Fresh** | `teru` | Nothing -- scratchpad | No |
+| **Layout restore** | Set `restore_layout = true` | Pane count, layouts, workspaces | No |
+| **Named session** | `teru -n myproject` | Everything -- processes, scrollback, state | Yes (auto) |
+
+### Named sessions
+
+```bash
+teru -n myproject                 # create or reattach to "myproject"
+# work, split panes, run servers...
+# Alt+D to detach (or close the window)
+teru -n myproject                 # reattach — everything is exactly where you left it
+teru -l                           # list active sessions
+```
+
+Named sessions auto-start a daemon. PTY processes survive window close. Full state (workspace position, focus, master ratio, zoom) is synced between daemon and window.
+
+### Templates
+
+Templates are `.tsess` files that define multi-workspace session layouts:
+
+```conf
+# ~/.config/teru/templates/dev.tsess
+[session]
+name = dev
+description = Development environment
+
+[workspace.1]
+name = code
+layout = master-stack
+master_ratio = 0.6
+
+[workspace.1.pane.1]
+command = nvim .
+
+[workspace.1.pane.2]
+command = fish
+
+[workspace.2]
+name = servers
+layout = columns
+
+[workspace.2.pane.1]
+command = make dev-server
+
+[workspace.2.pane.2]
+command = tail -f /var/log/app.log
+```
+
+Use templates with `-t`:
+
+```bash
+teru -n myproject -t dev          # first run: applies template. subsequent runs: reattaches.
+```
+
+Templates are searched in `~/.config/teru/templates/` then `./examples/`. Export your current session via the `teru_session_save` MCP tool.
+
+See `examples/claude-power.tsess` for a full 10-workspace, 34-pane example.
+
+---
+
+## CLI Reference
+
+| Flag | Long | Description |
+|------|------|-------------|
+| `-n NAME` | `--name NAME` | Connect to (or start) named session |
+| `-t NAME` | `--template NAME` | Apply template (.tsess) on first start |
+| `-l` | `--list` | List active sessions |
+| `-v` | `--version` | Show version |
+| `-h` | `--help` | Show help |
+| | `--raw` | Raw TTY mode (no window, for SSH) |
+| | `--daemon NAME` | Start headless daemon (server use) |
+| | `--mcp-bridge` | MCP stdio bridge |
+| | `--class NAME` | Set WM_CLASS |
+
+---
+
 ## AI Integration
 
 ### Claude Code Agent Teams

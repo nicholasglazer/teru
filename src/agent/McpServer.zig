@@ -44,6 +44,7 @@ screen_height: u32 = 0,
 cell_width: u32 = 0,
 cell_height: u32 = 0,
 padding: u32 = 0,
+status_bar_h: u32 = 0,
 renderer: ?*tier.Renderer = null,
 
 // ── Lifecycle ──────────────────────────────────────────────────
@@ -576,7 +577,7 @@ fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, command: ?[
 
     // Resize all PTYs to match new layout
     if (self.screen_width > 0) {
-        self.multiplexer.resizePanePtys(self.screen_width, self.screen_height, self.cell_width, self.cell_height, self.padding);
+        self.multiplexer.resizePanePtys(self.screen_width, self.screen_height, self.cell_width, self.cell_height, self.padding, self.status_bar_h);
     }
 
     // Restore workspace
@@ -751,7 +752,7 @@ fn toolSetLayout(self: *McpServer, workspace: u8, layout_str: []const u8, buf: [
 
     // Resize PTYs to match new layout
     if (self.screen_width > 0 and self.cell_width > 0) {
-        self.multiplexer.resizePanePtys(self.screen_width, self.screen_height, self.cell_width, self.cell_height, self.padding);
+        self.multiplexer.resizePanePtys(self.screen_width, self.screen_height, self.cell_width, self.cell_height, self.padding, self.status_bar_h);
     }
     // Mark panes dirty for redraw
     for (self.multiplexer.panes.items) |*pane| pane.grid.dirty = true;
@@ -969,7 +970,7 @@ fn toolSessionRestore(self: *McpServer, name: []const u8, buf: []u8, id: ?[]cons
             const ws = &self.multiplexer.layout_engine.workspaces[wi];
             if (ws.node_ids.items.len > 0) {
                 self.multiplexer.switchWorkspace(@intCast(wi));
-                self.multiplexer.resizePanePtys(self.screen_width, self.screen_height, self.cell_width, self.cell_height, self.padding);
+                self.multiplexer.resizePanePtys(self.screen_width, self.screen_height, self.cell_width, self.cell_height, self.padding, self.status_bar_h);
             }
         }
         self.multiplexer.switchWorkspace(prev_ws);
