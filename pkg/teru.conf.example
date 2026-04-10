@@ -1,0 +1,65 @@
+# teru configuration
+# Place at: ~/.config/teru/teru.conf
+# Changes are hot-reloaded automatically.
+
+# ── Appearance ───────────────────────────────────────────────
+# font = /usr/share/fonts/TTF/JetBrainsMono-Regular.ttf
+# font_size = 16
+# padding = 8
+# theme = miozu
+# cursor_shape = block
+# cursor_blink = false
+
+# ── Behavior ─────────────────────────────────────────────────
+# shell = /usr/bin/fish
+# scrollback_lines = 10000
+# scroll_speed = 3
+# bold_is_bright = true
+# bell = visual
+# copy_on_select = true
+# show_status_bar = true
+
+# ── Session persistence ──────────────────────────────────────
+# Saves pane count, layouts, and workspaces on every change.
+# On next launch, restores the layout with fresh shells.
+# If a daemon named "default" is running, auto-attaches instead.
+# persist_session = true
+
+# ── Colors (override theme) ──────────────────────────────────
+# bg = 0x1a1b26
+# fg = 0xc0caf5
+# cursor_color = 0x7aa2f7
+# attention_color = 0xff9e64
+
+# ── Per-workspace layout ─────────────────────────────────────
+# Layouts: master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion
+#
+# [workspace.1]
+# name = code
+# layout = master-stack
+# ratio = 0.65
+#
+# [workspace.2]
+# name = servers
+# layout = columns
+
+# ── Keybindings ──────────────────────────────────────────────
+# Alt+1-9,0     switch workspace
+# Alt+j/k       focus next/prev pane
+# Alt+c         new pane (vertical split)
+# Alt+x         close pane
+# Alt+Space     cycle layout
+# Alt+z         zoom pane
+# Alt+v         vi/copy mode
+# Alt+d         detach session
+# RAlt+j/k      swap pane position
+# RAlt+h/l      resize pane width
+# RAlt+1-9,0    move pane to workspace
+#
+# Override defaults:
+# [keybinds.normal]
+# alt+j = pane:focus_next
+# alt+k = pane:focus_prev
+# ralt+j = pane:swap_next
+# ralt+k = pane:swap_prev
+# alt+shift+0 = zoom:reset

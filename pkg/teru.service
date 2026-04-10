@@ -1,0 +1,28 @@
+# teru daemon — systemd user service
+#
+# Keeps a teru session alive across terminal closes and reboots.
+# PTYs, panes, workspaces, and running processes persist.
+#
+# Install:
+#   cp pkg/teru.service ~/.config/systemd/user/
+#   systemctl --user enable --now teru
+#
+# Attach:
+#   teru --session default
+#
+# Or with persist_session = true in teru.conf, just run:
+#   teru
+# It auto-attaches to the running daemon.
+
+[Unit]
+Description=teru terminal daemon
+Documentation=https://teru.sh
+
+[Service]
+Type=forking
+ExecStart=%h/.local/bin/teru --daemon default
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
