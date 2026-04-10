@@ -842,8 +842,19 @@ fn dispatchCsi(self: *VtParser, final: u8) void {
                 self.sendResponse(msg);
             }
         },
-        's' => { // SCP — save cursor position
-            self.grid.saveCursor();
+        's' => {
+            if (self.grid.margins_enabled) {
+                // DECSLRM — set left/right margins (when DECLRMM active)
+                const left: u16 = if (self.params[0] > 0) self.params[0] - 1 else 0;
+                const right: u16 = if (self.param_count > 1 and self.params[1] > 0) self.params[1] else self.grid.cols;
+                self.grid.setMargins(
+                    @intCast(@min(left, self.grid.cols -| 1)),
+                    @intCast(@min(right, self.grid.cols)),
+                );
+            } else {
+                // SCP — save cursor position
+                self.grid.saveCursor();
+            }
         },
         'u' => { // RCP — restore cursor position
             self.grid.restoreCursor();
@@ -878,6 +889,7 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
                 1006 => self.mouse_sgr = true,
                 2004 => self.bracketed_paste = true,
                 2026 => self.sync_output = true,
+                69 => self.grid.margins_enabled = true, // DECLRMM — enable left/right margins
                 else => {},
             }
         },
@@ -896,6 +908,11 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
                 1000, 1002, 1003 => self.mouse_tracking = .none,
                 1006 => self.mouse_sgr = false,
                 2004 => self.bracketed_paste = false,
+                69 => { // DECLRMM — disable left/right margins
+                    self.grid.margins_enabled = false;
+                    self.grid.left_margin = 0;
+                    self.grid.right_margin = 0;
+                },
                 2026 => {
                     self.sync_output = false;
                     self.grid.dirty = true;

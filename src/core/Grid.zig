@@ -185,6 +185,9 @@ cursor_row: u16 = 0,
 cursor_col: u16 = 0,
 scroll_top: u16 = 0,
 scroll_bottom: u16,
+left_margin: u16 = 0,
+right_margin: u16 = 0, // 0 means "use cols" (full width)
+margins_enabled: bool = false,
 dirty: bool = true,
 cursor_shape: CursorShape = .block,
 bell: bool = false,
@@ -363,12 +366,30 @@ pub fn scrollUpN(self: *Grid, n: u16) void {
             sb.pushLine(line_buf[0..len], self) catch {};
         }
 
-        // Shift rows up within the scroll region
-        var row = top;
-        while (row < bottom) : (row += 1) {
-            const dst_start = row * w;
-            const src_start = (row + 1) * w;
-            @memcpy(self.cells[dst_start..][0..w], self.cells[src_start..][0..w]);
+        const lm = self.getLeftMargin();
+        const rm = self.getRightMargin();
+        if (self.margins_enabled and (lm > 0 or rm < w)) {
+            // Margin-bounded scroll: shift only cells within margin columns
+            const span = rm - lm;
+            var row = top;
+            while (row < bottom) : (row += 1) {
+                const dst_start = row * w + lm;
+                const src_start = (row + 1) * w + lm;
+                @memcpy(self.cells[dst_start..][0..span], self.cells[src_start..][0..span]);
+            }
+            // Clear only margin columns in bottom row
+            const clear_start = bottom * w + lm;
+            for (self.cells[clear_start..][0..span]) |*c| c.* = Cell.blank();
+        } else {
+            // Full-width scroll (fast path)
+            var row = top;
+            while (row < bottom) : (row += 1) {
+                const dst_start = row * w;
+                const src_start = (row + 1) * w;
+                @memcpy(self.cells[dst_start..][0..w], self.cells[src_start..][0..w]);
+            }
+            // Clear the bottom row of the scroll region
+            self.clearRow(@intCast(bottom));
         }
         // Shift row_meta up within the scroll region
         if (self.row_meta.len > bottom) {
@@ -378,8 +399,6 @@ pub fn scrollUpN(self: *Grid, n: u16) void {
             }
             self.row_meta[bottom] = .{};
         }
-        // Clear the bottom row of the scroll region
-        self.clearRow(@intCast(bottom));
     }
     self.dirty = true;
 }
@@ -397,12 +416,30 @@ pub fn scrollDownN(self: *Grid, n: u16) void {
 
     var i: u16 = 0;
     while (i < n) : (i += 1) {
-        // Shift rows down within the scroll region
-        var row = bottom;
-        while (row > top) : (row -= 1) {
-            const dst_start = row * w;
-            const src_start = (row - 1) * w;
-            @memcpy(self.cells[dst_start..][0..w], self.cells[src_start..][0..w]);
+        const lm = self.getLeftMargin();
+        const rm = self.getRightMargin();
+        if (self.margins_enabled and (lm > 0 or rm < w)) {
+            // Margin-bounded scroll: shift only cells within margin columns
+            const span = rm - lm;
+            var row = bottom;
+            while (row > top) : (row -= 1) {
+                const dst_start = row * w + lm;
+                const src_start = (row - 1) * w + lm;
+                @memcpy(self.cells[dst_start..][0..span], self.cells[src_start..][0..span]);
+            }
+            // Clear only margin columns in top row
+            const clear_start = top * w + lm;
+            for (self.cells[clear_start..][0..span]) |*c| c.* = Cell.blank();
+        } else {
+            // Full-width scroll (fast path)
+            var row = bottom;
+            while (row > top) : (row -= 1) {
+                const dst_start = row * w;
+                const src_start = (row - 1) * w;
+                @memcpy(self.cells[dst_start..][0..w], self.cells[src_start..][0..w]);
+            }
+            // Clear the top row of the scroll region
+            self.clearRow(@intCast(top));
         }
         // Shift row_meta down within the scroll region
         if (self.row_meta.len > bottom) {
@@ -412,8 +449,6 @@ pub fn scrollDownN(self: *Grid, n: u16) void {
             }
             self.row_meta[top] = .{};
         }
-        // Clear the top row of the scroll region
-        self.clearRow(@intCast(top));
     }
     self.dirty = true;
 }
@@ -528,6 +563,24 @@ pub fn resize(self: *Grid, allocator: std.mem.Allocator, new_rows: u16, new_cols
     self.cursor_row = @min(self.cursor_row, new_rows -| 1);
     self.cursor_col = @min(self.cursor_col, new_cols -| 1);
     self.dirty = true;
+}
+
+// ── Left/right margin helpers (DECLRMM / DECSLRM) ──────────────
+
+/// Return the effective left margin column (0-based).
+pub fn getLeftMargin(self: *const Grid) usize {
+    return if (self.margins_enabled) self.left_margin else 0;
+}
+
+/// Return the effective right margin column (exclusive, so the range is [left..right)).
+pub fn getRightMargin(self: *const Grid) usize {
+    return if (self.margins_enabled and self.right_margin > 0) self.right_margin else self.cols;
+}
+
+/// Set left/right margins (0-based left, exclusive right).
+pub fn setMargins(self: *Grid, left: u16, right: u16) void {
+    self.left_margin = left;
+    self.right_margin = right;
 }
 
 /// Set cursor position (1-based coordinates, as per VT convention).
