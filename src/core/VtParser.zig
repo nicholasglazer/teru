@@ -274,8 +274,8 @@ fn handleGround(self: *VtParser, byte: u8) void {
             const limit = if (self.grid.cursor_col >= lm and self.grid.cursor_col < rm) rm -| 1 else self.grid.cols -| 1;
             self.grid.cursor_col = @min(next, limit);
         },
-        0x0A, 0x0B, 0x0C => { // LF, VT, FF
-            self.grid.newline();
+        0x0A, 0x0B, 0x0C => { // LF, VT, FF — move down only, do NOT reset column
+            self.grid.lineFeed();
         },
         0x0D => { // CR — return to left margin (or col 0 if no margins)
             self.grid.cursor_col = @intCast(self.grid.getLeftMargin());
@@ -2023,4 +2023,116 @@ test "OSC 133 marks do not interfere with text" {
     try std.testing.expectEqual(@as(u21, 'l'), grid.cellAtConst(0, 2).char);
     try std.testing.expectEqual(@as(u21, 's'), grid.cellAtConst(0, 3).char);
     try std.testing.expectEqual(Grid.PromptMark.prompt_start, grid.row_meta[0].prompt_mark);
+}
+
+test "DECLRMM: tmux vertical split simulation" {
+    // tmux uses smglr from terminfo: ESC[?69h ESC[%i%p1%d;%p2%ds
+    // This enables DECLRMM, then sets left/right margins via DECSLRM.
+    // tmux draws each pane by: set margins for that pane, CUP to position, write text.
+    // Characters must stay within their pane's column range.
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 10, 80);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    // Step 1: Enable DECLRMM (left/right margin mode)
+    parser.feed("\x1b[?69h");
+    try std.testing.expect(grid.margins_enabled);
+
+    // Step 2: Set left pane margins (cols 1-40, 1-based → 0-39 in 0-based)
+    // smglr: ESC[%i%p1%d;%p2%ds — %i increments params, so tmux sends 1-based
+    parser.feed("\x1b[1;40s");
+    try std.testing.expectEqual(@as(u16, 0), grid.left_margin);
+    try std.testing.expectEqual(@as(usize, 40), grid.right_margin);
+
+    // Step 3: Position cursor and write left pane content
+    parser.feed("\x1b[1;1H"); // CUP to row 1, col 1 (1-based)
+    parser.feed("LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL"); // 38 L's — should fit in cols 0-39
+
+    // Step 4: Set right pane margins (cols 42-80, 1-based → 41-79 in 0-based)
+    parser.feed("\x1b[42;80s");
+
+    // Step 5: Position cursor and write right pane content
+    parser.feed("\x1b[1;42H"); // CUP to row 1, col 42 (1-based)
+    parser.feed("RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR"); // 40 R's
+
+    // Verify: L's should only be in columns 0-37
+    var col: u16 = 0;
+    while (col < 38) : (col += 1) {
+        try std.testing.expectEqual(@as(u21, 'L'), grid.cellAtConst(0, col).char);
+    }
+
+    // Verify: No L's past column 39 (right margin of left pane)
+    col = 40;
+    while (col < 80) : (col += 1) {
+        const ch = grid.cellAtConst(0, col).char;
+        try std.testing.expect(ch != 'L');
+    }
+
+    // Verify: R's should start at column 41 (left margin of right pane)
+    const first_r = grid.cellAtConst(0, 41).char;
+    try std.testing.expectEqual(@as(u21, 'R'), first_r);
+
+    // Verify: No R's in left pane area (cols 0-39)
+    col = 0;
+    while (col < 40) : (col += 1) {
+        const ch = grid.cellAtConst(0, col).char;
+        try std.testing.expect(ch != 'R');
+    }
+}
+
+test "DECLRMM: writeGroundBatch wraps at right margin" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 10, 80);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    // Enable DECLRMM and set narrow margins (cols 1-10)
+    parser.feed("\x1b[?69h");
+    parser.feed("\x1b[1;10s");
+
+    // Position at start and write more chars than fit
+    parser.feed("\x1b[1;1H");
+    parser.feed("ABCDEFGHIJKLMNO"); // 15 chars, only 10 fit per line
+
+    // First line: chars in cols 0-9
+    try std.testing.expectEqual(@as(u21, 'A'), grid.cellAtConst(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'J'), grid.cellAtConst(0, 9).char);
+
+    // Should NOT bleed past col 9
+    try std.testing.expectEqual(@as(u21, ' '), grid.cellAtConst(0, 10).char);
+
+    // Second line: wrapped chars in cols 0-4 (K,L,M,N,O)
+    try std.testing.expectEqual(@as(u21, 'K'), grid.cellAtConst(1, 0).char);
+    try std.testing.expectEqual(@as(u21, 'O'), grid.cellAtConst(1, 4).char);
+}
+
+test "DECLRMM: CUB/CUF respect margin boundaries" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 10, 80);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    // Enable margins cols 20-60 (1-based: 21;60)
+    parser.feed("\x1b[?69h");
+    parser.feed("\x1b[21;60s");
+
+    // CUP to inside margins, then CUF should stop at right margin
+    parser.feed("\x1b[1;30H"); // col 29 (0-based), inside margins
+    parser.feed("\x1b[100C"); // CUF 100 — should stop at col 59 (right margin - 1)
+    try std.testing.expectEqual(@as(u16, 59), grid.cursor_col);
+
+    // CUB from inside margins should stop at left margin
+    parser.feed("\x1b[100D"); // CUB 100 — should stop at col 20 (left margin)
+    try std.testing.expectEqual(@as(u16, 20), grid.cursor_col);
+
+    // CUP to outside margins (col 5), CUB should go to 0, not left margin
+    parser.feed("\x1b[1;6H"); // col 5 (0-based)
+    parser.feed("\x1b[3D"); // CUB 3 — should go to col 2, not clamp at 20
+    try std.testing.expectEqual(@as(u16, 2), grid.cursor_col);
+
+    // CUP to outside margins (col 70), CUF should go to 79, not right margin
+    parser.feed("\x1b[1;71H"); // col 70 (0-based)
+    parser.feed("\x1b[100C"); // CUF 100 — should go to col 79
+    try std.testing.expectEqual(@as(u16, 79), grid.cursor_col);
 }

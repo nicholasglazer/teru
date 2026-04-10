@@ -299,7 +299,16 @@ pub fn cursorDown(self: *Grid) void {
     }
 }
 
-/// Handle newline: move cursor to left margin, then move down (with scroll).
+/// Handle line feed: move cursor down one row (with scroll). Does NOT change column.
+/// Per VT100/VT510: LF only moves down. CR (0x0D) handles column reset separately.
+pub fn lineFeed(self: *Grid) void {
+    self.cursorDown();
+    self.dirty = true;
+}
+
+/// Handle newline (CR+LF combined): move to left margin and down.
+/// Used internally by Grid (e.g., write overflow). External callers should
+/// use lineFeed() for LF and handle CR separately.
 pub fn newline(self: *Grid) void {
     self.cursor_col = @intCast(self.getLeftMargin());
     self.cursorDown();
