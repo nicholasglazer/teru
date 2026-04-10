@@ -667,15 +667,7 @@ fn parseFloat(value: []const u8) ?f32 {
 }
 
 fn parseLayout(value: []const u8) ?LayoutEngine.Layout {
-    if (std.mem.eql(u8, value, "master-stack") or std.mem.eql(u8, value, "master_stack")) return .master_stack;
-    if (std.mem.eql(u8, value, "grid")) return .grid;
-    if (std.mem.eql(u8, value, "monocle")) return .monocle;
-    if (std.mem.eql(u8, value, "dishes")) return .dishes;
-    if (std.mem.eql(u8, value, "accordion")) return .accordion;
-    if (std.mem.eql(u8, value, "spiral")) return .spiral;
-    if (std.mem.eql(u8, value, "three-col") or std.mem.eql(u8, value, "three_col")) return .three_col;
-    if (std.mem.eql(u8, value, "columns")) return .columns;
-    return null;
+    return LayoutEngine.parseLayout(value);
 }
 
 /// Parse a comma-separated list of layout names.

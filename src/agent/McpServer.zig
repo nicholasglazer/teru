@@ -735,23 +735,7 @@ fn toolSetLayout(self: *McpServer, workspace: u8, layout_str: []const u8, buf: [
     if (workspace > 9)
         return jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
 
-    const layout: LayoutEngine.Layout = if (std.mem.eql(u8, layout_str, "master-stack") or std.mem.eql(u8, layout_str, "master_stack"))
-        .master_stack
-    else if (std.mem.eql(u8, layout_str, "grid"))
-        .grid
-    else if (std.mem.eql(u8, layout_str, "monocle"))
-        .monocle
-    else if (std.mem.eql(u8, layout_str, "dishes"))
-        .dishes
-    else if (std.mem.eql(u8, layout_str, "accordion"))
-        .accordion
-    else if (std.mem.eql(u8, layout_str, "spiral"))
-        .spiral
-    else if (std.mem.eql(u8, layout_str, "three-col") or std.mem.eql(u8, layout_str, "three_col"))
-        .three_col
-    else if (std.mem.eql(u8, layout_str, "columns"))
-        .columns
-    else
+    const layout: LayoutEngine.Layout = LayoutEngine.parseLayout(layout_str) orelse
         return jsonRpcError(buf, id, -32602, "Unknown layout");
 
     const ws = &self.multiplexer.layout_engine.workspaces[workspace];

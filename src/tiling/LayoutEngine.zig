@@ -25,6 +25,8 @@ pub const SplitNode = types.SplitNode;
 pub const max_layouts = types.max_layouts;
 pub const Workspace = @import("Workspace.zig");
 pub const autoSelectLayout = Workspace.autoSelectLayout;
+pub const parseLayout = Layout.parse;
+pub const layoutName = Layout.name;
 
 // ── Layout engine state ─────────────────────────────────────────
 
@@ -104,6 +106,7 @@ pub fn getActiveWorkspace(self: *LayoutEngine) *Workspace {
 // ── Pull sub-module tests ───────────────────────────────────────
 
 test {
+    _ = @import("types.zig");
     _ = @import("Workspace.zig");
     _ = @import("layouts.zig");
 }

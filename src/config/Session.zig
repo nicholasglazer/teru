@@ -490,28 +490,11 @@ fn parseKeyValue(line: []const u8) ?KeyValue {
 }
 
 fn layoutFromString(s: []const u8) Layout {
-    if (std.mem.eql(u8, s, "master-stack") or std.mem.eql(u8, s, "master_stack")) return .master_stack;
-    if (std.mem.eql(u8, s, "grid")) return .grid;
-    if (std.mem.eql(u8, s, "monocle")) return .monocle;
-    if (std.mem.eql(u8, s, "dishes")) return .dishes;
-    if (std.mem.eql(u8, s, "spiral")) return .spiral;
-    if (std.mem.eql(u8, s, "three-col") or std.mem.eql(u8, s, "three_col")) return .three_col;
-    if (std.mem.eql(u8, s, "columns")) return .columns;
-    if (std.mem.eql(u8, s, "accordion")) return .accordion;
-    return .master_stack;
+    return LayoutEngine.parseLayout(s) orelse .master_stack;
 }
 
 fn layoutToString(layout: Layout) []const u8 {
-    return switch (layout) {
-        .master_stack => "master-stack",
-        .grid => "grid",
-        .monocle => "monocle",
-        .dishes => "dishes",
-        .spiral => "spiral",
-        .three_col => "three-col",
-        .columns => "columns",
-        .accordion => "accordion",
-    };
+    return LayoutEngine.layoutName(layout);
 }
 
 fn parseFloat(s: []const u8) ?f32 {
