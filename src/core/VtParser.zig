@@ -203,9 +203,11 @@ fn findNextSpecial(input: []const u8) usize {
 /// Avoids per-byte state machine overhead for the common case of plain text.
 fn writeGroundBatch(self: *VtParser, run: []const u8) void {
     const grid = self.grid;
+    const rm: u16 = @intCast(grid.getRightMargin());
+    const lm: u16 = @intCast(grid.getLeftMargin());
     for (run) |byte| {
-        if (grid.cursor_col >= grid.cols) {
-            grid.cursor_col = 0;
+        if (grid.cursor_col >= rm) {
+            grid.cursor_col = lm;
             grid.cursorDown();
         }
         const cell = grid.cellAt(grid.cursor_row, grid.cursor_col);
@@ -257,15 +259,17 @@ fn handleGround(self: *VtParser, byte: u8) void {
         0x07 => { // BEL — visual bell
             self.grid.bell = true;
         },
-        0x08 => { // BS (backspace)
-            if (self.grid.cursor_col > 0) {
+        0x08 => { // BS (backspace) — stops at left margin when DECLRMM active
+            const lm: u16 = @intCast(self.grid.getLeftMargin());
+            if (self.grid.cursor_col > lm) {
                 self.grid.cursor_col -= 1;
             }
         },
-        0x09 => { // TAB — advance to next tab stop
+        0x09 => { // TAB — advance to next tab stop (clamped to right margin)
             const tw: u16 = self.grid.tab_width;
+            const rm: u16 = @intCast(self.grid.getRightMargin());
             const next = if (tw > 0) (self.grid.cursor_col / tw + 1) * tw else self.grid.cursor_col + 1;
-            self.grid.cursor_col = @min(next, self.grid.cols -| 1);
+            self.grid.cursor_col = @min(next, rm -| 1);
         },
         0x0A, 0x0B, 0x0C => { // LF, VT, FF
             self.grid.newline();
@@ -731,26 +735,28 @@ fn dispatchCsi(self: *VtParser, final: u8) void {
             const n = self.getParam(0, 1);
             self.grid.cursor_row = @min(self.grid.cursor_row +| n, self.grid.scroll_bottom);
         },
-        'C' => { // CUF — cursor forward
+        'C' => { // CUF — cursor forward (stops at right margin)
             const n = self.getParam(0, 1);
-            self.grid.cursor_col = @min(self.grid.cursor_col +| n, self.grid.cols -| 1);
+            const rm: u16 = @intCast(self.grid.getRightMargin());
+            self.grid.cursor_col = @min(self.grid.cursor_col +| n, rm -| 1);
         },
-        'D' => { // CUB — cursor back
+        'D' => { // CUB — cursor back (stops at left margin)
             const n = self.getParam(0, 1);
-            self.grid.cursor_col -|= n;
+            const lm: u16 = @intCast(self.grid.getLeftMargin());
+            self.grid.cursor_col = @max(self.grid.cursor_col -| n, lm);
         },
-        'E' => { // CNL — cursor next line
+        'E' => { // CNL — cursor next line (goes to left margin)
             const n = self.getParam(0, 1);
             self.grid.cursor_row = @min(self.grid.cursor_row +| n, self.grid.scroll_bottom);
-            self.grid.cursor_col = 0;
+            self.grid.cursor_col = @intCast(self.grid.getLeftMargin());
         },
-        'F' => { // CPL — cursor previous line
+        'F' => { // CPL — cursor previous line (goes to left margin)
             const n = self.getParam(0, 1);
             self.grid.cursor_row -|= n;
             if (self.grid.cursor_row < self.grid.scroll_top) {
                 self.grid.cursor_row = self.grid.scroll_top;
             }
-            self.grid.cursor_col = 0;
+            self.grid.cursor_col = @intCast(self.grid.getLeftMargin());
         },
         'G' => { // CHA — cursor horizontal absolute (1-based)
             const col = self.getParam(0, 1);
