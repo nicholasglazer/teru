@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.1 (2026-04-10)
+
+### Features
+- **DECLRMM left/right scroll margins** — full DECSLRM support: IL/DL/ICH/DCH respect margins, cursor constraining, wrap/newline/erase margin-aware. Fixes tmux vertical split rendering.
+- **Homebrew tap** — `brew install nicholasglazer/teru/teru` for macOS distribution.
+- **Scoop manifest** — `scoop install teru` for Windows distribution.
+- **New shortcuts** — `Alt+B` toggle status bar, `Alt+Enter` new pane, `Alt+\` zoom reset.
+- **`-e` exec flag** — `teru -e htop` runs a command instead of shell.
+- **`--no-bar` flag** — start with status bar hidden.
+- **Nesting detection** — refuses to open a teru window inside an existing teru session.
+
+### Fixes
+- Mouse selection off by one row (padding not subtracted from coordinates).
+- Selection no longer blinks or disappears during/after drag.
+- Windows IME properly disabled — fixes CJK character input.
+- Windows keyboard layout change handling.
+- LF no longer resets cursor column — fixes tmux vertical splits.
+- DECLRMM margin compliance: eraseChars unbounded, DECSLRM homes cursor, CR respects left margin, alt screen clears margins, wrap/newline margin-aware.
+- Mouse cursor properly restored on click and motion (3 fixes).
+- Wayland cursor hide/show safety — no-op without cursor surface.
+- `Alt+D` no longer kills local mode — shows notification instead.
+
+### Documentation
+- Added `mouse_hide_when_typing`, `word_delimiters`, `bar_left`/`bar_center`/`bar_right` to CONFIGURATION.md.
+- Fixed workspace range 0-8 → 0-9 in AI-INTEGRATION.md.
+- Added `input/` module to architecture docs.
+- Removed stale macOS Intel binary from install docs (CI only builds aarch64).
+
 ## 0.4.0 (2026-04-10)
 
 ### Architecture

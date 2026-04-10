@@ -2,6 +2,22 @@
 
 teru is a single-binary terminal emulator, multiplexer, and tiling manager. See the [README](../README.md#architecture) for the full source tree and module descriptions.
 
+## Modules
+
+| Directory | Purpose |
+|-----------|---------|
+| `src/core/` | VtParser, Grid, Pane, Multiplexer, Selection, KeyHandler, Clipboard, ViMode |
+| `src/input/` | Extracted input modules: keysym constants, mouse state/handlers |
+| `src/agent/` | OSC 9999 protocol, HookHandler, HookListener, McpServer, PaneBackend |
+| `src/graph/` | ProcessGraph (DAG of all processes/agents) |
+| `src/tiling/` | Layout engine (8 layouts), workspace management |
+| `src/persist/` | Session serialization, scrollback compression |
+| `src/render/` | CPU SIMD renderer, stb_truetype FontAtlas, compositor |
+| `src/config/` | Config parser, keybinds engine, config watcher, hooks, themes |
+| `src/server/` | Daemon persistence, wire protocol, cross-platform IPC |
+| `src/pty/` | PTY management (POSIX, ConPTY, RemotePty) |
+| `src/platform/` | Platform shells: X11+Wayland/Linux, AppKit/macOS, Win32/Windows |
+
 ## Data Flow
 
 ```

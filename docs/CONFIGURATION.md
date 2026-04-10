@@ -404,6 +404,34 @@ hook_on_close = notify-send "teru" "pane closed"
 hook_on_agent_start = echo "agent started" >> ~/.local/share/teru/agents.log
 ```
 
+### Behavior
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `mouse_hide_when_typing` | bool | `true` | Hide the mouse cursor while typing, restore on mouse movement |
+| `word_delimiters` | string | (none) | Characters that delimit words for double-click selection. If unset, uses a built-in default set |
+
+```conf
+mouse_hide_when_typing = false
+word_delimiters = " \t@:/.()\"'-"
+```
+
+### Status Bar
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `bar_left` | string | (none) | Custom format string for the left section of the status bar |
+| `bar_center` | string | (none) | Custom format string for the center section of the status bar |
+| `bar_right` | string | (none) | Custom format string for the right section of the status bar |
+
+When unset, the status bar uses its built-in layout (workspace indicators, layout name, pane info, session name).
+
+```conf
+bar_left = {workspace}
+bar_center = {layout}
+bar_right = {session}
+```
+
 ### Advanced
 
 | Option | Type | Default | Description |

@@ -84,7 +84,7 @@ Replace `PID` with teru's process ID (visible in `teru --list` output or `pgrep 
 
 | Tool | Args | Description |
 |------|------|-------------|
-| `teru_switch_workspace` | `workspace` | Switch active workspace (0-8) |
+| `teru_switch_workspace` | `workspace` | Switch active workspace (0-9) |
 | `teru_set_layout` | `layout`, `workspace` | Set layout: master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion |
 | `teru_scroll` | `pane_id`, `direction`, `lines` | Scroll scrollback: up, down, bottom |
 

@@ -98,7 +98,6 @@ Download from [GitHub Releases](https://github.com/nicholasglazer/teru/releases)
 | Linux x86_64 (X11 only) | `teru-linux-x86_64-x11.tar.gz` | No wayland dep |
 | Linux x86_64 (Wayland only) | `teru-linux-x86_64-wayland.tar.gz` | No xcb dep |
 | Windows x86_64 | `teru-windows-x86_64.zip` | Win10+ (ConPTY) |
-| macOS x86_64 | `teru-macos-x86_64.tar.gz` | Intel Mac |
 | macOS aarch64 | `teru-macos-aarch64.tar.gz` | Apple Silicon |
 
 ### Arch Linux (AUR)
@@ -222,7 +221,7 @@ teru --daemon myproject           # start headless daemon (server use)
 - **MCP prompts** -- `workspace_setup` prompt teaches AI clients how to compose tools for workspace configuration
 - **Hook system** -- external commands on spawn/close/agent/save events
 - **Alt-screen** -- vim, htop, less work correctly (dual cell buffers)
-- **VT compatibility** -- CSI, SGR (256 + truecolor), DCS passthrough, DECSCUSR cursor styles, DEC Special Graphics
+- **VT compatibility** -- CSI, SGR (256 + truecolor), DCS passthrough, DECSCUSR cursor styles, DEC Special Graphics, DECLRMM left/right margins
 - **Cross-platform** -- Linux (X11+Wayland), macOS (AppKit), Windows (Win32+ConPTY)
 
 ### Platform Support
@@ -555,6 +554,9 @@ src/
 │   ├── Clipboard.zig       Cross-platform clipboard (xclip, pbcopy, Win32 API)
 │   ├── Terminal.zig        Raw mode (POSIX termios / Win32 console)
 │   └── UrlDetector.zig     URL detection (regex-free)
+├── input/
+│   ├── keysyms.zig         XKB keysym constants
+│   └── mouse.zig           Mouse state machine and event handlers
 ├── agent/
 │   ├── PaneBackend.zig     CustomPaneBackend protocol (Claude Code)
 │   ├── McpServer.zig       MCP server (19 tools, IPC)

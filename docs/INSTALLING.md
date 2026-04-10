@@ -12,7 +12,6 @@ Download from [GitHub Releases](https://github.com/nicholasglazer/teru/releases)
 | Linux x86_64 (X11 only) | `teru-linux-x86_64-x11.tar.gz` | No wayland dep |
 | Linux x86_64 (Wayland only) | `teru-linux-x86_64-wayland.tar.gz` | No xcb dep |
 | Windows x86_64 | `teru-windows-x86_64.zip` | Win10+ (ConPTY) |
-| macOS x86_64 | `teru-macos-x86_64.tar.gz` | Intel Mac |
 | macOS aarch64 | `teru-macos-aarch64.tar.gz` | Apple Silicon |
 
 ## Arch Linux (AUR)
