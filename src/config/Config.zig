@@ -165,7 +165,8 @@ dynamic_title: bool = true,
 // Behavior
 alt_workspace_switch: bool = true, // Alt+key shortcuts (workspace, focus, zoom, split)
 mouse_hide_when_typing: bool = true,
-persist_session: bool = false, // auto-save/restore session state on meaningful changes
+restore_layout: bool = false, // save layout on exit, restore on launch (fresh shells)
+persist_session: bool = false, // keep processes alive between window closes (daemon mode)
 word_delimiters: ?[]const u8 = null,
 
 // Timing
@@ -538,6 +539,8 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         self.alt_workspace_switch = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "mouse_hide_when_typing")) {
         self.mouse_hide_when_typing = parseBool(value) orelse return;
+    } else if (std.mem.eql(u8, key, "restore_layout")) {
+        self.restore_layout = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "persist_session")) {
         self.persist_session = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "word_delimiters")) {

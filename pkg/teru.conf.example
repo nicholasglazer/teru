@@ -19,10 +19,15 @@
 # copy_on_select = true
 # show_status_bar = true
 
-# ── Session persistence ──────────────────────────────────────
-# Saves pane count, layouts, and workspaces on every change.
-# On next launch, restores the layout with fresh shells.
-# If a daemon named "default" is running, auto-attaches instead.
+# ── Session ───────────────────────────────────────────────────
+# restore_layout: save layout on exit, restore on next launch (fresh shells).
+# No daemon, no background process. Lightweight.
+restore_layout = true
+
+# persist_session: keep processes alive between window closes.
+# Auto-starts a background daemon. Close window = daemon survives.
+# Reopen teru = reconnects to same panes with content preserved.
+# Implies restore_layout. Requires POSIX (Linux/macOS).
 # persist_session = true
 
 # ── Colors (override theme) ──────────────────────────────────

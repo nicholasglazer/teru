@@ -377,12 +377,12 @@ fn sendStateSync(self: *Daemon) void {
         pos += 1;
         buf[pos] = @intCast(@min(ws.node_ids.items.len, 255));
         pos += 1;
-        buf[pos] = ws.active_node;
+        buf[pos] = if (ws.active_node) |n| @intCast(@min(n, 255)) else 0;
         pos += 1;
         // Master ratio as 0-100 integer (0.55 → 55)
         buf[pos] = @intCast(@min(@as(u32, @intFromFloat(ws.master_ratio * 100)), 100));
         pos += 1;
-        buf[pos] = if (ws.zoomed) 1 else 0;
+        buf[pos] = 0; // zoomed field removed from Workspace
         pos += 1;
     }
 

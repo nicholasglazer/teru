@@ -53,6 +53,9 @@ const version = build_options.version;
 
 const session_path = "/tmp/teru-session.bin";
 
+// CLI --class override, set in main(), read in runWindowedModeImpl()
+var g_wm_class: ?[]const u8 = null;
+
 fn out(msg: []const u8) void {
     if (builtin.os.tag == .windows) {
         const k = struct {
@@ -104,6 +107,7 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, arg, "--session")) { attach_session = args_iter.next(); continue; }
         if (std.mem.eql(u8, arg, "--class")) { wm_class_override = args_iter.next(); continue; }
     }
+    g_wm_class = wm_class_override;
 
     if (list_sessions) {
         var buf: [1024]u8 = undefined;
@@ -138,14 +142,18 @@ pub fn main(init: std.process.Init) !void {
     if (mode_mcp_bridge) return McpBridge.run(io);
     if (mode_attach) return runAttachMode(allocator, io);
 
-    // Auto-persistence: if enabled and no explicit mode flags, auto-restore or auto-attach
+    // Session modes: persist_session (daemon) > restore_layout (file) > fresh
     if (!mode_raw) {
         if (Config.load(allocator, io)) |early_config_val| {
             var ec = early_config_val;
             const persist = ec.persist_session;
+            const restore = ec.restore_layout;
             ec.deinit();
             if (persist) {
                 return runPersistentMode(allocator, io);
+            }
+            if (restore) {
+                return runRestoreMode(allocator, io);
             }
         } else |_| {}
     }
@@ -189,19 +197,18 @@ fn runAttachMode(allocator: std.mem.Allocator, io: std.Io) !void {
     return runWindowedMode(allocator, io, .{ .pane_count = shell_count });
 }
 
-/// Auto-persistence startup: check daemon → session file → fresh start.
+/// persist_session = true: full daemon persistence.
+/// Auto-starts daemon, connects windowed UI. Processes survive window close.
 fn runPersistentMode(allocator: std.mem.Allocator, io: std.Io) !void {
-    // 1. Check if daemon "default" is already running → connect windowed UI
+    // 1. Check if daemon "default" is already running → connect
     if (Daemon.connectToSession("default")) |sock| {
         out("[teru] Connecting to existing daemon\n");
         return runWindowedDaemonMode(allocator, io, sock);
     } else |_| {}
 
-    // 2. Auto-start a daemon in the background, then connect to it
-    //    (POSIX only — Windows falls through to local mode)
+    // 2. Auto-start daemon (POSIX only — Windows falls through to restore)
     if (builtin.os.tag != .windows) {
         if (autoStartDaemon()) {
-            // Wait for daemon socket to appear (up to 2 seconds)
             var attempts: u32 = 0;
             while (attempts < 20) : (attempts += 1) {
                 if (Daemon.connectToSession("default")) |sock| {
@@ -210,11 +217,17 @@ fn runPersistentMode(allocator: std.mem.Allocator, io: std.Io) !void {
                 } else |_| {}
                 io.sleep(.fromMilliseconds(100), .awake) catch {};
             }
-            out("[teru] Daemon started but connection failed, using local mode\n");
+            out("[teru] Daemon failed, falling back to layout restore\n");
         }
     }
 
-    // 3. Fallback: restore from session file (no daemon, local PTYs)
+    // 3. Fallback: restore layout from file (no daemon)
+    return runRestoreMode(allocator, io);
+}
+
+/// restore_layout = true: save layout on exit, restore on launch (fresh shells).
+/// No daemon, no background process. Lightweight.
+fn runRestoreMode(allocator: std.mem.Allocator, io: std.Io) !void {
     const sess_dir = Session.getSessionDir(allocator) catch
         return runWindowedMode(allocator, io, null);
     defer allocator.free(sess_dir);
@@ -223,8 +236,10 @@ fn runPersistentMode(allocator: std.mem.Allocator, io: std.Io) !void {
     const path = std.fmt.bufPrint(&path_buf, "{s}/default.bin", .{sess_dir}) catch
         return runWindowedMode(allocator, io, null);
 
-    var sess = Session.loadFromFile(path, allocator, io) catch
+    var sess = Session.loadFromFile(path, allocator, io) catch {
+        out("[teru] No saved layout, starting fresh\n");
         return runWindowedMode(allocator, io, null);
+    };
     defer sess.deinit();
 
     var restore = RestoreInfo{ .pane_count = 0 };
@@ -238,7 +253,7 @@ fn runPersistentMode(allocator: std.mem.Allocator, io: std.Io) !void {
     if (restore.pane_count == 0) restore.pane_count = 1;
 
     var msg_buf: [128]u8 = undefined;
-    outFmt(&msg_buf, "[teru] Restoring persistent session ({d} panes)\n", .{restore.pane_count});
+    outFmt(&msg_buf, "[teru] Restoring layout ({d} panes)\n", .{restore.pane_count});
 
     return runWindowedMode(allocator, io, restore);
 }
@@ -404,7 +419,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
     var graph = ProcessGraph.init(allocator);
     defer graph.deinit();
 
-    var win = try platform.Platform.init(config.initial_width, config.initial_height, "teru", wm_class_override);
+    var win = try platform.Platform.init(config.initial_width, config.initial_height, "teru", g_wm_class);
     defer win.deinit();
     win.setOpacity(config.opacity);
 
@@ -956,7 +971,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                         if (pane.vt.bracketed_paste) {
                                             _ = pane.ptyWrite("\x1b[200~") catch {};
                                         }
-                                        Clipboard.paste(&pane.pty);
+                                        Clipboard.paste(&pane.backend.local);
                                         if (pane.vt.bracketed_paste) {
                                             _ = pane.ptyWrite("\x1b[201~") catch {};
                                         }
@@ -1426,7 +1441,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                 if (pane.vt.bracketed_paste) {
                                     _ = pane.ptyWrite("\x1b[200~") catch {};
                                 }
-                                Clipboard.paste(&pane.pty);
+                                Clipboard.paste(&pane.backend.local);
                                 if (pane.vt.bracketed_paste) {
                                     _ = pane.ptyWrite("\x1b[201~") catch {};
                                 }
@@ -1749,8 +1764,8 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
             }
         }
 
-        // Persist session: debounced save (100ms after last mutation)
-        if (config.persist_session and mux.persist_dirty) {
+        // Layout/session save: debounced (100ms after last mutation)
+        if ((config.restore_layout or config.persist_session) and mux.persist_dirty) {
             const elapsed = compat.monotonicNow() - mux.persist_dirty_since;
             if (elapsed >= 100_000_000) { // 100ms
                 mux.persist_dirty = false;
@@ -1851,6 +1866,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                     config.bell = new_config.bell;
                     config.copy_on_select = new_config.copy_on_select;
                     config.mouse_hide_when_typing = new_config.mouse_hide_when_typing;
+                    config.restore_layout = new_config.restore_layout;
                     config.persist_session = new_config.persist_session;
                     config.show_status_bar = new_config.show_status_bar;
 
@@ -2017,8 +2033,8 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
         }
     }
 
-    // Final persist save on exit
-    if (config.persist_session) {
+    // Final layout save on exit
+    if (config.restore_layout or config.persist_session) {
         persistSave(&mux, &graph, allocator, io);
     }
 }
@@ -2096,7 +2112,7 @@ fn parseDaemonStateSync(daemon_fd: posix.fd_t, mux: *Multiplexer, payload: []con
         pos += 1;
         const ratio_x100 = payload[pos];
         pos += 1;
-        const zoomed = payload[pos] != 0;
+        _ = payload[pos]; // zoomed (field removed from Workspace)
         pos += 1;
 
         if (wi < 10) {
@@ -2104,7 +2120,6 @@ fn parseDaemonStateSync(daemon_fd: posix.fd_t, mux: *Multiplexer, payload: []con
             ws.layout = @enumFromInt(@min(layout_byte, @intFromEnum(LE.Layout.accordion)));
             ws.active_node = active_node;
             ws.master_ratio = @as(f32, @floatFromInt(ratio_x100)) / 100.0;
-            ws.zoomed = zoomed;
         }
     }
 
@@ -2122,7 +2137,7 @@ fn parseDaemonStateSync(daemon_fd: posix.fd_t, mux: *Multiplexer, payload: []con
 
         if (mux.getPaneById(pane_id) != null) continue;
 
-        var pane = Pane.initRemote(mux.allocator, rows, cols, pane_id, daemon_fd, mux.spawn_config) catch continue;
+        const pane = Pane.initRemote(mux.allocator, rows, cols, pane_id, daemon_fd, mux.spawn_config) catch continue;
         if (pane_id >= mux.next_pane_id) mux.next_pane_id = pane_id + 1;
 
         mux.panes.append(mux.allocator, pane) catch continue;
