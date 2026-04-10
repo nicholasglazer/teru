@@ -735,7 +735,6 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
     _ = &ms;
     var pty_buf: [8192]u8 = undefined;
     var running = true;
-    const default_word_delimiters = " \t{}[]()\"'`,;:@";
     var last_blink_time: i128 = compat.monotonicNow();
     var cursor_blink_visible: bool = true;
 
@@ -1329,443 +1328,78 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                     }
                 },
                 .mouse_press => |mouse| {
-                    // Mouse reporting to PTY (modes 1000/1002/1003)
-                    if (mux.getActivePaneMut()) |pane| {
-                        if (pane.vt.mouse_tracking != .none) {
-                            const mcol: u16 = @intCast(@min(mouse.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
-                            const mrow: u16 = @intCast(@min(mouse.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
-                            const btn: u8 = switch (mouse.button) {
-                                .left => 0,
-                                .middle => 1,
-                                .right => 2,
-                                .scroll_up => 64,
-                                .scroll_down => 65,
-                            };
-                            var mbuf: [32]u8 = undefined;
-                            if (pane.vt.mouse_sgr) {
-                                const mlen = std.fmt.bufPrint(&mbuf, "\x1b[<{d};{d};{d}M", .{ btn, mcol + 1, mrow + 1 }) catch continue;
-                                _ = pane.ptyWrite(mlen) catch {};
-                            } else {
-                                // X10 legacy encoding
-                                if (mcol + 33 < 256 and mrow + 33 < 256) {
-                                    mbuf[0] = 0x1b;
-                                    mbuf[1] = '[';
-                                    mbuf[2] = 'M';
-                                    mbuf[3] = @intCast(btn + 32);
-                                    mbuf[4] = @intCast(mcol + 33);
-                                    mbuf[5] = @intCast(mrow + 33);
-                                    _ = pane.ptyWrite(mbuf[0..6]) catch {};
-                                }
-                            }
-                            // Track button state for motion reporting (mode 1002)
-                            if (mouse.button == .left) ms.mouse_down = true;
-                            // Scroll events: don't consume, let teru handle them too
-                            if (mouse.button != .scroll_up and mouse.button != .scroll_down) continue;
-                        }
+                    const lp = mouse_handler.LayoutParams{
+                        .cell_width = atlas.cell_width,
+                        .cell_height = atlas.cell_height,
+                        .grid_rows = grid_rows,
+                        .grid_cols = grid_cols,
+                        .padding = padding,
+                        .status_bar_h = status_bar_h,
+                    };
+                    const cfg = mouse_handler.MouseConfig{
+                        .copy_on_select = config.copy_on_select,
+                        .scroll_speed = config.scroll_speed,
+                        .word_delimiters = config.word_delimiters orelse " \t{}[]()\"'`,;:@",
+                        .show_status_bar = config.show_status_bar,
+                    };
+                    const sz = win.getSize();
+                    const result = mouse_handler.handleMousePress(&mux, mouse, &selection, &ms, lp, cfg, allocator, sz.width, sz.height);
+                    if (result.panes_changed) {
+                        const sz2 = win.getSize();
+                        mux.resizePanePtys(sz2.width, sz2.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
+                        for (mux.panes.items) |*p| p.grid.dirty = true;
+                        force_redraw = true;
                     }
-                    switch (mouse.button) {
-                        .left => {
-                            // Status bar click: switch workspace
-                            if (config.show_status_bar) {
-                                const sz = win.getSize();
-                                const bar_h: u32 = atlas.cell_height + 4;
-                                if (Ui.hitTestStatusBar(&mux, atlas.cell_width, padding, sz.height, bar_h, mouse.x, mouse.y)) |ws| {
-                                    mux.switchWorkspace(ws);
-                                    const sz2 = win.getSize();
-                                    mux.resizePanePtys(sz2.width, sz2.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
-                                    for (mux.panes.items) |*p| p.grid.dirty = true;
-                                    force_redraw = true;
-                                    continue;
-                                }
-                            }
-
-                            const col: u16 = @intCast(@min(mouse.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
-                            const row: u16 = @intCast(@min(mouse.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
-
-                            // Shift+click: open URL under cursor
-                            // Prefer OSC 8 hyperlink (explicit), fall back to regex detection
-                            const SHIFT_MASK: u32 = 1; // XCB ShiftMask
-                            if (mouse.modifiers & SHIFT_MASK != 0) {
-                                if (mux.getActivePane()) |pane| {
-                                    const cell = pane.grid.cellAtConst(row, col);
-                                    if (cell.hyperlink_id != 0) {
-                                        // OSC 8 hyperlink — use explicit URI
-                                        const entry = &pane.grid.hyperlinks[cell.hyperlink_id];
-                                        if (entry.uri_len > 0) {
-                                            UrlDetector.openUrl(entry.uri[0..entry.uri_len]);
-                                        }
-                                    } else if (UrlDetector.findUrlAt(&pane.grid, row, col)) |match| {
-                                        // Regex-free URL detection fallback
-                                        const row_start = @as(usize, match.row) * @as(usize, pane.grid.cols);
-                                        const row_cells = pane.grid.cells[row_start..][0..pane.grid.cols];
-                                        var url_buf: [2048]u8 = undefined;
-                                        const url_len = UrlDetector.extractUrl(row_cells, match, &url_buf);
-                                        if (url_len > 0) {
-                                            UrlDetector.openUrl(url_buf[0..url_len]);
-                                        }
-                                    }
-                                }
-                                continue;
-                            }
-
-                            // Click-to-focus + border drag detection
-                            const ClickRect = @import("tiling/LayoutEngine.zig").Rect;
-                            const click_ws = &mux.layout_engine.workspaces[mux.active_workspace];
-
-                            var click_ids_buf: [64]u64 = undefined;
-                            const click_pane_ids = if (click_ws.split_root != null) blk: {
-                                const n = click_ws.getTreePaneIds(&click_ids_buf);
-                                break :blk click_ids_buf[0..n];
-                            } else click_ws.node_ids.items;
-
-                            if (click_pane_ids.len > 1) {
-                                const sz = win.getSize();
-                                const click_screen = ClickRect{
-                                    .x = @intCast(padding),
-                                    .y = @intCast(padding),
-                                    .width = @intCast(@min(sz.width -| padding * 2, std.math.maxInt(u16))),
-                                    .height = @intCast(@min(sz.height -| padding * 2, std.math.maxInt(u16))),
-                                };
-
-                                // Border drag: check if click is on a split or layout border
-                                if (click_ws.split_root != null) {
-                                    if (mux.layout_engine.workspaces[mux.active_workspace].findSplitForBorder(click_screen, mouse.x, mouse.y, 4)) |hit| {
-                                        ms.border_dragging = true;
-                                        // Store the correct axis for drag delta
-                                        const split_dir = mux.layout_engine.workspaces[mux.active_workspace].split_nodes[hit.node_idx].split.dir;
-                                        ms.border_drag_x = if (split_dir == .horizontal) mouse.y else mouse.x;
-                                        ms.border_drag_ratio = mux.layout_engine.workspaces[mux.active_workspace].split_nodes[hit.node_idx].split.ratio;
-                                        ms.border_drag_node = hit.node_idx;
-                                        continue;
-                                    }
-                                } else if (click_pane_ids.len >= 2) {
-                                    // Flat layout: detect master ratio border
-                                    const layout = click_ws.layout;
-                                    const ratio = click_ws.master_ratio;
-                                    const zone: u32 = 4;
-                                    const is_vertical = (layout == .master_stack or layout == .three_col);
-                                    const is_horizontal = (layout == .dishes);
-                                    if (is_vertical) {
-                                        const border_x: u32 = @as(u32, click_screen.x) + @as(u32, @intFromFloat(@as(f32, @floatFromInt(click_screen.width)) * ratio));
-                                        if (mouse.x >= border_x -| zone and mouse.x <= border_x + zone) {
-                                            ms.border_dragging = true;
-                                            ms.border_drag_x = mouse.x;
-                                            ms.border_drag_ratio = ratio;
-                                            ms.border_drag_node = std.math.maxInt(u16); // sentinel: flat layout
-                                            continue;
-                                        }
-                                    } else if (is_horizontal) {
-                                        const border_y: u32 = @as(u32, click_screen.y) + @as(u32, @intFromFloat(@as(f32, @floatFromInt(click_screen.height)) * ratio));
-                                        if (mouse.y >= border_y -| zone and mouse.y <= border_y + zone) {
-                                            ms.border_dragging = true;
-                                            ms.border_drag_x = mouse.y; // store Y for horizontal
-                                            ms.border_drag_ratio = ratio;
-                                            ms.border_drag_node = std.math.maxInt(u16); // sentinel: flat layout
-                                            continue;
-                                        }
-                                    }
-                                }
-
-                                // Click-to-focus
-                                if (mux.layout_engine.calculate(mux.active_workspace, click_screen)) |click_rects| {
-                                    defer allocator.free(click_rects);
-                                    for (click_rects, 0..) |cr, ci| {
-                                        if (ci >= click_pane_ids.len) break;
-                                        if (mouse.x >= cr.x and mouse.x < @as(u32, cr.x) + cr.width and
-                                            mouse.y >= cr.y and mouse.y < @as(u32, cr.y) + cr.height)
-                                        {
-                                            if (click_ws.split_root != null) {
-                                                mux.layout_engine.workspaces[mux.active_workspace].active_node = click_pane_ids[ci];
-                                            } else if (ci != click_ws.active_index) {
-                                                mux.layout_engine.workspaces[mux.active_workspace].active_index = ci;
-                                            }
-                                            for (mux.panes.items) |*p| p.grid.dirty = true;
-                                            break;
-                                        }
-                                    }
-                                } else |_| {}
-                            }
-
-                            // Double-click: select word
-                            const click_now = compat.monotonicNow();
-                            if (click_now - ms.last_click_time < DOUBLE_CLICK_NS and
-                                row == ms.last_click_row and col == ms.last_click_col)
-                            {
-                                if (mux.getActivePane()) |pane| {
-                                    const delims = config.word_delimiters orelse default_word_delimiters;
-                                    const so = mux.getScrollOffset();
-                                    const sbl: u32 = mux.getScrollbackLineCount();
-                                    selection.selectWord(&pane.grid, row, col, delims, so, sbl);
-                                    pane.grid.dirty = true;
-                                    if (config.copy_on_select) {
-                                        var sel_buf: [65536]u8 = undefined;
-                                        const sb = pane.grid.scrollback;
-                                        const len = selection.getText(&pane.grid, sb, &sel_buf);
-                                        if (len > 0) {
-                                            Clipboard.copy(sel_buf[0..len]);
-                                            mux.notify("Copied to clipboard");
-                                        }
-                                    }
-                                }
-                                ms.last_click_time = 0; // prevent triple-click triggering
-                                continue;
-                            }
-                            ms.last_click_time = click_now;
-                            ms.last_click_row = row;
-                            ms.last_click_col = col;
-
-                            // Clear any existing selection on click
-                            if (selection.active) {
-                                selection.clear();
-                                if (mux.getActivePane()) |pane| pane.grid.dirty = true;
-                            }
-                            // Record click position — don't start selection yet.
-                            // Selection only begins on mouse_motion (drag).
-                            ms.mouse_start_row = row;
-                            ms.mouse_start_col = col;
-                            ms.mouse_down = true;
-                        },
-                        .middle => {
-                            // Paste from clipboard (with bracketed paste wrapping)
-                            if (mux.getActivePaneMut()) |pane| {
-                                if (pane.vt.bracketed_paste) {
-                                    _ = pane.ptyWrite("\x1b[200~") catch {};
-                                }
-                                Clipboard.paste(&pane.backend.local);
-                                if (pane.vt.bracketed_paste) {
-                                    _ = pane.ptyWrite("\x1b[201~") catch {};
-                                }
-                            }
-                        },
-                        .scroll_up => {
-                            // Don't scroll teru's scrollback when alt screen is active
-                            // (tmux, vim, etc. handle scrolling themselves)
-                            const in_alt = if (mux.getActivePane()) |pane| pane.vt.alt_screen else false;
-                            if (!in_alt) {
-                                const max_offset = mux.getScrollbackLineCount();
-                                if (max_offset > 0) {
-                                    _ = mux.smoothScroll(@as(i32, @intCast(atlas.cell_height)) * @as(i32, @intCast(config.scroll_speed)), atlas.cell_height, max_offset);
-                                }
-                            }
-                        },
-                        .scroll_down => {
-                            const in_alt = if (mux.getActivePane()) |pane| pane.vt.alt_screen else false;
-                            if (!in_alt) {
-                                if (mux.getScrollOffset() > 0 or mux.getScrollPixel() > 0) {
-                                    const max_offset = mux.getScrollbackLineCount();
-                                    _ = mux.smoothScroll(-@as(i32, @intCast(atlas.cell_height)) * @as(i32, @intCast(config.scroll_speed)), atlas.cell_height, max_offset);
-                                }
-                            }
-                        },
-                        else => {},
+                    if (result.dirty) {
+                        if (mux.getActivePane()) |pane| pane.grid.dirty = true;
+                        force_redraw = true;
                     }
+                    if (result.consumed) continue;
                 },
                 .mouse_release => |mouse| {
-                    // Mouse release reporting to PTY
-                    if (mux.getActivePaneMut()) |pane| {
-                        if (pane.vt.mouse_tracking != .none) {
-                            const mcol: u16 = @intCast(@min(mouse.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
-                            const mrow: u16 = @intCast(@min(mouse.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
-                            var mbuf: [32]u8 = undefined;
-                            if (pane.vt.mouse_sgr) {
-                                const btn: u8 = switch (mouse.button) {
-                                    .left => 0,
-                                    .middle => 1,
-                                    .right => 2,
-                                    else => 0,
-                                };
-                                const mlen = std.fmt.bufPrint(&mbuf, "\x1b[<{d};{d};{d}m", .{ btn, mcol + 1, mrow + 1 }) catch continue;
-                                _ = pane.ptyWrite(mlen) catch {};
-                            } else {
-                                if (mcol + 33 < 256 and mrow + 33 < 256) {
-                                    mbuf[0] = 0x1b;
-                                    mbuf[1] = '[';
-                                    mbuf[2] = 'M';
-                                    mbuf[3] = 35; // release = button 3
-                                    mbuf[4] = @intCast(mcol + 33);
-                                    mbuf[5] = @intCast(mrow + 33);
-                                    _ = pane.ptyWrite(mbuf[0..6]) catch {};
-                                }
-                            }
-                        }
-                    }
-                    if (mouse.button == .left and ms.border_dragging) {
-                        ms.border_dragging = false;
-                        const sz = win.getSize();
+                    const lp = mouse_handler.LayoutParams{
+                        .cell_width = atlas.cell_width,
+                        .cell_height = atlas.cell_height,
+                        .grid_rows = grid_rows,
+                        .grid_cols = grid_cols,
+                        .padding = padding,
+                        .status_bar_h = status_bar_h,
+                    };
+                    const sz = win.getSize();
+                    const release_cfg = mouse_handler.MouseConfig{
+                        .copy_on_select = config.copy_on_select,
+                        .scroll_speed = config.scroll_speed,
+                        .word_delimiters = config.word_delimiters orelse " \t{}[]()\"'`,;:@",
+                        .show_status_bar = config.show_status_bar,
+                    };
+                    const result = mouse_handler.handleMouseRelease(&mux, mouse, &selection, &ms, lp, release_cfg);
+                    if (result.border_drag_finished) {
                         mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
-                        continue;
+                        for (mux.panes.items) |*p| p.grid.dirty = true;
+                        force_redraw = true;
                     }
-                    if (mouse.button == .left and ms.mouse_down) {
-                        ms.mouse_down = false;
-                        // Don't process selection when mouse tracking is active
-                        const track_active = if (mux.getActivePane()) |pane| pane.vt.mouse_tracking != .none else false;
-                        if (track_active) continue;
-                        const col: u16 = @intCast(@min(mouse.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
-                        const row: u16 = @intCast(@min(mouse.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
-                        {
-                            const so = mux.getScrollOffset();
-                            const sbl: u32 = mux.getScrollbackLineCount();
-                            selection.update(row, col, so, sbl);
-                        }
-
-                        // Only finalize selection if mouse actually moved (not a single click)
-                        if (selection.start_row != selection.end_row or selection.start_col != selection.end_col) {
-                            selection.finish();
-                            if (config.copy_on_select) {
-                                if (mux.getActivePane()) |pane| {
-                                    var sel_buf: [65536]u8 = undefined;
-                                    const sb = pane.grid.scrollback;
-                                    const len = selection.getText(&pane.grid, sb, &sel_buf);
-                                    if (len > 0) {
-                                        Clipboard.copy(sel_buf[0..len]);
-                                        mux.notify("Copied to clipboard");
-                                    }
-                                }
-                            }
-                        } else {
-                            // Single click: clear selection (already cleared on press)
-                            selection.clear();
-                        }
+                    if (result.dirty) {
+                        if (mux.getActivePane()) |pane| pane.grid.dirty = true;
                     }
                 },
                 .mouse_motion => |motion| {
-                    // Show mouse cursor when mouse moves
-                    if (ms.mouse_cursor_hidden) {
+                    const lp = mouse_handler.LayoutParams{
+                        .cell_width = atlas.cell_width,
+                        .cell_height = atlas.cell_height,
+                        .grid_rows = grid_rows,
+                        .grid_cols = grid_cols,
+                        .padding = padding,
+                        .status_bar_h = status_bar_h,
+                    };
+                    const sz = win.getSize();
+                    const result = mouse_handler.handleMouseMotion(&mux, motion.x, motion.y, motion.modifiers, &selection, &ms, lp, sz.width, sz.height);
+                    if (result.show_cursor and ms.mouse_cursor_hidden) {
                         win.showCursor();
                         ms.mouse_cursor_hidden = false;
                     }
-                    // Border drag-to-resize
-                    if (ms.border_dragging) {
-                        const sz = win.getSize();
-                        const ws_mut = &mux.layout_engine.workspaces[mux.active_workspace];
-                        if (ws_mut.split_root != null and ms.border_drag_node != std.math.maxInt(u16)) {
-                            // Tree split drag — use correct axis based on split direction
-                            const SplitNode = @import("tiling/types.zig").SplitNode;
-                            const node = ws_mut.split_nodes[ms.border_drag_node];
-                            const is_h = switch (node) {
-                                .split => |s| s.dir == .horizontal,
-                                .leaf => false,
-                            };
-                            _ = SplitNode;
-                            const content_dim = if (is_h) sz.height -| padding * 2 else sz.width -| padding * 2;
-                            const mouse_pos = if (is_h) motion.y else motion.x;
-                            if (content_dim > 0) {
-                                const delta_px: i32 = @as(i32, @intCast(mouse_pos)) - @as(i32, @intCast(ms.border_drag_x));
-                                const delta_ratio: f32 = @as(f32, @floatFromInt(delta_px)) / @as(f32, @floatFromInt(content_dim));
-                                ws_mut.resizeSplit(ms.border_drag_node, std.math.clamp(ms.border_drag_ratio + delta_ratio, MASTER_RATIO_MIN, MASTER_RATIO_MAX));
-                            }
-                        } else {
-                            // Flat layout master_ratio drag
-                            const is_horizontal = (ws_mut.layout == .dishes);
-                            const content_size = if (is_horizontal) sz.height -| padding * 2 else sz.width -| padding * 2;
-                            const mouse_pos = if (is_horizontal) motion.y else motion.x;
-                            if (content_size > 0) {
-                                const delta_px: i32 = @as(i32, @intCast(mouse_pos)) - @as(i32, @intCast(ms.border_drag_x));
-                                const delta_ratio: f32 = @as(f32, @floatFromInt(delta_px)) / @as(f32, @floatFromInt(content_size));
-                                ws_mut.master_ratio = std.math.clamp(ms.border_drag_ratio + delta_ratio, MASTER_RATIO_MIN, MASTER_RATIO_MAX);
-                            }
-                        }
-                        for (mux.panes.items) |*p| p.grid.dirty = true;
-                        continue;
-                    }
-                    // Mouse motion reporting to PTY (modes 1002/1003)
-                    if (mux.getActivePaneMut()) |pane| {
-                        const report_motion = switch (pane.vt.mouse_tracking) {
-                            .any_event => true,
-                            .button_event => ms.mouse_down,
-                            else => false,
-                        };
-                        if (report_motion) {
-                            const mcol: u16 = @intCast(@min(motion.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
-                            const mrow: u16 = @intCast(@min(motion.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
-                            var mbuf: [32]u8 = undefined;
-                            if (pane.vt.mouse_sgr) {
-                                const btn: u8 = if (ms.mouse_down) 32 else 35; // 32 = motion + left button
-                                const mlen = std.fmt.bufPrint(&mbuf, "\x1b[<{d};{d};{d}M", .{ btn, mcol + 1, mrow + 1 }) catch continue;
-                                _ = pane.ptyWrite(mlen) catch {};
-                            } else {
-                                if (mcol + 33 < 256 and mrow + 33 < 256) {
-                                    mbuf[0] = 0x1b;
-                                    mbuf[1] = '[';
-                                    mbuf[2] = 'M';
-                                    mbuf[3] = if (ms.mouse_down) 64 else 67; // motion flag + button
-                                    mbuf[4] = @intCast(mcol + 33);
-                                    mbuf[5] = @intCast(mrow + 33);
-                                    _ = pane.ptyWrite(mbuf[0..6]) catch {};
-                                }
-                            }
-                        }
-                    }
-                    // Shift+hover: detect URL under cursor for underline
-                    const SHIFT_MOTION: u32 = 1;
-                    if (motion.modifiers & SHIFT_MOTION != 0) {
-                        const hcol: u16 = @intCast(@min(motion.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
-                        const hrow: u16 = @intCast(@min(motion.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
-                        if (mux.getActivePane()) |pane| {
-                            if (UrlDetector.findUrlAt(&pane.grid, hrow, hcol)) |match| {
-                                if (!ms.hover_url_active or ms.hover_url_row != match.row or ms.hover_url_start != match.start_col or ms.hover_url_end != match.end_col) {
-                                    ms.hover_url_active = true;
-                                    ms.hover_url_row = match.row;
-                                    ms.hover_url_start = match.start_col;
-                                    ms.hover_url_end = match.end_col;
-                                    pane.grid.dirty = true;
-                                }
-                            } else if (ms.hover_url_active) {
-                                ms.hover_url_active = false;
-                                pane.grid.dirty = true;
-                            }
-                        }
-                    } else if (ms.hover_url_active) {
-                        ms.hover_url_active = false;
+                    if (result.dirty) {
                         if (mux.getActivePane()) |pane| pane.grid.dirty = true;
-                    }
-
-                    // Only handle selection when mouse tracking is off (app handles mouse)
-                    const tracking_active = if (mux.getActivePane()) |pane| pane.vt.mouse_tracking != .none else false;
-                    if (ms.mouse_down and !tracking_active) {
-                        const col: u16 = @intCast(@min(motion.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
-                        const row: u16 = @intCast(@min(motion.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
-
-                        // Start selection on first drag movement
-                        if (!selection.active) {
-                            const so = mux.getScrollOffset();
-                            const sbl: u32 = mux.getScrollbackLineCount();
-                            selection.begin(ms.mouse_start_row, ms.mouse_start_col, so, sbl);
-                        }
-
-                        // Auto-scroll when dragging near viewport edges
-                        const in_alt = if (mux.getActivePane()) |pane| pane.vt.alt_screen else false;
-                        if (!in_alt) {
-                            const sz_scroll = win.getSize();
-                            const pane_rect = mux.getActivePaneRect(sz_scroll.width, sz_scroll.height, padding, status_bar_h);
-                            const edge_zone = atlas.cell_height;
-                            const top_edge = if (pane_rect) |pr| @as(u32, pr.y) else 0;
-                            const bot_edge = if (pane_rect) |pr| @as(u32, pr.y) + pr.height else grid_rows * atlas.cell_height;
-
-                            if (motion.y < top_edge + edge_zone) {
-                                const max_offset = mux.getScrollbackLineCount();
-                                if (max_offset > 0) {
-                                    _ = mux.smoothScroll(@as(i32, @intCast(atlas.cell_height)), atlas.cell_height, max_offset);
-                                }
-                            } else if (motion.y >= bot_edge -| edge_zone) {
-                                if (mux.getScrollOffset() > 0) {
-                                    const max_offset = mux.getScrollbackLineCount();
-                                    _ = mux.smoothScroll(-@as(i32, @intCast(atlas.cell_height)), atlas.cell_height, max_offset);
-                                }
-                            }
-                        }
-
-                        // Update selection AFTER auto-scroll so scroll_offset is current
-                        {
-                            const so = mux.getScrollOffset();
-                            const sbl: u32 = mux.getScrollbackLineCount();
-                            selection.update(row, col, so, sbl);
-                        }
-
-                        // Mark grid dirty so selection highlight redraws
-                        if (mux.getActivePane()) |pane| {
-                            pane.grid.dirty = true;
-                        }
+                        force_redraw = true;
                     }
                 },
                 else => {},
