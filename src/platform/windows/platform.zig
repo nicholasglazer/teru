@@ -133,6 +133,7 @@ const WM_KEYUP: UINT = 0x0101;
 const WM_CHAR: UINT = 0x0102;
 const WM_SYSKEYDOWN: UINT = 0x0104;
 const WM_SYSKEYUP: UINT = 0x0105;
+const WM_INPUTLANGCHANGE: UINT = 0x0051;
 const WM_MOUSEMOVE: UINT = 0x0200;
 const WM_LBUTTONDOWN: UINT = 0x0201;
 const WM_LBUTTONUP: UINT = 0x0202;
@@ -186,6 +187,8 @@ extern "user32" fn UpdateWindow(hWnd: HWND) callconv(.c) BOOL;
 extern "user32" fn PeekMessageW(lpMsg: *MSG, hWnd: HWND, wMsgFilterMin: UINT, wMsgFilterMax: UINT, wRemoveMsg: UINT) callconv(.c) BOOL;
 extern "user32" fn TranslateMessage(lpMsg: *const MSG) callconv(.c) BOOL;
 extern "imm32" fn ImmDisableIME(idThread: DWORD) callconv(.c) BOOL;
+extern "imm32" fn ImmAssociateContextEx(hwnd: HWND, himc: ?*anyopaque, dwFlags: DWORD) callconv(.c) BOOL;
+const IACE_IGNORENOCONTEXT: DWORD = 0x0020;
 extern "user32" fn DispatchMessageW(lpMsg: *const MSG) callconv(.c) LRESULT;
 extern "user32" fn DefWindowProcW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.c) LRESULT;
 extern "user32" fn PostQuitMessage(nExitCode: INT) callconv(.c) void;
@@ -316,6 +319,11 @@ pub const Win32Window = struct {
         };
         state_storage = state;
 
+        // Disable IME BEFORE window creation — ImmDisableIME has no effect
+        // after the first window receives WM_CREATE. Terminal emulators
+        // handle keyboard input directly via ToUnicode, not IME.
+        _ = ImmDisableIME(@bitCast(@as(i32, -1))); // -1 = all threads
+
         // Create window with WS_EX_LAYERED so setOpacity works
         const hwnd = CreateWindowExW(
             WS_EX_LAYERED,
@@ -334,10 +342,9 @@ pub const Win32Window = struct {
 
         if (hwnd == null) return error.CreateWindowFailed;
 
-        // Disable IME for this thread — terminal emulators handle keyboard
-        // input directly via ToUnicode. IME intercepts keystrokes and
-        // produces CJK characters, which breaks ASCII input.
-        _ = ImmDisableIME(0xFFFFFFFF); // -1 = current thread
+        // Belt-and-suspenders: also disassociate IME context from this window.
+        // This handles cases where ImmDisableIME didn't take effect.
+        _ = ImmAssociateContextEx(hwnd, null, IACE_IGNORENOCONTEXT);
 
         // Store state pointer in window's GWLP_USERDATA
         _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, @intCast(@intFromPtr(state)));
@@ -533,6 +540,11 @@ pub const Win32Window = struct {
                     .modifiers = modifiers,
                 } };
                 return 0;
+            },
+            WM_INPUTLANGCHANGE => {
+                // Keyboard layout changed (Win+Space, etc.) — let DefWindowProc
+                // update the thread's HKL so ToUnicode uses the new layout.
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
             },
 
             // ── Mouse buttons ───────────────────────────────────────
