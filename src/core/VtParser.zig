@@ -851,9 +851,9 @@ fn dispatchCsi(self: *VtParser, final: u8) void {
                     @intCast(@min(left, self.grid.cols)),
                     @intCast(@min(right, self.grid.cols)),
                 );
-                // Per VT510: cursor moves to home after DECSLRM
-                self.grid.cursor_row = self.grid.scroll_top;
-                self.grid.cursor_col = @intCast(self.grid.getLeftMargin());
+                // Per VT510: cursor moves to absolute home (0,0) after DECSLRM
+                self.grid.cursor_row = 0;
+                self.grid.cursor_col = 0;
             } else {
                 // SCP — save cursor position
                 self.grid.saveCursor();

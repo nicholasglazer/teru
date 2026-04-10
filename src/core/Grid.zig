@@ -857,13 +857,12 @@ pub fn insertBlanks(self: *Grid, n: u16) void {
 }
 
 /// Erase n characters at cursor position (overwrite with blanks, no shift).
+/// ECH — erase characters. Per VT510, NOT bounded by left/right margins.
 pub fn eraseChars(self: *Grid, n: u16) void {
     const row: usize = self.cursor_row;
     const col: usize = self.cursor_col;
     const w: usize = self.cols;
-    const rm = self.getRightMargin();
-    const end = if (col < rm) rm else w; // bound to right margin when applicable
-    const count: usize = @min(n, end - col);
+    const count: usize = @min(n, w - col);
     const row_start = row * w;
 
     for (self.cells[row_start + col ..][0..count]) |*c| c.* = Cell.blank();
