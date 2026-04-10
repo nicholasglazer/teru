@@ -2297,7 +2297,7 @@ fn resolveTemplatePath(name: []const u8, buf: *[512]u8) ?[]const u8 {
 }
 
 /// Apply a .tsess template: parse it, create workspaces and panes as defined.
-fn applyTemplate(allocator: std.mem.Allocator, mux: *Multiplexer, graph: *ProcessGraph, template: []const u8, io: std.Io) void {
+fn applyTemplate(allocator: std.mem.Allocator, mux: *Multiplexer, graph: *ProcessGraph, template: []const u8, _: std.Io) void {
     var path_buf: [512]u8 = undefined;
     const path = resolveTemplatePath(template, &path_buf) orelse {
         var msg: [128]u8 = undefined;
