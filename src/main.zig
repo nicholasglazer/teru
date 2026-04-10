@@ -1411,9 +1411,8 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                     };
                     const sz = win.getSize();
                     const result = mouse_handler.handleMouseMotion(&mux, motion.x, motion.y, motion.modifiers, &selection, &ms, lp, sz.width, sz.height);
-                    if (result.show_cursor and ms.mouse_cursor_hidden) {
+                    if (result.show_cursor) {
                         win.showCursor();
-                        ms.mouse_cursor_hidden = false;
                     }
                     if (result.dirty) {
                         if (mux.getActivePane()) |pane| pane.grid.dirty = true;
