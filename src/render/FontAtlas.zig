@@ -41,6 +41,10 @@ box_glyphs: [128]?GlyphInfo,
 block_glyphs: [32]?GlyphInfo,
 /// Cyrillic (U+0400-U+04FF)
 cyrillic_glyphs: [256]?GlyphInfo,
+/// Geometric Shapes (U+25A0-U+25FF)
+geometric_glyphs: [96]?GlyphInfo,
+/// Braille Patterns (U+2800-U+28FF)
+braille_glyphs: [256]?GlyphInfo,
 cell_width: u32,
 cell_height: u32,
 allocator: std.mem.Allocator,
@@ -87,10 +91,12 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     //   Box Drawing:     0x2500-0x257F (128 glyphs)
     //   Block Elements:  0x2580-0x259F (32 glyphs)
     //   Cyrillic:        0x0400-0x04FF (256 glyphs)
-    // Total: 607 glyphs
-    const total_glyphs: u32 = 95 + 96 + 128 + 32 + 256; // 607
+    //   Geometric Shapes: 0x25A0-0x25FF (96 glyphs)
+    //   Braille Patterns: 0x2800-0x28FF (256 glyphs)
+    // Total: 959 glyphs
+    const total_glyphs: u32 = 95 + 96 + 128 + 32 + 256 + 96 + 256; // 959
     const glyphs_per_row: u32 = 16;
-    const num_rows: u32 = (total_glyphs + glyphs_per_row - 1) / glyphs_per_row; // 22
+    const num_rows: u32 = (total_glyphs + glyphs_per_row - 1) / glyphs_per_row;
     const atlas_w = glyphs_per_row * cell_w;
     const atlas_h = num_rows * cell_h;
 
@@ -102,6 +108,8 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     var box_glyphs: [128]?GlyphInfo = [_]?GlyphInfo{null} ** 128;
     var block_glyphs: [32]?GlyphInfo = [_]?GlyphInfo{null} ** 32;
     var cyrillic_glyphs: [256]?GlyphInfo = [_]?GlyphInfo{null} ** 256;
+    var geometric_glyphs: [96]?GlyphInfo = [_]?GlyphInfo{null} ** 96;
+    var braille_glyphs: [256]?GlyphInfo = [_]?GlyphInfo{null} ** 256;
     const baseline: i32 = @intFromFloat(f_ascent);
 
     // Build a flat list of codepoints to rasterize
@@ -131,6 +139,16 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     }
     // Cyrillic: U+0400-U+04FF
     for (0x0400..0x0500) |cp| {
+        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    }
+    // Geometric Shapes: U+25A0-U+25FF
+    for (0x25A0..0x2600) |cp| {
+        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    }
+    // Braille Patterns: U+2800-U+2900
+    for (0x2800..0x2900) |cp| {
         codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
         slot += 1;
     }
@@ -201,6 +219,10 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
             block_glyphs[entry.cp - 0x2580] = info;
         } else if (entry.cp >= 0x0400 and entry.cp < 0x0500) {
             cyrillic_glyphs[entry.cp - 0x0400] = info;
+        } else if (entry.cp >= 0x25A0 and entry.cp < 0x2600) {
+            geometric_glyphs[entry.cp - 0x25A0] = info;
+        } else if (entry.cp >= 0x2800 and entry.cp < 0x2900) {
+            braille_glyphs[entry.cp - 0x2800] = info;
         }
     }
 
@@ -217,6 +239,8 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
         .box_glyphs = box_glyphs,
         .block_glyphs = block_glyphs,
         .cyrillic_glyphs = cyrillic_glyphs,
+        .geometric_glyphs = geometric_glyphs,
+        .braille_glyphs = braille_glyphs,
         .cell_width = cell_w,
         .cell_height = cell_h,
         .allocator = allocator,
@@ -251,7 +275,7 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
 
     if (cell_w == 0 or cell_h == 0) return error.InvalidFontMetrics;
 
-    const total_glyphs: u32 = 95 + 96 + 128 + 32 + 256;
+    const total_glyphs: u32 = 95 + 96 + 128 + 32 + 256 + 96 + 256; // 959
     const glyphs_per_row: u32 = 16;
     const num_rows: u32 = (total_glyphs + glyphs_per_row - 1) / glyphs_per_row;
     const atlas_w = glyphs_per_row * cell_w;
@@ -264,6 +288,8 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
     var box_glyphs: [128]?GlyphInfo = [_]?GlyphInfo{null} ** 128;
     var block_glyphs: [32]?GlyphInfo = [_]?GlyphInfo{null} ** 32;
     var cyrillic_glyphs: [256]?GlyphInfo = [_]?GlyphInfo{null} ** 256;
+    var geometric_glyphs: [96]?GlyphInfo = [_]?GlyphInfo{null} ** 96;
+    var braille_glyphs: [256]?GlyphInfo = [_]?GlyphInfo{null} ** 256;
     const baseline: i32 = @intFromFloat(f_ascent);
 
     const Codepoint = struct { cp: u21, slot: u32 };
@@ -274,6 +300,8 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
     for (0x2500..0x2580) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
     for (0x2580..0x25A0) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
     for (0x0400..0x0500) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
+    for (0x25A0..0x2600) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
+    for (0x2800..0x2900) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
 
     for (codepoints[0..slot]) |entry| {
         const col = entry.slot % glyphs_per_row;
@@ -330,6 +358,8 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
         else if (entry.cp >= 0x2500 and entry.cp < 0x2580) { box_glyphs[entry.cp - 0x2500] = info; }
         else if (entry.cp >= 0x2580 and entry.cp < 0x25A0) { block_glyphs[entry.cp - 0x2580] = info; }
         else if (entry.cp >= 0x0400 and entry.cp < 0x0500) { cyrillic_glyphs[entry.cp - 0x0400] = info; }
+        else if (entry.cp >= 0x25A0 and entry.cp < 0x2600) { geometric_glyphs[entry.cp - 0x25A0] = info; }
+        else if (entry.cp >= 0x2800 and entry.cp < 0x2900) { braille_glyphs[entry.cp - 0x2800] = info; }
     }
 
     drawBoxDrawingRange(atlas_data, atlas_w, cell_w, cell_h, glyphs_per_row);
@@ -347,6 +377,8 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
         .box_glyphs = box_glyphs,
         .block_glyphs = block_glyphs,
         .cyrillic_glyphs = cyrillic_glyphs,
+        .geometric_glyphs = geometric_glyphs,
+        .braille_glyphs = braille_glyphs,
         .cell_width = cell_w,
         .cell_height = cell_h,
         .allocator = self.allocator,
@@ -390,7 +422,7 @@ pub fn loadVariant(self: *const FontAtlas, allocator: std.mem.Allocator, font_pa
     const glyphs_per_row: u32 = 16;
 
     // Build same codepoint list as init
-    const total_glyphs: u32 = 95 + 96 + 128 + 32 + 256;
+    const total_glyphs: u32 = 95 + 96 + 128 + 32 + 256 + 96 + 256; // 959
     const Codepoint = struct { cp: u21, slot: u32 };
     var codepoints: [total_glyphs]Codepoint = undefined;
     var slot: u32 = 0;
@@ -412,6 +444,14 @@ pub fn loadVariant(self: *const FontAtlas, allocator: std.mem.Allocator, font_pa
         slot += 1;
     }
     for (0x0400..0x0500) |cp| {
+        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    }
+    for (0x25A0..0x2600) |cp| {
+        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    }
+    for (0x2800..0x2900) |cp| {
         codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
         slot += 1;
     }
@@ -486,7 +526,7 @@ pub fn rasterizeVariant(self: *const FontAtlas, allocator: std.mem.Allocator, va
     const ah = self.atlas_height;
     const glyphs_per_row: u32 = 16;
 
-    const total_glyphs: u32 = 95 + 96 + 128 + 32 + 256;
+    const total_glyphs: u32 = 95 + 96 + 128 + 32 + 256 + 96 + 256; // 959
     const Codepoint = struct { cp: u21, slot: u32 };
     var codepoints: [total_glyphs]Codepoint = undefined;
     var slot: u32 = 0;
@@ -495,6 +535,8 @@ pub fn rasterizeVariant(self: *const FontAtlas, allocator: std.mem.Allocator, va
     for (0x2500..0x2580) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
     for (0x2580..0x25A0) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
     for (0x0400..0x0500) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
+    for (0x25A0..0x2600) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
+    for (0x2800..0x2900) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
 
     for (codepoints[0..slot]) |entry| {
         const col = entry.slot % glyphs_per_row;
@@ -564,6 +606,10 @@ pub fn getGlyph(self: *const FontAtlas, codepoint: u21) ?GlyphInfo {
         return self.box_glyphs[codepoint - 0x2500];
     if (codepoint >= 0x2580 and codepoint < 0x25A0)
         return self.block_glyphs[codepoint - 0x2580];
+    if (codepoint >= 0x25A0 and codepoint < 0x2600)
+        return self.geometric_glyphs[codepoint - 0x25A0];
+    if (codepoint >= 0x2800 and codepoint < 0x2900)
+        return self.braille_glyphs[codepoint - 0x2800];
     return null;
 }
 
@@ -575,6 +621,8 @@ pub fn glyphSlot(codepoint: u21) ?u32 {
     if (codepoint >= 0x2500 and codepoint < 0x2580) return @as(u32, codepoint - 0x2500) + 95 + 96;
     if (codepoint >= 0x2580 and codepoint < 0x25A0) return @as(u32, codepoint - 0x2580) + 95 + 96 + 128;
     if (codepoint >= 0x0400 and codepoint < 0x0500) return @as(u32, codepoint - 0x0400) + 95 + 96 + 128 + 32;
+    if (codepoint >= 0x25A0 and codepoint < 0x2600) return @as(u32, codepoint - 0x25A0) + 95 + 96 + 128 + 32 + 256;
+    if (codepoint >= 0x2800 and codepoint < 0x2900) return @as(u32, codepoint - 0x2800) + 95 + 96 + 128 + 32 + 256 + 96;
     return null;
 }
 
@@ -1113,8 +1161,6 @@ test "glyphSlot: Block Elements" {
     try std.testing.expectEqual(@as(?u32, 319), glyphSlot(0x2580));
     // U+259F = slot 350
     try std.testing.expectEqual(@as(?u32, 350), glyphSlot(0x259F));
-    // U+25A0 = not in atlas
-    try std.testing.expectEqual(@as(?u32, null), glyphSlot(0x25A0));
 }
 
 test "glyphSlot: Cyrillic" {
