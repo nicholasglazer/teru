@@ -84,6 +84,7 @@ pub fn main(init: std.process.Init) !void {
     var daemon_session: ?[]const u8 = null;
     var attach_session: ?[]const u8 = null;
     var list_sessions = false;
+    var wm_class_override: ?[]const u8 = null;
 
     while (args_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--version")) {
@@ -101,6 +102,7 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, arg, "--list")) { list_sessions = true; continue; }
         if (std.mem.eql(u8, arg, "--daemon")) { daemon_session = args_iter.next(); continue; }
         if (std.mem.eql(u8, arg, "--session")) { attach_session = args_iter.next(); continue; }
+        if (std.mem.eql(u8, arg, "--class")) { wm_class_override = args_iter.next(); continue; }
     }
 
     if (list_sessions) {
@@ -402,7 +404,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
     var graph = ProcessGraph.init(allocator);
     defer graph.deinit();
 
-    var win = try platform.Platform.init(config.initial_width, config.initial_height, "teru");
+    var win = try platform.Platform.init(config.initial_width, config.initial_height, "teru", wm_class_override);
     defer win.deinit();
     win.setOpacity(config.opacity);
 
@@ -2070,26 +2072,44 @@ fn pollDaemonOutput(fd: posix.fd_t, mux: *Multiplexer, buf: []u8) bool {
 /// Parse state_sync from daemon and create/update remote panes in the multiplexer.
 /// Format: [active_ws:1][ws_count:1][per-ws: layout:1 + pane_count:1 × N]
 ///         [per-pane: pane_id:8 + rows:2 + cols:2 + ws_idx:1]
+/// Parse state_sync from daemon and create/update remote panes.
+/// Restores exact workspace position, active pane, layout, ratio, and zoom.
+/// Format: [active_ws:1][ws_count:1]
+///   per-ws × N: [layout:1][pane_count:1][active_node:1][ratio_x100:1][zoomed:1]
+///   per-pane (ordered by workspace position): [pane_id:8][rows:2][cols:2][ws_idx:1]
 fn parseDaemonStateSync(daemon_fd: posix.fd_t, mux: *Multiplexer, payload: []const u8) void {
     if (payload.len < 2) return;
     const active_ws = payload[0];
     const ws_count = @min(payload[1], 10);
     var pos: usize = 2;
 
-    // Parse per-workspace info
+    const LE = @import("tiling/LayoutEngine.zig");
+
+    // Parse per-workspace info (5 bytes each)
     for (0..ws_count) |wi| {
-        if (pos + 2 > payload.len) break;
+        if (pos + 5 > payload.len) break;
         const layout_byte = payload[pos];
         pos += 1;
-        _ = payload[pos]; // pane_count (informational)
+        _ = payload[pos]; // pane_count
         pos += 1;
+        const active_node = payload[pos];
+        pos += 1;
+        const ratio_x100 = payload[pos];
+        pos += 1;
+        const zoomed = payload[pos] != 0;
+        pos += 1;
+
         if (wi < 10) {
-            const LE = @import("tiling/LayoutEngine.zig");
-            mux.layout_engine.workspaces[wi].layout = @enumFromInt(@min(layout_byte, @intFromEnum(LE.Layout.accordion)));
+            var ws = &mux.layout_engine.workspaces[wi];
+            ws.layout = @enumFromInt(@min(layout_byte, @intFromEnum(LE.Layout.accordion)));
+            ws.active_node = active_node;
+            ws.master_ratio = @as(f32, @floatFromInt(ratio_x100)) / 100.0;
+            ws.zoomed = zoomed;
         }
     }
 
-    // Parse per-pane info and create remote panes that don't exist yet
+    // Parse per-pane info and create remote panes (preserving workspace order)
+    const Pane = @import("core/Pane.zig");
     while (pos + 13 <= payload.len) {
         const pane_id = std.mem.readInt(u64, payload[pos..][0..8], .little);
         pos += 8;
@@ -2100,21 +2120,15 @@ fn parseDaemonStateSync(daemon_fd: posix.fd_t, mux: *Multiplexer, payload: []con
         const ws_idx = payload[pos];
         pos += 1;
 
-        // Skip if pane already exists locally
         if (mux.getPaneById(pane_id) != null) continue;
 
-        // Create remote pane stub
-        const Pane = @import("core/Pane.zig");
         var pane = Pane.initRemote(mux.allocator, rows, cols, pane_id, daemon_fd, mux.spawn_config) catch continue;
-
-        // Track the pane_id for the mux (override auto-increment)
         if (pane_id >= mux.next_pane_id) mux.next_pane_id = pane_id + 1;
 
         mux.panes.append(mux.allocator, pane) catch continue;
         const idx = mux.panes.items.len - 1;
         mux.panes.items[idx].linkVt(mux.allocator);
 
-        // Add to workspace
         if (ws_idx < 10) {
             mux.layout_engine.workspaces[ws_idx].addNode(mux.allocator, pane_id) catch {};
         }

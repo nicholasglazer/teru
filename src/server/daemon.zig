@@ -354,46 +354,53 @@ fn handleCommand(self: *Daemon, payload: []const u8) void {
 fn sendStateSync(self: *Daemon) void {
     const cfd = self.client_fd orelse return;
 
-    // Build state: active_workspace(1) + workspace_count(1) + per-workspace[layout(1) + pane_count(1)]
-    // + per-pane[pane_id(8) + rows(2) + cols(2) + workspace(1)]
+    // State sync format:
+    // [active_workspace: 1]
+    // [ws_count: 1]
+    // per-workspace (× ws_count):
+    //   [layout: 1] [pane_count: 1] [active_node_idx: 1] [master_ratio_x100: 1] [zoomed: 1]
+    // per-pane (ordered by workspace node_ids to preserve position):
+    //   [pane_id: 8] [rows: 2] [cols: 2] [ws_idx: 1]
     var buf: [4096]u8 = undefined;
     var pos: usize = 0;
 
     buf[pos] = self.mux.active_workspace;
     pos += 1;
-    buf[pos] = 10; // workspace count
+    const ws_count: u8 = 10;
+    buf[pos] = ws_count;
     pos += 1;
 
-    // Per-workspace info
+    // Per-workspace info (5 bytes each)
     for (&self.mux.layout_engine.workspaces) |*ws| {
-        if (pos + 2 > buf.len) break;
+        if (pos + 5 > buf.len) break;
         buf[pos] = @intFromEnum(ws.layout);
         pos += 1;
         buf[pos] = @intCast(@min(ws.node_ids.items.len, 255));
         pos += 1;
+        buf[pos] = ws.active_node;
+        pos += 1;
+        // Master ratio as 0-100 integer (0.55 → 55)
+        buf[pos] = @intCast(@min(@as(u32, @intFromFloat(ws.master_ratio * 100)), 100));
+        pos += 1;
+        buf[pos] = if (ws.zoomed) 1 else 0;
+        pos += 1;
     }
 
-    // Per-pane info
-    for (self.mux.panes.items) |*pane| {
-        if (pos + 13 > buf.len) break;
-        std.mem.writeInt(u64, buf[pos..][0..8], pane.id, .little);
-        pos += 8;
-        std.mem.writeInt(u16, buf[pos..][0..2], pane.grid.rows, .little);
-        pos += 2;
-        std.mem.writeInt(u16, buf[pos..][0..2], pane.grid.cols, .little);
-        pos += 2;
-        // Find which workspace this pane belongs to
-        var ws_idx: u8 = 0;
-        for (&self.mux.layout_engine.workspaces, 0..) |*ws, wi| {
-            for (ws.node_ids.items) |nid| {
-                if (nid == pane.id) {
-                    ws_idx = @intCast(wi);
-                    break;
-                }
-            }
+    // Per-pane info: iterate workspaces in order, then node_ids in order.
+    // This preserves the position of each pane within its workspace.
+    for (&self.mux.layout_engine.workspaces, 0..) |*ws, wi| {
+        for (ws.node_ids.items) |nid| {
+            if (pos + 13 > buf.len) break;
+            const pane = self.mux.getPaneById(nid) orelse continue;
+            std.mem.writeInt(u64, buf[pos..][0..8], pane.id, .little);
+            pos += 8;
+            std.mem.writeInt(u16, buf[pos..][0..2], pane.grid.rows, .little);
+            pos += 2;
+            std.mem.writeInt(u16, buf[pos..][0..2], pane.grid.cols, .little);
+            pos += 2;
+            buf[pos] = @intCast(wi);
+            pos += 1;
         }
-        buf[pos] = ws_idx;
-        pos += 1;
     }
 
     _ = proto.sendMessage(cfd, .state_sync, buf[0..pos]);
