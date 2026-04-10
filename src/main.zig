@@ -119,6 +119,17 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (attach_session) |name| {
+        // Windowed attach if display available, TTY relay otherwise
+        const tier = render.detectTier();
+        if (tier == .cpu) {
+            if (Daemon.connectToSession(name)) |sock| {
+                return runWindowedDaemonMode(allocator, io, sock);
+            } else |_| {
+                var buf: [128]u8 = undefined;
+                outFmt(&buf, "[teru] Session '{s}' not found\n", .{name});
+                return;
+            }
+        }
         return runSessionAttach(name);
     }
 
@@ -178,12 +189,30 @@ fn runAttachMode(allocator: std.mem.Allocator, io: std.Io) !void {
 
 /// Auto-persistence startup: check daemon → session file → fresh start.
 fn runPersistentMode(allocator: std.mem.Allocator, io: std.Io) !void {
-    // 1. Check if daemon "default" is alive → connect windowed UI to it
+    // 1. Check if daemon "default" is already running → connect windowed UI
     if (Daemon.connectToSession("default")) |sock| {
+        out("[teru] Connecting to existing daemon\n");
         return runWindowedDaemonMode(allocator, io, sock);
     } else |_| {}
 
-    // 2. Check if session file exists → restore pane count
+    // 2. Auto-start a daemon in the background, then connect to it
+    //    (POSIX only — Windows falls through to local mode)
+    if (builtin.os.tag != .windows) {
+        if (autoStartDaemon()) {
+            // Wait for daemon socket to appear (up to 2 seconds)
+            var attempts: u32 = 0;
+            while (attempts < 20) : (attempts += 1) {
+                if (Daemon.connectToSession("default")) |sock| {
+                    out("[teru] Connected to daemon\n");
+                    return runWindowedDaemonMode(allocator, io, sock);
+                } else |_| {}
+                io.sleep(.fromMilliseconds(100), .awake) catch {};
+            }
+            out("[teru] Daemon started but connection failed, using local mode\n");
+        }
+    }
+
+    // 3. Fallback: restore from session file (no daemon, local PTYs)
     const sess_dir = Session.getSessionDir(allocator) catch
         return runWindowedMode(allocator, io, null);
     defer allocator.free(sess_dir);
@@ -196,7 +225,6 @@ fn runPersistentMode(allocator: std.mem.Allocator, io: std.Io) !void {
         return runWindowedMode(allocator, io, null);
     defer sess.deinit();
 
-    // Extract workspace info from session
     var restore = RestoreInfo{ .pane_count = 0 };
     restore.active_workspace = sess.active_workspace;
     for (sess.workspace_states, 0..) |ws, i| {
@@ -211,6 +239,29 @@ fn runPersistentMode(allocator: std.mem.Allocator, io: std.Io) !void {
     outFmt(&msg_buf, "[teru] Restoring persistent session ({d} panes)\n", .{restore.pane_count});
 
     return runWindowedMode(allocator, io, restore);
+}
+
+/// Fork a teru daemon process in the background. Returns true if fork succeeded.
+fn autoStartDaemon() bool {
+    // Fork and exec: teru --daemon default
+    // The child daemonizes itself (setsid, etc.)
+    const exe_path = "/proc/self/exe"; // Linux; macOS would need _NSGetExecutablePath
+    const argv = [_:null]?[*:0]const u8{
+        @ptrCast(exe_path),
+        @ptrCast("--daemon"),
+        @ptrCast("default"),
+        null,
+    };
+    const fork_pid = compat.posixFork();
+    if (fork_pid < 0) return false;
+    if (fork_pid == 0) {
+        // Child: exec teru --daemon default
+        const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
+        _ = std.c.execve(exe_path, @ptrCast(&argv), envp);
+        compat.posixExit(1);
+    }
+    // Parent: daemon forked successfully
+    return true;
 }
 
 /// Start a headless daemon session. PTYs persist after this process forks.
@@ -1994,17 +2045,83 @@ fn pollDaemonOutput(fd: posix.fd_t, mux: *Multiplexer, buf: []u8) bool {
                 }
             },
             .state_sync => {
-                // TODO: parse state and sync workspace/pane layout
+                parseDaemonStateSync(fd, mux, payload);
                 any = true;
             },
             .pane_event => {
-                // TODO: handle pane create/close events
+                // Pane created/closed on daemon side
+                if (payload.len >= 9) {
+                    const pane_id = std.mem.readInt(u64, payload[0..8], .little);
+                    const event = payload[8];
+                    if (event == 1) {
+                        // Pane closed — remove from local mux
+                        mux.closePane(pane_id);
+                    }
+                    // event == 0 (created) handled via state_sync
+                }
                 any = true;
             },
             else => {},
         }
     }
     return any;
+}
+
+/// Parse state_sync from daemon and create/update remote panes in the multiplexer.
+/// Format: [active_ws:1][ws_count:1][per-ws: layout:1 + pane_count:1 × N]
+///         [per-pane: pane_id:8 + rows:2 + cols:2 + ws_idx:1]
+fn parseDaemonStateSync(daemon_fd: posix.fd_t, mux: *Multiplexer, payload: []const u8) void {
+    if (payload.len < 2) return;
+    const active_ws = payload[0];
+    const ws_count = @min(payload[1], 10);
+    var pos: usize = 2;
+
+    // Parse per-workspace info
+    for (0..ws_count) |wi| {
+        if (pos + 2 > payload.len) break;
+        const layout_byte = payload[pos];
+        pos += 1;
+        _ = payload[pos]; // pane_count (informational)
+        pos += 1;
+        if (wi < 10) {
+            const LE = @import("tiling/LayoutEngine.zig");
+            mux.layout_engine.workspaces[wi].layout = @enumFromInt(@min(layout_byte, @intFromEnum(LE.Layout.accordion)));
+        }
+    }
+
+    // Parse per-pane info and create remote panes that don't exist yet
+    while (pos + 13 <= payload.len) {
+        const pane_id = std.mem.readInt(u64, payload[pos..][0..8], .little);
+        pos += 8;
+        const rows = std.mem.readInt(u16, payload[pos..][0..2], .little);
+        pos += 2;
+        const cols = std.mem.readInt(u16, payload[pos..][0..2], .little);
+        pos += 2;
+        const ws_idx = payload[pos];
+        pos += 1;
+
+        // Skip if pane already exists locally
+        if (mux.getPaneById(pane_id) != null) continue;
+
+        // Create remote pane stub
+        const Pane = @import("core/Pane.zig");
+        var pane = Pane.initRemote(mux.allocator, rows, cols, pane_id, daemon_fd, mux.spawn_config) catch continue;
+
+        // Track the pane_id for the mux (override auto-increment)
+        if (pane_id >= mux.next_pane_id) mux.next_pane_id = pane_id + 1;
+
+        mux.panes.append(mux.allocator, pane) catch continue;
+        const idx = mux.panes.items.len - 1;
+        mux.panes.items[idx].linkVt(mux.allocator);
+
+        // Add to workspace
+        if (ws_idx < 10) {
+            mux.layout_engine.workspaces[ws_idx].addNode(mux.allocator, pane_id) catch {};
+        }
+    }
+
+    mux.switchWorkspace(active_ws);
+    for (mux.panes.items) |*p| p.grid.dirty = true;
 }
 
 /// Send a command to the daemon (for windowed-daemon mode).
