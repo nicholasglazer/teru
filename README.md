@@ -117,9 +117,14 @@ curl -L https://github.com/nicholasglazer/teru/releases/latest/download/teru-mac
 sudo mv teru /usr/local/bin/
 ```
 
-### Windows
+### Windows (Scoop)
 
-Download `teru-windows-x86_64.zip` from [Releases](https://github.com/nicholasglazer/teru/releases), extract, and run `teru.exe`. Requires Windows 10 1809+ (ConPTY support).
+```powershell
+scoop bucket add teru https://github.com/nicholasglazer/scoop-teru
+scoop install teru
+```
+
+Or download `teru-windows-x86_64.zip` from [Releases](https://github.com/nicholasglazer/teru/releases). See [INSTALLING.md](docs/INSTALLING.md) for details.
 
 ### Build from source
 
