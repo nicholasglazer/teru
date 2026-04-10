@@ -70,9 +70,6 @@ const PERSIST_DEBOUNCE_NS: i128 = 100_000_000; // 100ms
 const DAEMON_RETRY_ATTEMPTS: u32 = 20;
 const DAEMON_RETRY_DELAY_MS: u32 = 100;
 
-// CLI --class override, set in main(), read in runWindowedModeImpl()
-var g_wm_class: ?[]const u8 = null;
-
 fn out(msg: []const u8) void {
     if (builtin.os.tag == .windows) {
         const k = struct {
@@ -160,8 +157,6 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, arg, "--template") or std.mem.eql(u8, arg, "-t")) { template_name = args_iter.next(); continue; }
         if (std.mem.eql(u8, arg, "--class")) { wm_class_override = args_iter.next(); continue; }
     }
-    g_wm_class = wm_class_override;
-
     if (list_sessions) {
         var buf: [1024]u8 = undefined;
         if (Daemon.listSessions(&buf)) |sessions| {
@@ -179,18 +174,18 @@ pub fn main(init: std.process.Init) !void {
 
     // -n NAME: persistent named session (auto-start daemon + connect windowed)
     if (session_name) |name| {
-        return runNamedSession(allocator, io, name, template_name);
+        return runNamedSession(allocator, io, name, template_name, wm_class_override);
     }
 
     if (mode_mcp_bridge) return McpBridge.run(io);
-    if (mode_attach) return runAttachMode(allocator, io);
+    if (mode_attach) return runAttachMode(allocator, io, wm_class_override);
 
     // Detect rendering tier
     const tier = render.detectTier();
     if (tier == .tty or mode_raw) {
         return runRawMode(allocator, io);
     }
-    return runWindowedMode(allocator, io, null);
+    return runWindowedMode(allocator, io, null, wm_class_override);
 }
 
 /// Session restore info passed from --attach to runWindowedMode.
@@ -204,10 +199,10 @@ const RestoreInfo = struct {
     active_workspace: u8 = 0,
 };
 
-fn runAttachMode(allocator: std.mem.Allocator, io: std.Io) !void {
+fn runAttachMode(allocator: std.mem.Allocator, io: std.Io, wm_class: ?[]const u8) !void {
     var sess = Session.loadFromFile(session_path, allocator, io) catch {
         out("[teru] No saved session found, starting fresh\n");
-        return runWindowedMode(allocator, io, null);
+        return runWindowedMode(allocator, io, null, wm_class);
     };
     defer sess.deinit();
 
@@ -221,16 +216,16 @@ fn runAttachMode(allocator: std.mem.Allocator, io: std.Io) !void {
     var msg_buf: [128]u8 = undefined;
     outFmt(&msg_buf, "[teru] Restoring session ({d} panes)\n", .{shell_count});
 
-    return runWindowedMode(allocator, io, .{ .pane_count = shell_count });
+    return runWindowedMode(allocator, io, .{ .pane_count = shell_count }, wm_class);
 }
 
 /// -n NAME: connect to (or start) a named daemon session with full windowed UI.
-fn runNamedSession(allocator: std.mem.Allocator, io: std.Io, name: []const u8, template: ?[]const u8) !void {
+fn runNamedSession(allocator: std.mem.Allocator, io: std.Io, name: []const u8, template: ?[]const u8, wm_class: ?[]const u8) !void {
     // 1. Try connecting to existing daemon (template ignored if daemon exists)
     if (Daemon.connectToSession(name)) |sock| {
         var buf: [128]u8 = undefined;
         outFmt(&buf, "[teru] Connecting to session '{s}'\n", .{name});
-        return runWindowedDaemonMode(allocator, io, sock);
+        return runWindowedDaemonMode(allocator, io, sock, wm_class);
     } else |_| {}
 
     // 2. Auto-start daemon with optional template (POSIX only)
@@ -241,7 +236,7 @@ fn runNamedSession(allocator: std.mem.Allocator, io: std.Io, name: []const u8, t
                 if (Daemon.connectToSession(name)) |sock| {
                     var buf: [128]u8 = undefined;
                     outFmt(&buf, "[teru] Connected to session '{s}'\n", .{name});
-                    return runWindowedDaemonMode(allocator, io, sock);
+                    return runWindowedDaemonMode(allocator, io, sock, wm_class);
                 } else |_| {}
                 io.sleep(.fromMilliseconds(DAEMON_RETRY_DELAY_MS), .awake) catch {}; // sleep failure is harmless
             }
@@ -255,7 +250,7 @@ fn runNamedSession(allocator: std.mem.Allocator, io: std.Io, name: []const u8, t
         outFmt(&buf, "[teru] Session '{s}' not available\n", .{name});
         return;
     }
-    return runWindowedMode(allocator, io, null);
+    return runWindowedMode(allocator, io, null, wm_class);
 }
 
 /// Fork a daemon with a specific session name.
@@ -1821,9 +1816,11 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
 
         // If new lines were added to scrollback, adjust scroll_offset and
         // active selection to keep them pinned to the same content.
+        // If the selection overlaps the visible grid (not purely scrollback),
+        // clear it — PTY output has changed the cell content underneath.
         if (had_output) {
             if (mux.getActivePane()) |pane| {
-                if (pane.grid.scrollback) |sb| {
+                const sb_lines: u32 = if (pane.grid.scrollback) |sb| blk: {
                     const sb_count_after = sb.lineCount();
                     if (sb_count_after > sb_count_before) {
                         const new_lines: u32 = @intCast(sb_count_after - sb_count_before);
@@ -1835,6 +1832,13 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             selection.end_row += new_lines;
                         }
                     }
+                    break :blk @intCast(sb_count_after);
+                } else 0;
+
+                // Selection that overlaps the grid is now stale — clear it.
+                // Selections purely in scrollback remain valid (content is immutable there).
+                if (selection.active and selection.end_row >= sb_lines) {
+                    selection.clear();
                 }
             }
         }
