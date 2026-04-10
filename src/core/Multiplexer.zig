@@ -594,10 +594,10 @@ pub fn renderAllWithSelection(
 
             // Render grid into inset rect
             const inset = Compositor.insetRect(clamped, 1);
-            Compositor.renderPaneIntoRect(renderer, &pane.grid, inset, cell_width, cell_height, is_active, pane_sel, so, sb_lines);
+            Compositor.renderPaneIntoRect(renderer, &pane.grid, inset, cell_width, cell_height, is_active, pane_sel, so, sb_lines, pane.vt.cursor_visible);
         } else {
             // Single pane: no border, full screen (above status bar)
-            Compositor.renderPaneIntoRect(renderer, &pane.grid, clamped, cell_width, cell_height, is_active, pane_sel, so, sb_lines);
+            Compositor.renderPaneIntoRect(renderer, &pane.grid, clamped, cell_width, cell_height, is_active, pane_sel, so, sb_lines, pane.vt.cursor_visible);
         }
     }
 
