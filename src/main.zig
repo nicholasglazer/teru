@@ -2134,24 +2134,24 @@ fn parseDaemonStateSync(daemon_fd: posix.fd_t, mux: *Multiplexer, payload: []con
 
     const LE = @import("tiling/LayoutEngine.zig");
 
-    // Parse per-workspace info (5 bytes each)
+    // Parse per-workspace info (12 bytes each):
+    //   [layout:1][pane_count:1][ratio_x100:1][reserved:1][active_pane_id:8]
     for (0..ws_count) |wi| {
-        if (pos + 5 > payload.len) break;
+        if (pos + 12 > payload.len) break;
         const layout_byte = payload[pos];
         pos += 1;
         _ = payload[pos]; // pane_count
         pos += 1;
-        const active_node = payload[pos];
-        pos += 1;
         const ratio_x100 = payload[pos];
         pos += 1;
-        _ = payload[pos]; // zoomed (field removed from Workspace)
-        pos += 1;
+        pos += 1; // reserved
+        const active_pane_id = std.mem.readInt(u64, payload[pos..][0..8], .little);
+        pos += 8;
 
         if (wi < 10) {
             var ws = &mux.layout_engine.workspaces[wi];
             ws.layout = @enumFromInt(@min(layout_byte, @intFromEnum(LE.Layout.accordion)));
-            ws.active_node = active_node;
+            ws.active_node = if (active_pane_id != 0) active_pane_id else null;
             ws.master_ratio = @as(f32, @floatFromInt(ratio_x100)) / 100.0;
         }
     }

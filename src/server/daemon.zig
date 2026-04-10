@@ -370,20 +370,22 @@ fn sendStateSync(self: *Daemon) void {
     buf[pos] = ws_count;
     pos += 1;
 
-    // Per-workspace info (5 bytes each)
+    // Per-workspace info (12 bytes each):
+    //   [layout:1][pane_count:1][ratio_x100:1][reserved:1][active_pane_id:8]
     for (&self.mux.layout_engine.workspaces) |*ws| {
-        if (pos + 5 > buf.len) break;
+        if (pos + 12 > buf.len) break;
         buf[pos] = @intFromEnum(ws.layout);
         pos += 1;
         buf[pos] = @intCast(@min(ws.node_ids.items.len, 255));
         pos += 1;
-        buf[pos] = if (ws.active_node) |n| @intCast(@min(n, 255)) else 0;
-        pos += 1;
-        // Master ratio as 0-100 integer (0.55 → 55)
         buf[pos] = @intCast(@min(@as(u32, @intFromFloat(ws.master_ratio * 100)), 100));
         pos += 1;
-        buf[pos] = 0; // zoomed field removed from Workspace
+        buf[pos] = 0; // reserved
         pos += 1;
+        // Active pane ID (8 bytes, 0 = none)
+        const active_id: u64 = ws.active_node orelse 0;
+        std.mem.writeInt(u64, buf[pos..][0..8], active_id, .little);
+        pos += 8;
     }
 
     // Per-pane info: iterate workspaces in order, then node_ids in order.
