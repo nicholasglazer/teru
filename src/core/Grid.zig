@@ -220,6 +220,9 @@ alt_cells: ?[]Cell = null,
 /// Cursor position saved for the alt screen's paired main screen.
 alt_saved_cursor_row: u16 = 0,
 alt_saved_cursor_col: u16 = 0,
+alt_saved_left_margin: u16 = 0,
+alt_saved_right_margin: u16 = 0,
+alt_saved_margins_enabled: bool = false,
 
 /// Per-row metadata for OSC 133 shell integration.
 /// Allocated alongside cells, one entry per row.
@@ -270,9 +273,10 @@ pub fn cellAtConst(self: *const Grid, row: u16, col: u16) *const Cell {
 /// Write a character at the current cursor position with pen attributes,
 /// then advance the cursor. Wraps to the next line at the right margin.
 pub fn write(self: *Grid, char: u21) void {
-    if (self.cursor_col >= self.cols) {
-        // Wrap: move to start of next line
-        self.cursor_col = 0;
+    const wrap_col: u16 = @intCast(self.getRightMargin());
+    if (self.cursor_col >= wrap_col) {
+        // Wrap: move to left margin of next line
+        self.cursor_col = @intCast(self.getLeftMargin());
         self.cursorDown();
     }
 
@@ -295,9 +299,9 @@ pub fn cursorDown(self: *Grid) void {
     }
 }
 
-/// Handle newline: move cursor to column 0, then move down (with scroll).
+/// Handle newline: move cursor to left margin, then move down (with scroll).
 pub fn newline(self: *Grid) void {
-    self.cursor_col = 0;
+    self.cursor_col = @intCast(self.getLeftMargin());
     self.cursorDown();
     self.dirty = true;
 }
@@ -650,12 +654,20 @@ pub fn switchToAltScreen(self: *Grid, allocator: std.mem.Allocator) !void {
         self.cells = alt;
     }
 
-    // Clear the now-active alt screen
+    // Save margin state from main screen
+    self.alt_saved_left_margin = self.left_margin;
+    self.alt_saved_right_margin = self.right_margin;
+    self.alt_saved_margins_enabled = self.margins_enabled;
+
+    // Clear the now-active alt screen + reset margins
     for (self.cells) |*c| c.* = Cell.blank();
     self.cursor_row = 0;
     self.cursor_col = 0;
     self.scroll_top = 0;
     self.scroll_bottom = self.rows -| 1;
+    self.left_margin = 0;
+    self.right_margin = 0;
+    self.margins_enabled = false;
     self.dirty = true;
 }
 
@@ -669,11 +681,14 @@ pub fn switchToMainScreen(self: *Grid) void {
         self.alt_cells = alt;
     }
 
-    // Restore main screen cursor
+    // Restore main screen cursor and margin state
     self.cursor_row = @min(self.alt_saved_cursor_row, self.rows -| 1);
     self.cursor_col = @min(self.alt_saved_cursor_col, self.cols -| 1);
     self.scroll_top = 0;
     self.scroll_bottom = self.rows -| 1;
+    self.left_margin = self.alt_saved_left_margin;
+    self.right_margin = self.alt_saved_right_margin;
+    self.margins_enabled = self.alt_saved_margins_enabled;
     self.dirty = true;
 }
 
@@ -846,7 +861,9 @@ pub fn eraseChars(self: *Grid, n: u16) void {
     const row: usize = self.cursor_row;
     const col: usize = self.cursor_col;
     const w: usize = self.cols;
-    const count: usize = @min(n, w - col);
+    const rm = self.getRightMargin();
+    const end = if (col < rm) rm else w; // bound to right margin when applicable
+    const count: usize = @min(n, end - col);
     const row_start = row * w;
 
     for (self.cells[row_start + col ..][0..count]) |*c| c.* = Cell.blank();
