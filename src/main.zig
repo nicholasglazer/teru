@@ -1523,10 +1523,12 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
         // clear it — PTY output has changed the cell content underneath.
         if (had_output) {
             if (mux.getActivePane()) |pane| {
-                const sb_lines: u32 = if (pane.grid.scrollback) |sb| blk: {
+                var scrolled = false;
+                if (pane.grid.scrollback) |sb| {
                     const sb_count_after = sb.lineCount();
                     if (sb_count_after > sb_count_before) {
                         const new_lines: u32 = @intCast(sb_count_after - sb_count_before);
+                        scrolled = true;
                         if (mux.getScrollOffset() > config.scroll_speed) {
                             pane.scroll_offset += new_lines;
                         }
@@ -1535,12 +1537,13 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             selection.end_row += new_lines;
                         }
                     }
-                    break :blk @intCast(sb_count_after);
-                } else 0;
+                }
 
-                // Selection that overlaps the grid is now stale — clear it.
-                // Selections purely in scrollback remain valid (content is immutable there).
-                if (selection.active and selection.end_row >= sb_lines) {
+                // Only clear selection when content actually scrolled (new lines
+                // entered scrollback). Don't clear on cursor moves or redraws —
+                // the selected content is still on screen.
+                // Never clear during active mouse drag.
+                if (selection.active and scrolled and !ms.mouse_down) {
                     selection.clear();
                 }
             }
