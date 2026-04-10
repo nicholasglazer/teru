@@ -109,7 +109,7 @@ pub fn run(self: *Daemon) void {
         const pty_start = nfds;
         for (self.mux.panes.items) |*pane| {
             if (nfds >= fds.len) break;
-            fds[nfds] = .{ .fd = pane.pty.master, .events = POLLIN, .revents = 0 };
+            fds[nfds] = .{ .fd = pane.ptyMasterFd(), .events = POLLIN, .revents = 0 };
             nfds += 1;
         }
 
@@ -290,14 +290,14 @@ fn handleClientData(self: *Daemon, recv_buf: []u8) void {
         .active_input => {
             // Forward keyboard input to active pane PTY
             if (self.mux.getActivePaneMut()) |pane| {
-                _ = pane.pty.write(payload) catch {};
+                _ = pane.ptyWrite(payload) catch {};
             }
         },
         .input => {
             // Forward input to specific pane (pane_id-tagged)
             if (proto.decodePanePayload(payload)) |pp| {
                 if (self.mux.getPaneById(pp.pane_id)) |pane| {
-                    _ = pane.pty.write(pp.data) catch {};
+                    _ = pane.ptyWrite(pp.data) catch {};
                 }
             }
         },
@@ -420,7 +420,7 @@ fn checkPaneAlive(self: *Daemon) void {
     var i: usize = 0;
     while (i < self.mux.panes.items.len) {
         const pane = &self.mux.panes.items[i];
-        if (pane.pty.child_pid) |pid| {
+        if (pane.childPid()) |pid| {
             var status: c_int = 0;
             const rc = std.c.waitpid(pid, &status, 1); // WNOHANG = 1
             if (rc > 0) {

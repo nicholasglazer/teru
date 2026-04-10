@@ -248,7 +248,7 @@ fn handleSpawn(self: *PaneBackend, body: []const u8, id: ?[]const u8, buf: []u8)
     const graph_node_id = self.graph.spawn(.{
         .name = name,
         .kind = .agent,
-        .pid = if (self.multiplexer.getPaneById(pane_id)) |pane| pane.pty.child_pid else null,
+        .pid = if (self.multiplexer.getPaneById(pane_id)) |pane| pane.childPid() else null,
         .agent = .{
             .group = group,
             .role = role,
@@ -313,7 +313,7 @@ fn handleWrite(self: *PaneBackend, body: []const u8, id: ?[]const u8, buf: []u8)
     const pane = self.multiplexer.getPaneById(ctx.pane_id) orelse
         return jsonRpcError(buf, id, -32602, "Pane not found");
 
-    _ = pane.pty.write(data) catch
+    _ = pane.ptyWrite(data) catch
         return jsonRpcError(buf, id, -32603, "Write failed");
 
     const id_str = id orelse "null";

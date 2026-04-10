@@ -3,13 +3,16 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const posix = std.posix;
 const compat = @import("../compat.zig");
-const Pty = @import("../pty/pty.zig").Pty;
+const pty_mod = @import("../pty/pty.zig");
+const Pty = pty_mod.Pty;
+const RemotePty = pty_mod.RemotePty;
 const Grid = @import("Grid.zig");
 const VtParser = @import("VtParser.zig");
 const Scrollback = @import("../persist/Scrollback.zig");
+const proto = @import("../server/protocol.zig");
 
-/// A Pane bundles a PTY + Grid + VtParser + Scrollback into a single manageable unit.
-/// Each pane is an independent terminal session with its own shell process.
+/// A Pane bundles a PTY backend + Grid + VtParser + Scrollback into a single unit.
+/// The backend is either a local PTY (owns the process) or a remote PTY (daemon IPC).
 const Pane = @This();
 
 pub const SpawnConfig = struct {
@@ -20,7 +23,13 @@ pub const SpawnConfig = struct {
     cursor_shape: Grid.CursorShape = .block,
 };
 
-pty: Pty,
+/// PTY backend: local process or daemon IPC stream.
+pub const Backend = union(enum) {
+    local: Pty,
+    remote: RemotePty,
+};
+
+backend: Backend,
 grid: Grid,
 vt: VtParser,
 id: u64,
@@ -60,7 +69,29 @@ pub fn init(allocator: Allocator, rows: u16, cols: u16, id: u64, spawn_config: S
     // ArrayList.append, we set grid to undefined here. Caller MUST
     // call linkVt() after the Pane is in its final memory location.
     return .{
-        .pty = pty,
+        .backend = .{ .local = pty },
+        .grid = grid,
+        .vt = VtParser.initEmpty(),
+        .id = id,
+        .scrollback = sb,
+    };
+}
+
+/// Create a pane backed by a daemon IPC stream (no local PTY).
+pub fn initRemote(allocator: Allocator, rows: u16, cols: u16, id: u64, ipc_fd: posix.fd_t, spawn_config: SpawnConfig) !Pane {
+    var grid = try Grid.init(allocator, rows, cols);
+    errdefer grid.deinit(allocator);
+    grid.tab_width = spawn_config.tab_width;
+    grid.cursor_shape = spawn_config.cursor_shape;
+
+    var sb = Scrollback.init(allocator, .{
+        .keyframe_interval = 100,
+        .max_lines = spawn_config.scrollback_lines,
+    });
+    grid.scrollback = &sb;
+
+    return .{
+        .backend = .{ .remote = .{ .ipc_fd = ipc_fd, .pane_id = id } },
         .grid = grid,
         .vt = VtParser.initEmpty(),
         .id = id,
@@ -74,14 +105,32 @@ pub fn init(allocator: Allocator, rows: u16, cols: u16, id: u64, spawn_config: S
 pub fn linkVt(self: *Pane, allocator: Allocator) void {
     self.vt.grid = &self.grid;
     self.vt.allocator = allocator;
-    self.vt.response_fd = self.pty.master;
-    // Re-link scrollback pointer after Pane was moved by ArrayList
+    switch (self.backend) {
+        .local => |*p| {
+            self.vt.response_fd = p.master;
+            self.vt.response_fn = null;
+        },
+        .remote => {
+            self.vt.response_fd = -1;
+            self.vt.response_fn = remoteResponse;
+            self.vt.response_ctx = @ptrCast(self);
+        },
+    }
     self.grid.scrollback = &self.scrollback;
 }
 
+/// VtParser response callback for remote panes: send DA1/DSR responses through IPC.
+fn remoteResponse(data: []const u8, ctx: ?*anyopaque) void {
+    const pane: *Pane = @ptrCast(@alignCast(ctx orelse return));
+    _ = pane.ptyWrite(data) catch {};
+}
+
 pub fn deinit(self: *Pane, allocator: Allocator) void {
-    self.pty.deinit();
-    self.grid.scrollback = null; // detach before freeing
+    switch (self.backend) {
+        .local => |*p| p.deinit(),
+        .remote => |*r| r.deinit(),
+    }
+    self.grid.scrollback = null;
     self.scrollback.deinit();
     self.grid.deinit(allocator);
 }
@@ -89,7 +138,7 @@ pub fn deinit(self: *Pane, allocator: Allocator) void {
 /// Read available data from the PTY and feed it through the VT parser.
 /// Returns the number of bytes read (0 if nothing available).
 pub fn readAndProcess(self: *Pane, buf: []u8) !usize {
-    const n = self.pty.read(buf) catch |err| switch (err) {
+    const n = self.ptyRead(buf) catch |err| switch (err) {
         error.WouldBlock => return 0,
         else => return err,
     };
@@ -103,12 +152,56 @@ pub fn readAndProcess(self: *Pane, buf: []u8) !usize {
 /// Resize this pane's grid and PTY to new dimensions.
 pub fn resize(self: *Pane, allocator: Allocator, rows: u16, cols: u16) !void {
     try self.grid.resize(allocator, rows, cols);
-    self.pty.resize(rows, cols);
+    self.ptyResize(rows, cols);
 }
 
 /// Check if the pane's shell process is still alive.
 pub fn isAlive(self: *const Pane) bool {
-    return self.pty.isAlive();
+    return self.ptyIsAlive();
+}
+
+// ── Unified PTY accessors ────────────────────────────────────────
+
+pub fn ptyRead(self: *Pane, buf: []u8) !usize {
+    return switch (self.backend) {
+        .local => |*p| p.read(buf),
+        .remote => |*r| r.read(buf),
+    };
+}
+
+pub fn ptyWrite(self: *const Pane, data: []const u8) !usize {
+    return switch (self.backend) {
+        .local => |p| p.write(data),
+        .remote => |r| r.write(data),
+    };
+}
+
+pub fn ptyResize(self: *Pane, rows: u16, cols: u16) void {
+    switch (self.backend) {
+        .local => |*p| p.resize(rows, cols),
+        .remote => |*r| r.resize(rows, cols),
+    }
+}
+
+pub fn ptyIsAlive(self: *const Pane) bool {
+    return switch (self.backend) {
+        .local => |p| p.isAlive(),
+        .remote => |r| r.isAlive(),
+    };
+}
+
+pub fn ptyMasterFd(self: *const Pane) posix.fd_t {
+    return switch (self.backend) {
+        .local => |p| p.master,
+        .remote => |r| r.ipc_fd,
+    };
+}
+
+pub fn childPid(self: *const Pane) ?posix.pid_t {
+    return switch (self.backend) {
+        .local => |p| p.child_pid,
+        .remote => null,
+    };
 }
 
 // ── Tests ────────────────────────────────────────────────────────
@@ -123,8 +216,8 @@ test "Pane init and deinit" {
     try std.testing.expectEqual(@as(u64, 1), pane.id);
     try std.testing.expectEqual(@as(u16, 24), pane.grid.rows);
     try std.testing.expectEqual(@as(u16, 80), pane.grid.cols);
-    try std.testing.expect(pane.pty.master >= 0);
-    try std.testing.expect(pane.pty.child_pid != null);
+    try std.testing.expect(pane.backend.local.master >= 0);
+    try std.testing.expect(pane.backend.local.child_pid != null);
 }
 
 test "Pane readAndProcess returns 0 on empty" {

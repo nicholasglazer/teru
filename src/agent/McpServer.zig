@@ -512,7 +512,7 @@ fn toolSendInput(self: *McpServer, pane_id: u64, text: []const u8, buf: []u8, id
     var unesc: [4096]u8 = undefined;
     const unesc_text = unescapeJson(text, &unesc);
 
-    _ = pane.pty.write(unesc_text) catch
+    _ = pane.ptyWrite(unesc_text) catch
         return jsonRpcError(buf, id, -32603, "Write failed");
 
     return std.fmt.bufPrint(buf,
@@ -529,7 +529,7 @@ fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, command: ?[
     const cwd: ?[]const u8 = if (cwd_param) |c| c else blk: {
         // Read active pane's CWD from /proc/<pid>/cwd
         if (self.multiplexer.getActivePane()) |pane| {
-            if (pane.pty.child_pid) |pid| {
+            if (pane.childPid()) |pid| {
                 if (builtin.os.tag == .windows) break :blk null;
                 var path_z: [64:0]u8 = undefined;
                 const proc_path = std.fmt.bufPrint(&path_z, "/proc/{d}/cwd", .{pid}) catch break :blk null;
@@ -565,7 +565,7 @@ fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, command: ?[
         _ = self.graph.spawn(.{
             .name = "shell",
             .kind = .shell,
-            .pid = pane.pty.child_pid,
+            .pid = pane.childPid(),
             .workspace = workspace,
         }) catch {};
     }
@@ -595,7 +595,7 @@ fn toolBroadcast(self: *McpServer, workspace: u8, text: []const u8, buf: []u8, i
 
     for (ws.node_ids.items) |node_id| {
         if (self.multiplexer.getPaneById(node_id)) |pane| {
-            _ = pane.pty.write(text) catch continue;
+            _ = pane.ptyWrite(text) catch continue;
             sent += 1;
         }
     }
@@ -623,7 +623,7 @@ fn toolSendKeys(self: *McpServer, pane_id: u64, params_body: []const u8, buf: []
     var iter = JsonArrayIterator.init(keys_json);
     while (iter.next()) |key_name| {
         const seq = resolveKey(key_name, app_cursor);
-        _ = pane.pty.write(seq) catch continue;
+        _ = pane.ptyWrite(seq) catch continue;
         sent += 1;
     }
 

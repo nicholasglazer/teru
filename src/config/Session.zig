@@ -362,7 +362,7 @@ pub fn restore(def: *SessionDef, mux: *Multiplexer, graph: *ProcessGraph, rows: 
                 _ = graph.spawn(.{
                     .name = node_name,
                     .kind = .shell,
-                    .pid = pane.pty.child_pid,
+                    .pid = pane.childPid(),
                     .workspace = ws_idx,
                 }) catch {};
             }
@@ -621,7 +621,7 @@ fn findNodeName(graph: *ProcessGraph, pane_id: u64) []const u8 {
 /// Falls back to empty string on non-Linux or on error.
 fn getPaneCwd(pane: anytype, buf: []u8) []const u8 {
     if (builtin.os.tag != .linux) return "";
-    const pid = pane.pty.child_pid orelse return "";
+    const pid = pane.childPid() orelse return "";
     var proc_path: [64:0]u8 = undefined;
     const path = std.fmt.bufPrint(&proc_path, "/proc/{d}/cwd", .{pid}) catch return "";
     proc_path[path.len] = 0;
@@ -634,7 +634,7 @@ fn getPaneCwd(pane: anytype, buf: []u8) []const u8 {
 /// Falls back to empty string on non-Linux or on error.
 fn getPaneCmd(pane: anytype, buf: []u8) []const u8 {
     if (builtin.os.tag != .linux) return "";
-    const pid = pane.pty.child_pid orelse return "";
+    const pid = pane.childPid() orelse return "";
     var proc_path: [64:0]u8 = undefined;
     const path = std.fmt.bufPrint(&proc_path, "/proc/{d}/cmdline", .{pid}) catch return "";
     proc_path[path.len] = 0;

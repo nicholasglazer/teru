@@ -4,3 +4,4 @@ pub const Pty = if (builtin.os.tag == .windows)
     @import("WinPty.zig")
 else
     @import("PosixPty.zig");
+pub const RemotePty = @import("RemotePty.zig");

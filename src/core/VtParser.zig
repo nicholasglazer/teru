@@ -45,6 +45,12 @@ allocator: std.mem.Allocator,
 /// Set to the PTY master fd by the Pane after init. -1 = no responses.
 response_fd: i32 = -1,
 
+/// Optional callback for sending responses through IPC instead of fd.
+/// When set, sendResponse() calls this instead of writing to response_fd.
+/// Used by remote/daemon panes that need pane_id framing.
+response_fn: ?*const fn (data: []const u8, ctx: ?*anyopaque) void = null,
+response_ctx: ?*anyopaque = null,
+
 /// CSI parameter accumulation
 params: [MAX_PARAMS]u16 = [_]u16{0} ** MAX_PARAMS,
 param_count: u8 = 0,
@@ -112,6 +118,10 @@ pub fn init(allocator: std.mem.Allocator, grid: *Grid) VtParser {
 /// stdin without being echoed back to the master as output.
 fn sendResponse(self: *const VtParser, data: []const u8) void {
     if (@import("builtin").os.tag == .windows) return; // ConPTY handles DA1/DSR internally
+    if (self.response_fn) |f| {
+        f(data, self.response_ctx);
+        return;
+    }
     if (self.response_fd >= 0) {
         _ = std.c.write(self.response_fd, data.ptr, data.len);
     }

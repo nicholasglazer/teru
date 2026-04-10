@@ -201,7 +201,7 @@ test "Header: round-trip toBytes/fromBytes" {
 }
 
 test "Header: all tags round-trip" {
-    const tags = [_]Tag{ .input, .output, .resize, .detach, .grid_sync, .pane_info, .command };
+    const tags = [_]Tag{ .input, .output, .resize, .detach, .state_sync, .pane_event, .command, .active_input, .request_sync };
     for (tags) |tag| {
         const hdr = Header{ .tag = tag, .len = 100 };
         const bytes = hdr.toBytes();
@@ -240,7 +240,9 @@ test "Tag.fromByte: valid and invalid" {
     try std.testing.expectEqual(Tag.input, Tag.fromByte(0).?);
     try std.testing.expectEqual(Tag.output, Tag.fromByte(1).?);
     try std.testing.expectEqual(Tag.command, Tag.fromByte(6).?);
-    try std.testing.expect(Tag.fromByte(7) == null);
+    try std.testing.expectEqual(Tag.active_input, Tag.fromByte(7).?);
+    try std.testing.expectEqual(Tag.request_sync, Tag.fromByte(8).?);
+    try std.testing.expect(Tag.fromByte(9) == null);
     try std.testing.expect(Tag.fromByte(255) == null);
 }
 

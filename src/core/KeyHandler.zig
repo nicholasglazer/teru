@@ -150,9 +150,9 @@ pub fn handleMuxCommand(
             // Unknown command; forward the prefix + key to active pane
             if (mux.getActivePane()) |pane| {
                 const pfx = [1]u8{prefix_byte};
-                _ = pane.pty.write(&pfx) catch {};
+                _ = pane.ptyWrite(&pfx) catch {};
                 const byte = [1]u8{cmd};
-                _ = pane.pty.write(&byte) catch {};
+                _ = pane.ptyWrite(&byte) catch {};
             }
         },
     }

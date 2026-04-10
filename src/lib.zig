@@ -13,6 +13,7 @@
 //!   persist  — Session serialization and scrollback compression
 
 pub const Pty = @import("pty/pty.zig").Pty;
+pub const RemotePty = @import("pty/pty.zig").RemotePty;
 pub const ProcessGraph = @import("graph/ProcessGraph.zig");
 pub const protocol = @import("agent/protocol.zig");
 pub const HookHandler = @import("agent/HookHandler.zig");
@@ -47,6 +48,7 @@ pub const png = @import("png.zig");
 
 test {
     _ = Pty;
+    _ = RemotePty;
     _ = ProcessGraph;
     _ = protocol;
     _ = HookHandler;

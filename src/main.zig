@@ -229,7 +229,7 @@ fn runDaemonMode(allocator: std.mem.Allocator, io: std.Io, session_name: []const
 
     // Spawn initial pane (24x80 default, resized by client on attach)
     const pid = try mux.spawnPane(24, 80);
-    _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = if (mux.getPaneById(pid)) |p| p.pty.child_pid else null }) catch {};
+    _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = if (mux.getPaneById(pid)) |p| p.childPid() else null }) catch {};
 
     // Start MCP server
     var mcp = McpServer.init(allocator, &mux, &graph) catch null;
@@ -513,7 +513,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                 for (0..ws_panes) |_| {
                     const pid = try mux.spawnPane(grid_rows, grid_cols);
                     if (mux.getPaneById(pid)) |pane| {
-                        _ = try graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.pty.child_pid, .workspace = @intCast(wi) });
+                        _ = try graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.childPid(), .workspace = @intCast(wi) });
                     }
                     hooks.fire(.spawn);
                 }
@@ -524,7 +524,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
             // Simple restore: just pane count on workspace 0
             const pid = try mux.spawnPane(grid_rows, grid_cols);
             if (mux.getPaneById(pid)) |pane| {
-                _ = try graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.pty.child_pid });
+                _ = try graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.childPid() });
             }
             hooks.fire(.spawn);
         }
@@ -532,7 +532,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
         // Fresh start: single pane
         const pid = try mux.spawnPane(grid_rows, grid_cols);
         if (mux.getPaneById(pid)) |pane| {
-            _ = try graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.pty.child_pid });
+            _ = try graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.childPid() });
         }
         hooks.fire(.spawn);
     }
@@ -640,13 +640,13 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                     prefix.reset();
                     // Send focus-in event to PTY (neovim, etc. use this)
                     if (mux.getActivePaneMut()) |pane| {
-                        _ = pane.pty.write("\x1b[I") catch {};
+                        _ = pane.ptyWrite("\x1b[I") catch {};
                     }
                 },
                 .focus_out => {
                     // Send focus-out event to PTY
                     if (mux.getActivePaneMut()) |pane| {
-                        _ = pane.pty.write("\x1b[O") catch {};
+                        _ = pane.ptyWrite("\x1b[O") catch {};
                     }
                 },
                 .wl_modifiers => |mods| {
@@ -901,11 +901,11 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                     // Paste (with bracketed paste wrapping)
                                     if (mux.getActivePaneMut()) |pane| {
                                         if (pane.vt.bracketed_paste) {
-                                            _ = pane.pty.write("\x1b[200~") catch {};
+                                            _ = pane.ptyWrite("\x1b[200~") catch {};
                                         }
                                         Clipboard.paste(&pane.pty);
                                         if (pane.vt.bracketed_paste) {
-                                            _ = pane.pty.write("\x1b[201~") catch {};
+                                            _ = pane.ptyWrite("\x1b[201~") catch {};
                                         }
                                     }
                                     continue;
@@ -959,7 +959,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                         const dir: @import("tiling/LayoutEngine.zig").SplitDirection = if (action == .split_horizontal) .horizontal else .vertical;
                                         const id = mux.spawnPane(grid_rows, grid_cols) catch continue;
                                         if (mux.getPaneById(id)) |pane| {
-                                            _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.pty.child_pid }) catch {};
+                                            _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.childPid() }) catch {};
                                         }
                                         hooks.fire(.spawn);
                                         const ws = &mux.layout_engine.workspaces[mux.active_workspace];
@@ -1102,7 +1102,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                     const dir: @import("tiling/LayoutEngine.zig").SplitDirection = if (action == .split_horizontal) .horizontal else .vertical;
                                     const id = mux.spawnPane(grid_rows, grid_cols) catch continue;
                                     if (mux.getPaneById(id)) |pane| {
-                                        _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.pty.child_pid }) catch {};
+                                        _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.childPid() }) catch {};
                                     }
                                     hooks.fire(.spawn);
                                     // Add to split tree
@@ -1124,9 +1124,9 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                     var alt_buf: [33]u8 = undefined;
                                     alt_buf[0] = 0x1b;
                                     @memcpy(alt_buf[1..][0..len], key_buf[0..len]);
-                                    _ = pane.pty.write(alt_buf[0 .. len + 1]) catch {};
+                                    _ = pane.ptyWrite(alt_buf[0 .. len + 1]) catch {};
                                 } else {
-                                    _ = pane.pty.write(key_buf[0..len]) catch {};
+                                    _ = pane.ptyWrite(key_buf[0..len]) catch {};
                                 }
                             }
                         }
@@ -1157,7 +1157,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                         }
                         if (mux.getActivePane()) |pane| {
                             const byte = [1]u8{@truncate(key.keycode)};
-                            _ = pane.pty.write(&byte) catch {};
+                            _ = pane.ptyWrite(&byte) catch {};
                         }
                     }
                 },
@@ -1186,7 +1186,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             var mbuf: [32]u8 = undefined;
                             if (pane.vt.mouse_sgr) {
                                 const mlen = std.fmt.bufPrint(&mbuf, "\x1b[<{d};{d};{d}M", .{ btn, mcol + 1, mrow + 1 }) catch continue;
-                                _ = pane.pty.write(mlen) catch {};
+                                _ = pane.ptyWrite(mlen) catch {};
                             } else {
                                 // X10 legacy encoding
                                 if (mcol + 33 < 256 and mrow + 33 < 256) {
@@ -1196,7 +1196,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                     mbuf[3] = @intCast(btn + 32);
                                     mbuf[4] = @intCast(mcol + 33);
                                     mbuf[5] = @intCast(mrow + 33);
-                                    _ = pane.pty.write(mbuf[0..6]) catch {};
+                                    _ = pane.ptyWrite(mbuf[0..6]) catch {};
                                 }
                             }
                             // Track button state for motion reporting (mode 1002)
@@ -1371,11 +1371,11 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             // Paste from clipboard (with bracketed paste wrapping)
                             if (mux.getActivePaneMut()) |pane| {
                                 if (pane.vt.bracketed_paste) {
-                                    _ = pane.pty.write("\x1b[200~") catch {};
+                                    _ = pane.ptyWrite("\x1b[200~") catch {};
                                 }
                                 Clipboard.paste(&pane.pty);
                                 if (pane.vt.bracketed_paste) {
-                                    _ = pane.pty.write("\x1b[201~") catch {};
+                                    _ = pane.ptyWrite("\x1b[201~") catch {};
                                 }
                             }
                         },
@@ -1417,7 +1417,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                     else => 0,
                                 };
                                 const mlen = std.fmt.bufPrint(&mbuf, "\x1b[<{d};{d};{d}m", .{ btn, mcol + 1, mrow + 1 }) catch continue;
-                                _ = pane.pty.write(mlen) catch {};
+                                _ = pane.ptyWrite(mlen) catch {};
                             } else {
                                 if (mcol + 33 < 256 and mrow + 33 < 256) {
                                     mbuf[0] = 0x1b;
@@ -1426,7 +1426,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                     mbuf[3] = 35; // release = button 3
                                     mbuf[4] = @intCast(mcol + 33);
                                     mbuf[5] = @intCast(mrow + 33);
-                                    _ = pane.pty.write(mbuf[0..6]) catch {};
+                                    _ = pane.ptyWrite(mbuf[0..6]) catch {};
                                 }
                             }
                         }
@@ -1524,7 +1524,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             if (pane.vt.mouse_sgr) {
                                 const btn: u8 = if (mouse_down) 32 else 35; // 32 = motion + left button
                                 const mlen = std.fmt.bufPrint(&mbuf, "\x1b[<{d};{d};{d}M", .{ btn, mcol + 1, mrow + 1 }) catch continue;
-                                _ = pane.pty.write(mlen) catch {};
+                                _ = pane.ptyWrite(mlen) catch {};
                             } else {
                                 if (mcol + 33 < 256 and mrow + 33 < 256) {
                                     mbuf[0] = 0x1b;
@@ -1533,7 +1533,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                     mbuf[3] = if (mouse_down) 64 else 67; // motion flag + button
                                     mbuf[4] = @intCast(mcol + 33);
                                     mbuf[5] = @intCast(mrow + 33);
-                                    _ = pane.pty.write(mbuf[0..6]) catch {};
+                                    _ = pane.ptyWrite(mbuf[0..6]) catch {};
                                 }
                             }
                         }
