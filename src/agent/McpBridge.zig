@@ -195,6 +195,12 @@ fn findSocket() ?[]const u8 {
 }
 
 fn discoverSocket() ?[]const u8 {
+    if (builtin.os.tag == .windows) {
+        // Windows uses named pipes (\\.\pipe\teru-mcp-*), not Unix sockets.
+        // Discovery requires FindFirstFileW; for now, require $TERU_MCP_SOCKET.
+        return null;
+    }
+
     const runtime_dir_z = getRuntimeDir() orelse return null;
     const runtime_dir = std.mem.sliceTo(runtime_dir_z, 0);
 

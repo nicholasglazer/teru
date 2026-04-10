@@ -200,7 +200,7 @@ pub fn ptyMasterFd(self: *const Pane) posix.fd_t {
     };
 }
 
-pub fn childPid(self: *const Pane) ?posix.pid_t {
+pub fn childPid(self: *const Pane) ?i32 {
     return switch (self.backend) {
         .local => |p| p.child_pid,
         .remote => null,
