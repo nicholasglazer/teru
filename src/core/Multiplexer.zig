@@ -133,7 +133,7 @@ pub fn getScrollbackLineCount(self: *const Multiplexer) u32 {
 
 /// Get the layout rect of the active pane (content area, inside border).
 /// Returns null if no active pane or layout calculation fails.
-pub fn getActivePaneRect(self: *Multiplexer, screen_width: u32, screen_height: u32, padding: u32) ?Rect {
+pub fn getActivePaneRect(self: *Multiplexer, screen_width: u32, screen_height: u32, padding: u32, status_bar_h: u32) ?Rect {
     const ws = &self.layout_engine.workspaces[self.active_workspace];
 
     var tree_ids_buf: [64]u64 = undefined;
@@ -150,7 +150,7 @@ pub fn getActivePaneRect(self: *Multiplexer, screen_width: u32, screen_height: u
         .x = @intCast(padding),
         .y = @intCast(padding),
         .width = @intCast(@min(screen_width -| padding * 2, std.math.maxInt(u16))),
-        .height = @intCast(@min(screen_height -| padding * 2, std.math.maxInt(u16))),
+        .height = @intCast(@min(screen_height -| padding * 2 -| status_bar_h, std.math.maxInt(u16))),
     };
 
     const rects = self.layout_engine.calculate(self.active_workspace, screen_rect) catch return null;
@@ -158,7 +158,7 @@ pub fn getActivePaneRect(self: *Multiplexer, screen_width: u32, screen_height: u
 
     const has_agents = if (self.graph) |g| g.countAgentsByState().running + g.countAgentsByState().done + g.countAgentsByState().failed > 0 else false;
     const bar_height: u16 = if (has_agents and screen_height > 60) 20 else 0;
-    const effective_height: u16 = @intCast(screen_height -| bar_height -| padding);
+    const effective_height: u16 = @intCast(screen_height -| bar_height -| padding -| status_bar_h);
 
     for (rects, 0..) |rect, i| {
         if (i >= pane_ids.len) break;
@@ -408,7 +408,7 @@ pub fn toggleZoom(self: *Multiplexer) void {
 /// dx > 0 grows width, dx < 0 shrinks. dy is reserved for future use.
 /// Resize all pane PTYs to match their current layout rects.
 /// Call after adding/removing panes or changing layout.
-pub fn resizePanePtys(self: *Multiplexer, screen_width: u32, screen_height: u32, cell_width: u32, cell_height: u32, pad: u32) void {
+pub fn resizePanePtys(self: *Multiplexer, screen_width: u32, screen_height: u32, cell_width: u32, cell_height: u32, pad: u32, status_bar_h: u32) void {
     const ws = &self.layout_engine.workspaces[self.active_workspace];
 
     // Get pane IDs from tree or flat list
@@ -420,9 +420,8 @@ pub fn resizePanePtys(self: *Multiplexer, screen_width: u32, screen_height: u32,
     if (pane_ids.len == 0) return;
 
     // Subtract status bar height (must match renderAllWithSelection)
-    const status_h: u32 = if (cell_height > 0) cell_height + 4 else 0;
     const sw = screen_width -| pad * 2;
-    const sh = screen_height -| pad * 2 -| status_h;
+    const sh = screen_height -| pad * 2 -| status_bar_h;
     if (sw == 0 or sh == 0 or cell_width == 0 or cell_height == 0) return;
 
     const screen = LayoutEngine.Rect{
@@ -521,8 +520,9 @@ pub fn renderAll(
     screen_height: u32,
     cell_width: u32,
     cell_height: u32,
+    status_bar_h: u32,
 ) void {
-    self.renderAllWithSelection(renderer, screen_width, screen_height, cell_width, cell_height, null);
+    self.renderAllWithSelection(renderer, screen_width, screen_height, cell_width, cell_height, null, status_bar_h);
 }
 
 /// Render all visible panes with optional selection highlight on the active pane.
@@ -534,17 +534,16 @@ pub fn renderAllWithSelection(
     cell_width: u32,
     cell_height: u32,
     sel: ?*const Selection,
+    status_bar_h: u32,
 ) void {
     @memset(renderer.framebuffer, renderer.scheme.bg);
 
     const pad = renderer.padding;
-    // Reserve space for the text status bar (cell_height + 4px when visible)
-    const status_h: u32 = if (cell_height > 0) cell_height + 4 else 0;
     const screen_rect = Rect{
         .x = @intCast(pad),
         .y = @intCast(pad),
         .width = @intCast(@min(screen_width -| pad * 2, std.math.maxInt(u16))),
-        .height = @intCast(@min(screen_height -| pad * 2 -| status_h, std.math.maxInt(u16))),
+        .height = @intCast(@min(screen_height -| pad * 2 -| status_bar_h, std.math.maxInt(u16))),
     };
 
     const ws = &self.layout_engine.workspaces[self.active_workspace];
@@ -565,7 +564,7 @@ pub fn renderAllWithSelection(
     // Reserve bottom bar height only when agents are active
     const has_agents = if (self.graph) |g| g.countAgentsByState().running + g.countAgentsByState().done + g.countAgentsByState().failed > 0 else false;
     const bar_height: u16 = if (has_agents and screen_height > 60) 20 else 0;
-    const effective_height: u16 = @intCast(screen_height -| bar_height -| pad);
+    const effective_height: u16 = @intCast(screen_height -| bar_height -| pad -| status_bar_h);
 
     for (rects, 0..) |rect, i| {
         if (i >= pane_ids.len) break;
@@ -806,7 +805,7 @@ test "Multiplexer renderAll with single pane" {
     renderer.padding = 0; // tests expect no padding
     defer renderer.deinit();
 
-    mux.renderAll(&renderer, width, height, cw, ch);
+    mux.renderAll(&renderer, width, height, cw, ch, 0);
 
     // Should have rendered something (at minimum the background)
     // Single pane = no border, cursor should be visible
@@ -830,7 +829,7 @@ test "Multiplexer renderAll with multiple panes" {
     renderer.padding = 0; // tests expect no padding
     defer renderer.deinit();
 
-    mux.renderAll(&renderer, width, height, cw, ch);
+    mux.renderAll(&renderer, width, height, cw, ch, 0);
 
     // With 2 panes, borders should be drawn. Active pane border = scheme.border_active.
     const scheme = ColorScheme{};
