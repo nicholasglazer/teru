@@ -134,16 +134,21 @@ pub fn run(self: *Daemon) void {
             }
         }
 
-        // Read PTY output and relay to client
+        // Read PTY output and relay to client (tagged with pane_id)
         var pane_idx: usize = 0;
         for (pty_start..nfds) |fi| {
             if (pane_idx >= self.mux.panes.items.len) break;
             if (fds[fi].revents & POLLIN != 0) {
                 const pane = &self.mux.panes.items[pane_idx];
+                const pane_id = pane.id;
                 const n = pane.readAndProcess(&pty_buf) catch 0;
                 if (n > 0) {
                     if (self.client_fd) |cfd| {
-                        _ = proto.sendMessage(cfd, .output, pty_buf[0..n]);
+                        // Tag output with pane_id: [8-byte LE pane_id][data]
+                        var tagged_buf: [8 + 8192]u8 = undefined;
+                        if (proto.encodePanePayload(pane_id, pty_buf[0..n], &tagged_buf)) |tagged| {
+                            _ = proto.sendMessage(cfd, .output, tagged);
+                        }
                     }
                 }
             }
@@ -204,6 +209,73 @@ fn tryAcceptClient(self: *Daemon) void {
     }
 
     self.client_fd = client.rawFd();
+
+    // Send current state to newly connected client
+    self.sendStateSync();
+
+    // Send recent grid content for all panes so client can render immediately
+    self.sendGridSync();
+}
+
+/// Send visible grid content for all panes to the client.
+/// This enables the client to render immediately on reconnect.
+fn sendGridSync(self: *Daemon) void {
+    const cfd = self.client_fd orelse return;
+    var line_buf: [16384]u8 = undefined;
+
+    for (self.mux.panes.items) |*pane| {
+        // Build grid content: rows of text for VtParser to replay
+        var grid_buf: [65536]u8 = undefined;
+        var gpos: usize = 0;
+
+        // Encode pane_id prefix
+        std.mem.writeInt(u64, grid_buf[0..8], pane.id, .little);
+        gpos = 8;
+
+        // Encode visible grid as VT sequences: cursor home + each row's text
+        // ESC[H = cursor home
+        if (gpos + 3 <= grid_buf.len) {
+            grid_buf[gpos] = 0x1b;
+            grid_buf[gpos + 1] = '[';
+            grid_buf[gpos + 2] = 'H';
+            gpos += 3;
+        }
+
+        var row: u16 = 0;
+        while (row < pane.grid.rows) : (row += 1) {
+            const row_start = @as(usize, row) * @as(usize, pane.grid.cols);
+            var col: u16 = 0;
+            var line_len: usize = 0;
+            while (col < pane.grid.cols) : (col += 1) {
+                const cell = pane.grid.cells[row_start + col];
+                if (cell.char >= 32 and cell.char < 127) {
+                    if (line_len < line_buf.len) {
+                        line_buf[line_len] = @intCast(cell.char);
+                        line_len += 1;
+                    }
+                } else {
+                    if (line_len < line_buf.len) {
+                        line_buf[line_len] = ' ';
+                        line_len += 1;
+                    }
+                }
+            }
+            // Trim trailing spaces
+            while (line_len > 0 and line_buf[line_len - 1] == ' ') line_len -= 1;
+
+            if (gpos + line_len + 2 > grid_buf.len) break;
+            @memcpy(grid_buf[gpos..][0..line_len], line_buf[0..line_len]);
+            gpos += line_len;
+            // Newline (CR+LF) between rows
+            if (row + 1 < pane.grid.rows) {
+                grid_buf[gpos] = '\r';
+                grid_buf[gpos + 1] = '\n';
+                gpos += 2;
+            }
+        }
+
+        _ = proto.sendMessage(cfd, .output, grid_buf[0..gpos]);
+    }
 }
 
 fn handleClientData(self: *Daemon, recv_buf: []u8) void {
@@ -215,10 +287,18 @@ fn handleClientData(self: *Daemon, recv_buf: []u8) void {
     };
 
     switch (hdr.tag) {
-        .input => {
+        .active_input => {
             // Forward keyboard input to active pane PTY
             if (self.mux.getActivePaneMut()) |pane| {
                 _ = pane.pty.write(payload) catch {};
+            }
+        },
+        .input => {
+            // Forward input to specific pane (pane_id-tagged)
+            if (proto.decodePanePayload(payload)) |pp| {
+                if (self.mux.getPaneById(pp.pane_id)) |pane| {
+                    _ = pane.pty.write(pp.data) catch {};
+                }
             }
         },
         .resize => {
@@ -229,8 +309,94 @@ fn handleClientData(self: *Daemon, recv_buf: []u8) void {
         .detach => {
             self.disconnectClient();
         },
+        .command => {
+            self.handleCommand(payload);
+        },
+        .request_sync => {
+            self.sendStateSync();
+        },
         else => {},
     }
+}
+
+fn handleCommand(self: *Daemon, payload: []const u8) void {
+    if (payload.len == 0) return;
+    const cmd = proto.Command.fromByte(payload[0]) orelse return;
+    switch (cmd) {
+        .switch_workspace => {
+            if (payload.len >= 2) self.mux.switchWorkspace(payload[1]);
+        },
+        .focus_next => self.mux.focusNext(),
+        .focus_prev => self.mux.focusPrev(),
+        .split_vertical => {
+            _ = self.mux.spawnPane(24, 80) catch {};
+        },
+        .split_horizontal => {
+            _ = self.mux.spawnPane(24, 80) catch {};
+        },
+        .close_pane => {
+            if (self.mux.getActivePane()) |pane| {
+                self.mux.closePane(pane.id);
+            }
+        },
+        .cycle_layout => self.mux.cycleLayout(),
+        .zoom_toggle => self.mux.toggleZoom(),
+        .swap_next => self.mux.swapPaneNext(),
+        .swap_prev => self.mux.swapPanePrev(),
+        .focus_master => self.mux.focusMaster(),
+        .set_master => self.mux.setMaster(),
+    }
+    // Notify client of state change
+    self.sendStateSync();
+}
+
+/// Send full multiplexer state to connected client for synchronization.
+fn sendStateSync(self: *Daemon) void {
+    const cfd = self.client_fd orelse return;
+
+    // Build state: active_workspace(1) + workspace_count(1) + per-workspace[layout(1) + pane_count(1)]
+    // + per-pane[pane_id(8) + rows(2) + cols(2) + workspace(1)]
+    var buf: [4096]u8 = undefined;
+    var pos: usize = 0;
+
+    buf[pos] = self.mux.active_workspace;
+    pos += 1;
+    buf[pos] = 10; // workspace count
+    pos += 1;
+
+    // Per-workspace info
+    for (&self.mux.layout_engine.workspaces) |*ws| {
+        if (pos + 2 > buf.len) break;
+        buf[pos] = @intFromEnum(ws.layout);
+        pos += 1;
+        buf[pos] = @intCast(@min(ws.node_ids.items.len, 255));
+        pos += 1;
+    }
+
+    // Per-pane info
+    for (self.mux.panes.items) |*pane| {
+        if (pos + 13 > buf.len) break;
+        std.mem.writeInt(u64, buf[pos..][0..8], pane.id, .little);
+        pos += 8;
+        std.mem.writeInt(u16, buf[pos..][0..2], pane.grid.rows, .little);
+        pos += 2;
+        std.mem.writeInt(u16, buf[pos..][0..2], pane.grid.cols, .little);
+        pos += 2;
+        // Find which workspace this pane belongs to
+        var ws_idx: u8 = 0;
+        for (&self.mux.layout_engine.workspaces, 0..) |*ws, wi| {
+            for (ws.node_ids.items) |nid| {
+                if (nid == pane.id) {
+                    ws_idx = @intCast(wi);
+                    break;
+                }
+            }
+        }
+        buf[pos] = ws_idx;
+        pos += 1;
+    }
+
+    _ = proto.sendMessage(cfd, .state_sync, buf[0..pos]);
 }
 
 fn disconnectClient(self: *Daemon) void {

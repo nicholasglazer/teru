@@ -178,10 +178,9 @@ fn runAttachMode(allocator: std.mem.Allocator, io: std.Io) !void {
 
 /// Auto-persistence startup: check daemon → session file → fresh start.
 fn runPersistentMode(allocator: std.mem.Allocator, io: std.Io) !void {
-    // 1. Check if daemon "default" is alive → auto-attach
+    // 1. Check if daemon "default" is alive → connect windowed UI to it
     if (Daemon.connectToSession("default")) |sock| {
-        _ = posix.system.close(sock);
-        return runSessionAttach("default");
+        return runWindowedDaemonMode(allocator, io, sock);
     } else |_| {}
 
     // 2. Check if session file exists → restore pane count
@@ -311,7 +310,7 @@ fn runSessionAttach(session_name: []const u8) !void {
                     return;
                 }
             }
-            _ = daemon_proto.sendMessage(sock, .input, in_buf[0..n]);
+            _ = daemon_proto.sendMessage(sock, .active_input, in_buf[0..n]);
         }
 
         // daemon → stdout (raw PTY output)
@@ -333,6 +332,14 @@ fn runSessionAttach(session_name: []const u8) !void {
 }
 
 fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo) !void {
+    return runWindowedModeImpl(allocator, io, restore, null);
+}
+
+fn runWindowedDaemonMode(allocator: std.mem.Allocator, io: std.Io, daemon_fd: posix.fd_t) !void {
+    return runWindowedModeImpl(allocator, io, null, daemon_fd);
+}
+
+fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daemon_fd: ?posix.fd_t) !void {
     // Load configuration from ~/.config/teru/teru.conf (defaults if missing)
     var config = try Config.load(allocator, io);
     defer config.deinit();
@@ -1646,8 +1653,11 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
             }
         }
 
-        // Poll all PTYs (grid is never modified by scroll — no save/restore needed)
-        const had_output = mux.pollPtys(&pty_buf);
+        // Poll PTYs: local mode reads from PTY fds, daemon mode reads from IPC socket
+        const had_output = if (daemon_fd) |dfd|
+            pollDaemonOutput(dfd, &mux, &pty_buf)
+        else
+            mux.pollPtys(&pty_buf);
 
         // If new lines were added to scrollback, adjust scroll_offset and
         // active selection to keep them pinned to the same content.
@@ -1958,6 +1968,59 @@ fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreIn
     if (config.persist_session) {
         persistSave(&mux, &graph, allocator, io);
     }
+}
+
+/// Poll daemon IPC socket for tagged PTY output and feed to the right pane's VtParser.
+/// Returns true if any output was received.
+fn pollDaemonOutput(fd: posix.fd_t, mux: *Multiplexer, buf: []u8) bool {
+    var any = false;
+    var hdr: daemon_proto.Header = undefined;
+    var recv_buf: [daemon_proto.max_payload]u8 = undefined;
+    _ = buf;
+
+    // Non-blocking read of all available messages
+    while (daemon_proto.recvMessage(fd, &hdr, &recv_buf)) |payload| {
+        switch (hdr.tag) {
+            .output => {
+                // Payload: [8-byte pane_id LE][PTY data]
+                if (daemon_proto.decodePanePayload(payload)) |pp| {
+                    if (mux.getPaneById(pp.pane_id)) |pane| {
+                        if (pp.data.len > 0) {
+                            pane.vt.feed(pp.data);
+                            pane.grid.dirty = true;
+                            any = true;
+                        }
+                    }
+                }
+            },
+            .state_sync => {
+                // TODO: parse state and sync workspace/pane layout
+                any = true;
+            },
+            .pane_event => {
+                // TODO: handle pane create/close events
+                any = true;
+            },
+            else => {},
+        }
+    }
+    return any;
+}
+
+/// Send a command to the daemon (for windowed-daemon mode).
+fn sendDaemonCommand(fd: posix.fd_t, cmd: daemon_proto.Command, arg: ?u8) void {
+    var buf: [2]u8 = undefined;
+    buf[0] = @intFromEnum(cmd);
+    const len: usize = if (arg) |a| blk: {
+        buf[1] = a;
+        break :blk 2;
+    } else 1;
+    _ = daemon_proto.sendMessage(fd, .command, buf[0..len]);
+}
+
+/// Send keyboard input to daemon's active pane.
+fn sendDaemonInput(fd: posix.fd_t, data: []const u8) void {
+    _ = daemon_proto.sendMessage(fd, .active_input, data);
 }
 
 /// Save session state to the persist directory (best-effort, errors silently ignored).

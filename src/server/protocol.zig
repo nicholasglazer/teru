@@ -9,20 +9,31 @@ const posix = std.posix;
 
 /// Message types for daemon <-> client communication.
 pub const Tag = enum(u8) {
-    /// Client -> daemon: keyboard/input bytes.
+    /// Client -> daemon: keyboard/input bytes for a pane.
+    /// Payload: 8-byte pane_id (LE) + input bytes.
     input = 0,
-    /// Daemon -> client: raw PTY output bytes.
+    /// Daemon -> client: raw PTY output bytes from a pane.
+    /// Payload: 8-byte pane_id (LE) + output bytes.
     output = 1,
-    /// Client -> daemon: terminal size changed (payload: 4 bytes, u16 rows + u16 cols).
+    /// Client -> daemon: terminal window size changed.
+    /// Payload: 4 bytes (u16 rows + u16 cols LE).
     resize = 2,
     /// Client -> daemon: graceful disconnect.
     detach = 3,
-    /// Daemon -> client: full grid snapshot on attach (reserved for Phase 3 GUI).
-    grid_sync = 4,
-    /// Daemon -> client: pane layout info (reserved for Phase 3 GUI).
-    pane_info = 5,
-    /// Client -> daemon: multiplexer command (split, close, etc; reserved).
+    /// Daemon -> client: full pane state on attach.
+    /// Payload: JSON with panes, workspaces, layouts.
+    state_sync = 4,
+    /// Daemon -> client: pane created/closed event.
+    /// Payload: 8-byte pane_id (LE) + 1-byte event (0=created, 1=closed).
+    pane_event = 5,
+    /// Client -> daemon: multiplexer command.
+    /// Payload: 1-byte command + variable args.
     command = 6,
+    /// Client -> daemon: send input to active pane (no pane_id prefix).
+    /// Payload: raw input bytes.
+    active_input = 7,
+    /// Client -> daemon: request state sync.
+    request_sync = 8,
 
     pub fn fromByte(b: u8) ?Tag {
         return switch (b) {
@@ -30,13 +41,50 @@ pub const Tag = enum(u8) {
             1 => .output,
             2 => .resize,
             3 => .detach,
-            4 => .grid_sync,
-            5 => .pane_info,
+            4 => .state_sync,
+            5 => .pane_event,
             6 => .command,
+            7 => .active_input,
+            8 => .request_sync,
             else => null,
         };
     }
 };
+
+/// Multiplexer commands sent from client to daemon.
+pub const Command = enum(u8) {
+    switch_workspace = 0,
+    focus_next = 1,
+    focus_prev = 2,
+    split_vertical = 3,
+    split_horizontal = 4,
+    close_pane = 5,
+    cycle_layout = 6,
+    zoom_toggle = 7,
+    swap_next = 8,
+    swap_prev = 9,
+    focus_master = 10,
+    set_master = 11,
+
+    pub fn fromByte(b: u8) ?Command {
+        return if (b <= 11) @enumFromInt(b) else null;
+    }
+};
+
+/// Encode a pane_id-prefixed payload: 8-byte LE pane_id + data.
+pub fn encodePanePayload(pane_id: u64, data: []const u8, buf: []u8) ?[]const u8 {
+    if (data.len + 8 > buf.len) return null;
+    std.mem.writeInt(u64, buf[0..8], pane_id, .little);
+    if (data.len > 0) @memcpy(buf[8..][0..data.len], data);
+    return buf[0 .. 8 + data.len];
+}
+
+/// Decode a pane_id-prefixed payload.
+pub fn decodePanePayload(payload: []const u8) ?struct { pane_id: u64, data: []const u8 } {
+    if (payload.len < 8) return null;
+    const pane_id = std.mem.readInt(u64, payload[0..8], .little);
+    return .{ .pane_id = pane_id, .data = payload[8..] };
+}
 
 /// Wire header: 1 byte tag + 4 bytes little-endian length.
 pub const Header = extern struct {
