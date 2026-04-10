@@ -37,6 +37,7 @@ const Keyboard = switch (builtin.os.tag) {
 
 const Session = @import("persist/Session.zig");
 const UrlDetector = @import("core/UrlDetector.zig");
+const mouse_handler = @import("input/mouse.zig");
 const HookListener = @import("agent/HookListener.zig");
 const HookHandler = @import("agent/HookHandler.zig");
 const SignalManager = @import("core/SignalManager.zig");
@@ -730,35 +731,10 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
     _ = &zoom_pending_resize;
     var zoom_timestamp: i128 = 0; // last zoom event time (ns)
     _ = &zoom_timestamp;
-    var mouse_down = false;
-    _ = &mouse_down;
-    var mouse_start_row: u16 = 0;
-    var mouse_start_col: u16 = 0;
-    _ = &mouse_start_row;
-    _ = &mouse_start_col;
-    var border_dragging = false;
-    _ = &border_dragging;
-    var border_drag_x: u32 = 0; // initial mouse x for drag
-    _ = &border_drag_x;
-    var border_drag_ratio: f32 = 0.6; // initial ratio
-    _ = &border_drag_ratio;
-    var border_drag_node: u16 = 0; // split node index for tree drag
-    _ = &border_drag_node;
-    // Shift+hover URL underline state
-    var hover_url_row: u16 = 0;
-    var hover_url_start: u16 = 0;
-    var hover_url_end: u16 = 0;
-    var hover_url_active: bool = false;
-    _ = &hover_url_row;
-    _ = &hover_url_start;
-    _ = &hover_url_end;
-    _ = &hover_url_active;
+    var ms = mouse_handler.MouseState{};
+    _ = &ms;
     var pty_buf: [8192]u8 = undefined;
     var running = true;
-    var mouse_cursor_hidden = false;
-    var last_click_time: i128 = 0;
-    var last_click_row: u16 = 0;
-    var last_click_col: u16 = 0;
     const default_word_delimiters = " \t{}[]()\"'`,;:@";
     var last_blink_time: i128 = compat.monotonicNow();
     var cursor_blink_visible: bool = true;
@@ -879,9 +855,9 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                 },
                 .key_press => |key| {
                     // Hide mouse cursor while typing
-                    if (config.mouse_hide_when_typing and !mouse_cursor_hidden) {
+                    if (config.mouse_hide_when_typing and !ms.mouse_cursor_hidden) {
                         win.hideCursor();
-                        mouse_cursor_hidden = true;
+                        ms.mouse_cursor_hidden = true;
                     }
                     // Reset cursor blink on keypress (cursor stays solid while typing)
                     if (config.cursor_blink) {
@@ -1140,6 +1116,32 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                         mux.saveSession(&graph, path, io) catch {};
                                         hooks.fire(.session_save);
                                         running = false;
+                                        continue;
+                                    }
+                                    if (action == .copy_selection) {
+                                        if (selection.active) {
+                                            if (mux.getActivePane()) |pane| {
+                                                var sel_buf: [65536]u8 = undefined;
+                                                const sb = pane.grid.scrollback;
+                                                const copy_len = selection.getText(&pane.grid, sb, &sel_buf);
+                                                if (copy_len > 0) {
+                                                    Clipboard.copy(sel_buf[0..copy_len]);
+                                                    mux.notify("Copied to clipboard");
+                                                }
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    if (action == .paste_clipboard) {
+                                        if (mux.getActivePaneMut()) |pane| {
+                                            if (pane.vt.bracketed_paste) {
+                                                _ = pane.ptyWrite("\x1b[200~") catch {};
+                                            }
+                                            Clipboard.paste(&pane.backend.local);
+                                            if (pane.vt.bracketed_paste) {
+                                                _ = pane.ptyWrite("\x1b[201~") catch {};
+                                            }
+                                        }
                                         continue;
                                     }
                                     if (action == .toggle_zoom) {

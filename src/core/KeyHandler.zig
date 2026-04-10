@@ -52,6 +52,8 @@ pub const MuxAction = enum {
     zoom_reset,
     detach,
     toggle_zoom,
+    copy_selection,
+    paste_clipboard,
 };
 
 // ── Mux command dispatch ─────────────────────────────────────────
@@ -215,8 +217,8 @@ pub fn executeAction(action: KB.Action, mux: *Multiplexer) MuxAction {
         .mode_search => .enter_search,
         .mode_locked => .none,
         .session_detach => .detach,
-        .copy_selection => .none, // TODO: implement in main
-        .paste_clipboard => .none, // TODO: implement in main
+        .copy_selection => .copy_selection,
+        .paste_clipboard => .paste_clipboard,
         .workspace_1, .workspace_2, .workspace_3,
         .workspace_4, .workspace_5, .workspace_6,
         .workspace_7, .workspace_8, .workspace_9,
