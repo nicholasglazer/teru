@@ -743,18 +743,6 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
     // No saved_cells needed — scroll is non-destructive (renders overlay on framebuffer)
 
     // Search mode state (Feature 9)
-    var mouse_down = false;
-    var last_click_time: i128 = 0;
-    var border_dragging = false;
-    var border_drag_node: ?usize = null;
-    var border_drag_x: u32 = 0;
-    var border_drag_ratio: f32 = 0.5;
-    var last_click_row: u16 = 0;
-    var last_click_col: u16 = 0;
-    var mouse_start_row: u16 = 0;
-    var mouse_start_col: u16 = 0;
-    var mouse_cursor_hidden = false;
-    var hover_url_active = false;
     var search_mode = false;
     var search_query: [256]u8 = undefined;
     var search_len: usize = 0;
@@ -1370,7 +1358,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                 }
                             }
                             // Track button state for motion reporting (mode 1002)
-                            if (mouse.button == .left) mouse_down = true;
+                            if (mouse.button == .left) ms.mouse_down = true;
                             // Scroll events: don't consume, let teru handle them too
                             if (mouse.button != .scroll_up and mouse.button != .scroll_down) continue;
                         }
@@ -1442,12 +1430,12 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                 // Border drag: check if click is on a split or layout border
                                 if (click_ws.split_root != null) {
                                     if (mux.layout_engine.workspaces[mux.active_workspace].findSplitForBorder(click_screen, mouse.x, mouse.y, 4)) |hit| {
-                                        border_dragging = true;
+                                        ms.border_dragging = true;
                                         // Store the correct axis for drag delta
                                         const split_dir = mux.layout_engine.workspaces[mux.active_workspace].split_nodes[hit.node_idx].split.dir;
-                                        border_drag_x = if (split_dir == .horizontal) mouse.y else mouse.x;
-                                        border_drag_ratio = mux.layout_engine.workspaces[mux.active_workspace].split_nodes[hit.node_idx].split.ratio;
-                                        border_drag_node = hit.node_idx;
+                                        ms.border_drag_x = if (split_dir == .horizontal) mouse.y else mouse.x;
+                                        ms.border_drag_ratio = mux.layout_engine.workspaces[mux.active_workspace].split_nodes[hit.node_idx].split.ratio;
+                                        ms.border_drag_node = hit.node_idx;
                                         continue;
                                     }
                                 } else if (click_pane_ids.len >= 2) {
@@ -1460,19 +1448,19 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                     if (is_vertical) {
                                         const border_x: u32 = @as(u32, click_screen.x) + @as(u32, @intFromFloat(@as(f32, @floatFromInt(click_screen.width)) * ratio));
                                         if (mouse.x >= border_x -| zone and mouse.x <= border_x + zone) {
-                                            border_dragging = true;
-                                            border_drag_x = mouse.x;
-                                            border_drag_ratio = ratio;
-                                            border_drag_node = std.math.maxInt(u16); // sentinel: flat layout
+                                            ms.border_dragging = true;
+                                            ms.border_drag_x = mouse.x;
+                                            ms.border_drag_ratio = ratio;
+                                            ms.border_drag_node = std.math.maxInt(u16); // sentinel: flat layout
                                             continue;
                                         }
                                     } else if (is_horizontal) {
                                         const border_y: u32 = @as(u32, click_screen.y) + @as(u32, @intFromFloat(@as(f32, @floatFromInt(click_screen.height)) * ratio));
                                         if (mouse.y >= border_y -| zone and mouse.y <= border_y + zone) {
-                                            border_dragging = true;
-                                            border_drag_x = mouse.y; // store Y for horizontal
-                                            border_drag_ratio = ratio;
-                                            border_drag_node = std.math.maxInt(u16); // sentinel: flat layout
+                                            ms.border_dragging = true;
+                                            ms.border_drag_x = mouse.y; // store Y for horizontal
+                                            ms.border_drag_ratio = ratio;
+                                            ms.border_drag_node = std.math.maxInt(u16); // sentinel: flat layout
                                             continue;
                                         }
                                     }
@@ -1500,8 +1488,8 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
 
                             // Double-click: select word
                             const click_now = compat.monotonicNow();
-                            if (click_now - last_click_time < DOUBLE_CLICK_NS and
-                                row == last_click_row and col == last_click_col)
+                            if (click_now - ms.last_click_time < DOUBLE_CLICK_NS and
+                                row == ms.last_click_row and col == ms.last_click_col)
                             {
                                 if (mux.getActivePane()) |pane| {
                                     const delims = config.word_delimiters orelse default_word_delimiters;
@@ -1519,12 +1507,12 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                         }
                                     }
                                 }
-                                last_click_time = 0; // prevent triple-click triggering
+                                ms.last_click_time = 0; // prevent triple-click triggering
                                 continue;
                             }
-                            last_click_time = click_now;
-                            last_click_row = row;
-                            last_click_col = col;
+                            ms.last_click_time = click_now;
+                            ms.last_click_row = row;
+                            ms.last_click_col = col;
 
                             // Clear any existing selection on click
                             if (selection.active) {
@@ -1533,9 +1521,9 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             }
                             // Record click position — don't start selection yet.
                             // Selection only begins on mouse_motion (drag).
-                            mouse_start_row = row;
-                            mouse_start_col = col;
-                            mouse_down = true;
+                            ms.mouse_start_row = row;
+                            ms.mouse_start_col = col;
+                            ms.mouse_down = true;
                         },
                         .middle => {
                             // Paste from clipboard (with bracketed paste wrapping)
@@ -1601,14 +1589,14 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             }
                         }
                     }
-                    if (mouse.button == .left and border_dragging) {
-                        border_dragging = false;
+                    if (mouse.button == .left and ms.border_dragging) {
+                        ms.border_dragging = false;
                         const sz = win.getSize();
                         mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
                         continue;
                     }
-                    if (mouse.button == .left and mouse_down) {
-                        mouse_down = false;
+                    if (mouse.button == .left and ms.mouse_down) {
+                        ms.mouse_down = false;
                         // Don't process selection when mouse tracking is active
                         const track_active = if (mux.getActivePane()) |pane| pane.vt.mouse_tracking != .none else false;
                         if (track_active) continue;
@@ -1642,18 +1630,18 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                 },
                 .mouse_motion => |motion| {
                     // Show mouse cursor when mouse moves
-                    if (mouse_cursor_hidden) {
+                    if (ms.mouse_cursor_hidden) {
                         win.showCursor();
-                        mouse_cursor_hidden = false;
+                        ms.mouse_cursor_hidden = false;
                     }
                     // Border drag-to-resize
-                    if (border_dragging) {
+                    if (ms.border_dragging) {
                         const sz = win.getSize();
                         const ws_mut = &mux.layout_engine.workspaces[mux.active_workspace];
-                        if (ws_mut.split_root != null and border_drag_node != std.math.maxInt(u16)) {
+                        if (ws_mut.split_root != null and ms.border_drag_node != std.math.maxInt(u16)) {
                             // Tree split drag — use correct axis based on split direction
                             const SplitNode = @import("tiling/types.zig").SplitNode;
-                            const node = ws_mut.split_nodes[border_drag_node];
+                            const node = ws_mut.split_nodes[ms.border_drag_node];
                             const is_h = switch (node) {
                                 .split => |s| s.dir == .horizontal,
                                 .leaf => false,
@@ -1662,9 +1650,9 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             const content_dim = if (is_h) sz.height -| padding * 2 else sz.width -| padding * 2;
                             const mouse_pos = if (is_h) motion.y else motion.x;
                             if (content_dim > 0) {
-                                const delta_px: i32 = @as(i32, @intCast(mouse_pos)) - @as(i32, @intCast(border_drag_x));
+                                const delta_px: i32 = @as(i32, @intCast(mouse_pos)) - @as(i32, @intCast(ms.border_drag_x));
                                 const delta_ratio: f32 = @as(f32, @floatFromInt(delta_px)) / @as(f32, @floatFromInt(content_dim));
-                                ws_mut.resizeSplit(border_drag_node, std.math.clamp(border_drag_ratio + delta_ratio, MASTER_RATIO_MIN, MASTER_RATIO_MAX));
+                                ws_mut.resizeSplit(ms.border_drag_node, std.math.clamp(ms.border_drag_ratio + delta_ratio, MASTER_RATIO_MIN, MASTER_RATIO_MAX));
                             }
                         } else {
                             // Flat layout master_ratio drag
@@ -1672,9 +1660,9 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             const content_size = if (is_horizontal) sz.height -| padding * 2 else sz.width -| padding * 2;
                             const mouse_pos = if (is_horizontal) motion.y else motion.x;
                             if (content_size > 0) {
-                                const delta_px: i32 = @as(i32, @intCast(mouse_pos)) - @as(i32, @intCast(border_drag_x));
+                                const delta_px: i32 = @as(i32, @intCast(mouse_pos)) - @as(i32, @intCast(ms.border_drag_x));
                                 const delta_ratio: f32 = @as(f32, @floatFromInt(delta_px)) / @as(f32, @floatFromInt(content_size));
-                                ws_mut.master_ratio = std.math.clamp(border_drag_ratio + delta_ratio, MASTER_RATIO_MIN, MASTER_RATIO_MAX);
+                                ws_mut.master_ratio = std.math.clamp(ms.border_drag_ratio + delta_ratio, MASTER_RATIO_MIN, MASTER_RATIO_MAX);
                             }
                         }
                         for (mux.panes.items) |*p| p.grid.dirty = true;
@@ -1684,7 +1672,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                     if (mux.getActivePaneMut()) |pane| {
                         const report_motion = switch (pane.vt.mouse_tracking) {
                             .any_event => true,
-                            .button_event => mouse_down,
+                            .button_event => ms.mouse_down,
                             else => false,
                         };
                         if (report_motion) {
@@ -1692,7 +1680,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             const mrow: u16 = @intCast(@min(motion.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
                             var mbuf: [32]u8 = undefined;
                             if (pane.vt.mouse_sgr) {
-                                const btn: u8 = if (mouse_down) 32 else 35; // 32 = motion + left button
+                                const btn: u8 = if (ms.mouse_down) 32 else 35; // 32 = motion + left button
                                 const mlen = std.fmt.bufPrint(&mbuf, "\x1b[<{d};{d};{d}M", .{ btn, mcol + 1, mrow + 1 }) catch continue;
                                 _ = pane.ptyWrite(mlen) catch {};
                             } else {
@@ -1700,7 +1688,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                     mbuf[0] = 0x1b;
                                     mbuf[1] = '[';
                                     mbuf[2] = 'M';
-                                    mbuf[3] = if (mouse_down) 64 else 67; // motion flag + button
+                                    mbuf[3] = if (ms.mouse_down) 64 else 67; // motion flag + button
                                     mbuf[4] = @intCast(mcol + 33);
                                     mbuf[5] = @intCast(mrow + 33);
                                     _ = pane.ptyWrite(mbuf[0..6]) catch {};
@@ -1715,26 +1703,26 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                         const hrow: u16 = @intCast(@min(motion.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
                         if (mux.getActivePane()) |pane| {
                             if (UrlDetector.findUrlAt(&pane.grid, hrow, hcol)) |match| {
-                                if (!hover_url_active or hover_url_row != match.row or hover_url_start != match.start_col or hover_url_end != match.end_col) {
-                                    hover_url_active = true;
-                                    hover_url_row = match.row;
-                                    hover_url_start = match.start_col;
-                                    hover_url_end = match.end_col;
+                                if (!ms.hover_url_active or ms.hover_url_row != match.row or ms.hover_url_start != match.start_col or ms.hover_url_end != match.end_col) {
+                                    ms.hover_url_active = true;
+                                    ms.hover_url_row = match.row;
+                                    ms.hover_url_start = match.start_col;
+                                    ms.hover_url_end = match.end_col;
                                     pane.grid.dirty = true;
                                 }
-                            } else if (hover_url_active) {
-                                hover_url_active = false;
+                            } else if (ms.hover_url_active) {
+                                ms.hover_url_active = false;
                                 pane.grid.dirty = true;
                             }
                         }
-                    } else if (hover_url_active) {
-                        hover_url_active = false;
+                    } else if (ms.hover_url_active) {
+                        ms.hover_url_active = false;
                         if (mux.getActivePane()) |pane| pane.grid.dirty = true;
                     }
 
                     // Only handle selection when mouse tracking is off (app handles mouse)
                     const tracking_active = if (mux.getActivePane()) |pane| pane.vt.mouse_tracking != .none else false;
-                    if (mouse_down and !tracking_active) {
+                    if (ms.mouse_down and !tracking_active) {
                         const col: u16 = @intCast(@min(motion.x / atlas.cell_width, @as(u32, grid_cols -| 1)));
                         const row: u16 = @intCast(@min(motion.y / atlas.cell_height, @as(u32, grid_rows -| 1)));
 
@@ -1742,7 +1730,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                         if (!selection.active) {
                             const so = mux.getScrollOffset();
                             const sbl: u32 = mux.getScrollbackLineCount();
-                            selection.begin(mouse_start_row, mouse_start_col, so, sbl);
+                            selection.begin(ms.mouse_start_row, ms.mouse_start_col, so, sbl);
                         }
 
                         // Auto-scroll when dragging near viewport edges
@@ -2078,15 +2066,15 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                     }
 
                     // Shift+hover URL underline
-                    if (hover_url_active) {
+                    if (ms.hover_url_active) {
                         if (mux.getActivePaneRect(sz.width, sz.height, cpu.padding, status_bar_h)) |pr| {
                             const cw = atlas.cell_width;
                             const ch = atlas.cell_height;
                             // Draw 1px underline at the bottom of each cell in the URL
-                            var ucol: u16 = hover_url_start;
-                            while (ucol <= hover_url_end) : (ucol += 1) {
+                            var ucol: u16 = ms.hover_url_start;
+                            while (ucol <= ms.hover_url_end) : (ucol += 1) {
                                 const ux = @as(usize, pr.x) + @as(usize, ucol) * cw;
-                                const uy = @as(usize, pr.y) + @as(usize, hover_url_row) * ch + ch - 1;
+                                const uy = @as(usize, pr.y) + @as(usize, ms.hover_url_row) * ch + ch - 1;
                                 if (uy >= cpu.height) break;
                                 const ux_end = @min(ux + cw, @as(usize, pr.x) + pr.width);
                                 if (ux >= cpu.width or ux >= ux_end) continue;
