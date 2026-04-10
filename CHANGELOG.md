@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.3.10 (2026-04-10)
+
+### Features
+- **Clean CLI** — simplified interface: `teru` starts a fresh scratchpad, `teru -n NAME` creates/attaches a persistent named session (daemon auto-started), `teru -n NAME -t TEMPLATE` starts from a .tsess template, `teru -l` lists sessions.
+- **Template system** — `.tsess` files define multi-workspace sessions (workspaces, layouts, panes, commands, CWDs). Searched in `~/.config/teru/templates/` then `./examples/`. Export current session via `teru_session_save` MCP tool.
+- **Pane backend abstraction** — `RemotePty` in `src/pty/` enables daemon-backed windowed mode where panes connect to a running daemon instead of owning PTYs directly.
+- **Full state sync** — workspace position, focus, master ratio, and zoom state preserved across daemon attach/detach cycles.
+- **`restore_layout` config option** — save layout on exit, restore on launch (fresh shells, no daemon). Separate from `persist_session` which keeps processes alive.
+- **`persist_session` config option** — keep processes alive between window closes via auto-daemon.
+
+### Fixes
+- **JSON injection in MCP tools** — all MCP tool responses properly escape user-controlled strings.
+- **Scrollback OOM protection** — bounded scrollback allocation prevents runaway memory growth.
+- **Audit critical fixes** — bounds checks on CSI params, path traversal protection in session names, input validation on MCP tool arguments.
+- **State sync active_pane_id** — uses full u64, matches `?u64` Workspace.active_node type.
+- **pane.pty to pane.backend** — fixed missed migration in `spawnPaneWithCommand` + platform dispatch.
+- **Stale selection cleared** — selection highlight no longer persists when PTY output changes grid content.
+
+### Refactoring
+- Deduplicated layout parsing into `Layout.parse`/`Layout.name` (types.zig).
+- Extracted hardcoded magic numbers into named constants.
+- Annotated safe `catch {}` blocks, log session save failures instead of silently dropping.
+
+### Testing
+- 8 protocol robustness fuzz tests for malformed wire messages.
+- 499+ inline tests (up from 480).
+
 ## 0.3.9 (2026-04-09)
 
 ### Features

@@ -11,7 +11,7 @@ zig build run -- --raw  # run (TTY mode)
 ## Architecture
 - src/core/ -- VtParser, Grid, Pane, Multiplexer, Selection, KeyHandler, Clipboard, ViMode
 - src/server/ -- Daemon persistence (daemon.zig, protocol.zig, ipc.zig cross-platform IPC)
-- src/pty/ -- PTY management (pty.zig dispatch, PosixPty.zig POSIX, WinPty.zig ConPTY)
+- src/pty/ -- PTY management (pty.zig dispatch, PosixPty.zig POSIX, WinPty.zig ConPTY, RemotePty.zig daemon-backed)
 - src/graph/ -- ProcessGraph (DAG of all processes/agents)
 - src/agent/ -- OSC 9999 protocol, HookHandler, HookListener, McpServer, PaneBackend
 - src/tiling/ -- Layout engine (master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion)
@@ -27,15 +27,16 @@ zig build run -- --raw  # run (TTY mode)
 - See `.claude/rules/zig-terminal.md` for dev rules, anti-patterns, and perf targets
 
 ## Version
-Current: 0.3.9. Single source of truth: `build.zig` (line 10). Propagated via `build_options.version` to main.zig and McpServer.zig at compile time. Bump with: `make bump-version V=x.y.z` (updates build.zig + build.zig.zon)
+Current: 0.3.10. Single source of truth: `build.zig` (line 10). Propagated via `build_options.version` to main.zig and McpServer.zig at compile time. Bump with: `make bump-version V=x.y.z` (updates build.zig + build.zig.zon)
 
 ## Testing
-All modules have inline tests (480+ test blocks). Run with `zig build test`.
+All modules have inline tests (499+ test blocks). Run with `zig build test`.
 
 ## Session Persistence
 ```bash
-teru --daemon myproject   # start headless daemon (PTYs persist)
-teru --session myproject  # attach to daemon (TTY raw mode)
-teru --list               # list active sessions
-# Ctrl+\ to detach from session
+teru                              # fresh terminal (scratchpad)
+teru -n myproject                 # persistent named session (daemon auto-started)
+teru -n myproject -t claude-power # start from template
+teru -l                           # list active sessions
+# Alt+D to detach from session
 ```
