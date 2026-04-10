@@ -349,8 +349,13 @@ pub fn restore(def: *SessionDef, mux: *Multiplexer, graph: *ProcessGraph, rows: 
             const prev_ws = mux.active_workspace;
             mux.switchWorkspace(ws_idx);
 
-            // Spawn the pane
-            const shell = cmd orelse compat.getenv("SHELL") orelse "/bin/sh";
+            // Spawn the pane.
+            // auto_start=true (default): pass cmd as the shell arg so it runs immediately.
+            // auto_start=false: spawn a plain shell, then type the command without Enter.
+            const shell = if (!pane_def.auto_start and cmd != null)
+                compat.getenv("SHELL") orelse "/bin/sh"
+            else
+                cmd orelse compat.getenv("SHELL") orelse "/bin/sh";
             const pane_id = mux.spawnPaneWithCommand(rows, cols, shell, cwd) catch {
                 mux.switchWorkspace(prev_ws);
                 continue;
@@ -367,17 +372,14 @@ pub fn restore(def: *SessionDef, mux: *Multiplexer, graph: *ProcessGraph, rows: 
                 }) catch {};
             }
 
-            // If cmd is set but auto_start is false, type command without Enter
-            // If auto_start is true (default), the shell is already running the command
-            // because we passed it as the shell arg via spawnPaneWithCommand.
-            // For auto_start=false, we need a different approach: spawn shell first,
-            // then type the command without pressing Enter.
+            // auto_start=false: write cmd text to PTY without newline so the
+            // user sees it on the prompt but must press Enter to execute.
             if (!pane_def.auto_start and pane_def.cmd.len > 0) {
-                // The pane was spawned with the command as the shell,
-                // which means it's already running. For auto_start=false,
-                // we should have spawned a plain shell and typed the command.
-                // Since we can't undo the spawn, this is a best-effort approach.
-                // A proper implementation would spawn $SHELL then write cmd text.
+                if (cmd) |c| {
+                    if (mux.getPaneById(pane_id)) |pane| {
+                        _ = pane.ptyWrite(c) catch {};
+                    }
+                }
             }
 
             mux.switchWorkspace(prev_ws);
