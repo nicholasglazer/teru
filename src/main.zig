@@ -53,6 +53,23 @@ const version = build_options.version;
 
 const session_path = "/tmp/teru-session.bin";
 
+// Default PTY/grid dimensions
+const DEFAULT_ROWS: u16 = 24;
+const DEFAULT_COLS: u16 = 80;
+
+// Master ratio clamps for mouse drag resize
+const MASTER_RATIO_MIN: f32 = 0.15;
+const MASTER_RATIO_MAX: f32 = 0.85;
+
+// Timing constants (nanoseconds)
+const DOUBLE_CLICK_NS: i128 = 300_000_000; // 300ms
+const CURSOR_BLINK_NS: i128 = 530_000_000; // 530ms on/off cycle
+const PERSIST_DEBOUNCE_NS: i128 = 100_000_000; // 100ms
+
+// Daemon connection retry parameters
+const DAEMON_RETRY_ATTEMPTS: u32 = 20;
+const DAEMON_RETRY_DELAY_MS: u32 = 100;
+
 // CLI --class override, set in main(), read in runWindowedModeImpl()
 var g_wm_class: ?[]const u8 = null;
 
@@ -220,13 +237,13 @@ fn runNamedSession(allocator: std.mem.Allocator, io: std.Io, name: []const u8, t
     if (builtin.os.tag != .windows) {
         if (autoStartNamedDaemon(name, template)) {
             var attempts: u32 = 0;
-            while (attempts < 20) : (attempts += 1) {
+            while (attempts < DAEMON_RETRY_ATTEMPTS) : (attempts += 1) {
                 if (Daemon.connectToSession(name)) |sock| {
                     var buf: [128]u8 = undefined;
                     outFmt(&buf, "[teru] Connected to session '{s}'\n", .{name});
                     return runWindowedDaemonMode(allocator, io, sock);
                 } else |_| {}
-                io.sleep(.fromMilliseconds(100), .awake) catch {};
+                io.sleep(.fromMilliseconds(DAEMON_RETRY_DELAY_MS), .awake) catch {};
             }
         }
     }
@@ -290,12 +307,12 @@ fn runPersistentMode(allocator: std.mem.Allocator, io: std.Io) !void {
     if (builtin.os.tag != .windows) {
         if (autoStartDaemon()) {
             var attempts: u32 = 0;
-            while (attempts < 20) : (attempts += 1) {
+            while (attempts < DAEMON_RETRY_ATTEMPTS) : (attempts += 1) {
                 if (Daemon.connectToSession("default")) |sock| {
                     out("[teru] Connected to daemon\n");
                     return runWindowedDaemonMode(allocator, io, sock);
                 } else |_| {}
-                io.sleep(.fromMilliseconds(100), .awake) catch {};
+                io.sleep(.fromMilliseconds(DAEMON_RETRY_DELAY_MS), .awake) catch {};
             }
             out("[teru] Daemon failed, falling back to layout restore\n");
         }
@@ -369,12 +386,12 @@ fn runDaemonMode(allocator: std.mem.Allocator, io: std.Io, session_name: []const
     if (template) |tmpl| {
         applyTemplate(allocator, &mux, &graph, tmpl, io);
     } else {
-        const pid = try mux.spawnPane(24, 80);
+        const pid = try mux.spawnPane(DEFAULT_ROWS, DEFAULT_COLS);
         _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = if (mux.getPaneById(pid)) |p| p.childPid() else null }) catch {};
     }
     // Ensure at least one pane exists
     if (mux.panes.items.len == 0) {
-        const pid = try mux.spawnPane(24, 80);
+        const pid = try mux.spawnPane(DEFAULT_ROWS, DEFAULT_COLS);
         _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = if (mux.getPaneById(pid)) |p| p.childPid() else null }) catch {};
     }
 
@@ -746,11 +763,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
     var last_click_time: i128 = 0;
     var last_click_row: u16 = 0;
     var last_click_col: u16 = 0;
-    const DOUBLE_CLICK_NS: i128 = 300_000_000; // 300ms
     const default_word_delimiters = " \t{}[]()\"'`,;:@";
-
-    // Cursor blink state (530ms on/off cycle)
-    const BLINK_INTERVAL_NS: i128 = 530_000_000;
     var last_blink_time: i128 = compat.monotonicNow();
     var cursor_blink_visible: bool = true;
 
@@ -1641,7 +1654,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             if (content_dim > 0) {
                                 const delta_px: i32 = @as(i32, @intCast(mouse_pos)) - @as(i32, @intCast(border_drag_x));
                                 const delta_ratio: f32 = @as(f32, @floatFromInt(delta_px)) / @as(f32, @floatFromInt(content_dim));
-                                ws_mut.resizeSplit(border_drag_node, std.math.clamp(border_drag_ratio + delta_ratio, 0.15, 0.85));
+                                ws_mut.resizeSplit(border_drag_node, std.math.clamp(border_drag_ratio + delta_ratio, MASTER_RATIO_MIN, MASTER_RATIO_MAX));
                             }
                         } else {
                             // Flat layout master_ratio drag
@@ -1651,7 +1664,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             if (content_size > 0) {
                                 const delta_px: i32 = @as(i32, @intCast(mouse_pos)) - @as(i32, @intCast(border_drag_x));
                                 const delta_ratio: f32 = @as(f32, @floatFromInt(delta_px)) / @as(f32, @floatFromInt(content_size));
-                                ws_mut.master_ratio = std.math.clamp(border_drag_ratio + delta_ratio, 0.15, 0.85);
+                                ws_mut.master_ratio = std.math.clamp(border_drag_ratio + delta_ratio, MASTER_RATIO_MIN, MASTER_RATIO_MAX);
                             }
                         }
                         for (mux.panes.items) |*p| p.grid.dirty = true;
@@ -1846,7 +1859,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
         // Layout/session save: debounced (100ms after last mutation)
         if ((config.restore_layout or config.persist_session) and mux.persist_dirty) {
             const elapsed = compat.monotonicNow() - mux.persist_dirty_since;
-            if (elapsed >= 100_000_000) { // 100ms
+            if (elapsed >= PERSIST_DEBOUNCE_NS) {
                 mux.persist_dirty = false;
                 persistSave(&mux, &graph, allocator, io);
             }
@@ -1975,7 +1988,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
         // Cursor blink timer
         if (config.cursor_blink) {
             const now_blink = compat.monotonicNow();
-            if (now_blink - last_blink_time >= BLINK_INTERVAL_NS) {
+            if (now_blink - last_blink_time >= CURSOR_BLINK_NS) {
                 cursor_blink_visible = !cursor_blink_visible;
                 last_blink_time = now_blink;
                 any_dirty = true;
@@ -2334,7 +2347,7 @@ fn applyTemplate(allocator: std.mem.Allocator, mux: *Multiplexer, graph: *Proces
     defer def.deinit();
 
     // Restore: creates panes in workspaces as defined by the template
-    SessionConfig.restore(&def, mux, graph, 24, 80);
+    SessionConfig.restore(&def, mux, graph, DEFAULT_ROWS, DEFAULT_COLS);
 
     var msg: [128]u8 = undefined;
     outFmt(&msg, "[teru] Applied template '{s}' ({d} workspaces)\n", .{ template, def.workspace_count });
@@ -2346,7 +2359,10 @@ fn persistSave(mux: *Multiplexer, graph: *const ProcessGraph, allocator: std.mem
     compat.ensureDirC(sess_dir);
     var path_buf: [512]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/{s}.bin", .{ sess_dir, mux.persist_session_name }) catch return;
-    mux.saveSession(graph, path, io) catch {};
+    mux.saveSession(graph, path, io) catch |err| {
+        var ebuf: [128]u8 = undefined;
+        outFmt(&ebuf, "[teru] session save failed: {s}\n", .{@errorName(err)});
+    };
 }
 
 /// Fill the grid with scrollback + saved screen content for browsing mode.
@@ -2505,7 +2521,7 @@ fn runRawMode(allocator: std.mem.Allocator, io: std.Io) !void {
     var terminal = Terminal.init();
     defer terminal.deinit();
 
-    const size = terminal.getSize() catch Terminal.TermSize{ .rows = 24, .cols = 80 };
+    const size = terminal.getSize() catch Terminal.TermSize{ .rows = DEFAULT_ROWS, .cols = DEFAULT_COLS };
 
     var buf: [256]u8 = undefined;
     outFmt(&buf, "\x1b[38;5;208m[teru {s}]\x1b[0m AI-first terminal · {d}x{d}\n", .{ version, size.cols, size.rows });
@@ -2520,7 +2536,10 @@ fn runRawMode(allocator: std.mem.Allocator, io: std.Io) !void {
 
     try terminal.enterRawMode();
     out("\x1b[2J\x1b[H");
-    terminal.runLoop(&pty_inst) catch {};
+    terminal.runLoop(&pty_inst) catch |err| {
+        var ebuf: [128]u8 = undefined;
+        outFmt(&ebuf, "[teru] terminal loop error: {s}\n", .{@errorName(err)});
+    };
     terminal.exitRawMode();
 
     if (pty_inst.child_pid != null) {
