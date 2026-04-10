@@ -159,6 +159,27 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, arg, "--template") or std.mem.eql(u8, arg, "-t")) { template_name = args_iter.next(); continue; }
         if (std.mem.eql(u8, arg, "--class")) { wm_class_override = args_iter.next(); continue; }
     }
+    // Nesting detection: don't open a window inside an existing teru
+    // Safe commands inside teru: --version, --help, --list, --daemon, --raw
+    const inside_teru = if (compat.getenv("TERM_PROGRAM")) |tp|
+        std.mem.eql(u8, std.mem.sliceTo(tp, 0), "teru")
+    else
+        false;
+
+    if (inside_teru and daemon_session == null and !list_sessions and !mode_raw and !mode_mcp_bridge) {
+        if (session_name != null) {
+            out("[teru] Already inside teru. Use Alt+1-9 to switch workspaces, Alt+C to create panes.\n");
+            out("       To start a daemon: teru --daemon NAME\n");
+            return;
+        }
+        // Plain `teru` inside teru — warn instead of nesting
+        out("[teru] Already running inside teru.\n");
+        out("       Alt+C  new pane     Alt+1-9  switch workspace\n");
+        out("       teru --daemon NAME  start headless daemon\n");
+        out("       teru -l             list active sessions\n");
+        return;
+    }
+
     if (list_sessions) {
         var buf: [1024]u8 = undefined;
         if (Daemon.listSessions(&buf)) |sessions| {
