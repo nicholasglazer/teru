@@ -1321,6 +1321,10 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                     }
                 },
                 .mouse_press => |mouse| {
+                    if (ms.mouse_cursor_hidden) {
+                        win.showCursor();
+                        ms.mouse_cursor_hidden = false;
+                    }
                     const lp = mouse_handler.LayoutParams{
                         .cell_width = atlas.cell_width,
                         .cell_height = atlas.cell_height,
