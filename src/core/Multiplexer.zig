@@ -263,7 +263,7 @@ pub fn spawnPaneWithCommand(self: *Multiplexer, rows: u16, cols: u16, command: [
     }
 
     var pane = Pane{
-        .pty = pty,
+        .backend = .{ .local = pty },
         .grid = grid,
         .vt = VtParser.initEmpty(),
         .id = id,

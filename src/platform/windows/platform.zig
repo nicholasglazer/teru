@@ -663,7 +663,7 @@ pub const Win32Window = struct {
 pub const Platform = union(enum) {
     win32: Win32Window,
 
-    pub fn init(width: u32, height: u32, title: []const u8) !Platform {
+    pub fn init(width: u32, height: u32, title: []const u8, _: ?[]const u8) !Platform {
         return .{ .win32 = try Win32Window.init(width, height, title) };
     }
 

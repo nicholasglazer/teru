@@ -518,7 +518,7 @@ pub const MacosWindow = struct {
 pub const Platform = union(enum) {
     macos: MacosWindow,
 
-    pub fn init(width: u32, height: u32, title: []const u8) !Platform {
+    pub fn init(width: u32, height: u32, title: []const u8, _: ?[]const u8) !Platform {
         return .{ .macos = try MacosWindow.init(width, height, title) };
     }
 

@@ -219,7 +219,7 @@ pub const X11Window = struct {
     shm_height: u32 = 0,
     use_shm: bool = false,
 
-    pub fn init(width: u32, height: u32, title: []const u8) !X11Window {
+    pub fn init(width: u32, height: u32, title: []const u8, wm_class: ?[]const u8) !X11Window {
         // Connect to X server (pure XCB, no Xlib)
         var screen_num: c_int = 0;
         const connection = xcb_connect(null, &screen_num) orelse return error.XcbConnectFailed;
@@ -260,9 +260,22 @@ pub const X11Window = struct {
         const gc = xcb_generate_id(connection);
         _ = xcb_create_gc(connection, gc, win_id, 0, null);
 
-        // WM_CLASS
-        const wm_class = "teru\x00teru\x00";
-        _ = xcb_change_property(connection, XCB_PROP_MODE_REPLACE, win_id, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, wm_class.len, wm_class.ptr);
+        // WM_CLASS (instance\0class\0) — use --class override if provided
+        if (wm_class) |cls| {
+            // Build "cls\0cls\0" dynamically
+            var class_buf: [512]u8 = undefined;
+            if (cls.len * 2 + 2 <= class_buf.len) {
+                @memcpy(class_buf[0..cls.len], cls);
+                class_buf[cls.len] = 0;
+                @memcpy(class_buf[cls.len + 1 ..][0..cls.len], cls);
+                class_buf[cls.len * 2 + 1] = 0;
+                const total_len: u32 = @intCast(cls.len * 2 + 2);
+                _ = xcb_change_property(connection, XCB_PROP_MODE_REPLACE, win_id, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, total_len, &class_buf);
+            }
+        } else {
+            const default_class = "teru\x00teru\x00";
+            _ = xcb_change_property(connection, XCB_PROP_MODE_REPLACE, win_id, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, default_class.len, default_class.ptr);
+        }
 
         // _NET_WM_NAME (EWMH)
         const utf8_atom = internAtom(connection, "UTF8_STRING", false);

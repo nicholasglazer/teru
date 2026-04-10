@@ -47,13 +47,13 @@ const DualPlatform = union(enum) {
     x11: x11.X11Window,
     wayland_: wayland.WaylandWindow,
 
-    pub fn init(width: u32, height: u32, title: []const u8) !DualPlatform {
+    pub fn init(width: u32, height: u32, title: []const u8, wm_class: ?[]const u8) !DualPlatform {
         if (compat.getenv("WAYLAND_DISPLAY") != null) {
             if (wayland.WaylandWindow.init(width, height, title)) |w| {
                 return .{ .wayland_ = w };
             } else |_| {}
         }
-        return .{ .x11 = try x11.X11Window.init(width, height, title) };
+        return .{ .x11 = try x11.X11Window.init(width, height, title, wm_class) };
     }
 
     pub fn deinit(self: *DualPlatform) void {
@@ -133,8 +133,8 @@ const DualPlatform = union(enum) {
 const X11Only = struct {
     inner: x11.X11Window,
 
-    pub fn init(width: u32, height: u32, title: []const u8) !X11Only {
-        return .{ .inner = try x11.X11Window.init(width, height, title) };
+    pub fn init(width: u32, height: u32, title: []const u8, wm_class: ?[]const u8) !X11Only {
+        return .{ .inner = try x11.X11Window.init(width, height, title, wm_class) };
     }
 
     pub fn deinit(self: *X11Only) void {
@@ -178,7 +178,7 @@ const X11Only = struct {
 const WaylandOnly = struct {
     inner: wayland.WaylandWindow,
 
-    pub fn init(width: u32, height: u32, title: []const u8) !WaylandOnly {
+    pub fn init(width: u32, height: u32, title: []const u8, _: ?[]const u8) !WaylandOnly {
         return .{ .inner = try wayland.WaylandWindow.init(width, height, title) };
     }
 
