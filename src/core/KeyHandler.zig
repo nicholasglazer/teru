@@ -54,6 +54,7 @@ pub const MuxAction = enum {
     toggle_zoom,
     copy_selection,
     paste_clipboard,
+    toggle_status_bar,
 };
 
 // ── Mux command dispatch ─────────────────────────────────────────
@@ -217,6 +218,7 @@ pub fn executeAction(action: KB.Action, mux: *Multiplexer) MuxAction {
         .mode_search => .enter_search,
         .mode_locked => .none,
         .session_detach => .detach,
+        .toggle_status_bar => .toggle_status_bar,
         .copy_selection => .copy_selection,
         .paste_clipboard => .paste_clipboard,
         .workspace_1, .workspace_2, .workspace_3,
@@ -254,6 +256,7 @@ pub fn executeAction(action: KB.Action, mux: *Multiplexer) MuxAction {
 ///   Alt+v           — vi mode (scrollback navigation)
 ///   Alt+d           — detach session
 ///   Alt+m           — focus master pane
+///   Alt+b           — toggle status bar
 ///   Alt+=           — zoom in (increase font size)
 ///   Alt+-           — zoom out (decrease font size)
 ///   Alt+0           — workspace 10
@@ -289,6 +292,7 @@ pub fn handleGlobalKey(keycode: u32, modifiers: u32, key_char: u8, alt_enabled: 
         'v' => .enter_vi_mode,
         'd' => .detach,
         'm' => { if (ralt) mux.setMaster() else mux.focusMaster(); return .panes_changed; },
+        'b' => .toggle_status_bar,
         '-' => .zoom_out,
         '=' => .zoom_in,
         else => null,

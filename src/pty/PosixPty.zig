@@ -17,6 +17,8 @@ pub const SpawnOptions = struct {
     cwd: ?[]const u8 = null,
     env: ?[*:null]const ?[*:0]const u8 = null,
     term: ?[]const u8 = null,
+    /// Pre-built argv for -e / -- exec (overrides shell when set).
+    exec_argv: ?[*:null]const ?[*:0]const u8 = null,
 };
 
 pub fn spawn(opts: SpawnOptions) !Pty {
@@ -89,14 +91,19 @@ pub fn spawn(opts: SpawnOptions) !Pty {
             }
         }
 
-        // Exec shell (copy to null-terminated buffer)
-        var shell_buf: [std.fs.max_path_bytes:0]u8 = undefined;
-        @memcpy(shell_buf[0..shell.len], shell);
-        shell_buf[shell.len] = 0;
-        const shell_z: [*:0]const u8 = &shell_buf;
-        const argv = [_:null]?[*:0]const u8{ shell_z, null };
-        const env = opts.env orelse std.c.environ;
-        _ = posix.system.execve(shell_z, &argv, @ptrCast(env));
+        // Exec: use exec_argv (-e command) if provided, otherwise shell
+        if (opts.exec_argv) |exec_argv| {
+            // execvp for PATH lookup (teru -e vim, teru -e htop, etc.)
+            _ = execvp(exec_argv[0].?, exec_argv);
+        } else {
+            const env = opts.env orelse std.c.environ;
+            var shell_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+            @memcpy(shell_buf[0..shell.len], shell);
+            shell_buf[shell.len] = 0;
+            const shell_z: [*:0]const u8 = &shell_buf;
+            const argv = [_:null]?[*:0]const u8{ shell_z, null };
+            _ = posix.system.execve(shell_z, &argv, @ptrCast(env));
+        }
         compat.posixExit(1);
     }
 
@@ -197,3 +204,4 @@ extern "c" fn posix_openpt(flags: c_int) c_int;
 extern "c" fn grantpt(fd: c_int) c_int;
 extern "c" fn unlockpt(fd: c_int) c_int;
 extern "c" fn ptsname(fd: c_int) ?[*:0]const u8;
+extern "c" fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) c_int;

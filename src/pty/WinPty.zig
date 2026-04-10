@@ -31,6 +31,8 @@ pub const SpawnOptions = struct {
     cwd: ?[]const u8 = null,
     env: ?[*:null]const ?[*:0]const u8 = null,
     term: ?[]const u8 = null,
+    /// Pre-built argv for -e / -- exec (overrides shell when set).
+    exec_argv: ?[*:null]const ?[*:0]const u8 = null,
 };
 
 // ── Public API (mirrors Pty.zig) ─────────────────────────────────
@@ -96,7 +98,10 @@ pub fn spawn(opts: SpawnOptions) !WinPty {
 
     // ── 4. Build command line ────────────────────────────────────
     var cmd_buf: [MAX_CMD_LEN]u16 = undefined;
-    const cmd_line = try buildCommandLine(&cmd_buf, opts.shell);
+    const cmd_line = if (opts.exec_argv) |exec_argv|
+        try buildCommandLineFromArgv(&cmd_buf, exec_argv)
+    else
+        try buildCommandLine(&cmd_buf, opts.shell);
 
     // Build working-directory wide string (optional).
     var cwd_buf: [MAX_PATH]u16 = undefined;
@@ -234,6 +239,28 @@ pub fn utf8ToWide(buf: []u16, utf8: []const u8) !?[*:0]const u16 {
         }
     }
     if (i >= buf.len) return error.BufferTooSmall;
+    buf[i] = 0;
+    return @ptrCast(buf[0..i :0].ptr);
+}
+
+/// Build a null-terminated wide command line from a pre-built argv.
+fn buildCommandLineFromArgv(buf: *[MAX_CMD_LEN]u16, argv: [*:null]const ?[*:0]const u8) !?[*:0]u16 {
+    var i: usize = 0;
+    var arg_idx: usize = 0;
+    while (argv[arg_idx]) |arg| : (arg_idx += 1) {
+        if (arg_idx > 0) {
+            if (i >= MAX_CMD_LEN - 1) return error.CommandLineTooLong;
+            buf[i] = ' ';
+            i += 1;
+        }
+        const s = std.mem.sliceTo(arg, 0);
+        for (s) |byte| {
+            if (i >= MAX_CMD_LEN - 1) return error.CommandLineTooLong;
+            buf[i] = @intCast(byte);
+            i += 1;
+        }
+    }
+    if (i == 0) return error.CommandLineTooLong;
     buf[i] = 0;
     return @ptrCast(buf[0..i :0].ptr);
 }

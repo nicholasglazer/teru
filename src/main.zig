@@ -72,6 +72,13 @@ const PERSIST_DEBOUNCE_NS: i128 = 100_000_000; // 100ms
 const DAEMON_RETRY_ATTEMPTS: u32 = 20;
 const DAEMON_RETRY_DELAY_MS: u32 = 100;
 
+// CLI flag: --no-bar (start with status bar hidden)
+var cli_no_bar: bool = false;
+
+// CLI flag: -e / -- exec argv (run command instead of shell)
+var cli_exec_argv_buf: [64]?[*:0]const u8 = .{null} ** 64;
+var cli_exec_argv: ?[*:null]const ?[*:0]const u8 = null;
+
 fn out(msg: []const u8) void {
     if (builtin.os.tag == .windows) {
         const k = struct {
@@ -129,6 +136,8 @@ pub fn main(init: std.process.Init) !void {
                 \\  -l, --list              List active sessions
                 \\  -v, --version           Show version
                 \\  -h, --help              Show this help
+                \\  -e <command> [args...]  Run command instead of shell
+                \\  --no-bar                Start with status bar hidden
                 \\  --raw                   Raw TTY mode (no window)
                 \\  --daemon <name>         Start headless daemon (server use)
                 \\  --mcp-bridge            MCP stdio bridge
@@ -143,6 +152,7 @@ pub fn main(init: std.process.Init) !void {
                 \\  Alt+J/K     Focus next/prev       Alt+X       Close pane
                 \\  Alt+Space   Cycle layout          Alt+Z       Zoom pane
                 \\  Alt+V       Vi/copy mode          Alt+D       Detach
+                \\  Alt+B       Toggle status bar
                 \\  RAlt+J/K    Swap pane              RAlt+H/L   Resize
                 \\
                 \\
@@ -150,6 +160,7 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, arg, "--raw")) { mode_raw = true; continue; }
+        if (std.mem.eql(u8, arg, "--no-bar")) { cli_no_bar = true; continue; }
         if (std.mem.eql(u8, arg, "--attach")) { mode_attach = true; continue; }
         if (std.mem.eql(u8, arg, "--mcp-bridge")) { mode_mcp_bridge = true; continue; }
         if (std.mem.eql(u8, arg, "--list") or std.mem.eql(u8, arg, "-l")) { list_sessions = true; continue; }
@@ -158,6 +169,21 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, arg, "--name") or std.mem.eql(u8, arg, "-n")) { session_name = args_iter.next(); continue; }
         if (std.mem.eql(u8, arg, "--template") or std.mem.eql(u8, arg, "-t")) { template_name = args_iter.next(); continue; }
         if (std.mem.eql(u8, arg, "--class")) { wm_class_override = args_iter.next(); continue; }
+        if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--")) {
+            // Collect remaining args as exec argv
+            var n: usize = 0;
+            while (args_iter.next()) |ea| {
+                if (n < cli_exec_argv_buf.len - 1) {
+                    cli_exec_argv_buf[n] = ea.ptr;
+                    n += 1;
+                }
+            }
+            if (n > 0) {
+                cli_exec_argv_buf[n] = null; // sentinel
+                cli_exec_argv = @ptrCast(&cli_exec_argv_buf);
+            }
+            break;
+        }
     }
     // Nesting detection: don't open a window inside an existing teru
     // Safe commands inside teru: --version, --help, --list, --daemon, --raw
@@ -581,6 +607,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
         .tty => {},
     }
 
+    if (cli_no_bar) config.show_status_bar = false;
     const padding: u32 = config.padding;
     var status_bar_h: u32 = if (config.show_status_bar) atlas.cell_height + 4 else 0;
     var grid_cols: u16 = @intCast((config.initial_width -| padding * 2) / atlas.cell_width);
@@ -606,6 +633,8 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
         .tab_width = config.tab_width,
         .cursor_shape = config.cursor_shape,
     };
+    // exec_argv is consumed by the first pane spawn only
+    mux.spawn_config.exec_argv = cli_exec_argv;
     mux.notification_duration_ns = @as(i128, config.notification_duration_ms) * 1_000_000;
     mux.persist_session_name = "default";
 
@@ -719,6 +748,9 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
         }
         hooks.fire(.spawn);
     }
+
+    // Clear exec_argv so new panes (Alt+C) get the normal shell
+    mux.spawn_config.exec_argv = null;
 
     // Keyboard input: xkbcommon translates XCB keycodes → UTF-8
     // Uses the LIVE X11 keymap (supports dvorak, colemak, any layout)
@@ -1161,6 +1193,23 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                         const sz = win.getSize();
                                         mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
                                         for (mux.panes.items) |*p| p.grid.dirty = true;
+                                        force_redraw = true;
+                                        continue;
+                                    }
+                                    if (action == .toggle_status_bar) {
+                                        config.show_status_bar = !config.show_status_bar;
+                                        status_bar_h = if (config.show_status_bar) atlas.cell_height + 4 else 0;
+                                        const sz = win.getSize();
+                                        grid_cols = @intCast((sz.width -| padding * 2) / atlas.cell_width);
+                                        grid_rows = @intCast((sz.height -| padding * 2 -| status_bar_h) / atlas.cell_height);
+                                        for (mux.panes.items) |*pane| {
+                                            if (grid_rows != pane.grid.rows or grid_cols != pane.grid.cols) {
+                                                pane.grid.resize(allocator, grid_rows, grid_cols) catch {};
+                                                pane.linkVt(allocator);
+                                            }
+                                            pane.grid.dirty = true;
+                                        }
+                                        mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
                                         force_redraw = true;
                                         continue;
                                     }

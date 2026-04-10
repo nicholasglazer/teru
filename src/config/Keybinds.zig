@@ -143,6 +143,9 @@ pub const Action = enum(u8) {
     // Session
     session_detach,
 
+    // UI
+    toggle_status_bar,
+
     // Clipboard
     copy_selection,
     paste_clipboard,
@@ -196,6 +199,7 @@ pub const Action = enum(u8) {
             .{ "mode:search", Action.mode_search },
             .{ "mode:locked", Action.mode_locked },
             .{ "session:detach", Action.session_detach },
+            .{ "ui:toggle_status_bar", Action.toggle_status_bar },
             .{ "copy:selection", Action.copy_selection },
             .{ "paste:clipboard", Action.paste_clipboard },
             .{ "scroll:up:1", Action.scroll_up_1 },
@@ -429,6 +433,7 @@ pub const Keybinds = struct {
         _ = self.add(n, A, 'd', .session_detach);
         _ = self.add(n, A, '=', .zoom_in);
         _ = self.add(n, A, '-', .zoom_out);
+        _ = self.add(n, A, 'b', .toggle_status_bar);
 
         // Alt+1-9 workspaces, RAlt+1-9 move pane
         for (0..9) |i| {

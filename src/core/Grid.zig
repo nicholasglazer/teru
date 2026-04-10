@@ -316,8 +316,11 @@ pub fn scrollUpN(self: *Grid, n: u16) void {
     var i: u16 = 0;
     while (i < n) : (i += 1) {
         // Push the top line to scrollback before it's overwritten.
-        // Encodes cell colors + attributes as SGR sequences.
-        if (self.scrollback) |sb| {
+        // Only for full-width scrolls at screen top (not margin-bounded).
+        const lm_check = self.getLeftMargin();
+        const rm_check = self.getRightMargin();
+        const is_margin_scroll = self.margins_enabled and (lm_check > 0 or rm_check < w);
+        if (self.scrollback != null and !is_margin_scroll) if (self.scrollback) |sb| {
             var line_buf: [4096]u8 = undefined;
             var len: usize = 0;
             var prev_fg: Color = .default;
@@ -663,58 +666,122 @@ pub fn switchToMainScreen(self: *Grid) void {
 
 /// Insert n blank lines at the cursor row (within scroll region).
 /// Lines below shift down; lines pushed past scroll_bottom are lost.
+/// When L/R margins are active and cursor is within them, only cells
+/// within [left_margin..right_margin) are shifted; cursor moves to left_margin.
 pub fn insertLines(self: *Grid, n: u16) void {
     if (self.cursor_row < self.scroll_top or self.cursor_row > self.scroll_bottom) return;
     const count = @min(n, self.scroll_bottom - self.cursor_row + 1);
     const w: usize = self.cols;
+    const lm = self.getLeftMargin();
+    const rm = self.getRightMargin();
+    const margin_bounded = self.margins_enabled and (lm > 0 or rm < w);
+
+    // If margins are active, no-op if cursor is outside L/R margins
+    if (margin_bounded) {
+        if (self.cursor_col < lm or self.cursor_col >= rm) return;
+    }
 
     var i: u16 = 0;
     while (i < count) : (i += 1) {
-        // Shift rows down from scroll_bottom toward cursor_row
-        var row: usize = self.scroll_bottom;
-        while (row > self.cursor_row) : (row -= 1) {
-            const dst = row * w;
-            const src = (row - 1) * w;
-            @memcpy(self.cells[dst..][0..w], self.cells[src..][0..w]);
+        if (margin_bounded) {
+            const span = rm - lm;
+            // Shift margin cells down from scroll_bottom toward cursor_row
+            var row: usize = self.scroll_bottom;
+            while (row > self.cursor_row) : (row -= 1) {
+                const dst = row * w + lm;
+                const src = (row - 1) * w + lm;
+                @memcpy(self.cells[dst..][0..span], self.cells[src..][0..span]);
+            }
+            // Clear only margin columns at cursor_row
+            const clear_start = @as(usize, self.cursor_row) * w + lm;
+            for (self.cells[clear_start..][0..span]) |*c| c.* = Cell.blank();
+        } else {
+            // Full-width: shift entire rows
+            var row: usize = self.scroll_bottom;
+            while (row > self.cursor_row) : (row -= 1) {
+                const dst = row * w;
+                const src = (row - 1) * w;
+                @memcpy(self.cells[dst..][0..w], self.cells[src..][0..w]);
+            }
+            self.clearRow(self.cursor_row);
         }
-        self.clearRow(self.cursor_row);
+    }
+    if (margin_bounded) {
+        self.cursor_col = @intCast(lm);
     }
     self.dirty = true;
 }
 
 /// Delete n lines at the cursor row (within scroll region).
 /// Lines below shift up; blank lines appear at scroll_bottom.
+/// When L/R margins are active and cursor is within them, only cells
+/// within [left_margin..right_margin) are shifted; cursor moves to left_margin.
 pub fn deleteLines(self: *Grid, n: u16) void {
     if (self.cursor_row < self.scroll_top or self.cursor_row > self.scroll_bottom) return;
     const count = @min(n, self.scroll_bottom - self.cursor_row + 1);
     const w: usize = self.cols;
+    const lm = self.getLeftMargin();
+    const rm = self.getRightMargin();
+    const margin_bounded = self.margins_enabled and (lm > 0 or rm < w);
+
+    // If margins are active, no-op if cursor is outside L/R margins
+    if (margin_bounded) {
+        if (self.cursor_col < lm or self.cursor_col >= rm) return;
+    }
 
     var i: u16 = 0;
     while (i < count) : (i += 1) {
-        // Shift rows up from cursor_row toward scroll_bottom
-        var row: usize = self.cursor_row;
-        while (row < self.scroll_bottom) : (row += 1) {
-            const dst = row * w;
-            const src = (row + 1) * w;
-            @memcpy(self.cells[dst..][0..w], self.cells[src..][0..w]);
+        if (margin_bounded) {
+            const span = rm - lm;
+            // Shift margin cells up from cursor_row toward scroll_bottom
+            var row: usize = self.cursor_row;
+            while (row < self.scroll_bottom) : (row += 1) {
+                const dst = row * w + lm;
+                const src = (row + 1) * w + lm;
+                @memcpy(self.cells[dst..][0..span], self.cells[src..][0..span]);
+            }
+            // Clear only margin columns at scroll_bottom
+            const clear_start = @as(usize, self.scroll_bottom) * w + lm;
+            for (self.cells[clear_start..][0..span]) |*c| c.* = Cell.blank();
+        } else {
+            // Full-width: shift entire rows
+            var row: usize = self.cursor_row;
+            while (row < self.scroll_bottom) : (row += 1) {
+                const dst = row * w;
+                const src = (row + 1) * w;
+                @memcpy(self.cells[dst..][0..w], self.cells[src..][0..w]);
+            }
+            self.clearRow(@intCast(self.scroll_bottom));
         }
-        self.clearRow(@intCast(self.scroll_bottom));
+    }
+    if (margin_bounded) {
+        self.cursor_col = @intCast(lm);
     }
     self.dirty = true;
 }
 
 /// Delete n characters at cursor position, shifting the rest of the line left.
-/// Blank cells appear at the right edge.
+/// Blank cells appear at the right edge (or right margin when margins active).
 pub fn deleteChars(self: *Grid, n: u16) void {
     const row: usize = self.cursor_row;
     const col: usize = self.cursor_col;
     const w: usize = self.cols;
-    const count: usize = @min(n, w - col);
+    const lm = self.getLeftMargin();
+    const rm = self.getRightMargin();
+    const margin_bounded = self.margins_enabled and (lm > 0 or rm < w);
+
+    // No-op if cursor outside [left_margin..right_margin)
+    if (margin_bounded) {
+        if (col < lm or col >= rm) return;
+    }
+
+    const right_edge = if (margin_bounded) rm else w;
+    const count: usize = @min(n, right_edge - col);
     const row_start = row * w;
 
-    // Shift cells left
-    if (col + count < w) {
-        const remaining = w - col - count;
+    // Shift cells left from cursor+count..right_edge to cursor
+    if (col + count < right_edge) {
+        const remaining = right_edge - col - count;
         const dst = row_start + col;
         const src = row_start + col + count;
         var j: usize = 0;
@@ -722,24 +789,34 @@ pub fn deleteChars(self: *Grid, n: u16) void {
             self.cells[dst + j] = self.cells[src + j];
         }
     }
-    // Blank the rightmost cells
-    const blank_start = row_start + w - count;
-    for (self.cells[blank_start..row_start + w]) |*c| c.* = Cell.blank();
+    // Blank the rightmost cells within the bounded region
+    const blank_start = row_start + right_edge - count;
+    for (self.cells[blank_start..row_start + right_edge]) |*c| c.* = Cell.blank();
     self.dirty = true;
 }
 
 /// Insert n blank characters at cursor position, shifting existing chars right.
-/// Characters pushed past the right edge are lost.
+/// Characters pushed past the right edge (or right margin) are lost.
 pub fn insertBlanks(self: *Grid, n: u16) void {
     const row: usize = self.cursor_row;
     const col: usize = self.cursor_col;
     const w: usize = self.cols;
-    const count: usize = @min(n, w - col);
+    const lm = self.getLeftMargin();
+    const rm = self.getRightMargin();
+    const margin_bounded = self.margins_enabled and (lm > 0 or rm < w);
+
+    // No-op if cursor outside [left_margin..right_margin)
+    if (margin_bounded) {
+        if (col < lm or col >= rm) return;
+    }
+
+    const right_edge = if (margin_bounded) rm else w;
+    const count: usize = @min(n, right_edge - col);
     const row_start = row * w;
 
-    // Shift cells right (from end to avoid overlap)
-    if (col + count < w) {
-        const remaining = w - col - count;
+    // Shift cells right (from end to avoid overlap), bounded by right_edge
+    if (col + count < right_edge) {
+        const remaining = right_edge - col - count;
         var j: usize = remaining;
         while (j > 0) {
             j -= 1;

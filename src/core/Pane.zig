@@ -21,6 +21,8 @@ pub const SpawnConfig = struct {
     term: ?[]const u8 = null,
     tab_width: u8 = 8,
     cursor_shape: Grid.CursorShape = .block,
+    /// Pre-built argv for -e exec (first pane only, then cleared).
+    exec_argv: ?[*:null]const ?[*:0]const u8 = null,
 };
 
 /// PTY backend: local process or daemon IPC stream.
@@ -54,6 +56,7 @@ pub fn init(allocator: Allocator, rows: u16, cols: u16, id: u64, spawn_config: S
         .cols = cols,
         .shell = spawn_config.shell,
         .term = spawn_config.term,
+        .exec_argv = spawn_config.exec_argv,
     });
     errdefer pty.deinit();
 
