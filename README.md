@@ -11,7 +11,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
   <a href="https://github.com/nicholasglazer/teru/actions"><img src="https://github.com/nicholasglazer/teru/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/zig-0.16-orange" alt="Zig 0.16">
-  <img src="https://img.shields.io/badge/tests-499-blue" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-526-blue" alt="Tests">
   <img src="https://img.shields.io/badge/binary-1.4MB-brightgreen" alt="Binary Size">
   <a href="https://aur.archlinux.org/packages/teru"><img src="https://img.shields.io/aur/version/teru" alt="AUR"></a>
 </p>
@@ -532,7 +532,7 @@ teru tracks agents in the ProcessGraph, colors pane borders by status (cyan=runn
 src/
 ├── main.zig                Entry point, event loop, input handling
 ├── compat.zig              Cross-platform primitives (time, process, fork, O_NONBLOCK)
-├── lib.zig                 Library root, C-ABI API, test runner (499+ tests)
+├── lib.zig                 Library root, C-ABI API, test runner (526+ tests)
 ├── core/
 │   ├── Grid.zig            Character grid (cells, cursor, scroll regions, alt-screen)
 │   ├── VtParser.zig        VT100/xterm state machine (SIMD fast-path)
@@ -626,7 +626,7 @@ Build with `-Dx11=false` for Wayland-only (drops xcb dep).
 git clone https://github.com/nicholasglazer/teru.git
 cd teru
 
-zig build test            # 499+ tests
+zig build test            # 526+ tests
 zig build                 # debug build
 zig build run             # run windowed
 zig build run -- --raw    # run TTY mode

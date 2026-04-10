@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.4.0 (2026-04-10)
+
+### Architecture
+- **Daemon-backed windowed mode** — `teru -n NAME` auto-starts a background daemon, connects full windowed UI. Close window → daemon survives. Reopen → reconnects with same panes + content. Cross-platform IPC (Unix sockets / named pipes).
+- **Pane backend abstraction** — `RemotePty` enables panes backed by daemon IPC instead of local PTYs. Unified accessors: `pane.ptyWrite()`, `pane.ptyRead()`, `pane.childPid()`.
+- **State sync protocol** — daemon sends full workspace/pane state on client connect: layout, master ratio, zoom, active pane, pane positions. Under 50ms reconnect.
+
+### Features
+- **Template system** — `teru -n prod -t claude-power` starts from `.tsess` template. Templates define workspaces, layouts, panes, commands, CWDs. Searched in `~/.config/teru/templates/`.
+- **Clean CLI** — `teru` (fresh scratchpad), `teru -n NAME` (persistent), `teru -l` (list), `-t`/`-f`/`-v`/`-h` short flags.
+- **10 workspaces** — Alt+0 = workspace 10. Matches tmux `M-0 → window 10`.
+- **Clickable status bar** — click workspace indicators to switch.
+- **Native PNG screenshots** — `teru_screenshot` MCP tool, pure Zig encoder, zero deps.
+- **Copy/paste keybind actions** — `copy:selection` and `paste:clipboard` wired to config.
+- **`restore_layout` / `persist_session` split** — lightweight layout restore vs full daemon persistence.
+- **MCP bridge auto-discovery** — scans for teru socket when `$TERU_MCP_SOCKET` not set.
+- **MCP read-only mode** — `TERU_MCP_READONLY=1` filters write tools.
+- **Braille + geometric glyphs** — 352 new glyphs (⠋⠙⠹⠸ spinners, ◇◆●○ task lists).
+- **DECTCEM cursor visibility** — cursor hidden when apps use ESC[?25l (fixes spinner artifacts).
+- **Example session** — `examples/claude-power.tsess` (10 workspaces, 34 panes, production tmux replacement).
+- **Systemd service** — `pkg/teru.service` for daemon auto-start on login.
+
+### Security
+- **JSON injection fixed** — MCP tool responses escape all user-controlled strings.
+- **Protocol bounds checks** — payload overflow, workspace index validation, grid bounds.
+- **Path safety** — macOS uses `$TMPDIR`, Linux uses `$XDG_RUNTIME_DIR`.
+- **Scrollback OOM cap** — `scrollback_lines` capped at 1M.
+
+### Refactoring
+- Mouse handling extracted to `src/input/mouse.zig` (−370 lines from main.zig).
+- MCP helpers extracted to `src/agent/McpTools.zig` (−157 lines from McpServer).
+- XKB keysym constants extracted to `src/input/keysyms.zig`.
+- Layout parsing deduplicated into `Layout.parse`/`Layout.name`.
+- Named constants replace 11 magic numbers.
+- Global `g_wm_class` replaced with parameter threading.
+- Silent `catch {}` blocks annotated, session save logged.
+- `auto_start=false` fixed — spawns shell, types command without Enter.
+- Selection cleared when PTY output changes grid content.
+- Consistent `grid_rows` calculation across init, resize, and render.
+- Protocol fuzz tests (8) + braille/geometric tests (16).
+
+### Stats
+- 526 inline tests (up from 451)
+- 19 MCP tools
+- 60 source files, 32K lines
+- Cross-platform: Linux (X11+Wayland), macOS, Windows
+
 ## 0.3.10 (2026-04-10)
 
 ### Features

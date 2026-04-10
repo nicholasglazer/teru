@@ -27,10 +27,10 @@ zig build run -- --raw  # run (TTY mode)
 - See `.claude/rules/zig-terminal.md` for dev rules, anti-patterns, and perf targets
 
 ## Version
-Current: 0.3.10. Single source of truth: `build.zig` (line 10). Propagated via `build_options.version` to main.zig and McpServer.zig at compile time. Bump with: `make bump-version V=x.y.z` (updates build.zig + build.zig.zon)
+Current: 0.4.0. Single source of truth: `build.zig` (line 10). Propagated via `build_options.version` to main.zig and McpServer.zig at compile time. Bump with: `make bump-version V=x.y.z` (updates build.zig + build.zig.zon)
 
 ## Testing
-All modules have inline tests (499+ test blocks). Run with `zig build test`.
+All modules have inline tests (526+ test blocks). Run with `zig build test`.
 
 ## Session Persistence
 ```bash
