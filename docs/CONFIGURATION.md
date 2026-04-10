@@ -253,25 +253,36 @@ scroll_speed = 5
 | `prefix_key` | string | `ctrl+space` | Prefix key for multiplexer commands. Accepts `ctrl+a` through `ctrl+z`, `ctrl+space`, or raw integer 0-31 |
 | `prefix_timeout_ms` | integer | `500` | Milliseconds to wait for a command after pressing the prefix key |
 | `alt_workspace_switch` | boolean | `true` | Enable Alt+1-9 workspace switch and Alt+Shift+1-9 move pane |
-| `persist_session` | boolean | `false` | Auto-save session state on every meaningful change and restore on next launch |
+| `restore_layout` | boolean | `false` | Save layout on exit, restore on launch (fresh shells, no daemon) |
+| `persist_session` | boolean | `false` | Keep processes alive between window closes (auto-daemon) |
 
 ```conf
 prefix_key = ctrl+b
 prefix_timeout_ms = 1000
 alt_workspace_switch = true
-persist_session = true
+restore_layout = true
+persist_session = false
 ```
 
-#### Session Persistence
+#### Session Persistence: `restore_layout` vs `persist_session`
 
-When `persist_session = true`, teru automatically saves session state (pane count, layout, workspace, focus) to `$XDG_STATE_HOME/teru/sessions/default.bin` whenever you spawn/close panes, switch workspaces, change layouts, resize, zoom, swap, or move panes. Saves are debounced (100ms) so rapid actions coalesce into a single write.
+These two options serve different use cases:
 
-On startup with `persist_session = true`:
-1. If a daemon session named "default" is running, teru auto-attaches to it
-2. Otherwise, if a session file exists, teru restores the pane count
-3. Otherwise, teru starts fresh
+**`restore_layout = true`** (lightweight):
+- Saves layout state (pane count, workspace, layout type, master ratio, zoom) to `$XDG_STATE_HOME/teru/sessions/default.bin` on every meaningful change (debounced 100ms).
+- On next launch, restores pane count and layout -- but shells start fresh (new processes).
+- No daemon involved. Quick startup, no background processes.
+- Use this if you want your window arrangement preserved but don't need running processes to survive.
 
-Daemon sessions (`--daemon <name>`) also save to `sessions/<name>.bin` for crash resilience.
+**`persist_session = true`** (full persistence):
+- Automatically starts a daemon in the background. PTY processes survive window close.
+- On next launch, auto-attaches to the running daemon -- all shell sessions, command history, and running processes are exactly where you left them.
+- Equivalent to `teru -n default` every time.
+- Use this if you want tmux-style session persistence without thinking about it.
+
+Both options save to `$XDG_STATE_HOME/teru/sessions/`. You can enable both simultaneously -- `persist_session` takes priority when a daemon is running, `restore_layout` serves as fallback when no daemon is found.
+
+Named sessions (`teru -n NAME`) always get full daemon persistence regardless of these settings.
 
 #### Prefix Key Bindings
 

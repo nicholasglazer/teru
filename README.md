@@ -11,7 +11,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
   <a href="https://github.com/nicholasglazer/teru/actions"><img src="https://github.com/nicholasglazer/teru/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/zig-0.16-orange" alt="Zig 0.16">
-  <img src="https://img.shields.io/badge/tests-480-blue" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-499-blue" alt="Tests">
   <img src="https://img.shields.io/badge/binary-1.4MB-brightgreen" alt="Binary Size">
   <a href="https://aur.archlinux.org/packages/teru"><img src="https://img.shields.io/aur/version/teru" alt="AUR"></a>
 </p>
@@ -73,20 +73,14 @@ Alt+V                     # vi/copy mode
 Alt+/                     # search scrollback
 ```
 
-Auto-persistence (set `persist_session = true` in config):
+Session persistence:
 
 ```bash
-teru                      # auto-restores last session (pane count, layout)
-# just use it — state is saved on every meaningful change
-```
-
-Session persistence (tmux-style detach/attach):
-
-```bash
-teru --daemon myproject   # start headless (PTYs persist)
-teru --session myproject  # attach from any terminal
-# Alt+D to detach
-teru --list               # list sessions
+teru                              # fresh scratchpad (no persistence)
+teru -n myproject                 # persistent named session (daemon auto-started)
+teru -n myproject -t claude-power # start from template
+teru -l                           # list active sessions
+# Alt+D to detach, re-run same command to reattach
 ```
 
 ---
@@ -163,11 +157,12 @@ make release-wayland      # Wayland-only (no libxcb dep)
 ### Run
 
 ```bash
-teru                      # windowed mode (X11/Wayland auto-detected)
-teru --raw                # TTY mode (over SSH, like tmux)
-teru --daemon myproject   # start headless daemon (PTYs persist)
-teru --session myproject  # attach to daemon (TTY raw mode)
-teru --list               # list active sessions
+teru                              # fresh terminal (windowed, X11/Wayland auto-detected)
+teru -n myproject                 # persistent named session (daemon auto-started)
+teru -n myproject -t claude-power # start from template
+teru -l                           # list active sessions
+teru --raw                        # TTY mode (over SSH, like tmux)
+teru --daemon myproject           # start headless daemon (server use)
 ```
 
 ---
@@ -199,9 +194,9 @@ teru --list               # list active sessions
 - **8 tiling layouts** -- master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion
 - **Per-workspace layout lists** -- configure which layouts each workspace cycles through (xmonad `|||` pattern)
 - **Binary split tree** -- arbitrary horizontal/vertical splits with mouse drag-to-resize
-- **9 workspaces** -- switch with prefix + 1-9, each with independent layout and pane list
+- **10 workspaces** -- switch with Alt+1-9,0, each with independent layout and pane list
 - **Vi/copy mode** -- prefix + v for vim-like cursor navigation, visual selection, yank to clipboard
-- **Session persistence** -- `persist_session = true` auto-saves/restores on every meaningful change; `teru --daemon` for headless sessions that survive terminal close
+- **Session persistence** -- `teru -n NAME` for named sessions with auto-daemon; `restore_layout = true` for lightweight layout restore; `persist_session = true` for auto-daemon; `.tsess` templates for reproducible workspaces
 - **CustomPaneBackend** -- native Claude Code agent team protocol (7 operations)
 - **MCP server** -- 19 tools for cross-agent pane control over IPC (including live config)
 - **OSC 9999** -- agent self-declaration protocol (start/stop/status/progress)
@@ -455,7 +450,7 @@ teru tracks agents in the ProcessGraph, colors pane borders by status (cyan=runn
 src/
 ├── main.zig                Entry point, event loop, input handling
 ├── compat.zig              Cross-platform primitives (time, process, fork, O_NONBLOCK)
-├── lib.zig                 Library root, C-ABI API, test runner (480+ tests)
+├── lib.zig                 Library root, C-ABI API, test runner (499+ tests)
 ├── core/
 │   ├── Grid.zig            Character grid (cells, cursor, scroll regions, alt-screen)
 │   ├── VtParser.zig        VT100/xterm state machine (SIMD fast-path)
@@ -499,9 +494,11 @@ src/
 │   ├── daemon.zig          Headless session daemon (PTY persistence)
 │   ├── protocol.zig        Wire protocol (5-byte header)
 │   └── ipc.zig             Cross-platform IPC (Unix sockets / named pipes)
+├── png.zig                 Pure Zig PNG encoder (stored deflate, CRC32, Adler-32)
 ├── pty/
 │   ├── pty.zig              Comptime dispatch (POSIX or ConPTY per OS)
 │   ├── PosixPty.zig         POSIX PTY (posix_openpt, fork, exec)
+│   ├── RemotePty.zig        Daemon-backed PTY (connects to running daemon)
 │   └── WinPty.zig           Windows ConPTY (CreatePseudoConsole)
 └── platform/
     ├── types.zig            Shared Event/KeyEvent/Size/MouseEvent + keycodes
@@ -547,7 +544,7 @@ Build with `-Dx11=false` for Wayland-only (drops xcb dep).
 git clone https://github.com/nicholasglazer/teru.git
 cd teru
 
-zig build test            # 480+ tests
+zig build test            # 499+ tests
 zig build                 # debug build
 zig build run             # run windowed
 zig build run -- --raw    # run TTY mode
