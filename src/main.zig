@@ -85,26 +85,27 @@ pub fn main(init: std.process.Init) !void {
     var mode_attach = false;
     var mode_mcp_bridge = false;
     var daemon_session: ?[]const u8 = null;
-    var attach_session: ?[]const u8 = null;
+    var session_name: ?[]const u8 = null; // -n NAME: persistent named session
     var list_sessions = false;
     var wm_class_override: ?[]const u8 = null;
 
     while (args_iter.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--version")) {
+        if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
             var buf: [64]u8 = undefined;
             outFmt(&buf, "teru {s}\n", .{version});
             return;
         }
-        if (std.mem.eql(u8, arg, "--help")) {
-            out("teru — AI-first terminal emulator\n\nUsage: teru [options]\n\nOptions:\n  --help                Show this help\n  --version             Show version\n  --raw                 Raw passthrough mode (no window)\n  --attach              Restore session from last detach\n  --daemon <name>       Start headless daemon session\n  --session <name>      Attach to daemon session (TTY)\n  --list                List active daemon sessions\n  --mcp-bridge          MCP stdio bridge\n  --config <path>       Use custom config file\n  --theme <name>        Override theme\n  --class <name>        Set WM_CLASS\n\nMultiplexer keys (prefix: Ctrl+Space):\n  c/\\   Vertical split        -     Horizontal split\n  x     Close pane             n/p   Next/prev pane\n  v     Vi/copy mode           /     Search\n  1-9   Switch workspace       d     Detach\n  Space Cycle layout            z     Zoom\n  H/L   Resize width           K/J   Resize height\n\nGlobal shortcuts (no prefix):\n  Alt+1-9,0       Switch workspace\n  RAlt+1-9,0      Move pane to workspace\n  Alt+J/K         Focus next/prev pane\n  RAlt+J/K        Swap pane down/up\n  Alt+C           New pane        RAlt+C  Horizontal split\n  Alt+X           Close pane\n  Alt+M           Focus master pane\n  RAlt+M          Mark pane as master\n  Alt+-/=         Zoom out/in (font size)\n\n");
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            out("teru — AI-first terminal emulator\n\nUsage:\n  teru                    Fresh terminal (scratchpad)\n  teru -n <name>          Persistent named session (daemon)\n  teru -l                 List active sessions\n\nOptions:\n  -n, --name <name>     Connect to (or start) named session\n  -f, --fresh           Force fresh start (ignore saved layout)\n  -l, --list            List active sessions\n  -v, --version         Show version\n  -h, --help            Show this help\n  --raw                 Raw TTY mode (no window)\n  --daemon <name>       Start headless daemon (server use)\n  --session <name>      Attach to daemon (legacy)\n  --mcp-bridge          MCP stdio bridge\n  --class <name>        Set WM_CLASS\n\nKeybindings:\n  Alt+1-9,0   Switch workspace     Alt+C       New pane\n  Alt+J/K     Focus next/prev       Alt+X       Close pane\n  Alt+Space   Cycle layout          Alt+Z       Zoom pane\n  Alt+V       Vi/copy mode          Alt+D       Detach\n  RAlt+J/K    Swap pane              RAlt+H/L   Resize\n\n");
             return;
         }
         if (std.mem.eql(u8, arg, "--raw")) { mode_raw = true; continue; }
         if (std.mem.eql(u8, arg, "--attach")) { mode_attach = true; continue; }
         if (std.mem.eql(u8, arg, "--mcp-bridge")) { mode_mcp_bridge = true; continue; }
-        if (std.mem.eql(u8, arg, "--list")) { list_sessions = true; continue; }
+        if (std.mem.eql(u8, arg, "--list") or std.mem.eql(u8, arg, "-l")) { list_sessions = true; continue; }
         if (std.mem.eql(u8, arg, "--daemon")) { daemon_session = args_iter.next(); continue; }
-        if (std.mem.eql(u8, arg, "--session")) { attach_session = args_iter.next(); continue; }
+        if (std.mem.eql(u8, arg, "--session")) { session_name = args_iter.next(); continue; }
+        if (std.mem.eql(u8, arg, "--name") or std.mem.eql(u8, arg, "-n")) { session_name = args_iter.next(); continue; }
         if (std.mem.eql(u8, arg, "--class")) { wm_class_override = args_iter.next(); continue; }
     }
     g_wm_class = wm_class_override;
@@ -124,39 +125,13 @@ pub fn main(init: std.process.Init) !void {
         return runDaemonMode(allocator, io, name);
     }
 
-    if (attach_session) |name| {
-        // Windowed attach if display available, TTY relay otherwise
-        const tier = render.detectTier();
-        if (tier == .cpu) {
-            if (Daemon.connectToSession(name)) |sock| {
-                return runWindowedDaemonMode(allocator, io, sock);
-            } else |_| {
-                var buf: [128]u8 = undefined;
-                outFmt(&buf, "[teru] Session '{s}' not found\n", .{name});
-                return;
-            }
-        }
-        return runSessionAttach(name);
+    // -n NAME: persistent named session (auto-start daemon + connect windowed)
+    if (session_name) |name| {
+        return runNamedSession(allocator, io, name);
     }
 
     if (mode_mcp_bridge) return McpBridge.run(io);
     if (mode_attach) return runAttachMode(allocator, io);
-
-    // Session modes: persist_session (daemon) > restore_layout (file) > fresh
-    if (!mode_raw) {
-        if (Config.load(allocator, io)) |early_config_val| {
-            var ec = early_config_val;
-            const persist = ec.persist_session;
-            const restore = ec.restore_layout;
-            ec.deinit();
-            if (persist) {
-                return runPersistentMode(allocator, io);
-            }
-            if (restore) {
-                return runRestoreMode(allocator, io);
-            }
-        } else |_| {}
-    }
 
     // Detect rendering tier
     const tier = render.detectTier();
@@ -195,6 +170,64 @@ fn runAttachMode(allocator: std.mem.Allocator, io: std.Io) !void {
     outFmt(&msg_buf, "[teru] Restoring session ({d} panes)\n", .{shell_count});
 
     return runWindowedMode(allocator, io, .{ .pane_count = shell_count });
+}
+
+/// -n NAME: connect to (or start) a named daemon session with full windowed UI.
+fn runNamedSession(allocator: std.mem.Allocator, io: std.Io, name: []const u8) !void {
+    // 1. Try connecting to existing daemon
+    if (Daemon.connectToSession(name)) |sock| {
+        var buf: [128]u8 = undefined;
+        outFmt(&buf, "[teru] Connecting to session '{s}'\n", .{name});
+        return runWindowedDaemonMode(allocator, io, sock);
+    } else |_| {}
+
+    // 2. Auto-start daemon (POSIX only)
+    if (builtin.os.tag != .windows) {
+        if (autoStartNamedDaemon(name)) {
+            var attempts: u32 = 0;
+            while (attempts < 20) : (attempts += 1) {
+                if (Daemon.connectToSession(name)) |sock| {
+                    var buf: [128]u8 = undefined;
+                    outFmt(&buf, "[teru] Connected to session '{s}'\n", .{name});
+                    return runWindowedDaemonMode(allocator, io, sock);
+                } else |_| {}
+                io.sleep(.fromMilliseconds(100), .awake) catch {};
+            }
+        }
+    }
+
+    // 3. Fallback: TTY relay if no display, or fresh windowed if display available
+    const tier = render.detectTier();
+    if (tier == .tty) {
+        var buf: [128]u8 = undefined;
+        outFmt(&buf, "[teru] Session '{s}' not available\n", .{name});
+        return;
+    }
+    return runWindowedMode(allocator, io, null);
+}
+
+/// Fork a daemon with a specific session name.
+fn autoStartNamedDaemon(name: []const u8) bool {
+    const exe_path = "/proc/self/exe";
+    // Build null-terminated name for argv
+    var name_buf: [128:0]u8 = undefined;
+    if (name.len >= name_buf.len) return false;
+    @memcpy(name_buf[0..name.len], name);
+    name_buf[name.len] = 0;
+    const argv = [_:null]?[*:0]const u8{
+        @ptrCast(exe_path),
+        @ptrCast("--daemon"),
+        @ptrCast(name_buf[0..name.len :0]),
+        null,
+    };
+    const fork_pid = compat.posixFork();
+    if (fork_pid < 0) return false;
+    if (fork_pid == 0) {
+        const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
+        _ = std.c.execve(exe_path, @ptrCast(&argv), envp);
+        compat.posixExit(1);
+    }
+    return true;
 }
 
 /// persist_session = true: full daemon persistence.
