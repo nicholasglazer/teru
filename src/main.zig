@@ -86,6 +86,7 @@ pub fn main(init: std.process.Init) !void {
     var mode_mcp_bridge = false;
     var daemon_session: ?[]const u8 = null;
     var session_name: ?[]const u8 = null; // -n NAME: persistent named session
+    var template_name: ?[]const u8 = null; // -t NAME: apply template on start
     var list_sessions = false;
     var wm_class_override: ?[]const u8 = null;
 
@@ -96,7 +97,40 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            out("teru — AI-first terminal emulator\n\nUsage:\n  teru                    Fresh terminal (scratchpad)\n  teru -n <name>          Persistent named session (daemon)\n  teru -l                 List active sessions\n\nOptions:\n  -n, --name <name>     Connect to (or start) named session\n  -f, --fresh           Force fresh start (ignore saved layout)\n  -l, --list            List active sessions\n  -v, --version         Show version\n  -h, --help            Show this help\n  --raw                 Raw TTY mode (no window)\n  --daemon <name>       Start headless daemon (server use)\n  --session <name>      Attach to daemon (legacy)\n  --mcp-bridge          MCP stdio bridge\n  --class <name>        Set WM_CLASS\n\nKeybindings:\n  Alt+1-9,0   Switch workspace     Alt+C       New pane\n  Alt+J/K     Focus next/prev       Alt+X       Close pane\n  Alt+Space   Cycle layout          Alt+Z       Zoom pane\n  Alt+V       Vi/copy mode          Alt+D       Detach\n  RAlt+J/K    Swap pane              RAlt+H/L   Resize\n\n");
+            out(
+                \\teru — AI-first terminal emulator
+                \\
+                \\Usage:
+                \\  teru                          Fresh terminal (scratchpad)
+                \\  teru -n <name>                Persistent named session
+                \\  teru -n <name> -t <template>  Start session from template
+                \\  teru -l                       List active sessions
+                \\
+                \\Options:
+                \\  -n, --name <name>       Connect to (or start) named session
+                \\  -t, --template <name>   Apply template (.tsess) on first start
+                \\  -f, --fresh             Force fresh start (ignore saved layout)
+                \\  -l, --list              List active sessions
+                \\  -v, --version           Show version
+                \\  -h, --help              Show this help
+                \\  --raw                   Raw TTY mode (no window)
+                \\  --daemon <name>         Start headless daemon (server use)
+                \\  --mcp-bridge            MCP stdio bridge
+                \\  --class <name>          Set WM_CLASS
+                \\
+                \\Templates:
+                \\  Searched in: ~/.config/teru/templates/, then ./examples/
+                \\  Export current session: teru_session_save via MCP
+                \\
+                \\Keybindings:
+                \\  Alt+1-9,0   Switch workspace     Alt+C       New pane
+                \\  Alt+J/K     Focus next/prev       Alt+X       Close pane
+                \\  Alt+Space   Cycle layout          Alt+Z       Zoom pane
+                \\  Alt+V       Vi/copy mode          Alt+D       Detach
+                \\  RAlt+J/K    Swap pane              RAlt+H/L   Resize
+                \\
+                \\
+            );
             return;
         }
         if (std.mem.eql(u8, arg, "--raw")) { mode_raw = true; continue; }
@@ -106,6 +140,7 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, arg, "--daemon")) { daemon_session = args_iter.next(); continue; }
         if (std.mem.eql(u8, arg, "--session")) { session_name = args_iter.next(); continue; }
         if (std.mem.eql(u8, arg, "--name") or std.mem.eql(u8, arg, "-n")) { session_name = args_iter.next(); continue; }
+        if (std.mem.eql(u8, arg, "--template") or std.mem.eql(u8, arg, "-t")) { template_name = args_iter.next(); continue; }
         if (std.mem.eql(u8, arg, "--class")) { wm_class_override = args_iter.next(); continue; }
     }
     g_wm_class = wm_class_override;
@@ -122,12 +157,12 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (daemon_session) |name| {
-        return runDaemonMode(allocator, io, name);
+        return runDaemonMode(allocator, io, name, template_name);
     }
 
     // -n NAME: persistent named session (auto-start daemon + connect windowed)
     if (session_name) |name| {
-        return runNamedSession(allocator, io, name);
+        return runNamedSession(allocator, io, name, template_name);
     }
 
     if (mode_mcp_bridge) return McpBridge.run(io);
@@ -173,17 +208,17 @@ fn runAttachMode(allocator: std.mem.Allocator, io: std.Io) !void {
 }
 
 /// -n NAME: connect to (or start) a named daemon session with full windowed UI.
-fn runNamedSession(allocator: std.mem.Allocator, io: std.Io, name: []const u8) !void {
-    // 1. Try connecting to existing daemon
+fn runNamedSession(allocator: std.mem.Allocator, io: std.Io, name: []const u8, template: ?[]const u8) !void {
+    // 1. Try connecting to existing daemon (template ignored if daemon exists)
     if (Daemon.connectToSession(name)) |sock| {
         var buf: [128]u8 = undefined;
         outFmt(&buf, "[teru] Connecting to session '{s}'\n", .{name});
         return runWindowedDaemonMode(allocator, io, sock);
     } else |_| {}
 
-    // 2. Auto-start daemon (POSIX only)
+    // 2. Auto-start daemon with optional template (POSIX only)
     if (builtin.os.tag != .windows) {
-        if (autoStartNamedDaemon(name)) {
+        if (autoStartNamedDaemon(name, template)) {
             var attempts: u32 = 0;
             while (attempts < 20) : (attempts += 1) {
                 if (Daemon.connectToSession(name)) |sock| {
@@ -207,19 +242,31 @@ fn runNamedSession(allocator: std.mem.Allocator, io: std.Io, name: []const u8) !
 }
 
 /// Fork a daemon with a specific session name.
-fn autoStartNamedDaemon(name: []const u8) bool {
+fn autoStartNamedDaemon(name: []const u8, template: ?[]const u8) bool {
     const exe_path = "/proc/self/exe";
-    // Build null-terminated name for argv
     var name_buf: [128:0]u8 = undefined;
     if (name.len >= name_buf.len) return false;
     @memcpy(name_buf[0..name.len], name);
     name_buf[name.len] = 0;
-    const argv = [_:null]?[*:0]const u8{
-        @ptrCast(exe_path),
-        @ptrCast("--daemon"),
-        @ptrCast(name_buf[0..name.len :0]),
-        null,
-    };
+
+    // Build argv: teru --daemon NAME [--template TMPL]
+    var tmpl_buf: [256:0]u8 = undefined;
+    const has_tmpl = if (template) |t| blk: {
+        if (t.len >= tmpl_buf.len) break :blk false;
+        @memcpy(tmpl_buf[0..t.len], t);
+        tmpl_buf[t.len] = 0;
+        break :blk true;
+    } else false;
+
+    var argv: [6:null]?[*:0]const u8 = .{ null, null, null, null, null, null };
+    argv[0] = @ptrCast(exe_path);
+    argv[1] = @ptrCast("--daemon");
+    argv[2] = @ptrCast(name_buf[0..name.len :0]);
+    if (has_tmpl) {
+        argv[3] = @ptrCast("--template");
+        argv[4] = @ptrCast(tmpl_buf[0..template.?.len :0]);
+    }
+
     const fork_pid = compat.posixFork();
     if (fork_pid < 0) return false;
     if (fork_pid == 0) {
@@ -293,29 +340,12 @@ fn runRestoreMode(allocator: std.mem.Allocator, io: std.Io) !void {
 
 /// Fork a teru daemon process in the background. Returns true if fork succeeded.
 fn autoStartDaemon() bool {
-    // Fork and exec: teru --daemon default
-    // The child daemonizes itself (setsid, etc.)
-    const exe_path = "/proc/self/exe"; // Linux; macOS would need _NSGetExecutablePath
-    const argv = [_:null]?[*:0]const u8{
-        @ptrCast(exe_path),
-        @ptrCast("--daemon"),
-        @ptrCast("default"),
-        null,
-    };
-    const fork_pid = compat.posixFork();
-    if (fork_pid < 0) return false;
-    if (fork_pid == 0) {
-        // Child: exec teru --daemon default
-        const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
-        _ = std.c.execve(exe_path, @ptrCast(&argv), envp);
-        compat.posixExit(1);
-    }
-    // Parent: daemon forked successfully
-    return true;
+    return autoStartNamedDaemon("default", null);
 }
 
+
 /// Start a headless daemon session. PTYs persist after this process forks.
-fn runDaemonMode(allocator: std.mem.Allocator, io: std.Io, session_name: []const u8) !void {
+fn runDaemonMode(allocator: std.mem.Allocator, io: std.Io, session_name: []const u8, template: ?[]const u8) !void {
     var config = try Config.load(allocator, io);
     defer config.deinit();
     var hooks = Hooks.init(allocator);
@@ -326,11 +356,27 @@ fn runDaemonMode(allocator: std.mem.Allocator, io: std.Io, session_name: []const
 
     var mux = Multiplexer.init(allocator);
     mux.graph = &graph;
+    mux.spawn_config = .{
+        .shell = config.shell,
+        .scrollback_lines = config.scrollback_lines,
+        .term = config.term,
+        .tab_width = config.tab_width,
+        .cursor_shape = config.cursor_shape,
+    };
     defer mux.deinit();
 
-    // Spawn initial pane (24x80 default, resized by client on attach)
-    const pid = try mux.spawnPane(24, 80);
-    _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = if (mux.getPaneById(pid)) |p| p.childPid() else null }) catch {};
+    // Apply template if provided, otherwise spawn a single default pane
+    if (template) |tmpl| {
+        applyTemplate(allocator, &mux, &graph, tmpl, io);
+    } else {
+        const pid = try mux.spawnPane(24, 80);
+        _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = if (mux.getPaneById(pid)) |p| p.childPid() else null }) catch {};
+    }
+    // Ensure at least one pane exists
+    if (mux.panes.items.len == 0) {
+        const pid = try mux.spawnPane(24, 80);
+        _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = if (mux.getPaneById(pid)) |p| p.childPid() else null }) catch {};
+    }
 
     // Start MCP server
     var mcp = McpServer.init(allocator, &mux, &graph) catch null;
@@ -2203,6 +2249,97 @@ fn sendDaemonInput(fd: posix.fd_t, data: []const u8) void {
 }
 
 /// Save session state to the persist directory (best-effort, errors silently ignored).
+/// Resolve a template name to a file path. Search order:
+/// 1. Exact path (contains '/' or ends with '.tsess')
+/// 2. ~/.config/teru/templates/<name>.tsess
+/// 3. ./examples/<name>.tsess
+fn resolveTemplatePath(name: []const u8, buf: *[512]u8) ?[]const u8 {
+    // Exact path
+    if (std.mem.indexOf(u8, name, "/") != null or std.mem.endsWith(u8, name, ".tsess")) {
+        if (name.len < buf.len) {
+            @memcpy(buf[0..name.len], name);
+            return buf[0..name.len];
+        }
+        return null;
+    }
+
+    // ~/.config/teru/templates/<name>.tsess
+    const home = compat.getenv("HOME") orelse "/tmp";
+    if (std.fmt.bufPrint(buf, "{s}/.config/teru/templates/{s}.tsess", .{ home, name })) |path| {
+        // Check if file exists using C fopen
+        var path_z: [513]u8 = undefined;
+        if (path.len < path_z.len) {
+            @memcpy(path_z[0..path.len], path);
+            path_z[path.len] = 0;
+            const f = std.c.fopen(@ptrCast(path_z[0..path.len :0]), "r");
+            if (f != null) {
+                _ = std.c.fclose(f.?);
+                return path;
+            }
+        }
+    } else |_| {}
+
+    // ./examples/<name>.tsess
+    if (std.fmt.bufPrint(buf, "examples/{s}.tsess", .{name})) |path| {
+        var path_z: [513]u8 = undefined;
+        if (path.len < path_z.len) {
+            @memcpy(path_z[0..path.len], path);
+            path_z[path.len] = 0;
+            const f = std.c.fopen(@ptrCast(path_z[0..path.len :0]), "r");
+            if (f != null) {
+                _ = std.c.fclose(f.?);
+                return path;
+            }
+        }
+    } else |_| {}
+
+    return null;
+}
+
+/// Apply a .tsess template: parse it, create workspaces and panes as defined.
+fn applyTemplate(allocator: std.mem.Allocator, mux: *Multiplexer, graph: *ProcessGraph, template: []const u8, io: std.Io) void {
+    var path_buf: [512]u8 = undefined;
+    const path = resolveTemplatePath(template, &path_buf) orelse {
+        var msg: [128]u8 = undefined;
+        outFmt(&msg, "[teru] Template '{s}' not found\n", .{template});
+        return;
+    };
+
+    // Read template file
+    const SessionConfig = @import("config/Session.zig");
+    var file_path_z: [513:0]u8 = undefined;
+    if (path.len >= file_path_z.len) return;
+    @memcpy(file_path_z[0..path.len], path);
+    file_path_z[path.len] = 0;
+
+    var file_buf: [SessionConfig.max_file_size]u8 = undefined;
+    var file_len: usize = 0;
+    {
+        const f = std.c.fopen(@ptrCast(file_path_z[0..path.len :0]), "r");
+        if (f == null) {
+            var msg: [128]u8 = undefined;
+            outFmt(&msg, "[teru] Cannot read template: {s}\n", .{path});
+            return;
+        }
+        file_len = std.c.fread(&file_buf, 1, file_buf.len, f.?);
+        _ = std.c.fclose(f.?);
+    }
+    if (file_len == 0) return;
+
+    var def = SessionConfig.parse(allocator, file_buf[0..file_len]) catch {
+        var msg: [128]u8 = undefined;
+        outFmt(&msg, "[teru] Failed to parse template: {s}\n", .{path});
+        return;
+    };
+    defer def.deinit();
+
+    // Restore: creates panes in workspaces as defined by the template
+    SessionConfig.restore(&def, mux, graph, 24, 80);
+
+    var msg: [128]u8 = undefined;
+    outFmt(&msg, "[teru] Applied template '{s}' ({d} workspaces)\n", .{ template, def.workspace_count });
+}
+
 fn persistSave(mux: *Multiplexer, graph: *const ProcessGraph, allocator: std.mem.Allocator, io: std.Io) void {
     const sess_dir = Session.getSessionDir(allocator) catch return;
     defer allocator.free(sess_dir);
