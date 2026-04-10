@@ -1101,10 +1101,13 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                         continue;
                                     }
                                     if (action == .detach) {
-                                        const path = "/tmp/teru-session.bin";
-                                        mux.saveSession(&graph, path, io) catch {};
-                                        hooks.fire(.session_save);
-                                        running = false;
+                                        if (daemon_fd != null) {
+                                            // Daemon mode: detach (daemon keeps PTYs alive)
+                                            running = false;
+                                        } else {
+                                            // Local mode: no daemon to detach from
+                                            mux.notify("No daemon — use teru -n NAME for persistent sessions");
+                                        }
                                         continue;
                                     }
                                     if (action == .copy_selection) {
