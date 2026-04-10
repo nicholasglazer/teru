@@ -291,11 +291,11 @@ fn autoStartNamedDaemon(name: []const u8, template: ?[]const u8) bool {
 
 /// persist_session = true: full daemon persistence.
 /// Auto-starts daemon, connects windowed UI. Processes survive window close.
-fn runPersistentMode(allocator: std.mem.Allocator, io: std.Io) !void {
+fn runPersistentMode(allocator: std.mem.Allocator, io: std.Io, wm_class: ?[]const u8) !void {
     // 1. Check if daemon "default" is already running → connect
     if (Daemon.connectToSession("default")) |sock| {
         out("[teru] Connecting to existing daemon\n");
-        return runWindowedDaemonMode(allocator, io, sock);
+        return runWindowedDaemonMode(allocator, io, sock, wm_class);
     } else |_| {}
 
     // 2. Auto-start daemon (POSIX only — Windows falls through to restore)
@@ -305,7 +305,7 @@ fn runPersistentMode(allocator: std.mem.Allocator, io: std.Io) !void {
             while (attempts < DAEMON_RETRY_ATTEMPTS) : (attempts += 1) {
                 if (Daemon.connectToSession("default")) |sock| {
                     out("[teru] Connected to daemon\n");
-                    return runWindowedDaemonMode(allocator, io, sock);
+                    return runWindowedDaemonMode(allocator, io, sock, wm_class);
                 } else |_| {}
                 io.sleep(.fromMilliseconds(DAEMON_RETRY_DELAY_MS), .awake) catch {};
             }
@@ -314,23 +314,23 @@ fn runPersistentMode(allocator: std.mem.Allocator, io: std.Io) !void {
     }
 
     // 3. Fallback: restore layout from file (no daemon)
-    return runRestoreMode(allocator, io);
+    return runRestoreMode(allocator, io, wm_class);
 }
 
 /// restore_layout = true: save layout on exit, restore on launch (fresh shells).
 /// No daemon, no background process. Lightweight.
-fn runRestoreMode(allocator: std.mem.Allocator, io: std.Io) !void {
+fn runRestoreMode(allocator: std.mem.Allocator, io: std.Io, wm_class: ?[]const u8) !void {
     const sess_dir = Session.getSessionDir(allocator) catch
-        return runWindowedMode(allocator, io, null);
+        return runWindowedMode(allocator, io, null, wm_class);
     defer allocator.free(sess_dir);
 
     var path_buf: [512]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/default.bin", .{sess_dir}) catch
-        return runWindowedMode(allocator, io, null);
+        return runWindowedMode(allocator, io, null, wm_class);
 
     var sess = Session.loadFromFile(path, allocator, io) catch {
         out("[teru] No saved layout, starting fresh\n");
-        return runWindowedMode(allocator, io, null);
+        return runWindowedMode(allocator, io, null, wm_class);
     };
     defer sess.deinit();
 
@@ -347,7 +347,7 @@ fn runRestoreMode(allocator: std.mem.Allocator, io: std.Io) !void {
     var msg_buf: [128]u8 = undefined;
     outFmt(&msg_buf, "[teru] Restoring layout ({d} panes)\n", .{restore.pane_count});
 
-    return runWindowedMode(allocator, io, restore);
+    return runWindowedMode(allocator, io, restore, wm_class);
 }
 
 /// Fork a teru daemon process in the background. Returns true if fork succeeded.
@@ -490,15 +490,15 @@ fn runSessionAttach(session_name: []const u8) !void {
     }
 }
 
-fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo) !void {
-    return runWindowedModeImpl(allocator, io, restore, null);
+fn runWindowedMode(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, wm_class: ?[]const u8) !void {
+    return runWindowedModeImpl(allocator, io, restore, null, wm_class);
 }
 
-fn runWindowedDaemonMode(allocator: std.mem.Allocator, io: std.Io, daemon_fd: posix.fd_t) !void {
-    return runWindowedModeImpl(allocator, io, null, daemon_fd);
+fn runWindowedDaemonMode(allocator: std.mem.Allocator, io: std.Io, daemon_fd: posix.fd_t, wm_class: ?[]const u8) !void {
+    return runWindowedModeImpl(allocator, io, null, daemon_fd, wm_class);
 }
 
-fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daemon_fd: ?posix.fd_t) !void {
+fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daemon_fd: ?posix.fd_t, wm_class: ?[]const u8) !void {
     // Load configuration from ~/.config/teru/teru.conf (defaults if missing)
     var config = try Config.load(allocator, io);
     defer config.deinit();
@@ -510,7 +510,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
     var graph = ProcessGraph.init(allocator);
     defer graph.deinit();
 
-    var win = try platform.Platform.init(config.initial_width, config.initial_height, "teru", g_wm_class);
+    var win = try platform.Platform.init(config.initial_width, config.initial_height, "teru", wm_class);
     defer win.deinit();
     win.setOpacity(config.opacity);
 
