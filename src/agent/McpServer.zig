@@ -372,14 +372,16 @@ fn toolListPanes(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
                 pos += 1;
             }
         }
-        // Find process name from graph
+        // Find process name from graph (escape for JSON safety)
         const proc_name = self.findPaneName(pane.id);
+        var proc_esc: [256]u8 = undefined;
+        const proc_safe = jsonEscapeString(proc_name, &proc_esc);
         const status = if (pane.isAlive()) "running" else "exited";
         const workspace = self.findPaneWorkspace(pane.id);
 
         const entry = std.fmt.bufPrint(buf[pos..],
             \\{{\"id\":{d},\"workspace\":{d},\"name\":\"{s}\",\"status\":\"{s}\",\"rows\":{d},\"cols\":{d}}}
-        , .{ pane.id, workspace, proc_name, status, pane.grid.rows, pane.grid.cols }) catch break;
+        , .{ pane.id, workspace, proc_safe, status, pane.grid.rows, pane.grid.cols }) catch break;
         pos += entry.len;
     }
 
@@ -466,10 +468,12 @@ fn toolGetGraph(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
 
         const kind_str = @tagName(node.kind);
         const state_str = @tagName(node.state);
+        var name_esc: [256]u8 = undefined;
+        const name_safe = jsonEscapeString(node.name, &name_esc);
 
         const entry_json = std.fmt.bufPrint(buf[pos..],
             \\{{\"id\":{d},\"name\":\"{s}\",\"kind\":\"{s}\",\"state\":\"{s}\"
-        , .{ node.id, node.name, kind_str, state_str }) catch break;
+        , .{ node.id, name_safe, kind_str, state_str }) catch break;
         pos += entry_json.len;
 
         // Optional fields
@@ -850,9 +854,11 @@ fn toolSetConfig(_: *McpServer, key: []const u8, value: []const u8, buf: []u8, i
         _ = std.c.fclose(f.?);
     }
 
+    var key_esc: [128]u8 = undefined;
+    var val_esc: [256]u8 = undefined;
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"set {s} = {s}"}}]}},"id":{s}}}
-    , .{ key, value, id_str }) catch
+    , .{ jsonEscapeString(key, &key_esc), jsonEscapeString(value, &val_esc), id_str }) catch
         jsonRpcError(buf, id, -32603, "Internal error");
 }
 

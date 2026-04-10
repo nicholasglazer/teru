@@ -502,7 +502,7 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
     } else if (std.mem.eql(u8, key, "attention_color")) {
         self.attention_color = parseHexColor(value) orelse return;
     } else if (std.mem.eql(u8, key, "scrollback_lines")) {
-        self.scrollback_lines = std.fmt.parseInt(u32, value, 10) catch return;
+        self.scrollback_lines = @min(std.fmt.parseInt(u32, value, 10) catch return, 1_000_000);
     } else if (std.mem.eql(u8, key, "prefix_key")) {
         self.prefix_key = parsePrefixKey(value) orelse return;
     } else if (std.mem.eql(u8, key, "initial_width")) {
