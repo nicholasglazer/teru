@@ -26,8 +26,19 @@ Optional clipboard support: `paru -S xclip` (X11) or `paru -S wl-clipboard` (Way
 
 ## macOS
 
+### Homebrew (recommended)
+
+```bash
+brew install nicholasglazer/teru/teru
+```
+
+Builds from source via Zig. No Gatekeeper warnings since the binary is built locally.
+
+### Manual
+
 ```bash
 curl -L https://github.com/nicholasglazer/teru/releases/latest/download/teru-macos-aarch64.tar.gz | tar xz
+xattr -cr teru    # remove Gatekeeper quarantine
 sudo mv teru /usr/local/bin/
 ```
 

@@ -109,13 +109,13 @@ paru -S teru
 
 Optional clipboard support: `paru -S xclip` (X11) or `paru -S wl-clipboard` (Wayland).
 
-### macOS
+### macOS (Homebrew)
 
 ```bash
-# Download and install
-curl -L https://github.com/nicholasglazer/teru/releases/latest/download/teru-macos-aarch64.tar.gz | tar xz
-sudo mv teru /usr/local/bin/
+brew install nicholasglazer/teru/teru
 ```
+
+Or download from [Releases](https://github.com/nicholasglazer/teru/releases) and run `xattr -cr teru` to remove Gatekeeper quarantine.
 
 ### Windows (Scoop)
 

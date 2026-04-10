@@ -1,11 +1,16 @@
 class Teru < Formula
   desc "AI-first terminal emulator, multiplexer, and tiling manager"
   homepage "https://github.com/nicholasglazer/teru"
-  url "https://github.com/nicholasglazer/teru/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "ad30c4c7f087e8d6ace38a1ff0fde01383db6de1e171322824cd21e5aa9a2dea"
+  url "https://github.com/nicholasglazer/teru/archive/refs/tags/v0.3.9.tar.gz"
+  sha256 "2502117d5ee2aaf17985cc5f8d434d7d01589c4154394aa2758a41e6043a946a"
   license "MIT"
+  head "https://github.com/nicholasglazer/teru.git", branch: "main"
 
   depends_on "zig" => :build
+
+  on_macos do
+    depends_on xcode: :build
+  end
 
   on_linux do
     depends_on "libxcb"
