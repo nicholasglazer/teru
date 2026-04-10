@@ -388,6 +388,11 @@ pub const WaylandWindow = struct {
 
     state: WaylandState,
 
+    // Cursor restore (null = cursor hide/show disabled on Wayland without libwayland-cursor)
+    cursor_surface: ?*wl_surface = null,
+    cursor_hotspot_x: i32 = 0,
+    cursor_hotspot_y: i32 = 0,
+
     pub fn init(width: u32, height: u32, title: []const u8) !WaylandWindow {
         // 1. Connect to the Wayland display
         const display: *wl_display = wl_display_connect(null) orelse
@@ -598,18 +603,21 @@ pub const WaylandWindow = struct {
     }
 
     pub fn hideCursor(self: *WaylandWindow) void {
-        if (self.state.pointer) |ptr| {
-            wl_pointer_set_cursor(ptr, self.state.pointer_serial, null, 0, 0);
+        // Only hide if we can restore (need cursor surface)
+        if (self.cursor_surface != null) {
+            if (self.state.pointer) |ptr| {
+                wl_pointer_set_cursor(ptr, self.state.pointer_serial, null, 0, 0);
+            }
         }
     }
 
     pub fn showCursor(self: *WaylandWindow) void {
-        // Setting cursor to null hides it; to restore default we'd need
-        // wl_cursor_theme which requires libwayland-cursor. For now,
-        // set cursor to null (hidden) and it will reappear when pointer
-        // re-enters the window. This is a reasonable tradeoff.
-        // A full implementation would load wl_cursor_theme_load.
-        _ = self;
+        // Restore cursor surface if we have one
+        if (self.cursor_surface) |surf| {
+            if (self.state.pointer) |ptr| {
+                wl_pointer_set_cursor(ptr, self.state.pointer_serial, surf, self.cursor_hotspot_x, self.cursor_hotspot_y);
+            }
+        }
     }
 
     pub fn setTitle(self: *WaylandWindow, title: []const u8) void {
