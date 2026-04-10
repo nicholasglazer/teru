@@ -247,6 +247,7 @@ fn sendGridSync(self: *Daemon) void {
             var col: u16 = 0;
             var line_len: usize = 0;
             while (col < pane.grid.cols) : (col += 1) {
+                if (row_start + col >= pane.grid.cells.len) break;
                 const cell = pane.grid.cells[row_start + col];
                 if (cell.char >= 32 and cell.char < 127) {
                     if (line_len < line_buf.len) {
@@ -324,7 +325,7 @@ fn handleCommand(self: *Daemon, payload: []const u8) void {
     const cmd = proto.Command.fromByte(payload[0]) orelse return;
     switch (cmd) {
         .switch_workspace => {
-            if (payload.len >= 2) self.mux.switchWorkspace(payload[1]);
+            if (payload.len >= 2 and payload[1] < 10) self.mux.switchWorkspace(payload[1]);
         },
         .focus_next => self.mux.focusNext(),
         .focus_prev => self.mux.focusPrev(),

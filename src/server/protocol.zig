@@ -115,6 +115,7 @@ pub const max_payload: usize = 65536;
 /// Send a framed message over a file descriptor.
 /// Uses raw C write — suitable for sockets and pipes.
 pub fn sendMessage(fd: posix.fd_t, tag: Tag, payload: []const u8) bool {
+    if (payload.len > max_payload) return false;
     const hdr = Header{ .tag = tag, .len = @intCast(payload.len) };
     const hdr_bytes = hdr.toBytes();
     if (!writeAll(fd, &hdr_bytes)) return false;

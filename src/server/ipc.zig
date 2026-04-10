@@ -123,9 +123,15 @@ pub fn buildPath(buf: *[256]u8, prefix: []const u8, name: []const u8) ?[]const u
         return std.fmt.bufPrint(buf, "\\\\.\\pipe\\teru-{s}-{s}", .{ prefix, name }) catch null;
     } else if (builtin.os.tag == .macos) {
         const uid = compat.getUid();
-        return std.fmt.bufPrint(buf, "/tmp/teru-{d}-{s}-{s}.sock", .{ uid, prefix, name }) catch null;
+        const tmpdir = compat.getenv("TMPDIR") orelse "/tmp";
+        return std.fmt.bufPrint(buf, "{s}/teru-{d}-{s}-{s}.sock", .{ tmpdir, uid, prefix, name }) catch null;
     } else {
+        // Linux: prefer $XDG_RUNTIME_DIR, fallback to /run/user/{uid}
         const uid = compat.getUid();
+        const runtime_dir = compat.getenv("XDG_RUNTIME_DIR");
+        if (runtime_dir) |dir| {
+            return std.fmt.bufPrint(buf, "{s}/teru-{s}-{s}.sock", .{ dir, prefix, name }) catch null;
+        }
         return std.fmt.bufPrint(buf, "/run/user/{d}/teru-{s}-{s}.sock", .{ uid, prefix, name }) catch null;
     }
 }
