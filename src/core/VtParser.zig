@@ -270,8 +270,8 @@ fn handleGround(self: *VtParser, byte: u8) void {
         0x0A, 0x0B, 0x0C => { // LF, VT, FF
             self.grid.newline();
         },
-        0x0D => { // CR
-            self.grid.cursor_col = 0;
+        0x0D => { // CR — return to left margin (or col 0 if no margins)
+            self.grid.cursor_col = @intCast(self.grid.getLeftMargin());
         },
         0x00...0x06, 0x0E...0x1A, 0x1C...0x1F => {
             // Other C0 controls: ignore
@@ -848,9 +848,12 @@ fn dispatchCsi(self: *VtParser, final: u8) void {
                 const left: u16 = if (self.params[0] > 0) self.params[0] - 1 else 0;
                 const right: u16 = if (self.param_count > 1 and self.params[1] > 0) self.params[1] else self.grid.cols;
                 self.grid.setMargins(
-                    @intCast(@min(left, self.grid.cols -| 1)),
+                    @intCast(@min(left, self.grid.cols)),
                     @intCast(@min(right, self.grid.cols)),
                 );
+                // Per VT510: cursor moves to home after DECSLRM
+                self.grid.cursor_row = self.grid.scroll_top;
+                self.grid.cursor_col = @intCast(self.grid.getLeftMargin());
             } else {
                 // SCP — save cursor position
                 self.grid.saveCursor();

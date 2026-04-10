@@ -320,7 +320,8 @@ pub fn scrollUpN(self: *Grid, n: u16) void {
         const lm_check = self.getLeftMargin();
         const rm_check = self.getRightMargin();
         const is_margin_scroll = self.margins_enabled and (lm_check > 0 or rm_check < w);
-        if (self.scrollback != null and !is_margin_scroll) if (self.scrollback) |sb| {
+        if (self.scrollback != null and !is_margin_scroll) {
+            if (self.scrollback) |sb| {
             var line_buf: [4096]u8 = undefined;
             var len: usize = 0;
             var prev_fg: Color = .default;
@@ -364,9 +365,12 @@ pub fn scrollUpN(self: *Grid, n: u16) void {
                 }
             }
             // Trim trailing spaces (but not SGR sequences)
-            while (len > 0 and line_buf[len - 1] == ' ') len -= 1;
+            while (len > 0 and line_buf[len - 1] == ' ') {
+                len -= 1;
+            }
             // Scrollback capture is best-effort: OOM just drops the line
-            sb.pushLine(line_buf[0..len], self) catch {};
+            _ = sb.pushLine(line_buf[0..len], self) catch null;
+            }
         }
 
         const lm = self.getLeftMargin();
@@ -551,6 +555,12 @@ pub fn resize(self: *Grid, allocator: std.mem.Allocator, new_rows: u16, new_cols
     self.cols = new_cols;
     self.scroll_bottom = new_rows -| 1;
     self.scroll_top = 0;
+    // Clamp margins to new dimensions (reset if out of bounds)
+    if (self.right_margin > new_cols or self.left_margin >= new_cols) {
+        self.left_margin = 0;
+        self.right_margin = 0;
+        self.margins_enabled = false;
+    }
 
     // Resize the inactive alt buffer if it exists.
     // Content in the inactive buffer is not preserved on resize — this
@@ -581,9 +591,12 @@ pub fn getRightMargin(self: *const Grid) usize {
 }
 
 /// Set left/right margins (0-based left, exclusive right).
+/// Ignores invalid values (left >= right, out of bounds).
 pub fn setMargins(self: *Grid, left: u16, right: u16) void {
+    const r = if (right == 0 or right > self.cols) self.cols else right;
+    if (left >= r) return; // invalid: ignore per VT510 spec
     self.left_margin = left;
-    self.right_margin = right;
+    self.right_margin = r;
 }
 
 /// Set cursor position (1-based coordinates, as per VT convention).
