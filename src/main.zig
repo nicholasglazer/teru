@@ -243,7 +243,7 @@ fn runNamedSession(allocator: std.mem.Allocator, io: std.Io, name: []const u8, t
                     outFmt(&buf, "[teru] Connected to session '{s}'\n", .{name});
                     return runWindowedDaemonMode(allocator, io, sock);
                 } else |_| {}
-                io.sleep(.fromMilliseconds(DAEMON_RETRY_DELAY_MS), .awake) catch {};
+                io.sleep(.fromMilliseconds(DAEMON_RETRY_DELAY_MS), .awake) catch {}; // sleep failure is harmless
             }
         }
     }
@@ -2118,10 +2118,10 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
             // Frame rate limiter: cap at ~120fps to prevent CPU spin.
             // Without this, continuous PTY output (e.g., Claude Code) causes
             // 100% CPU on one core because the loop never sleeps when dirty.
-            io.sleep(.fromMilliseconds(8), .awake) catch {};
+            io.sleep(.fromMilliseconds(8), .awake) catch {}; // sleep failure is harmless
         } else {
             // Idle: sleep longer when nothing to render
-            io.sleep(.fromMilliseconds(16), .awake) catch {};
+            io.sleep(.fromMilliseconds(16), .awake) catch {}; // sleep failure is harmless
         }
     }
 
@@ -2237,7 +2237,10 @@ fn parseDaemonStateSync(daemon_fd: posix.fd_t, mux: *Multiplexer, payload: []con
         mux.panes.items[idx].linkVt(mux.allocator);
 
         if (ws_idx < 10) {
-            mux.layout_engine.workspaces[ws_idx].addNode(mux.allocator, pane_id) catch {};
+            mux.layout_engine.workspaces[ws_idx].addNode(mux.allocator, pane_id) catch |err| {
+                var ebuf: [128]u8 = undefined;
+                outFmt(&ebuf, "[teru] layout addNode failed: {s}\n", .{@errorName(err)});
+            };
         }
     }
 
