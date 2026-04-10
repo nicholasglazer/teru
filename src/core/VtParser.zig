@@ -259,17 +259,20 @@ fn handleGround(self: *VtParser, byte: u8) void {
         0x07 => { // BEL — visual bell
             self.grid.bell = true;
         },
-        0x08 => { // BS (backspace) — stops at left margin when DECLRMM active
+        0x08 => { // BS (backspace) — stops at left margin if inside margins
             const lm: u16 = @intCast(self.grid.getLeftMargin());
-            if (self.grid.cursor_col > lm) {
+            const stop = if (self.grid.cursor_col >= lm) lm else 0;
+            if (self.grid.cursor_col > stop) {
                 self.grid.cursor_col -= 1;
             }
         },
-        0x09 => { // TAB — advance to next tab stop (clamped to right margin)
+        0x09 => { // TAB — advance to next tab stop (clamped to right margin if inside)
             const tw: u16 = self.grid.tab_width;
+            const lm: u16 = @intCast(self.grid.getLeftMargin());
             const rm: u16 = @intCast(self.grid.getRightMargin());
             const next = if (tw > 0) (self.grid.cursor_col / tw + 1) * tw else self.grid.cursor_col + 1;
-            self.grid.cursor_col = @min(next, rm -| 1);
+            const limit = if (self.grid.cursor_col >= lm and self.grid.cursor_col < rm) rm -| 1 else self.grid.cols -| 1;
+            self.grid.cursor_col = @min(next, limit);
         },
         0x0A, 0x0B, 0x0C => { // LF, VT, FF
             self.grid.newline();
@@ -735,15 +738,22 @@ fn dispatchCsi(self: *VtParser, final: u8) void {
             const n = self.getParam(0, 1);
             self.grid.cursor_row = @min(self.grid.cursor_row +| n, self.grid.scroll_bottom);
         },
-        'C' => { // CUF — cursor forward (stops at right margin)
-            const n = self.getParam(0, 1);
-            const rm: u16 = @intCast(self.grid.getRightMargin());
-            self.grid.cursor_col = @min(self.grid.cursor_col +| n, rm -| 1);
-        },
-        'D' => { // CUB — cursor back (stops at left margin)
+        'C' => { // CUF — cursor forward (stops at right margin if inside margins)
             const n = self.getParam(0, 1);
             const lm: u16 = @intCast(self.grid.getLeftMargin());
-            self.grid.cursor_col = @max(self.grid.cursor_col -| n, lm);
+            const rm: u16 = @intCast(self.grid.getRightMargin());
+            const limit = if (self.grid.cursor_col >= lm and self.grid.cursor_col < rm) rm -| 1 else self.grid.cols -| 1;
+            self.grid.cursor_col = @min(self.grid.cursor_col +| n, limit);
+        },
+        'D' => { // CUB — cursor back (stops at left margin if inside margins)
+            const n = self.getParam(0, 1);
+            const lm: u16 = @intCast(self.grid.getLeftMargin());
+            const rm: u16 = @intCast(self.grid.getRightMargin());
+            if (self.grid.cursor_col >= lm and self.grid.cursor_col < rm) {
+                self.grid.cursor_col = @max(self.grid.cursor_col -| n, lm);
+            } else {
+                self.grid.cursor_col -|= n;
+            }
         },
         'E' => { // CNL — cursor next line (goes to left margin)
             const n = self.getParam(0, 1);
@@ -857,9 +867,9 @@ fn dispatchCsi(self: *VtParser, final: u8) void {
                     @intCast(@min(left, self.grid.cols)),
                     @intCast(@min(right, self.grid.cols)),
                 );
-                // Per VT510: cursor moves to absolute home (0,0) after DECSLRM
-                self.grid.cursor_row = 0;
-                self.grid.cursor_col = 0;
+                // Per VT510: cursor moves to home position after DECSLRM
+                self.grid.cursor_row = self.grid.scroll_top;
+                self.grid.cursor_col = @intCast(self.grid.getLeftMargin());
             } else {
                 // SCP — save cursor position
                 self.grid.saveCursor();
