@@ -45,6 +45,7 @@ pub const WinPty = @import("pty/WinPty.zig");
 pub const ipc = @import("server/ipc.zig");
 pub const compat = @import("compat.zig");
 pub const png = @import("png.zig");
+pub const keysyms = @import("input/keysyms.zig");
 
 test {
     _ = Pty;
@@ -77,4 +78,5 @@ test {
     _ = WinPty;
     _ = ipc;
     _ = png;
+    _ = keysyms;
 }

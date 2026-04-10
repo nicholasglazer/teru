@@ -38,6 +38,7 @@ const Keyboard = switch (builtin.os.tag) {
 const Session = @import("persist/Session.zig");
 const UrlDetector = @import("core/UrlDetector.zig");
 const mouse_handler = @import("input/mouse.zig");
+const ks = @import("input/keysyms.zig");
 const HookListener = @import("agent/HookListener.zig");
 const HookHandler = @import("agent/HookHandler.zig");
 const SignalManager = @import("core/SignalManager.zig");
@@ -867,11 +868,6 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             .tty => {},
                         }
                     }
-                    const XKB_KEY_Page_Up: u32 = 0xff55;
-                    const XKB_KEY_Page_Down: u32 = 0xff56;
-                    const XKB_KEY_Return: u32 = 0xff0d;
-                    const XKB_KEY_Escape: u32 = 0xff1b;
-                    const XKB_KEY_BackSpace: u32 = 0xff08;
 
                     if (key.keycode == platform.types.keycodes.RALT) ralt_held = true;
 
@@ -962,16 +958,16 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                 var search_key_buf: [32]u8 = undefined;
                                 const slen = kb.processKey(key.keycode, &search_key_buf);
 
-                                if (keysym == XKB_KEY_Escape) {
+                                if (keysym == ks.Escape) {
                                     // Cancel search
                                     search_mode = false;
                                     search_len = 0;
                                     if (mux.getActivePane()) |pane| pane.grid.dirty = true;
-                                } else if (keysym == XKB_KEY_Return) {
+                                } else if (keysym == ks.Return) {
                                     // Confirm and exit search
                                     search_mode = false;
                                     if (mux.getActivePane()) |pane| pane.grid.dirty = true;
-                                } else if (keysym == XKB_KEY_BackSpace) {
+                                } else if (keysym == ks.BackSpace) {
                                     if (search_len > 0) {
                                         search_len -= 1;
                                         if (mux.getActivePane()) |pane| pane.grid.dirty = true;
@@ -988,7 +984,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             }
 
                             // PageUp/Down: scrollback browsing (with or without Shift)
-                            if (keysym == XKB_KEY_Page_Up) {
+                            if (keysym == ks.Page_Up) {
                                 const max_offset = mux.getScrollbackLineCount();
                                 if (max_offset > 0) {
                                     mux.setScrollOffset(@min(mux.getScrollOffset() + grid_rows, max_offset));
@@ -996,7 +992,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                 var dummy: [32]u8 = undefined;
                                 _ = kb.processKey(key.keycode, &dummy);
                                 continue;
-                            } else if (keysym == XKB_KEY_Page_Down) {
+                            } else if (keysym == ks.Page_Down) {
                                 if (mux.getScrollOffset() > 0) {
                                     { const so = mux.getScrollOffset(); mux.setScrollOffset(so -| grid_rows); }
                                 }
@@ -1006,14 +1002,8 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                             }
 
                             // Ctrl+Shift+C: copy selection to clipboard
-                            const CTRL_MASK: u32 = 4;
-                            const SHIFT_MASK_COPY: u32 = 1;
-                            if (key.modifiers & CTRL_MASK != 0 and key.modifiers & SHIFT_MASK_COPY != 0) {
-                                const XKB_KEY_C: u32 = 0x0043;
-                                const XKB_KEY_c: u32 = 0x0063;
-                                const XKB_KEY_V: u32 = 0x0056;
-                                const XKB_KEY_v: u32 = 0x0076;
-                                if (keysym == XKB_KEY_C or keysym == XKB_KEY_c) {
+                            if (key.modifiers & ks.CTRL_MASK != 0 and key.modifiers & ks.SHIFT_MASK != 0) {
+                                if (keysym == ks.C_upper or keysym == ks.C_lower) {
                                     // Copy selection
                                     if (selection.active) {
                                         if (mux.getActivePane()) |pane| {
@@ -1028,7 +1018,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                                     }
                                     continue;
                                 }
-                                if (keysym == XKB_KEY_V or keysym == XKB_KEY_v) {
+                                if (keysym == ks.V_upper or keysym == ks.V_lower) {
                                     // Paste (with bracketed paste wrapping)
                                     if (mux.getActivePaneMut()) |pane| {
                                         if (pane.vt.bracketed_paste) {
