@@ -743,6 +743,18 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
     // No saved_cells needed — scroll is non-destructive (renders overlay on framebuffer)
 
     // Search mode state (Feature 9)
+    var mouse_down = false;
+    var last_click_time: i128 = 0;
+    var border_dragging = false;
+    var border_drag_node: ?usize = null;
+    var border_drag_x: u32 = 0;
+    var border_drag_ratio: f32 = 0.5;
+    var last_click_row: u16 = 0;
+    var last_click_col: u16 = 0;
+    var mouse_start_row: u16 = 0;
+    var mouse_start_col: u16 = 0;
+    var mouse_cursor_hidden = false;
+    var hover_url_active = false;
     var search_mode = false;
     var search_query: [256]u8 = undefined;
     var search_len: usize = 0;
