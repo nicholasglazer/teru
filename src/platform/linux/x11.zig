@@ -184,6 +184,9 @@ extern "xcb" fn xcb_create_pixmap(conn: *xcb_connection_t, depth: u8, pid: u32, 
 extern "xcb" fn xcb_free_pixmap(conn: *xcb_connection_t, pixmap: u32) callconv(.c) xcb_void_cookie_t;
 extern "xcb" fn xcb_create_cursor(conn: *xcb_connection_t, cid: u32, source: u32, mask: u32, fore_red: u16, fore_green: u16, fore_blue: u16, back_red: u16, back_green: u16, back_blue: u16, x: u16, y: u16) callconv(.c) xcb_void_cookie_t;
 extern "xcb" fn xcb_free_cursor(conn: *xcb_connection_t, cursor: u32) callconv(.c) xcb_void_cookie_t;
+extern "xcb" fn xcb_open_font(conn: *xcb_connection_t, fid: u32, name_len: u16, name: [*]const u8) callconv(.c) xcb_void_cookie_t;
+extern "xcb" fn xcb_close_font(conn: *xcb_connection_t, fid: u32) callconv(.c) xcb_void_cookie_t;
+extern "xcb" fn xcb_create_glyph_cursor(conn: *xcb_connection_t, cid: u32, source_font: u32, mask_font: u32, source_char: u16, mask_char: u16, fore_red: u16, fore_green: u16, fore_blue: u16, back_red: u16, back_green: u16, back_blue: u16) callconv(.c) xcb_void_cookie_t;
 extern "xcb" fn xcb_change_window_attributes(conn: *xcb_connection_t, window: xcb_window_t, value_mask: u32, value_list: ?*const anyopaque) callconv(.c) xcb_void_cookie_t;
 extern "xcb" fn xcb_configure_window(conn: *xcb_connection_t, window: xcb_window_t, value_mask: u16, value_list: *const anyopaque) callconv(.c) xcb_void_cookie_t;
 
@@ -208,8 +211,9 @@ pub const X11Window = struct {
     wm_delete_window: xcb_atom_t,
     depth: u8,
 
-    // Invisible cursor for mouse_hide_when_typing
+    // Cursors for mouse_hide_when_typing
     invisible_cursor: u32 = 0,
+    default_cursor: u32 = 0,
 
     // SHM state (zero-copy framebuffer)
     shm_seg: xcb_shm_seg_t = 0,
@@ -307,12 +311,21 @@ pub const X11Window = struct {
         // Try to set up SHM for zero-copy framebuffer
         self.setupShm(width, height);
 
-        // Create invisible cursor for mouse_hide_when_typing
+        // Create cursors for mouse_hide_when_typing
+        // Invisible cursor: 1x1 blank pixmap
         const pixmap = xcb_generate_id(connection);
         _ = xcb_create_pixmap(connection, 1, pixmap, win_id, 1, 1);
         self.invisible_cursor = xcb_generate_id(connection);
         _ = xcb_create_cursor(connection, self.invisible_cursor, pixmap, pixmap, 0, 0, 0, 0, 0, 0, 0, 0);
         _ = xcb_free_pixmap(connection, pixmap);
+
+        // Default cursor: left_ptr from X11 cursor font (glyph 68)
+        const cursor_font = xcb_generate_id(connection);
+        _ = xcb_open_font(connection, cursor_font, 6, "cursor");
+        self.default_cursor = xcb_generate_id(connection);
+        // XC_left_ptr = 68, mask = 69 (next glyph)
+        _ = xcb_create_glyph_cursor(connection, self.default_cursor, cursor_font, cursor_font, 68, 69, 0, 0, 0, 0xFFFF, 0xFFFF, 0xFFFF);
+        _ = xcb_close_font(connection, cursor_font);
 
         return self;
     }
@@ -325,13 +338,14 @@ pub const X11Window = struct {
     }
 
     pub fn showCursor(self: *X11Window) void {
-        const cursor_val = [1]u32{0}; // XCB_CURSOR_NONE restores default
+        const cursor_val = [1]u32{self.default_cursor};
         _ = xcb_change_window_attributes(self.connection, self.window, XCB_CW_CURSOR, &cursor_val);
         _ = xcb_flush(self.connection);
     }
 
     pub fn deinit(self: *X11Window) void {
         if (self.invisible_cursor != 0) _ = xcb_free_cursor(self.connection, self.invisible_cursor);
+        if (self.default_cursor != 0) _ = xcb_free_cursor(self.connection, self.default_cursor);
         self.teardownShm();
         _ = xcb_free_gc(self.connection, self.gc);
         _ = xcb_destroy_window(self.connection, self.window);
