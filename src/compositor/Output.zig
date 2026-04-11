@@ -50,7 +50,7 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
     const name = wlr.miozu_output_name(wlr_output) orelse "unknown";
     const w = wlr.miozu_output_width(wlr_output);
     const h = wlr.miozu_output_height(wlr_output);
-    std.debug.print("miozu: output '{s}' connected ({d}x{d})\n", .{ name, w, h });
+    std.debug.print("teruwm: output '{s}' connected ({d}x{d})\n", .{ name, w, h });
 
     // On first output: create bars first, then spawn terminal (so tiling respects bar height)
     if (server.terminal_count == 0) {
@@ -61,7 +61,7 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
         server.spawnTerminal(9); // auto-sizes to fill output minus bar(s)
 
         if (server.bar) |b| b.render(server);
-        std.debug.print("miozu: immortal terminal spawned on workspace 0\n", .{});
+        std.debug.print("teruwm: immortal terminal spawned on workspace 0\n", .{});
     }
 
     return output;
@@ -89,7 +89,7 @@ fn handleRequestState(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c
 fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const output: *Output = @fieldParentPtr("destroy", listener);
     const name = wlr.miozu_output_name(output.wlr_output) orelse "unknown";
-    std.debug.print("miozu: output '{s}' disconnected\n", .{name});
+    std.debug.print("teruwm: output '{s}' disconnected\n", .{name});
 
     // Remove listeners
     wlr.wl_list_remove(&output.frame.link);

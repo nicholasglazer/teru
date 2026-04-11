@@ -96,7 +96,7 @@ pub fn create(server: *Server, ws: u8, rows: u16, cols: u16) ?*TerminalPane {
     _ = server.nodes.addTerminal(tp.node_id, ws);
     server.layout_engine.workspaces[ws].addNode(server.zig_allocator, tp.node_id) catch return null;
 
-    std.debug.print("miozu: terminal pane node={d} ws={d} ({d}x{d})\n", .{ tp.node_id, ws, cols, rows });
+    std.debug.print("teruwm: terminal pane node={d} ws={d} ({d}x{d})\n", .{ tp.node_id, ws, cols, rows });
 
     server.arrangeworkspace(ws);
     tp.render();

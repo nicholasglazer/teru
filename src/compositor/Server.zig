@@ -53,9 +53,18 @@ terminal_count: u16 = 0,
 bar: ?*Bar = null,
 workspace_trees: [10]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** 10,
 
+// Fullscreen state: tracks which node is fullscreen (null = none)
+fullscreen_node: ?u64 = null,
+fullscreen_prev_bar_top: bool = true,
+fullscreen_prev_bar_bottom: bool = false,
+
 // Scratchpads: 9 floating terminal panes (Alt+RAlt+1-9)
 scratchpads: [9]?*TerminalPane = [_]?*TerminalPane{null} ** 9,
 scratchpad_visible: [9]bool = [_]bool{false} ** 9,
+
+// Internal clipboard buffer (Ctrl+Shift+C/V between terminal panes)
+clipboard_buf: [8192]u8 = undefined,
+clipboard_len: u16 = 0,
 
 // Built-in launcher
 launcher: Launcher = .{},
@@ -239,7 +248,7 @@ fn handleNewOutput(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) v
     const wlr_output: *wlr.wlr_output = @ptrCast(@alignCast(data orelse return));
 
     _ = Output.create(server, wlr_output, server.zig_allocator) catch {
-        std.debug.print("miozu: failed to create output\n", .{});
+        std.debug.print("teruwm: failed to create output\n", .{});
         return;
     };
 }
@@ -344,6 +353,19 @@ const Keyboard = struct {
                 var buf: [8]u8 = undefined;
                 const sym = wlr.xkb_state_key_get_one_sym(xkb_st, keycode + 8);
                 const ctrl = wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_CTRL, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
+                const shift = wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_SHIFT, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
+
+                // Ctrl+Shift+C: copy cursor line to internal clipboard
+                if (ctrl and shift and (sym == 'C' or sym == 'c')) {
+                    kb.server.clipboardCopyCursorLine(tp);
+                    return;
+                }
+
+                // Ctrl+Shift+V: paste internal clipboard to terminal PTY
+                if (ctrl and shift and (sym == 'V' or sym == 'v')) {
+                    kb.server.clipboardPaste(tp);
+                    return;
+                }
 
                 // Ctrl+key → control character (Ctrl+C = 0x03, etc.)
                 if (ctrl and sym >= 'a' and sym <= 'z') {
@@ -395,7 +417,7 @@ fn setupKeyboard(self: *Server, device: *wlr.wlr_input_device) void {
 
     wlr.wlr_seat_set_keyboard(self.seat, keyboard);
 
-    std.debug.print("miozu: keyboard configured\n", .{});
+    std.debug.print("teruwm: keyboard configured\n", .{});
 }
 
 // ── Cursor processing ──────────────────────────────────────────
@@ -567,7 +589,7 @@ fn executeAction(self: *Server, action: KBAction) bool {
             return true;
         },
         .fullscreen_toggle => {
-            // TODO: toggle focused node to fill entire output
+            self.toggleFullscreen();
             return true;
         },
         .launcher_toggle => {
@@ -697,7 +719,7 @@ pub fn spawnTerminal(self: *Server, ws: u8) void {
     const rows: u16 = @intCast(@max(1, usable_h / cell_h));
 
     const tp = TerminalPane.create(self, ws, rows, cols) orelse {
-        std.debug.print("miozu: failed to spawn terminal pane\n", .{});
+        std.debug.print("teruwm: failed to spawn terminal pane\n", .{});
         return;
     };
 
@@ -713,6 +735,76 @@ pub fn spawnTerminal(self: *Server, ws: u8) void {
     // Focus the new terminal
     self.focused_terminal = tp;
     self.focused_view = null; // terminal takes priority over external views
+}
+
+// ── Clipboard (internal buffer for Ctrl+Shift+C/V) ───────────
+
+/// Copy the cursor line from a terminal pane into the internal clipboard buffer.
+/// Extracts the full line at the cursor row, trimming trailing whitespace.
+fn clipboardCopyCursorLine(self: *Server, tp: *TerminalPane) void {
+    const grid = &tp.pane.grid;
+    const row = grid.cursor_row;
+    var pos: usize = 0;
+
+    var col: u16 = 0;
+    while (col < grid.cols) : (col += 1) {
+        const cell = grid.cellAtConst(row, col);
+        const cp = cell.char;
+        // Encode codepoint as UTF-8 into clipboard_buf
+        if (cp < 0x80) {
+            if (pos < self.clipboard_buf.len) {
+                self.clipboard_buf[pos] = @intCast(cp);
+                pos += 1;
+            }
+        } else if (cp < 0x800) {
+            if (pos + 2 <= self.clipboard_buf.len) {
+                self.clipboard_buf[pos] = @intCast(0xC0 | (cp >> 6));
+                self.clipboard_buf[pos + 1] = @intCast(0x80 | (cp & 0x3F));
+                pos += 2;
+            }
+        } else if (cp < 0x10000) {
+            if (pos + 3 <= self.clipboard_buf.len) {
+                self.clipboard_buf[pos] = @intCast(0xE0 | (cp >> 12));
+                self.clipboard_buf[pos + 1] = @intCast(0x80 | ((cp >> 6) & 0x3F));
+                self.clipboard_buf[pos + 2] = @intCast(0x80 | (cp & 0x3F));
+                pos += 3;
+            }
+        } else {
+            if (pos + 4 <= self.clipboard_buf.len) {
+                self.clipboard_buf[pos] = @intCast(0xF0 | (cp >> 18));
+                self.clipboard_buf[pos + 1] = @intCast(0x80 | ((cp >> 12) & 0x3F));
+                self.clipboard_buf[pos + 2] = @intCast(0x80 | ((cp >> 6) & 0x3F));
+                self.clipboard_buf[pos + 3] = @intCast(0x80 | (cp & 0x3F));
+                pos += 4;
+            }
+        }
+    }
+
+    // Trim trailing spaces
+    while (pos > 0 and self.clipboard_buf[pos - 1] == ' ') {
+        pos -= 1;
+    }
+
+    self.clipboard_len = @intCast(@min(pos, std.math.maxInt(u16)));
+    std.debug.print("teruwm: clipboard copy ({d} bytes)\n", .{self.clipboard_len});
+}
+
+/// Paste internal clipboard buffer to a terminal pane's PTY.
+/// Wraps with bracketed paste escape sequences if the terminal has it enabled.
+fn clipboardPaste(self: *Server, tp: *TerminalPane) void {
+    if (self.clipboard_len == 0) return;
+
+    const data = self.clipboard_buf[0..self.clipboard_len];
+
+    if (tp.pane.vt.bracketed_paste) {
+        tp.writeInput("\x1b[200~");
+    }
+    tp.writeInput(data);
+    if (tp.pane.vt.bracketed_paste) {
+        tp.writeInput("\x1b[201~");
+    }
+
+    std.debug.print("teruwm: clipboard paste ({d} bytes)\n", .{self.clipboard_len});
 }
 
 /// Poll all terminal panes for PTY output. Called from the event loop.
@@ -766,6 +858,92 @@ fn setWorkspaceVisibility(self: *Server, ws: u8, visible: bool) void {
     }
 }
 
+// ── Fullscreen ───────────────────────────────────────────────
+
+/// Toggle the focused terminal pane to fill the entire output.
+/// When entering fullscreen: hide bars, hide other panes, expand focused pane.
+/// When leaving fullscreen: restore bars, re-arrange workspace.
+fn toggleFullscreen(self: *Server) void {
+    if (self.fullscreen_node != null) {
+        // ── Exit fullscreen ──
+        self.fullscreen_node = null;
+
+        // Restore bar visibility
+        if (self.bar) |b| {
+            b.top.enabled = self.fullscreen_prev_bar_top;
+            b.bottom.enabled = self.fullscreen_prev_bar_bottom;
+            if (b.top.enabled) {
+                if (wlr.miozu_scene_buffer_node(b.top.scene_buffer)) |node| {
+                    wlr.wlr_scene_node_set_enabled(node, true);
+                }
+            }
+            if (b.bottom.enabled) {
+                if (wlr.miozu_scene_buffer_node(b.bottom.scene_buffer)) |node| {
+                    wlr.wlr_scene_node_set_enabled(node, true);
+                }
+            }
+        }
+
+        // Show all panes in the active workspace
+        const ws = self.layout_engine.active_workspace;
+        self.setWorkspaceVisibility(ws, true);
+
+        // Re-tile (respects bar height again)
+        self.arrangeworkspace(ws);
+        if (self.bar) |b| b.render(self);
+
+        std.debug.print("teruwm: fullscreen off\n", .{});
+        return;
+    }
+
+    // ── Enter fullscreen ──
+    const tp = self.focused_terminal orelse return;
+
+    self.fullscreen_node = tp.node_id;
+
+    // Save and hide bars
+    if (self.bar) |b| {
+        self.fullscreen_prev_bar_top = b.top.enabled;
+        self.fullscreen_prev_bar_bottom = b.bottom.enabled;
+        if (wlr.miozu_scene_buffer_node(b.top.scene_buffer)) |node| {
+            wlr.wlr_scene_node_set_enabled(node, false);
+        }
+        if (wlr.miozu_scene_buffer_node(b.bottom.scene_buffer)) |node| {
+            wlr.wlr_scene_node_set_enabled(node, false);
+        }
+    }
+
+    // Hide all other panes in the workspace
+    const ws = self.layout_engine.active_workspace;
+    const ws_nodes = self.layout_engine.workspaces[ws].node_ids.items;
+    for (ws_nodes) |nid| {
+        if (nid == tp.node_id) continue;
+        for (self.terminal_panes) |maybe_tp| {
+            if (maybe_tp) |other_tp| {
+                if (other_tp.node_id == nid) other_tp.setVisible(false);
+            }
+        }
+        // Also hide external views
+        if (self.nodes.findById(nid)) |slot| {
+            if (self.nodes.kind[slot] == .wayland_surface) {
+                if (self.nodes.scene_tree[slot]) |tree| {
+                    if (wlr.miozu_scene_tree_node(tree)) |node| {
+                        wlr.wlr_scene_node_set_enabled(node, false);
+                    }
+                }
+            }
+        }
+    }
+
+    // Expand focused pane to fill entire output (no bar, no gaps)
+    const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
+    const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
+    tp.resize(out_w, out_h);
+    tp.setPosition(0, 0);
+
+    std.debug.print("teruwm: fullscreen on node={d}\n", .{tp.node_id});
+}
+
 // ── Scratchpads ───────────────────────────────────────────────
 
 /// Toggle a numbered scratchpad (0-8, mapped from keys 1-9).
@@ -805,7 +983,7 @@ fn toggleScratchpad(self: *Server, index: u8) void {
         self.scratchpad_visible[index] = true;
         self.focused_terminal = tp;
         self.focused_view = null;
-        std.debug.print("miozu: scratchpad {d} created\n", .{index + 1});
+        std.debug.print("teruwm: scratchpad {d} created\n", .{index + 1});
         return;
     }
 
@@ -827,7 +1005,7 @@ fn toggleScratchpad(self: *Server, index: u8) void {
 
 /// Handle terminal pane exit (shell process died).
 pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
-    std.debug.print("miozu: terminal exited node={d}\n", .{tp.node_id});
+    std.debug.print("teruwm: terminal exited node={d}\n", .{tp.node_id});
 
     // Remove from node registry and tiling engine
     _ = self.nodes.remove(tp.node_id);
