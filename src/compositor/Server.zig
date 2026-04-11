@@ -551,6 +551,42 @@ fn executeAction(self: *Server, action: KBAction) bool {
             self.spawnTerminal(self.layout_engine.active_workspace);
             return true;
         },
+        .fullscreen_toggle => {
+            // TODO: toggle focused node to fill entire output
+            return true;
+        },
+        .launcher_toggle => {
+            // TODO: open built-in launcher overlay
+            return true;
+        },
+        .screenshot => {
+            self.takeScreenshot();
+            return true;
+        },
+        .bar_toggle_top => {
+            if (self.bar) |b| {
+                b.top.enabled = !b.top.enabled;
+                if (b.top.enabled) b.render(self);
+                self.arrangeworkspace(self.layout_engine.active_workspace);
+            }
+            return true;
+        },
+        .bar_toggle_bottom => {
+            if (self.bar) |b| {
+                b.bottom.enabled = !b.bottom.enabled;
+                if (b.bottom.enabled) b.render(self);
+                self.arrangeworkspace(self.layout_engine.active_workspace);
+            }
+            return true;
+        },
+        .volume_up => { self.spawnProcess("wpctl set-volume @DEFAULT_SINK@ 5%+"); return true; },
+        .volume_down => { self.spawnProcess("wpctl set-volume @DEFAULT_SINK@ 5%-"); return true; },
+        .volume_mute => { self.spawnProcess("wpctl set-mute @DEFAULT_SINK@ toggle"); return true; },
+        .brightness_up => { self.spawnProcess("brightnessctl set +5%"); return true; },
+        .brightness_down => { self.spawnProcess("brightnessctl set 5%-"); return true; },
+        .media_play => { self.spawnProcess("playerctl play-pause"); return true; },
+        .media_next => { self.spawnProcess("playerctl next"); return true; },
+        .media_prev => { self.spawnProcess("playerctl previous"); return true; },
         else => return false,
     }
 }
@@ -558,6 +594,9 @@ fn executeAction(self: *Server, action: KBAction) bool {
 // ── Tiling ─────────────────────────────────────────────────────
 
 /// Recalculate layout for a workspace and apply rects to all scene nodes.
+/// Configurable window gap (pixels between tiled panes).
+const window_gap: u16 = 4;
+
 pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
     // Get dimensions from the primary output, minus status bar height
     const w: u16 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
@@ -573,22 +612,25 @@ pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
     const ws = &self.layout_engine.workspaces[ws_index];
     const node_ids = ws.node_ids.items;
 
-    // Apply each rect to its corresponding node in the registry
+    // Apply each rect (with gap inset) to its corresponding node
     for (node_ids, 0..) |nid, i| {
         if (i >= rects.len) break;
         if (self.nodes.findById(nid)) |slot| {
-            self.nodes.applyRect(slot, rects[i].x, rects[i].y, rects[i].width, rects[i].height);
+            // Inset rect by gap (half on each side)
+            const g = window_gap;
+            const rx = rects[i].x + @as(i32, g);
+            const ry = rects[i].y + @as(i32, g);
+            const rw = if (rects[i].width > g * 2) rects[i].width - g * 2 else rects[i].width;
+            const rh = if (rects[i].height > g * 2) rects[i].height - g * 2 else rects[i].height;
+            self.nodes.applyRect(slot, rx, ry, rw, rh);
 
             // Resize terminal panes to match their assigned rect
             if (self.nodes.kind[slot] == .terminal) {
                 for (self.terminal_panes) |maybe_tp| {
                     if (maybe_tp) |tp| {
                         if (tp.node_id == nid) {
-                            tp.resize(rects[i].width, rects[i].height);
-                            // Position the scene buffer at the rect position
-                            if (wlr.miozu_scene_buffer_node(tp.scene_buffer)) |scene_node| {
-                                wlr.wlr_scene_node_set_position(scene_node, rects[i].x, rects[i].y);
-                            }
+                            tp.resize(rw, rh);
+                            tp.setPosition(rx, ry);
                             break;
                         }
                     }
@@ -826,26 +868,48 @@ fn updateFocusedTerminal(self: *Server) void {
 
 // ── Process spawning ───────────────────────────────────────────
 
-/// Spawn a process detached from the compositor (double-fork to avoid zombies).
+/// Spawn a shell command detached from the compositor (double-fork to avoid zombies).
+/// Uses /bin/sh -c to handle commands with arguments and pipes.
 fn spawnProcess(_: *Server, cmd: [*:0]const u8) void {
     const pid = std.os.linux.fork();
     if (pid == 0) {
-        // Child: fork again to detach, then exec
         const pid2 = std.os.linux.fork();
         if (pid2 == 0) {
-            // Grandchild: exec the command
-            const argv = [_:null]?[*:0]const u8{ cmd, null };
+            // Grandchild: exec via shell to handle args/pipes
+            const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", cmd, null };
             const envp = [_:null]?[*:0]const u8{null};
-            _ = std.os.linux.execve(cmd, &argv, &envp);
+            _ = std.os.linux.execve("/bin/sh", &argv, &envp);
             std.os.linux.exit(1);
         }
-        // First child exits immediately — grandchild is orphaned to init
         std.os.linux.exit(0);
     }
-    // Parent: reap the first child immediately
     if (pid > 0) {
         _ = std.c.waitpid(@intCast(pid), null, 0);
     }
+}
+
+/// Take a screenshot of the entire output and save as PNG.
+fn takeScreenshot(self: *Server) void {
+    // Get output dimensions
+    const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
+    const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
+
+    // Build path: ~/Pictures/screenshot_TIMESTAMP.png
+    var path_buf: [256]u8 = undefined;
+    const home = teru.compat.getenv("HOME") orelse "/tmp";
+    const timestamp = teru.compat.monotonicNow();
+    const path = std.fmt.bufPrint(&path_buf, "{s}/Pictures/screenshot_{d}.png", .{ home, timestamp }) catch return;
+
+    // TODO: grab the composed framebuffer from wlroots and encode via png.zig
+    // For now, spawn grim (standard Wayland screenshot tool)
+    var cmd_buf: [512]u8 = undefined;
+    const cmd = std.fmt.bufPrint(&cmd_buf, "grim {s}", .{path}) catch return;
+    cmd_buf[@min(cmd.len, cmd_buf.len - 1)] = 0;
+    self.spawnProcess(@ptrCast(cmd.ptr));
+
+    std.debug.print("teruwm: screenshot → {s}\n", .{path});
+    _ = out_w;
+    _ = out_h;
 }
 
 // ── Helper ─────────────────────────────────────────────────────
