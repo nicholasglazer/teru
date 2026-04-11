@@ -6,7 +6,7 @@ const wlr = @import("wlr.zig");
 const Output = @import("Output.zig");
 const XdgView = @import("XdgView.zig");
 const TerminalPane = @import("TerminalPane.zig");
-const StatusBar = @import("StatusBar.zig");
+const Bar = @import("Bar.zig");
 const NodeRegistry = @import("Node.zig");
 const teru = @import("teru");
 const LayoutEngine = teru.LayoutEngine;
@@ -46,7 +46,7 @@ focused_view: ?*XdgView = null,
 focused_terminal: ?*TerminalPane = null,
 terminal_panes: [NodeRegistry.max_nodes]?*TerminalPane = [_]?*TerminalPane{null} ** NodeRegistry.max_nodes,
 terminal_count: u16 = 0,
-status_bar: ?*StatusBar = null,
+bar: ?*Bar = null,
 workspace_trees: [10]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** 10,
 
 // Scratchpads: 9 floating terminal panes (Alt+RAlt+1-9)
@@ -414,7 +414,7 @@ fn executeAction(self: *Server, action: KBAction) bool {
         self.setWorkspaceVisibility(ws, true);
         self.arrangeworkspace(ws);
         self.updateFocusedTerminal();
-        if (self.status_bar) |sb| sb.render(self);
+        if (self.bar) |b| b.render(self);
         return true;
     }
 
@@ -447,7 +447,7 @@ fn executeAction(self: *Server, action: KBAction) bool {
         .layout_cycle => {
             self.layout_engine.getActiveWorkspace().cycleLayout();
             self.arrangeworkspace(self.layout_engine.active_workspace);
-            if (self.status_bar) |sb| sb.render(self);
+            if (self.bar) |b| b.render(self);
             return true;
         },
         .pane_focus_next => {
@@ -502,9 +502,10 @@ pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
     // Get dimensions from the primary output, minus status bar height
     const w: u16 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
     const full_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
-    const bar_h: u32 = if (self.status_bar) |sb| sb.bar_height else 0;
+    const bar_h: u32 = if (self.bar) |b| b.totalHeight() else 0;
+    const bar_y_offset: i32 = if (self.bar) |b| @intCast(b.tilingOffsetY()) else 0;
     const h: u16 = @intCast(@max(1, full_h - bar_h));
-    const screen = LayoutEngine.Rect{ .x = 0, .y = 0, .width = w, .height = h };
+    const screen = LayoutEngine.Rect{ .x = 0, .y = @intCast(bar_y_offset), .width = w, .height = h };
 
     const rects = self.layout_engine.calculate(ws_index, screen) catch return;
     defer self.zig_allocator.free(rects);
@@ -555,7 +556,7 @@ pub fn focusView(self: *Server, view: *XdgView) void {
     ) orelse return;
     wlr.wlr_seat_keyboard_notify_enter(self.seat, surface, null, 0, null);
 
-    if (self.status_bar) |sb| sb.render(self);
+    if (self.bar) |b| b.render(self);
 }
 
 // ── Terminal pane management ───────────────────────────────────
@@ -736,7 +737,7 @@ pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
 
     // Re-tile
     self.arrangeworkspace(self.layout_engine.active_workspace);
-    if (self.status_bar) |sb| sb.render(self);
+    if (self.bar) |b| b.render(self);
 }
 
 // ── Focus management ──────────────────────────────────────────
@@ -752,7 +753,7 @@ fn updateFocusedTerminal(self: *Server) void {
             if (tp.node_id == active_id) {
                 self.focused_terminal = tp;
                 self.focused_view = null;
-                if (self.status_bar) |sb| sb.render(self);
+                if (self.bar) |b| b.render(self);
                 return;
             }
         }
