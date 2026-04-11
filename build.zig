@@ -165,7 +165,7 @@ pub fn build(b: *std.Build) void {
         });
 
         const miozu_exe = b.addExecutable(.{
-            .name = "teru-wm",
+            .name = "teruwm",
             .root_module = miozu_mod,
         });
         b.installArtifact(miozu_exe);
@@ -175,7 +175,7 @@ pub fn build(b: *std.Build) void {
         if (b.args) |args| {
             miozu_run.addArgs(args);
         }
-        const miozu_run_step = b.step("run-miozu", "Run miozu compositor");
+        const miozu_run_step = b.step("run-wm", "Run teruwm compositor");
         miozu_run_step.dependOn(&miozu_run.step);
     }
 
