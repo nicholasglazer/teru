@@ -35,7 +35,22 @@ pub const Mods = packed struct(u8) {
     pub const CTRL = Mods{ .ctrl = true };
     pub const SHIFT = Mods{ .shift = true };
     pub const CTRL_SHIFT = Mods{ .ctrl = true, .shift = true };
+    pub const SUPER = Mods{ .super_ = true };
     pub const NONE = Mods{};
+
+    /// Return a copy with shift added.
+    pub fn withShift(self: Mods) Mods {
+        var m = self;
+        m.shift = true;
+        return m;
+    }
+
+    /// Return a copy with ralt added (for secondary mod bindings).
+    pub fn withRalt(self: Mods) Mods {
+        var m = self;
+        m.ralt = true;
+        return m;
+    }
 };
 
 // ── Modes ───────────────────────────────────────────────────
@@ -394,9 +409,14 @@ fn namedKey(name: []const u8) ?u32 {
 
 pub const ParsedTrigger = struct { mods: Mods, key: u32, is_keycode: bool = false };
 
-/// Parse a trigger string like "alt+j", "ctrl+shift+c", "super+XF86AudioMute"
+/// Parse a trigger string like "mod+j", "alt+j", "ctrl+shift+c", "super+XF86AudioMute"
+/// The "mod" token resolves to whatever mod_key is set to.
 /// Also supports "keycode:44" for physical key binding.
 fn parseTrigger(trigger: []const u8) ?ParsedTrigger {
+    return parseTriggerWithMod(trigger, Mods.ALT);
+}
+
+fn parseTriggerWithMod(trigger: []const u8, mod_key: Mods) ?ParsedTrigger {
     var mods = Mods{};
     var remaining = trigger;
 
@@ -418,7 +438,13 @@ fn parseTrigger(trigger: []const u8) ?ParsedTrigger {
     while (i < remaining.len) : (i += 1) {
         if (remaining[i] == '+') {
             const token = remaining[last_plus..i];
-            if (std.mem.eql(u8, token, "alt")) {
+            if (std.mem.eql(u8, token, "mod")) {
+                // Resolve $mod to the configured modifier
+                if (mod_key.alt) mods.alt = true;
+                if (mod_key.ralt) mods.ralt = true;
+                if (mod_key.ctrl) mods.ctrl = true;
+                if (mod_key.super_) mods.super_ = true;
+            } else if (std.mem.eql(u8, token, "alt")) {
                 mods.alt = true;
             } else if (std.mem.eql(u8, token, "ralt")) {
                 mods.alt = true;
@@ -449,6 +475,9 @@ pub const MAX_BINDINGS = 256;
 pub const Keybinds = struct {
     bindings: [MAX_BINDINGS]Binding = undefined,
     count: u16 = 0,
+    /// The primary modifier key. Defaults to Alt (standalone) or Super (compositor).
+    /// Set via `mod = super` in config. All `mod+key` bindings resolve to this.
+    mod_key: Mods = Mods.ALT,
 
     /// Look up an action for the given mode, modifiers, and keysym.
     /// Checks mode-specific bindings first, then shared bindings.
@@ -516,7 +545,7 @@ pub const Keybinds = struct {
             rhs = std.mem.trim(u8, rhs[0..hash], " \t");
         }
 
-        const trigger = parseTrigger(lhs) orelse return;
+        const trigger = parseTriggerWithMod(lhs, self.mod_key) orelse return;
 
         if (rhs.len == 0) {
             _ = self.addBinding(mode, trigger.mods, trigger.key, .none, trigger.is_keycode);
@@ -527,48 +556,58 @@ pub const Keybinds = struct {
         _ = self.addBinding(mode, trigger.mods, trigger.key, action, trigger.is_keycode);
     }
 
-    /// Load defaults — the hardcoded binding set.
+    /// Load defaults using the configured mod key.
     pub fn loadDefaults(self: *Keybinds) void {
         self.count = 0;
 
-        // ── Normal mode (Alt shortcuts) ─────────────────
+        // ── Normal mode ($mod shortcuts) ────────────────
         const n = Mode.normal;
-        const A = Mods.ALT;
-        const R = Mods.RALT;
+        const M = self.mod_key; // $mod — Alt (standalone) or Super (compositor)
+        const MS = self.mod_key.withShift(); // $mod+Shift
 
-        _ = self.add(n, A, 'j', .pane_focus_next);
-        _ = self.add(n, A, 'k', .pane_focus_prev);
-        _ = self.add(n, A, 'm', .pane_focus_master);
-        _ = self.add(n, R, 'm', .pane_set_master);
-        _ = self.add(n, R, 'j', .pane_swap_next);
-        _ = self.add(n, R, 'k', .pane_swap_prev);
-        _ = self.add(n, R, 'h', .resize_shrink_w);
-        _ = self.add(n, R, 'l', .resize_grow_w);
-        _ = self.add(n, A, 'c', .split_vertical);
-        _ = self.add(n, R, 'c', .split_horizontal);
-        _ = self.add(n, A, 'x', .pane_close);
-        _ = self.add(n, A, 'z', .zoom_toggle);
-        _ = self.add(n, A, ' ', .layout_cycle);
-        _ = self.add(n, A, '/', .mode_search);
-        _ = self.add(n, A, 'v', .mode_scroll);
-        _ = self.add(n, A, 'd', .session_detach);
-        _ = self.add(n, A, '=', .zoom_in);
-        _ = self.add(n, A, '-', .zoom_out);
-        _ = self.add(n, A, 'b', .toggle_status_bar);
-        _ = self.add(n, A, '\\', .zoom_reset);
-        _ = self.add(n, A, '\r', .split_vertical);
+        // Navigation
+        _ = self.add(n, M, 'j', .pane_focus_next);
+        _ = self.add(n, M, 'k', .pane_focus_prev);
+        _ = self.add(n, M, 'm', .pane_focus_master);
+        _ = self.add(n, MS, 'm', .pane_set_master);
+        _ = self.add(n, MS, 'j', .pane_swap_next);
+        _ = self.add(n, MS, 'k', .pane_swap_prev);
+        _ = self.add(n, M, 'h', .resize_shrink_w);
+        _ = self.add(n, M, 'l', .resize_grow_w);
 
-        // Alt+1-9 workspaces, RAlt+1-9 move pane
+        // Pane management
+        _ = self.add(n, M, 'c', .split_vertical);
+        _ = self.add(n, MS, 'c', .window_close);
+        _ = self.add(n, M, 'x', .pane_close);
+        _ = self.add(n, M, '\r', .spawn_terminal);
+
+        // Layout + window
+        _ = self.add(n, M, ' ', .layout_cycle);
+        _ = self.add(n, M, 'z', .zoom_toggle);
+        _ = self.add(n, M, 'f', .fullscreen_toggle);
+        _ = self.add(n, M, 's', .float_toggle);
+        _ = self.add(n, M, 'd', .launcher_toggle);
+
+        // Modes + UI
+        _ = self.add(n, M, '/', .mode_search);
+        _ = self.add(n, M, 'v', .mode_scroll);
+        _ = self.add(n, M, 'b', .bar_toggle_top);
+        _ = self.add(n, MS, 'b', .bar_toggle_bottom);
+        _ = self.add(n, M, '=', .zoom_in);
+        _ = self.add(n, M, '-', .zoom_out);
+        _ = self.add(n, M, '\\', .zoom_reset);
+        _ = self.add(n, MS, 'q', .compositor_quit);
+
+        // Workspaces: $mod+1-9, $mod+shift+1-9 move pane
         for (0..9) |i| {
             const digit: u8 = @intCast('1' + i);
             const ws: Action = @enumFromInt(@intFromEnum(Action.workspace_1) + @as(u8, @intCast(i)));
             const mv: Action = @enumFromInt(@intFromEnum(Action.pane_move_to_1) + @as(u8, @intCast(i)));
-            _ = self.add(n, A, digit, ws);
-            _ = self.add(n, R, digit, mv);
+            _ = self.add(n, M, digit, ws);
+            _ = self.add(n, MS, digit, mv);
         }
-        // Alt+0 = workspace 10, RAlt+0 = move pane to workspace 10
-        _ = self.add(n, A, '0', .workspace_0);
-        _ = self.add(n, R, '0', .pane_move_to_0);
+        _ = self.add(n, M, '0', .workspace_0);
+        _ = self.add(n, MS, '0', .pane_move_to_0);
 
         // Ctrl+Space enters prefix mode
         _ = self.add(n, Mods.CTRL, ' ', .mode_prefix);
@@ -630,52 +669,21 @@ pub const Keybinds = struct {
         _ = self.add(.shared, Mods.CTRL_SHIFT, 'v', .paste_clipboard);
     }
 
-    /// Load compositor-specific defaults (Super+key bindings).
-    /// Called by miozu after loadDefaults(). These are layered on top —
-    /// teru standalone never calls this, so Super+key is free for the WM.
-    pub fn loadCompositorDefaults(self: *Keybinds) void {
+    /// Load media key defaults (no modifier — XF86 keysyms).
+    /// Called after loadDefaults(). These are compositor-only because
+    /// standalone teru doesn't handle hardware media keys.
+    pub fn loadMediaDefaults(self: *Keybinds) void {
         const n = Mode.normal;
-        const S = Mods{ .super_ = true };
-        const SS = Mods{ .super_ = true, .shift = true };
-
-        _ = self.add(n, S, '\r', .spawn_terminal);
-        _ = self.add(n, S, ' ', .layout_cycle);
-        _ = self.add(n, S, 'j', .pane_focus_next);
-        _ = self.add(n, S, 'k', .pane_focus_prev);
-        _ = self.add(n, S, 'h', .resize_shrink_w);
-        _ = self.add(n, S, 'l', .resize_grow_w);
-        _ = self.add(n, SS, 'j', .pane_swap_next);
-        _ = self.add(n, SS, 'k', .pane_swap_prev);
-        _ = self.add(n, SS, '\r', .pane_set_master);
-        _ = self.add(n, SS, 'c', .window_close);
-        _ = self.add(n, SS, 'q', .compositor_quit);
-
-        _ = self.add(n, S, 'f', .fullscreen_toggle);
-        _ = self.add(n, SS, 'f', .float_toggle);
-        _ = self.add(n, S, 's', .float_toggle); // sink: floating → tiled (XMonad Mod+S)
-        _ = self.add(n, S, 'd', .launcher_toggle);
-        _ = self.add(n, S, 'b', .bar_toggle_top);
-        _ = self.add(n, SS, 'b', .bar_toggle_bottom);
-
-        // Super+1-9 workspace, Super+0 workspace 10
-        for (0..9) |i| {
-            const digit: u8 = @intCast('1' + i);
-            const ws: Action = @enumFromInt(@intFromEnum(Action.workspace_1) + @as(u8, @intCast(i)));
-            _ = self.add(n, S, digit, ws);
-        }
-        _ = self.add(n, S, '0', .workspace_0);
-
-        // Media keys (no modifier — XF86 keysyms)
         const NONE = Mods{};
-        _ = self.add(n, NONE, 0x1008FF13, .volume_up); // XF86AudioRaiseVolume
-        _ = self.add(n, NONE, 0x1008FF11, .volume_down); // XF86AudioLowerVolume
-        _ = self.add(n, NONE, 0x1008FF12, .volume_mute); // XF86AudioMute
-        _ = self.add(n, NONE, 0x1008FF14, .media_play); // XF86AudioPlay
-        _ = self.add(n, NONE, 0x1008FF17, .media_next); // XF86AudioNext
-        _ = self.add(n, NONE, 0x1008FF16, .media_prev); // XF86AudioPrev
-        _ = self.add(n, NONE, 0x1008FF02, .brightness_up); // XF86MonBrightnessUp
-        _ = self.add(n, NONE, 0x1008FF03, .brightness_down); // XF86MonBrightnessDown
-        _ = self.add(n, NONE, 0xFF61, .screenshot); // Print (PrintScreen)
+        _ = self.add(n, NONE, 0x1008FF13, .volume_up);
+        _ = self.add(n, NONE, 0x1008FF11, .volume_down);
+        _ = self.add(n, NONE, 0x1008FF12, .volume_mute);
+        _ = self.add(n, NONE, 0x1008FF14, .media_play);
+        _ = self.add(n, NONE, 0x1008FF17, .media_next);
+        _ = self.add(n, NONE, 0x1008FF16, .media_prev);
+        _ = self.add(n, NONE, 0x1008FF02, .brightness_up);
+        _ = self.add(n, NONE, 0x1008FF03, .brightness_down);
+        _ = self.add(n, NONE, 0xFF61, .screenshot);
     }
 };
 
