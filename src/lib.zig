@@ -46,6 +46,9 @@ pub const ipc = @import("server/ipc.zig");
 pub const compat = @import("compat.zig");
 pub const png = @import("png.zig");
 pub const keysyms = @import("input/keysyms.zig");
+pub const TuiScreen = @import("render/TuiScreen.zig");
+pub const TuiRenderer = @import("render/TuiRenderer.zig");
+pub const TuiInput = @import("input/TuiInput.zig");
 
 test {
     _ = Pty;
@@ -79,4 +82,7 @@ test {
     _ = ipc;
     _ = png;
     _ = keysyms;
+    _ = TuiScreen;
+    _ = TuiRenderer;
+    _ = TuiInput;
 }

@@ -303,7 +303,17 @@ fn handleClientData(self: *Daemon, recv_buf: []u8) void {
             }
         },
         .resize => {
-            if (proto.decodeResize(payload)) |sz| {
+            if (payload.len >= 12) {
+                if (proto.decodePanePayload(payload)) |pp| {
+                    if (pp.data.len >= 4) {
+                        if (self.mux.getPaneById(pp.pane_id)) |pane| {
+                            if (proto.decodeResize(pp.data)) |sz| {
+                                pane.ptyResize(sz.rows, sz.cols);
+                            }
+                        }
+                    }
+                }
+            } else if (proto.decodeResize(payload)) |sz| {
                 self.resizeAllPanes(sz.rows, sz.cols);
             }
         },
