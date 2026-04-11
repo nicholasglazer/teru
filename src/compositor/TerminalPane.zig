@@ -158,6 +158,30 @@ pub fn resize(self: *TerminalPane, pixel_w: u32, pixel_h: u32) void {
 pub fn render(self: *TerminalPane) void {
     self.renderer.render(&self.pane.grid);
 
+    // Draw focus border (2px)
+    const is_focused = (self.server.focused_terminal == self);
+    const border_color: u32 = if (is_focused) 0xFFFF9837 else 0xFF3E4359; // orange / base02
+    const w = self.renderer.width;
+    const h = self.renderer.height;
+    if (w > 4 and h > 4) {
+        const fb = self.renderer.framebuffer;
+        // Top + bottom edges
+        for (0..w) |x| {
+            if (x < fb.len / h) {
+                fb[x] = border_color;
+                fb[w + x] = border_color;
+                if ((h - 1) * w + x < fb.len) fb[(h - 1) * w + x] = border_color;
+                if ((h - 2) * w + x < fb.len) fb[(h - 2) * w + x] = border_color;
+            }
+        }
+        // Left + right edges
+        for (0..h) |y| {
+            const row = y * w;
+            if (row + 1 < fb.len) { fb[row] = border_color; fb[row + 1] = border_color; }
+            if (row + w - 1 < fb.len) { fb[row + w - 1] = border_color; fb[row + w - 2] = border_color; }
+        }
+    }
+
     // Tell wlroots the buffer content changed
     wlr.wlr_scene_buffer_set_buffer(self.scene_buffer, self.pixel_buffer);
 }
@@ -177,8 +201,15 @@ pub fn writeInput(self: *TerminalPane, data: []const u8) void {
 
 /// wl_event_loop callback: PTY fd is readable → read output and re-render.
 /// Called by wlroots' event loop — zero additional polling code needed.
-fn ptyReadable(_: c_int, _: u32, data: ?*anyopaque) callconv(.c) c_int {
+fn ptyReadable(_: c_int, mask: u32, data: ?*anyopaque) callconv(.c) c_int {
     const tp: *TerminalPane = @ptrCast(@alignCast(data orelse return 0));
+
+    // Check for hangup (shell exited)
+    if (mask & 0x10 != 0) { // WL_EVENT_HANGUP = 0x10
+        tp.server.handleTerminalExit(tp);
+        return 0;
+    }
+
     _ = tp.poll();
     return 0;
 }

@@ -6,6 +6,7 @@ const wlr = @import("wlr.zig");
 const Output = @import("Output.zig");
 const XdgView = @import("XdgView.zig");
 const TerminalPane = @import("TerminalPane.zig");
+const StatusBar = @import("StatusBar.zig");
 const NodeRegistry = @import("Node.zig");
 const teru = @import("teru");
 const LayoutEngine = teru.LayoutEngine;
@@ -45,6 +46,8 @@ focused_view: ?*XdgView = null,
 focused_terminal: ?*TerminalPane = null,
 terminal_panes: [NodeRegistry.max_nodes]?*TerminalPane = [_]?*TerminalPane{null} ** NodeRegistry.max_nodes,
 terminal_count: u16 = 0,
+status_bar: ?*StatusBar = null,
+workspace_trees: [10]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** 10,
 
 // ── Listeners ──────────────────────────────────────────────────
 
@@ -405,7 +408,8 @@ fn executeAction(self: *Server, action: KBAction) bool {
     // Workspace switching
     if (action.workspaceIndex()) |ws| {
         self.layout_engine.switchWorkspace(ws);
-        // TODO: enable/disable workspace scene trees
+        self.arrangeworkspace(ws);
+        if (self.status_bar) |sb| sb.render(self);
         return true;
     }
 
@@ -438,14 +442,17 @@ fn executeAction(self: *Server, action: KBAction) bool {
         .layout_cycle => {
             self.layout_engine.getActiveWorkspace().cycleLayout();
             self.arrangeworkspace(self.layout_engine.active_workspace);
+            if (self.status_bar) |sb| sb.render(self);
             return true;
         },
         .pane_focus_next => {
             self.layout_engine.getActiveWorkspace().focusNext();
+            self.updateFocusedTerminal();
             return true;
         },
         .pane_focus_prev => {
             self.layout_engine.getActiveWorkspace().focusPrev();
+            self.updateFocusedTerminal();
             return true;
         },
         .pane_swap_next => {
@@ -487,9 +494,11 @@ fn executeAction(self: *Server, action: KBAction) bool {
 
 /// Recalculate layout for a workspace and apply rects to all scene nodes.
 pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
-    // Get dimensions from the primary output (first in layout)
+    // Get dimensions from the primary output, minus status bar height
     const w: u16 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
-    const h: u16 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
+    const full_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
+    const bar_h: u32 = if (self.status_bar) |sb| sb.bar_height else 0;
+    const h: u16 = @intCast(@max(1, full_h - bar_h));
     const screen = LayoutEngine.Rect{ .x = 0, .y = 0, .width = w, .height = h };
 
     const rects = self.layout_engine.calculate(ws_index, screen) catch return;
@@ -582,6 +591,71 @@ pub fn pollTerminals(self: *Server) bool {
         }
     }
     return any_output;
+}
+
+// ── Terminal lifecycle ─────────────────────────────────────────
+
+/// Handle terminal pane exit (shell process died).
+pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
+    std.debug.print("miozu: terminal exited node={d}\n", .{tp.node_id});
+
+    // Remove from node registry and tiling engine
+    _ = self.nodes.remove(tp.node_id);
+    for (&self.layout_engine.workspaces) |*ws| {
+        ws.removeNode(tp.node_id);
+    }
+
+    // Remove event source
+    if (tp.event_source) |es| {
+        _ = wlr.wl_event_source_remove(es);
+        tp.event_source = null;
+    }
+
+    // Hide scene buffer
+    if (wlr.miozu_scene_buffer_node(tp.scene_buffer)) |node| {
+        wlr.wlr_scene_node_set_enabled(node, false);
+    }
+
+    // Remove from terminal_panes array
+    for (&self.terminal_panes) |*slot| {
+        if (slot.* == tp) {
+            slot.* = null;
+            self.terminal_count -= 1;
+            break;
+        }
+    }
+
+    // Clear focus if this was focused
+    if (self.focused_terminal == tp) {
+        self.focused_terminal = null;
+        self.updateFocusedTerminal();
+    }
+
+    // Re-tile
+    self.arrangeworkspace(self.layout_engine.active_workspace);
+    if (self.status_bar) |sb| sb.render(self);
+}
+
+// ── Focus management ──────────────────────────────────────────
+
+/// Update focused_terminal to match the LayoutEngine's active node.
+/// Also updates visual focus indicators (border color).
+fn updateFocusedTerminal(self: *Server) void {
+    const ws = self.layout_engine.getActiveWorkspace();
+    const active_id = ws.getActiveNodeId() orelse return;
+
+    for (self.terminal_panes) |maybe_tp| {
+        if (maybe_tp) |tp| {
+            if (tp.node_id == active_id) {
+                self.focused_terminal = tp;
+                self.focused_view = null;
+                if (self.status_bar) |sb| sb.render(self);
+                return;
+            }
+        }
+    }
+    // Active node is not a terminal — might be an external view
+    self.focused_terminal = null;
 }
 
 // ── Process spawning ───────────────────────────────────────────
