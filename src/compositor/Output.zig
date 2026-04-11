@@ -7,7 +7,7 @@
 const std = @import("std");
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
-const StatusBar = @import("StatusBar.zig");
+const Bar = @import("Bar.zig");
 
 const Output = @This();
 
@@ -57,9 +57,9 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
         server.layout_engine.switchWorkspace(9); // workspace "0" (immortal home)
         server.spawnTerminal(9); // auto-sizes to fill output
 
-        // Create status bar
-        server.status_bar = StatusBar.create(server);
-        if (server.status_bar) |sb| sb.render(server);
+        // Create configurable dual bar system
+        server.bar = Bar.create(server);
+        if (server.bar) |b| b.render(server);
 
         std.debug.print("miozu: immortal terminal spawned on workspace 0\n", .{});
     }
