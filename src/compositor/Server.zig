@@ -20,6 +20,8 @@ const KBMods = Keybinds.Mods;
 
 const Server = @This();
 
+pub const CursorMode = enum { normal, move, resize };
+
 // ── Zig allocator ─────────────────────────────────────────────
 
 zig_allocator: std.mem.Allocator,
@@ -62,6 +64,14 @@ fullscreen_prev_bar_bottom: bool = false,
 // Scratchpads: 9 floating terminal panes (Alt+RAlt+1-9)
 scratchpads: [9]?*TerminalPane = [_]?*TerminalPane{null} ** 9,
 scratchpad_visible: [9]bool = [_]bool{false} ** 9,
+
+// Mouse move/resize state for floating windows
+cursor_mode: CursorMode = .normal,
+grab_node_id: ?u64 = null,
+grab_x: f64 = 0,
+grab_y: f64 = 0,
+grab_w: u32 = 0,
+grab_h: u32 = 0,
 
 // Internal clipboard buffer (Ctrl+Shift+C/V between terminal panes)
 clipboard_buf: [8192]u8 = undefined,
@@ -320,7 +330,66 @@ fn handleCursorMotionAbsolute(listener: *wlr.wl_listener, data: ?*anyopaque) cal
 fn handleCursorButton(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const server = wlr.listenerParent(Server, "cursor_button", listener);
     const event: *wlr.wlr_pointer_button_event = @ptrCast(@alignCast(data orelse return));
-    _ = wlr.wlr_seat_pointer_notify_button(server.seat, wlr.miozu_pointer_button_time(event), wlr.miozu_pointer_button_button(event), wlr.miozu_pointer_button_state(event));
+
+    const button = wlr.miozu_pointer_button_button(event);
+    const state = wlr.miozu_pointer_button_state(event);
+
+    // Button release: end any active grab
+    if (state == 0) {
+        if (server.cursor_mode != .normal) {
+            server.cursor_mode = .normal;
+            server.grab_node_id = null;
+        }
+        _ = wlr.wlr_seat_pointer_notify_button(server.seat, wlr.miozu_pointer_button_time(event), button, state);
+        return;
+    }
+
+    // Button press: check for Super modifier to initiate move/resize on floating windows
+    const keyboard = wlr.miozu_seat_get_keyboard(server.seat);
+    const super_held = if (keyboard) |kb|
+        if (wlr.miozu_keyboard_xkb_state(kb)) |xkb_st|
+            wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_LOGO, wlr.XKB_STATE_MODS_EFFECTIVE) > 0
+        else
+            false
+    else
+        false;
+
+    if (super_held) {
+        // Find the focused floating node to grab
+        const nid: ?u64 = if (server.focused_terminal) |tp|
+            tp.node_id
+        else if (server.focused_view) |view|
+            view.node_id
+        else
+            null;
+
+        if (nid) |id| {
+            if (server.nodes.findById(id)) |slot| {
+                if (server.nodes.floating[slot]) {
+                    const cx = wlr.miozu_cursor_x(server.cursor);
+                    const cy = wlr.miozu_cursor_y(server.cursor);
+
+                    if (button == 272) { // BTN_LEFT: move
+                        server.cursor_mode = .move;
+                        server.grab_node_id = id;
+                        server.grab_x = cx - @as(f64, @floatFromInt(server.nodes.pos_x[slot]));
+                        server.grab_y = cy - @as(f64, @floatFromInt(server.nodes.pos_y[slot]));
+                        return;
+                    } else if (button == 274) { // BTN_RIGHT: resize
+                        server.cursor_mode = .resize;
+                        server.grab_node_id = id;
+                        server.grab_x = cx;
+                        server.grab_y = cy;
+                        server.grab_w = server.nodes.width[slot];
+                        server.grab_h = server.nodes.height[slot];
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    _ = wlr.wlr_seat_pointer_notify_button(server.seat, wlr.miozu_pointer_button_time(event), button, state);
 }
 
 fn handleCursorFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
@@ -448,9 +517,73 @@ fn setupKeyboard(self: *Server, device: *wlr.wlr_input_device) void {
 // ── Cursor processing ──────────────────────────────────────────
 
 fn processCursorMotion(self: *Server, time: u32) void {
-    // Find surface under cursor via scene graph hit test
     const cx = wlr.miozu_cursor_x(self.cursor);
     const cy = wlr.miozu_cursor_y(self.cursor);
+
+    // Handle floating window move/resize
+    if (self.cursor_mode == .move) {
+        if (self.grab_node_id) |id| {
+            if (self.nodes.findById(id)) |slot| {
+                const new_x: i32 = @intFromFloat(cx - self.grab_x);
+                const new_y: i32 = @intFromFloat(cy - self.grab_y);
+                self.nodes.pos_x[slot] = new_x;
+                self.nodes.pos_y[slot] = new_y;
+
+                // Update scene graph position
+                if (self.nodes.scene_tree[slot]) |tree| {
+                    if (wlr.miozu_scene_tree_node(tree)) |node| {
+                        wlr.wlr_scene_node_set_position(node, new_x, new_y);
+                    }
+                }
+                // Update terminal pane position
+                if (self.nodes.kind[slot] == .terminal) {
+                    for (self.terminal_panes) |maybe_tp| {
+                        if (maybe_tp) |tp| {
+                            if (tp.node_id == id) {
+                                tp.setPosition(new_x, new_y);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    if (self.cursor_mode == .resize) {
+        if (self.grab_node_id) |id| {
+            if (self.nodes.findById(id)) |slot| {
+                const dx = cx - self.grab_x;
+                const dy = cy - self.grab_y;
+                const new_w: u32 = @intCast(@max(100, @as(i64, self.grab_w) + @as(i64, @intFromFloat(dx))));
+                const new_h: u32 = @intCast(@max(100, @as(i64, self.grab_h) + @as(i64, @intFromFloat(dy))));
+                self.nodes.width[slot] = new_w;
+                self.nodes.height[slot] = new_h;
+
+                // Resize xdg toplevel
+                if (self.nodes.kind[slot] == .wayland_surface) {
+                    if (self.nodes.xdg_toplevel[slot]) |toplevel| {
+                        _ = wlr.wlr_xdg_toplevel_set_size(toplevel, new_w, new_h);
+                    }
+                }
+                // Resize terminal pane
+                if (self.nodes.kind[slot] == .terminal) {
+                    for (self.terminal_panes) |maybe_tp| {
+                        if (maybe_tp) |tp| {
+                            if (tp.node_id == id) {
+                                tp.resize(new_w, new_h);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // Find surface under cursor via scene graph hit test
     const scene_tree_root = wlr.miozu_scene_tree(self.scene) orelse return;
     const root_node = wlr.miozu_scene_tree_node(scene_tree_root) orelse return;
 
@@ -613,6 +746,10 @@ fn executeAction(self: *Server, action: KBAction) bool {
             self.spawnTerminal(self.layout_engine.active_workspace);
             return true;
         },
+        .float_toggle => {
+            self.toggleFloat();
+            return true;
+        },
         .fullscreen_toggle => {
             self.toggleFullscreen();
             return true;
@@ -647,14 +784,38 @@ fn executeAction(self: *Server, action: KBAction) bool {
             }
             return true;
         },
-        .volume_up => { self.spawnProcess("wpctl set-volume @DEFAULT_SINK@ 5%+"); return true; },
-        .volume_down => { self.spawnProcess("wpctl set-volume @DEFAULT_SINK@ 5%-"); return true; },
-        .volume_mute => { self.spawnProcess("wpctl set-mute @DEFAULT_SINK@ toggle"); return true; },
-        .brightness_up => { self.spawnProcess("brightnessctl set +5%"); return true; },
-        .brightness_down => { self.spawnProcess("brightnessctl set 5%-"); return true; },
-        .media_play => { self.spawnProcess("playerctl play-pause"); return true; },
-        .media_next => { self.spawnProcess("playerctl next"); return true; },
-        .media_prev => { self.spawnProcess("playerctl previous"); return true; },
+        .volume_up => {
+            self.spawnProcess("wpctl set-volume @DEFAULT_SINK@ 5%+");
+            return true;
+        },
+        .volume_down => {
+            self.spawnProcess("wpctl set-volume @DEFAULT_SINK@ 5%-");
+            return true;
+        },
+        .volume_mute => {
+            self.spawnProcess("wpctl set-mute @DEFAULT_SINK@ toggle");
+            return true;
+        },
+        .brightness_up => {
+            self.spawnProcess("brightnessctl set +5%");
+            return true;
+        },
+        .brightness_down => {
+            self.spawnProcess("brightnessctl set 5%-");
+            return true;
+        },
+        .media_play => {
+            self.spawnProcess("playerctl play-pause");
+            return true;
+        },
+        .media_next => {
+            self.spawnProcess("playerctl next");
+            return true;
+        },
+        .media_prev => {
+            self.spawnProcess("playerctl previous");
+            return true;
+        },
         else => return false,
     }
 }
@@ -878,6 +1039,60 @@ fn setWorkspaceVisibility(self: *Server, ws: u8, visible: bool) void {
             }
         }
     }
+}
+
+// ── Float toggle ────────────────────────────────────────────
+
+/// Toggle the focused node between floating and tiled.
+/// Floating nodes are removed from the LayoutEngine workspace (not tiled)
+/// but remain in the NodeRegistry for rendering. Tiling nodes are added
+/// back to the workspace and re-arranged.
+fn toggleFloat(self: *Server) void {
+    // Determine the focused node ID
+    const nid: u64 = if (self.focused_terminal) |tp|
+        tp.node_id
+    else if (self.focused_view) |view|
+        view.node_id
+    else
+        return;
+
+    const slot = self.nodes.findById(nid) orelse return;
+    const ws = self.layout_engine.active_workspace;
+
+    if (self.nodes.floating[slot]) {
+        // ── Unfloat: add back to tiling ──
+        self.nodes.floating[slot] = false;
+        self.layout_engine.workspaces[ws].addNode(self.zig_allocator, nid) catch {};
+        self.arrangeworkspace(ws);
+        std.debug.print("teruwm: unfloat node={d}\n", .{nid});
+    } else {
+        // ── Float: remove from tiling, keep in registry ──
+        self.nodes.floating[slot] = true;
+        self.layout_engine.workspaces[ws].removeNode(nid);
+        self.arrangeworkspace(ws);
+
+        // Center the floating window at 50% of output size
+        const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
+        const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
+        const float_w: u32 = out_w / 2;
+        const float_h: u32 = out_h / 2;
+        const float_x: i32 = @intCast(out_w / 4);
+        const float_y: i32 = @intCast(out_h / 4);
+
+        self.nodes.applyRect(slot, float_x, float_y, float_w, float_h);
+
+        // Also resize terminal pane if applicable
+        if (self.nodes.kind[slot] == .terminal) {
+            if (self.focused_terminal) |tp| {
+                tp.resize(float_w, float_h);
+                tp.setPosition(float_x, float_y);
+            }
+        }
+
+        std.debug.print("teruwm: float node={d}\n", .{nid});
+    }
+
+    if (self.bar) |b| b.render(self);
 }
 
 // ── Fullscreen ───────────────────────────────────────────────

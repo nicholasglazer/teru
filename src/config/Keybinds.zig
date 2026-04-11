@@ -257,9 +257,15 @@ pub const Action = enum(u8) {
         if (std.mem.startsWith(u8, s, "workspace:")) {
             const n = std.fmt.parseInt(u8, s["workspace:".len..], 10) catch return null;
             return switch (n) {
-                1 => .workspace_1, 2 => .workspace_2, 3 => .workspace_3,
-                4 => .workspace_4, 5 => .workspace_5, 6 => .workspace_6,
-                7 => .workspace_7, 8 => .workspace_8, 9 => .workspace_9,
+                1 => .workspace_1,
+                2 => .workspace_2,
+                3 => .workspace_3,
+                4 => .workspace_4,
+                5 => .workspace_5,
+                6 => .workspace_6,
+                7 => .workspace_7,
+                8 => .workspace_8,
+                9 => .workspace_9,
                 0 => .workspace_0,
                 else => null,
             };
@@ -267,9 +273,15 @@ pub const Action = enum(u8) {
         if (std.mem.startsWith(u8, s, "pane:move_to:")) {
             const n = std.fmt.parseInt(u8, s["pane:move_to:".len..], 10) catch return null;
             return switch (n) {
-                1 => .pane_move_to_1, 2 => .pane_move_to_2, 3 => .pane_move_to_3,
-                4 => .pane_move_to_4, 5 => .pane_move_to_5, 6 => .pane_move_to_6,
-                7 => .pane_move_to_7, 8 => .pane_move_to_8, 9 => .pane_move_to_9,
+                1 => .pane_move_to_1,
+                2 => .pane_move_to_2,
+                3 => .pane_move_to_3,
+                4 => .pane_move_to_4,
+                5 => .pane_move_to_5,
+                6 => .pane_move_to_6,
+                7 => .pane_move_to_7,
+                8 => .pane_move_to_8,
+                9 => .pane_move_to_9,
                 0 => .pane_move_to_0,
                 else => null,
             };
@@ -280,9 +292,15 @@ pub const Action = enum(u8) {
     /// Get the workspace number (0-indexed) for workspace actions.
     pub fn workspaceIndex(self: Action) ?u8 {
         return switch (self) {
-            .workspace_1 => 0, .workspace_2 => 1, .workspace_3 => 2,
-            .workspace_4 => 3, .workspace_5 => 4, .workspace_6 => 5,
-            .workspace_7 => 6, .workspace_8 => 7, .workspace_9 => 8,
+            .workspace_1 => 0,
+            .workspace_2 => 1,
+            .workspace_3 => 2,
+            .workspace_4 => 3,
+            .workspace_5 => 4,
+            .workspace_6 => 5,
+            .workspace_7 => 6,
+            .workspace_8 => 7,
+            .workspace_9 => 8,
             .workspace_0 => 9,
             else => null,
         };
@@ -291,9 +309,15 @@ pub const Action = enum(u8) {
     /// Get workspace index for move-to actions.
     pub fn moveToIndex(self: Action) ?u8 {
         return switch (self) {
-            .pane_move_to_1 => 0, .pane_move_to_2 => 1, .pane_move_to_3 => 2,
-            .pane_move_to_4 => 3, .pane_move_to_5 => 4, .pane_move_to_6 => 5,
-            .pane_move_to_7 => 6, .pane_move_to_8 => 7, .pane_move_to_9 => 8,
+            .pane_move_to_1 => 0,
+            .pane_move_to_2 => 1,
+            .pane_move_to_3 => 2,
+            .pane_move_to_4 => 3,
+            .pane_move_to_5 => 4,
+            .pane_move_to_6 => 5,
+            .pane_move_to_7 => 6,
+            .pane_move_to_8 => 7,
+            .pane_move_to_9 => 8,
             .pane_move_to_0 => 9,
             else => null,
         };
@@ -486,7 +510,7 @@ pub const Keybinds = struct {
     pub fn parseLine(self: *Keybinds, mode: Mode, line: []const u8) void {
         const eq_idx = std.mem.indexOf(u8, line, "=") orelse return;
         const lhs = std.mem.trim(u8, line[0..eq_idx], " \t");
-        const rhs_raw = if (eq_idx + 1 < line.len) line[eq_idx + 1..] else "";
+        const rhs_raw = if (eq_idx + 1 < line.len) line[eq_idx + 1 ..] else "";
         var rhs = std.mem.trim(u8, rhs_raw, " \t");
         if (std.mem.indexOf(u8, rhs, "#")) |hash| {
             rhs = std.mem.trim(u8, rhs[0..hash], " \t");
@@ -627,6 +651,7 @@ pub const Keybinds = struct {
         _ = self.add(n, SS, 'q', .compositor_quit);
 
         _ = self.add(n, S, 'f', .fullscreen_toggle);
+        _ = self.add(n, SS, 'f', .float_toggle);
         _ = self.add(n, S, 'd', .launcher_toggle);
         _ = self.add(n, S, 'b', .bar_toggle_top);
         _ = self.add(n, SS, 'b', .bar_toggle_bottom);

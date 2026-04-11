@@ -146,19 +146,25 @@ pub fn resize(self: *TerminalPane, pixel_w: u32, pixel_h: u32) void {
     const actual_w = @as(u32, new_cols) * cell_w;
     const actual_h = @as(u32, new_rows) * cell_h;
 
+    // Skip resize if dimensions haven't changed
+    if (actual_w == self.renderer.width and actual_h == self.renderer.height) return;
+
+    // Skip unreasonable sizes
+    if (actual_w == 0 or actual_h == 0 or actual_w > 8192 or actual_h > 8192) return;
+
     // Detach old buffer from scene before resizing (prevents stale references)
     wlr.wlr_scene_buffer_set_buffer(self.scene_buffer, null);
 
     if (!wlr.miozu_pixel_buffer_resize(self.pixel_buffer, @intCast(actual_w), @intCast(actual_h))) return;
 
-    if (wlr.miozu_pixel_buffer_data(self.pixel_buffer)) |data| {
-        const needed = @as(usize, actual_w) * @as(usize, actual_h);
-        if (needed > 0) {
-            self.renderer.framebuffer = data[0..needed];
-        }
-        self.renderer.width = actual_w;
-        self.renderer.height = actual_h;
-    }
+    const data = wlr.miozu_pixel_buffer_data(self.pixel_buffer) orelse return;
+    const needed = @as(usize, actual_w) * @as(usize, actual_h);
+    if (needed == 0) return;
+
+    // Update renderer ATOMICALLY — all three must be consistent
+    self.renderer.framebuffer = data[0..needed];
+    self.renderer.width = actual_w;
+    self.renderer.height = actual_h;
 
     self.pane.resize(self.server.zig_allocator, new_rows, new_cols) catch return;
     wlr.wlr_scene_buffer_set_dest_size(self.scene_buffer, @intCast(actual_w), @intCast(actual_h));
