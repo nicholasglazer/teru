@@ -24,15 +24,19 @@ pub fn masterStack(allocator: Allocator, count: usize, screen: Rect, ratio: f32)
     const cell_h = screen.height / stack_count;
     const remainder = screen.height % stack_count;
 
+    // Distribute remainder pixels evenly (1 extra px to the first N panes)
+    // instead of dumping all remainder on the last pane
+    var y_acc: u16 = 0;
     for (0..stack_count) |i| {
-        const idx: u16 = @intCast(i);
-        const extra: u16 = if (i == stack_count - 1) remainder else 0;
+        const extra: u16 = if (i < remainder) 1 else 0;
+        const this_h = cell_h + extra;
         rects[i + 1] = .{
             .x = screen.x + master_w,
-            .y = screen.y + idx * cell_h,
+            .y = screen.y + y_acc,
             .width = stack_w,
-            .height = cell_h + extra,
+            .height = this_h,
         };
+        y_acc += this_h;
     }
 
     return rects;
@@ -97,15 +101,17 @@ pub fn dishes(allocator: Allocator, count: usize, screen: Rect, ratio: f32) ![]R
     const cell_w = screen.width / stack_count;
     const remainder = screen.width % stack_count;
 
+    var x_acc: u16 = 0;
     for (0..stack_count) |i| {
-        const idx: u16 = @intCast(i);
-        const extra: u16 = if (i == stack_count - 1) remainder else 0;
+        const extra: u16 = if (i < remainder) 1 else 0;
+        const this_w = cell_w + extra;
         rects[i + 1] = .{
-            .x = screen.x + idx * cell_w,
+            .x = screen.x + x_acc,
             .y = screen.y + master_h,
-            .width = cell_w + extra,
+            .width = this_w,
             .height = stack_h,
         };
+        x_acc += this_w;
     }
 
     return rects;

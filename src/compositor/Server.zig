@@ -931,15 +931,13 @@ pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
     const bar_y_offset: i32 = if (self.bar) |b| @intCast(b.tilingOffsetY()) else 0;
     const h: u16 = @intCast(@max(1, full_h - bar_h));
 
-    // Proportional gaps: inset screen by half-gap, inset each pane by half-gap.
-    // Screen edge → pane = hg + hg = g. Pane → pane = hg + hg = g. All equal.
-    const g = self.wm_config.gap;
-    const hg = g / 2;
+    // Layout gets the full tiling area — no pre-inset.
+    // Gaps are applied uniformly to each rect AFTER layout calculation.
     const screen = LayoutEngine.Rect{
-        .x = @intCast(hg),
-        .y = @intCast(@as(u32, @intCast(bar_y_offset)) + hg),
-        .width = if (w > g) w - g else w,
-        .height = if (h > g) h - g else h,
+        .x = 0,
+        .y = @intCast(bar_y_offset),
+        .width = w,
+        .height = h,
     };
 
     const rects = self.layout_engine.calculate(ws_index, screen) catch return;
@@ -947,15 +945,17 @@ pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
 
     const ws = &self.layout_engine.workspaces[ws_index];
     const node_ids = ws.node_ids.items;
+    const g: i32 = @intCast(self.wm_config.gap);
+    const hg: i32 = @divTrunc(g, 2);
 
-    // Apply each rect with half-gap inset per side
     for (node_ids, 0..) |nid, i| {
         if (i >= rects.len) break;
         if (self.nodes.findById(nid)) |slot| {
-            const rx = rects[i].x + @as(i32, @intCast(hg));
-            const ry = rects[i].y + @as(i32, @intCast(hg));
-            const rw = if (rects[i].width > g) rects[i].width - g else rects[i].width;
-            const rh = if (rects[i].height > g) rects[i].height - g else rects[i].height;
+            // Uniform gap: hg inset on each side of every rect
+            const rx = rects[i].x + hg;
+            const ry = rects[i].y + hg;
+            const rw: u16 = if (rects[i].width > @as(u16, @intCast(g))) rects[i].width - @as(u16, @intCast(g)) else rects[i].width;
+            const rh: u16 = if (rects[i].height > @as(u16, @intCast(g))) rects[i].height - @as(u16, @intCast(g)) else rects[i].height;
             self.nodes.applyRect(slot, rx, ry, rw, rh);
 
             // Resize terminal panes to match their assigned rect
@@ -983,13 +983,11 @@ pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
     const bar_y_offset: i32 = if (self.bar) |b| @intCast(b.tilingOffsetY()) else 0;
     const h: u16 = @intCast(@max(1, full_h - bar_h));
 
-    const g = self.wm_config.gap;
-    const hg = g / 2;
     const screen = LayoutEngine.Rect{
-        .x = @intCast(hg),
-        .y = @intCast(@as(u32, @intCast(bar_y_offset)) + hg),
-        .width = if (w > g) w - g else w,
-        .height = if (h > g) h - g else h,
+        .x = 0,
+        .y = @intCast(bar_y_offset),
+        .width = w,
+        .height = h,
     };
 
     const rects = self.layout_engine.calculate(ws_index, screen) catch return;
@@ -997,13 +995,15 @@ pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
 
     const ws = &self.layout_engine.workspaces[ws_index];
     const node_ids = ws.node_ids.items;
+    const g: i32 = @intCast(self.wm_config.gap);
+    const hg: i32 = @divTrunc(g, 2);
 
     for (node_ids, 0..) |nid, i| {
         if (i >= rects.len) break;
-        const rx = rects[i].x + @as(i32, hg);
-        const ry = rects[i].y + @as(i32, hg);
-        const rw = if (rects[i].width > g) rects[i].width - g else rects[i].width;
-        const rh = if (rects[i].height > g) rects[i].height - g else rects[i].height;
+        const rx = rects[i].x + hg;
+        const ry = rects[i].y + hg;
+        const rw: u16 = if (rects[i].width > @as(u16, @intCast(g))) rects[i].width - @as(u16, @intCast(g)) else rects[i].width;
+        const rh: u16 = if (rects[i].height > @as(u16, @intCast(g))) rects[i].height - @as(u16, @intCast(g)) else rects[i].height;
 
         // Only reposition + scale — don't resize grid/PTY
         for (self.terminal_panes) |maybe_tp| {
