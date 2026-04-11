@@ -144,6 +144,6 @@ pub fn render(self: *StatusBar, server: *Server) void {
         rx += cw;
     }
 
-    // Update the scene buffer
-    wlr.wlr_scene_buffer_set_buffer(self.scene_buffer, self.pixel_buffer);
+    // Update the scene buffer (full damage)
+    wlr.wlr_scene_buffer_set_buffer_with_damage(self.scene_buffer, self.pixel_buffer, null);
 }
