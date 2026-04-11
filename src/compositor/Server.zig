@@ -417,8 +417,12 @@ pub fn handleKey(self: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) boo
 fn executeAction(self: *Server, action: KBAction) bool {
     // Workspace switching
     if (action.workspaceIndex()) |ws| {
+        const old_ws = self.layout_engine.active_workspace;
         self.layout_engine.switchWorkspace(ws);
+        self.setWorkspaceVisibility(old_ws, false);
+        self.setWorkspaceVisibility(ws, true);
         self.arrangeworkspace(ws);
+        self.updateFocusedTerminal();
         if (self.status_bar) |sb| sb.render(self);
         return true;
     }
@@ -549,15 +553,18 @@ pub fn focusView(self: *Server, view: *XdgView) void {
         _ = wlr.wlr_xdg_toplevel_set_activated(prev.toplevel, false);
     }
 
-    // Activate new
+    // Activate new — clear terminal focus, external view gets keyboard
     _ = wlr.wlr_xdg_toplevel_set_activated(view.toplevel, true);
     self.focused_view = view;
+    self.focused_terminal = null;
 
     // Send keyboard focus to the surface
     const surface = wlr.miozu_xdg_surface_surface(
         wlr.miozu_xdg_toplevel_base(view.toplevel) orelse return,
     ) orelse return;
     wlr.wlr_seat_keyboard_notify_enter(self.seat, surface, null, 0, null);
+
+    if (self.status_bar) |sb| sb.render(self);
 }
 
 // ── Terminal pane management ───────────────────────────────────
@@ -601,6 +608,31 @@ pub fn pollTerminals(self: *Server) bool {
         }
     }
     return any_output;
+}
+
+// ── Workspace visibility ──────────────────────────────────────
+
+/// Show or hide all nodes in a workspace.
+fn setWorkspaceVisibility(self: *Server, ws: u8, visible: bool) void {
+    const ws_nodes = self.layout_engine.workspaces[ws].node_ids.items;
+    for (ws_nodes) |nid| {
+        // Terminal panes
+        for (self.terminal_panes) |maybe_tp| {
+            if (maybe_tp) |tp| {
+                if (tp.node_id == nid) tp.setVisible(visible);
+            }
+        }
+        // External views: handled by the scene tree (XdgView nodes)
+        if (self.nodes.findById(nid)) |slot| {
+            if (self.nodes.kind[slot] == .wayland_surface) {
+                if (self.nodes.scene_tree[slot]) |tree| {
+                    if (wlr.miozu_scene_tree_node(tree)) |node| {
+                        wlr.wlr_scene_node_set_enabled(node, visible);
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ── Scratchpads ───────────────────────────────────────────────
@@ -684,11 +716,24 @@ pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
     }
 
     // Remove from terminal_panes array
+    var found_in_tiled = false;
     for (&self.terminal_panes) |*slot| {
         if (slot.* == tp) {
             slot.* = null;
             self.terminal_count -= 1;
+            found_in_tiled = true;
             break;
+        }
+    }
+
+    // Also check scratchpads
+    if (!found_in_tiled) {
+        for (&self.scratchpads, 0..) |*slot, i| {
+            if (slot.* == tp) {
+                slot.* = null;
+                self.scratchpad_visible[i] = false;
+                break;
+            }
         }
     }
 
