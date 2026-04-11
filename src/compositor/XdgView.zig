@@ -74,7 +74,7 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     server.layout_engine.workspaces[ws].addNode(server.zig_allocator, view.node_id) catch return;
 
     const app_id = wlr.miozu_xdg_toplevel_app_id(view.toplevel);
-    std.debug.print("miozu: surface mapped app_id='{s}' node={d} ws={d}\n", .{
+    std.debug.print("teruwm: surface mapped app_id='{s}' node={d} ws={d}\n", .{
         app_id orelse "none",
         view.node_id,
         ws,
@@ -96,7 +96,7 @@ fn handleUnmap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         ws.removeNode(view.node_id);
     }
 
-    std.debug.print("miozu: surface unmapped node={d}\n", .{view.node_id});
+    std.debug.print("teruwm: surface unmapped node={d}\n", .{view.node_id});
 }
 
 fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
@@ -114,7 +114,7 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     wlr.wl_list_remove(&view.destroy.link);
     wlr.wl_list_remove(&view.commit.link);
 
-    std.debug.print("miozu: surface destroyed node={d}\n", .{view.node_id});
+    std.debug.print("teruwm: surface destroyed node={d}\n", .{view.node_id});
 
     // Free the view
     view.server.zig_allocator.destroy(view);

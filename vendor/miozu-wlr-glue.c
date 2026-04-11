@@ -1,8 +1,8 @@
 /**
- * miozu-wlr-glue.c — Thin C accessors for wlroots struct fields.
+ * miozu-wlr-glue.c — Thin C accessors for wlroots struct fields (teruwm).
  *
  * wlroots types are opaque in Zig. Rather than replicating exact C struct
- * layouts (fragile, version-dependent), we expose the specific fields miozu
+ * layouts (fragile, version-dependent), we expose the specific fields teruwm
  * needs through accessor functions. The C compiler verifies correctness.
  */
 
