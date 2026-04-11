@@ -4,10 +4,12 @@
 //! initializes wlroots), starts the backend, and runs the event loop.
 
 const std = @import("std");
+const teru = @import("teru");
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 
 pub fn main(init: std.process.Init) !void {
+    const io = init.io;
     const allocator = init.gpa;
 
     // ── Create Wayland display ──────────────────────────────────
@@ -38,6 +40,16 @@ pub fn main(init: std.process.Init) !void {
     if (socket == null) {
         std.debug.print("miozu: failed to add Wayland socket\n", .{});
         return error.SocketFailed;
+    }
+
+    // ── Load font atlas (shared across all terminal panes) ───────
+    if (teru.render.FontAtlas.init(allocator, null, 14, io)) |atlas| {
+        const fa = try allocator.create(teru.render.FontAtlas);
+        fa.* = atlas;
+        server.font_atlas = fa;
+        std.debug.print("miozu: font loaded ({d}x{d} cells)\n", .{ fa.cell_width, fa.cell_height });
+    } else |err| {
+        std.debug.print("miozu: font init failed: {}, using fallback\n", .{err});
     }
 
     // ── Start backend ───────────────────────────────────────────

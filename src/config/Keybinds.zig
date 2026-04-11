@@ -168,6 +168,13 @@ pub const Action = enum(u8) {
     // Send raw key through to PTY
     send_through,
 
+    // Compositor actions (no-ops in standalone teru, handled by miozu Server)
+    spawn_terminal,
+    window_close,
+    compositor_quit,
+    launcher_toggle,
+    spawn_external, // reserved for future use
+
     pub fn fromString(s: []const u8) ?Action {
         // Exact match table
         const map = .{
@@ -212,6 +219,10 @@ pub const Action = enum(u8) {
             .{ "search:prev", Action.search_prev },
             .{ "select:begin", Action.select_begin },
             .{ "send:through", Action.send_through },
+            .{ "spawn:terminal", Action.spawn_terminal },
+            .{ "window:close", Action.window_close },
+            .{ "compositor:quit", Action.compositor_quit },
+            .{ "launcher:toggle", Action.launcher_toggle },
         };
         inline for (map) |entry| {
             if (std.mem.eql(u8, s, entry[0])) return entry[1];
@@ -507,6 +518,35 @@ pub const Keybinds = struct {
         // ── Shared ──────────────────────────────────────
         _ = self.add(.shared, Mods.CTRL_SHIFT, 'c', .copy_selection);
         _ = self.add(.shared, Mods.CTRL_SHIFT, 'v', .paste_clipboard);
+    }
+
+    /// Load compositor-specific defaults (Super+key bindings).
+    /// Called by miozu after loadDefaults(). These are layered on top —
+    /// teru standalone never calls this, so Super+key is free for the WM.
+    pub fn loadCompositorDefaults(self: *Keybinds) void {
+        const n = Mode.normal;
+        const S = Mods{ .super_ = true };
+        const SS = Mods{ .super_ = true, .shift = true };
+
+        _ = self.add(n, S, '\r', .spawn_terminal);
+        _ = self.add(n, S, ' ', .layout_cycle);
+        _ = self.add(n, S, 'j', .pane_focus_next);
+        _ = self.add(n, S, 'k', .pane_focus_prev);
+        _ = self.add(n, S, 'h', .resize_shrink_w);
+        _ = self.add(n, S, 'l', .resize_grow_w);
+        _ = self.add(n, SS, 'j', .pane_swap_next);
+        _ = self.add(n, SS, 'k', .pane_swap_prev);
+        _ = self.add(n, SS, '\r', .pane_set_master);
+        _ = self.add(n, SS, 'c', .window_close);
+        _ = self.add(n, SS, 'q', .compositor_quit);
+
+        // Super+1-9 workspace, Super+0 workspace 10
+        for (0..9) |i| {
+            const digit: u8 = @intCast('1' + i);
+            const ws: Action = @enumFromInt(@intFromEnum(Action.workspace_1) + @as(u8, @intCast(i)));
+            _ = self.add(n, S, digit, ws);
+        }
+        _ = self.add(n, S, '0', .workspace_0);
     }
 };
 

@@ -76,6 +76,11 @@ pub extern "wayland-server" fn wl_display_terminate(display: *wl_display) callco
 pub extern "wayland-server" fn wl_display_get_event_loop(display: *wl_display) callconv(.c) ?*wl_event_loop;
 pub extern "wayland-server" fn wl_display_add_socket_auto(display: *wl_display) callconv(.c) ?[*:0]const u8;
 
+pub const wl_event_source = opaque {};
+pub extern "wayland-server" fn wl_event_loop_add_fd(loop: *wl_event_loop, fd: c_int, mask: u32, func: *const fn (c_int, u32, ?*anyopaque) callconv(.c) c_int, data: ?*anyopaque) callconv(.c) ?*wl_event_source;
+pub extern "wayland-server" fn wl_event_source_remove(source: *wl_event_source) callconv(.c) c_int;
+pub const WL_EVENT_READABLE: u32 = 0x01;
+
 /// wl_signal_add is static inline in wayland headers — implement in Zig.
 /// Inserts listener at the end of the signal's listener list.
 pub fn wl_signal_add(signal: *wl_signal, listener: *wl_listener) void {
@@ -254,6 +259,7 @@ pub extern "xkbcommon" fn xkb_keymap_new_from_names(context: *xkb_context, names
 pub extern "xkbcommon" fn xkb_keymap_unref(keymap: *xkb_keymap) callconv(.c) void;
 pub extern "xkbcommon" fn xkb_state_key_get_one_sym(state: *xkb_state, key: u32) callconv(.c) u32;
 pub extern "xkbcommon" fn xkb_state_mod_name_is_active(state: *xkb_state, name: [*:0]const u8, kind: c_int) callconv(.c) c_int;
+pub extern "xkbcommon" fn xkb_state_key_get_utf8(state: *xkb_state, key: u32, buffer: [*]u8, size: usize) callconv(.c) c_int;
 
 // xkb modifier name constants
 pub const XKB_MOD_NAME_LOGO = "Mod4";
