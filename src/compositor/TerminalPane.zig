@@ -109,6 +109,65 @@ pub fn create(server: *Server, ws: u8, rows: u16, cols: u16) ?*TerminalPane {
     return tp;
 }
 
+/// Create a floating terminal pane (not added to workspace tiling).
+/// Used for scratchpads that toggle visibility independently.
+pub fn createFloating(server: *Server, rows: u16, cols: u16) ?*TerminalPane {
+    const allocator = server.zig_allocator;
+    const cell_w: u32 = if (server.font_atlas) |fa| fa.cell_width else 8;
+    const cell_h: u32 = if (server.font_atlas) |fa| fa.cell_height else 16;
+    const pixel_w: u32 = @as(u32, cols) * cell_w;
+    const pixel_h: u32 = @as(u32, rows) * cell_h;
+
+    const pixel_buffer = wlr.miozu_pixel_buffer_create(@intCast(pixel_w), @intCast(pixel_h)) orelse return null;
+    const scene_tree_root = wlr.miozu_scene_tree(server.scene) orelse return null;
+    const scene_buffer = wlr.wlr_scene_buffer_create(scene_tree_root, pixel_buffer) orelse return null;
+
+    const spawn_config = Pane.SpawnConfig{};
+    var pane = Pane.init(allocator, rows, cols, server.next_node_id, spawn_config) catch return null;
+
+    var renderer = SoftwareRenderer.init(allocator, pixel_w, pixel_h, cell_w, cell_h) catch {
+        pane.deinit(allocator);
+        return null;
+    };
+
+    if (wlr.miozu_pixel_buffer_data(pixel_buffer)) |data| {
+        renderer.framebuffer = data[0 .. pixel_w * pixel_h];
+    }
+    if (server.font_atlas) |fa| {
+        renderer.glyph_atlas = fa.atlas_data;
+        renderer.atlas_width = fa.atlas_width;
+        renderer.atlas_height = fa.atlas_height;
+    }
+
+    const tp = allocator.create(TerminalPane) catch {
+        pane.deinit(allocator);
+        return null;
+    };
+
+    const node_id = server.next_node_id;
+    server.next_node_id += 1;
+
+    tp.* = .{
+        .server = server,
+        .pane = pane,
+        .renderer = renderer,
+        .pixel_buffer = pixel_buffer,
+        .scene_buffer = scene_buffer,
+        .node_id = node_id,
+    };
+
+    tp.pane.linkVt(allocator);
+
+    // Register PTY fd with event loop
+    if (tp.getPtyFd()) |fd| {
+        const event_loop = wlr.wl_display_get_event_loop(server.display) orelse return tp;
+        tp.event_source = wlr.wl_event_loop_add_fd(event_loop, fd, wlr.WL_EVENT_READABLE, ptyReadable, @ptrCast(tp));
+    }
+
+    tp.render();
+    return tp;
+}
+
 /// Read PTY output and re-render if dirty. Called from the compositor's
 /// event loop (or timer). Returns true if the pane produced output.
 pub fn poll(self: *TerminalPane) bool {
