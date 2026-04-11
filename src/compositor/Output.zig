@@ -51,6 +51,26 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
     const h = wlr.miozu_output_height(wlr_output);
     std.debug.print("miozu: output '{s}' connected ({d}x{d})\n", .{ name, w, h });
 
+    // On first output: spawn the immortal terminal on workspace 9 (key 0)
+    if (server.terminal_count == 0) {
+        const cell_w: u32 = if (server.font_atlas) |fa| fa.cell_width else 8;
+        const cell_h: u32 = if (server.font_atlas) |fa| fa.cell_height else 16;
+        const term_cols: u16 = @intCast(@max(1, @divTrunc(@as(u32, @intCast(w)), cell_w)));
+        const term_rows: u16 = @intCast(@max(1, @divTrunc(@as(u32, @intCast(h)), cell_h)));
+
+        server.layout_engine.switchWorkspace(9); // workspace "0" (immortal home)
+        server.spawnTerminal(9);
+
+        // Resize the pane to fill the output
+        if (server.terminal_panes[0]) |tp| {
+            _ = tp; // TODO: resize pane grid to term_rows x term_cols
+        }
+        _ = term_rows;
+        _ = term_cols;
+
+        std.debug.print("miozu: immortal terminal spawned on workspace 0\n", .{});
+    }
+
     return output;
 }
 

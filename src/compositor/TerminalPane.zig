@@ -9,10 +9,12 @@
 //! and tell wlroots the buffer changed. No intermediate copies.
 
 const std = @import("std");
+const Io = std.Io;
 const teru = @import("teru");
 const Pane = teru.Pane;
 const Grid = teru.Grid;
 const SoftwareRenderer = teru.render.SoftwareRenderer;
+const FontAtlas = teru.render.FontAtlas;
 const Config = teru.Config;
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
@@ -25,15 +27,16 @@ renderer: SoftwareRenderer,
 pixel_buffer: *wlr.wlr_buffer,
 scene_buffer: *wlr.wlr_scene_buffer,
 node_id: u64,
+event_source: ?*wlr.wl_event_source = null, // PTY fd registered with wl_event_loop
 read_buf: [8192]u8 = undefined, // PTY read buffer (stack, no alloc)
 
 /// Create a terminal pane on the given workspace.
 pub fn create(server: *Server, ws: u8, rows: u16, cols: u16) ?*TerminalPane {
     const allocator = server.zig_allocator;
 
-    // Calculate pixel dimensions from cell grid
-    const cell_w: u32 = 8; // default cell width (will be from FontAtlas)
-    const cell_h: u32 = 16; // default cell height
+    // Get cell dimensions from shared font atlas (or fallback defaults)
+    const cell_w: u32 = if (server.font_atlas) |fa| fa.cell_width else 8;
+    const cell_h: u32 = if (server.font_atlas) |fa| fa.cell_height else 16;
     const pixel_w: u32 = @as(u32, cols) * cell_w;
     const pixel_h: u32 = @as(u32, rows) * cell_h;
 
@@ -57,6 +60,13 @@ pub fn create(server: *Server, ws: u8, rows: u16, cols: u16) ?*TerminalPane {
     // Point the renderer's framebuffer at the wlr pixel buffer data (zero-copy)
     if (wlr.miozu_pixel_buffer_data(pixel_buffer)) |data| {
         renderer.framebuffer = data[0 .. pixel_w * pixel_h];
+    }
+
+    // Wire up font atlas for glyph rendering
+    if (server.font_atlas) |fa| {
+        renderer.glyph_atlas = fa.atlas_data;
+        renderer.atlas_width = fa.atlas_width;
+        renderer.atlas_height = fa.atlas_height;
     }
 
     // Allocate the TerminalPane wrapper
@@ -83,6 +93,12 @@ pub fn create(server: *Server, ws: u8, rows: u16, cols: u16) ?*TerminalPane {
     // Register in node registry and tiling engine
     _ = server.nodes.addTerminal(node_id, ws);
     server.layout_engine.workspaces[ws].addNode(allocator, node_id) catch return null;
+
+    // Register PTY fd with wlroots event loop for automatic polling
+    if (tp.getPtyFd()) |fd| {
+        const event_loop = wlr.wl_display_get_event_loop(server.display) orelse return tp;
+        tp.event_source = wlr.wl_event_loop_add_fd(event_loop, fd, wlr.WL_EVENT_READABLE, ptyReadable, @ptrCast(tp));
+    }
 
     std.debug.print("miozu: terminal pane created node={d} ws={d} ({d}x{d})\n", .{ node_id, ws, cols, rows });
 
@@ -122,6 +138,14 @@ pub fn getPtyFd(self: *TerminalPane) ?i32 {
 /// Write input to the terminal's PTY (keyboard input from compositor).
 pub fn writeInput(self: *TerminalPane, data: []const u8) void {
     _ = self.pane.ptyWrite(data) catch {};
+}
+
+/// wl_event_loop callback: PTY fd is readable → read output and re-render.
+/// Called by wlroots' event loop — zero additional polling code needed.
+fn ptyReadable(_: c_int, _: u32, data: ?*anyopaque) callconv(.c) c_int {
+    const tp: *TerminalPane = @ptrCast(@alignCast(data orelse return 0));
+    _ = tp.poll();
+    return 0;
 }
 
 pub fn deinit(self: *TerminalPane, allocator: std.mem.Allocator) void {

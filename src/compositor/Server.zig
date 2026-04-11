@@ -9,6 +9,10 @@ const TerminalPane = @import("TerminalPane.zig");
 const NodeRegistry = @import("Node.zig");
 const teru = @import("teru");
 const LayoutEngine = teru.LayoutEngine;
+const Keybinds = teru.Keybinds;
+const KB = Keybinds.Keybinds;
+const KBAction = Keybinds.Action;
+const KBMods = Keybinds.Mods;
 
 const Server = @This();
 
@@ -34,8 +38,11 @@ xkb_ctx: *wlr.xkb_context,
 
 layout_engine: LayoutEngine,
 nodes: NodeRegistry,
+keybinds: KB = .{},
+font_atlas: ?*teru.render.FontAtlas = null, // shared across all terminal panes
 next_node_id: u64 = 1,
 focused_view: ?*XdgView = null,
+focused_terminal: ?*TerminalPane = null,
 terminal_panes: [NodeRegistry.max_nodes]?*TerminalPane = [_]?*TerminalPane{null} ** NodeRegistry.max_nodes,
 terminal_count: u16 = 0,
 
@@ -111,10 +118,16 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     const xkb_ctx = wlr.xkb_context_new(0) orelse
         return error.XkbContextFailed;
 
+    // Load keybinds: teru defaults (Alt+key) + compositor layer (Super+key)
+    var keybinds = KB{};
+    keybinds.loadDefaults();
+    keybinds.loadCompositorDefaults();
+
     // Return fields only — listeners are registered separately by initOnHeap
     // after the struct has its final heap address.
     return Server{
         .zig_allocator = allocator,
+        .keybinds = keybinds,
         .layout_engine = LayoutEngine.init(allocator),
         .nodes = .{},
         .display = display,
@@ -241,14 +254,36 @@ const Keyboard = struct {
         const keycode = wlr.miozu_keyboard_key_keycode(event_ptr);
         const key_state = wlr.miozu_keyboard_key_state(event_ptr);
         const time = wlr.miozu_keyboard_key_time(event_ptr);
+        const xkb_st = wlr.miozu_keyboard_xkb_state(kb.wlr_keyboard) orelse return;
 
-        // Only handle key press, not release
-        if (key_state == 1) { // WL_KEYBOARD_KEY_STATE_PRESSED
-            const xkb_st = wlr.miozu_keyboard_xkb_state(kb.wlr_keyboard) orelse return;
-            if (kb.server.handleCompositorKey(keycode, xkb_st)) return;
+        // Only handle keybinds on key press, not release
+        if (key_state == 1) {
+            if (kb.server.handleKey(keycode, xkb_st)) return;
         }
 
-        // Forward to focused surface
+        // Route to focused terminal pane (convert keysym → UTF-8 → PTY)
+        if (kb.server.focused_terminal) |tp| {
+            if (key_state == 1) { // press only
+                var buf: [8]u8 = undefined;
+                const sym = wlr.xkb_state_key_get_one_sym(xkb_st, keycode + 8);
+                const ctrl = wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_CTRL, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
+
+                // Ctrl+key → control character (Ctrl+C = 0x03, etc.)
+                if (ctrl and sym >= 'a' and sym <= 'z') {
+                    buf[0] = @intCast(sym - 'a' + 1);
+                    tp.writeInput(buf[0..1]);
+                } else {
+                    // Normal key → UTF-8
+                    const len = wlr.xkb_state_key_get_utf8(xkb_st, keycode + 8, &buf, buf.len);
+                    if (len > 0) {
+                        tp.writeInput(buf[0..@intCast(len)]);
+                    }
+                }
+            }
+            return;
+        }
+
+        // Forward to focused Wayland client surface
         wlr.wlr_seat_keyboard_notify_key(kb.server.seat, time, keycode, key_state);
     }
 
@@ -322,69 +357,115 @@ fn processCursorMotion(self: *Server, time: u32) void {
 
 // ── Keyboard handling ──────────────────────────────────────────
 
-/// Called from per-keyboard key listener. Returns true if the key was
-/// consumed by a compositor binding (not forwarded to client).
-pub fn handleCompositorKey(self: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) bool {
+/// Called from per-keyboard key listener. Looks up the key in teru's
+/// config-driven keybind system and executes the action. Returns true
+/// if the key was consumed (not forwarded to client).
+pub fn handleKey(self: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) bool {
     // xkb keycodes are offset by 8 from evdev
     const sym = wlr.xkb_state_key_get_one_sym(xkb_state_ptr, keycode + 8);
 
-    // Check if Super (Mod4) is held
-    const super_active = wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_LOGO, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
-    const shift_active = wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_SHIFT, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
+    // Convert xkb sym to ASCII key for teru's keybind lookup
+    // (teru keybinds use ASCII characters, not keysyms)
+    const key: u8 = if (sym >= 0x20 and sym <= 0x7e) @intCast(sym) else switch (sym) {
+        0xff0d => '\r', // Return
+        0xff1b => 0x1b, // Escape
+        0xff09 => '\t', // Tab
+        0xffff => 0x7f, // Delete → Backspace
+        else => return false,
+    };
 
-    if (!super_active) return false;
+    // Build modifier flags matching teru's Keybinds.Mods
+    var mods = KBMods{};
+    if (wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_ALT, wlr.XKB_STATE_MODS_EFFECTIVE) > 0) mods.alt = true;
+    if (wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_SHIFT, wlr.XKB_STATE_MODS_EFFECTIVE) > 0) mods.shift = true;
+    if (wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_CTRL, wlr.XKB_STATE_MODS_EFFECTIVE) > 0) mods.ctrl = true;
+    if (wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_LOGO, wlr.XKB_STATE_MODS_EFFECTIVE) > 0) mods.super_ = true;
 
-    // ── Compositor keybinds (Mod+key) — zero allocation dispatch ──
-    if (sym >= wlr.XKB_KEY_1 and sym <= wlr.XKB_KEY_0 + 9) {
-        // Mod+1..9 → switch workspace 0..8
-        self.layout_engine.switchWorkspace(@intCast(sym - wlr.XKB_KEY_1));
+    // Lookup in teru's config-driven keybind table (same system standalone teru uses)
+    const action = self.keybinds.lookup(.normal, mods, key) orelse return false;
+
+    return self.executeAction(action);
+}
+
+/// Execute a keybind action. Shared by both compositor keybinds and
+/// terminal pane keybinds (same Action enum, same execution logic).
+fn executeAction(self: *Server, action: KBAction) bool {
+    // Workspace switching
+    if (action.workspaceIndex()) |ws| {
+        self.layout_engine.switchWorkspace(ws);
+        // TODO: enable/disable workspace scene trees
         return true;
     }
 
-    switch (sym) {
-        wlr.XKB_KEY_0 => {
-            // Mod+0 → workspace 9 (10th, immortal home)
-            self.layout_engine.switchWorkspace(9);
-            return true;
-        },
-        wlr.XKB_KEY_Return => {
-            // Mod+Return → spawn embedded terminal pane on active workspace
+    // Move node to workspace
+    if (action.moveToIndex()) |ws| {
+        const active_ws = self.layout_engine.getActiveWorkspace();
+        if (active_ws.getActiveNodeId()) |nid| {
+            self.layout_engine.moveNodeToWorkspace(nid, ws) catch {};
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            self.arrangeworkspace(ws);
+        }
+        return true;
+    }
+
+    switch (action) {
+        .spawn_terminal => {
             self.spawnTerminal(self.layout_engine.active_workspace);
             return true;
         },
-        wlr.XKB_KEY_space => {
-            // Mod+Space → cycle layout
+        .window_close, .pane_close => {
+            if (self.focused_view) |view| {
+                wlr.wlr_xdg_toplevel_send_close(view.toplevel);
+            }
+            return true;
+        },
+        .compositor_quit => {
+            wlr.wl_display_terminate(self.display);
+            return true;
+        },
+        .layout_cycle => {
             self.layout_engine.getActiveWorkspace().cycleLayout();
             self.arrangeworkspace(self.layout_engine.active_workspace);
             return true;
         },
-        wlr.XKB_KEY_j => {
-            // Mod+j → focus next
+        .pane_focus_next => {
             self.layout_engine.getActiveWorkspace().focusNext();
             return true;
         },
-        wlr.XKB_KEY_k => {
-            // Mod+k → focus prev
+        .pane_focus_prev => {
             self.layout_engine.getActiveWorkspace().focusPrev();
             return true;
         },
-        wlr.XKB_KEY_c => {
-            if (shift_active) {
-                // Mod+Shift+c → close focused window
-                if (self.focused_view) |view| {
-                    wlr.wlr_xdg_toplevel_send_close(view.toplevel);
-                }
-                return true;
-            }
-            return false;
+        .pane_swap_next => {
+            self.layout_engine.getActiveWorkspace().swapWithNext();
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
         },
-        wlr.XKB_KEY_q => {
-            if (shift_active) {
-                // Mod+Shift+q → quit compositor
-                wlr.wl_display_terminate(self.display);
-                return true;
-            }
-            return false;
+        .pane_swap_prev => {
+            self.layout_engine.getActiveWorkspace().swapWithPrev();
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
+        },
+        .pane_set_master => {
+            self.layout_engine.getActiveWorkspace().promoteToMaster();
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
+        },
+        .resize_shrink_w => {
+            const ws = self.layout_engine.getActiveWorkspace();
+            ws.master_ratio = @max(0.1, ws.master_ratio - 0.05);
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
+        },
+        .resize_grow_w => {
+            const ws = self.layout_engine.getActiveWorkspace();
+            ws.master_ratio = @min(0.9, ws.master_ratio + 0.05);
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
+        },
+        .split_vertical => {
+            self.spawnTerminal(self.layout_engine.active_workspace);
+            return true;
         },
         else => return false,
     }
@@ -449,6 +530,10 @@ pub fn spawnTerminal(self: *Server, ws: u8) void {
             break;
         }
     }
+
+    // Focus the new terminal
+    self.focused_terminal = tp;
+    self.focused_view = null; // terminal takes priority over external views
 }
 
 /// Poll all terminal panes for PTY output. Called from the event loop.

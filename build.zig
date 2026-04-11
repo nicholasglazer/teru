@@ -16,6 +16,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    // Add vendor include path for @cImport in FontAtlas (stb_truetype.h)
+    lib_mod.addIncludePath(b.path("vendor"));
+
     const lib = b.addLibrary(.{
         .name = "teru",
         .root_module = lib_mod,
