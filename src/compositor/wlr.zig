@@ -92,7 +92,7 @@ pub extern "wayland-server" fn wl_list_remove(elm: *wl_list) callconv(.c) void;
 
 // ── wlroots backend ────────────────────────────────────────────
 
-pub extern "wlroots-0.18" fn wlr_backend_autocreate(event_loop: *wl_event_loop, session: ?*wlr_session) callconv(.c) ?*wlr_backend;
+pub extern "wlroots-0.18" fn wlr_backend_autocreate(event_loop: *wl_event_loop, session_ptr: ?*?*wlr_session) callconv(.c) ?*wlr_backend;
 pub extern "wlroots-0.18" fn wlr_backend_start(backend: *wlr_backend) callconv(.c) bool;
 pub extern "wlroots-0.18" fn wlr_backend_destroy(backend: *wlr_backend) callconv(.c) void;
 
@@ -343,6 +343,13 @@ pub extern "c" fn miozu_keyboard_key_time(event: *anyopaque) callconv(.c) u32;
 // WL_SEAT capability bits
 pub const WL_SEAT_CAPABILITY_POINTER: u32 = 1;
 pub const WL_SEAT_CAPABILITY_KEYBOARD: u32 = 2;
+
+// ── Session (VT switching) ──────────────────────────────────────
+
+pub extern "wlroots-0.18" fn wlr_session_change_vt(session: *wlr_session, vt: c_uint) callconv(.c) bool;
+
+// XKB keysyms for VT switching (Ctrl+Alt+F1-F12)
+pub const XKB_KEY_XF86Switch_VT_1: u32 = 0x1008FE01;
 
 // ── XWayland ───────────────────────────────────────────────────
 
