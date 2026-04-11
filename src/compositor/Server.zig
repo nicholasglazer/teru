@@ -100,17 +100,8 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     const scene = wlr.wlr_scene_create() orelse
         return error.SceneCreateFailed;
 
-    // Background rect (miozu base00 #232733 — covers entire output)
-    if (wlr.miozu_scene_tree(scene)) |root_tree| {
-        // ARGB float: R=0x23/255, G=0x27/255, B=0x33/255
-        const bg_color = [4]f32{
-            @as(f32, 0x23) / 255.0,
-            @as(f32, 0x27) / 255.0,
-            @as(f32, 0x33) / 255.0,
-            1.0,
-        };
-        _ = wlr.wlr_scene_rect_create(root_tree, 8192, 8192, &bg_color);
-    }
+    // Note: background color is handled by wlr_renderer_clear in the
+    // Output frame handler, not by a scene rect (avoids node type issues).
 
     // Output layout
     const output_layout = wlr.wlr_output_layout_create(display) orelse

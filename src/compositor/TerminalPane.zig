@@ -145,6 +145,9 @@ pub fn resize(self: *TerminalPane, pixel_w: u32, pixel_h: u32) void {
     const actual_w = @as(u32, new_cols) * cell_w;
     const actual_h = @as(u32, new_rows) * cell_h;
 
+    // Detach old buffer from scene before resizing (prevents stale references)
+    wlr.wlr_scene_buffer_set_buffer(self.scene_buffer, null);
+
     if (!wlr.miozu_pixel_buffer_resize(self.pixel_buffer, @intCast(actual_w), @intCast(actual_h))) return;
 
     if (wlr.miozu_pixel_buffer_data(self.pixel_buffer)) |data| {
@@ -167,7 +170,8 @@ pub fn render(self: *TerminalPane) void {
     const border_color: u32 = if (is_focused) 0xFFFF9837 else 0xFF3E4359;
     self.drawBorder(border_color);
 
-    wlr.wlr_scene_buffer_set_buffer(self.scene_buffer, self.pixel_buffer);
+    // Signal wlroots that buffer content changed (full damage, NULL region)
+    wlr.wlr_scene_buffer_set_buffer_with_damage(self.scene_buffer, self.pixel_buffer, null);
 }
 
 fn drawBorder(self: *TerminalPane, color: u32) void {
