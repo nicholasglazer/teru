@@ -138,6 +138,48 @@ pub fn deinit(self: *Pane, allocator: Allocator) void {
     self.grid.deinit(allocator);
 }
 
+/// Kill the current shell process and spawn a fresh one in the same pane.
+/// Resets the grid and VT parser. Used for immortal panes that cannot be closed.
+pub fn respawnShell(self: *Pane, allocator: Allocator, spawn_config: SpawnConfig) void {
+    const rows = self.grid.rows;
+    const cols = self.grid.cols;
+
+    // Kill existing PTY
+    switch (self.backend) {
+        .local => |*p| p.deinit(),
+        .remote => return, // remote panes can't respawn locally
+    }
+
+    // Reset grid (clear all cells, cursor to 0,0)
+    self.grid.clearScreen(2); // mode 2 = clear entire screen
+    self.grid.cursor_row = 0;
+    self.grid.cursor_col = 0;
+    self.vt = VtParser.initEmpty();
+    self.scroll_offset = 0;
+    self.scroll_pixel = 0;
+
+    // Spawn new PTY
+    const pty = Pty.spawn(.{
+        .rows = rows,
+        .cols = cols,
+        .shell = spawn_config.shell,
+        .term = spawn_config.term,
+        .exec_argv = null, // never carry over exec_argv on respawn
+    }) catch return; // silently fail — better than crashing the compositor
+
+    // Set non-blocking
+    if (builtin.os.tag != .windows) {
+        const flags = std.c.fcntl(pty.master, posix.F.GETFL);
+        if (flags >= 0) {
+            _ = std.c.fcntl(pty.master, posix.F.SETFL, flags | compat.O_NONBLOCK);
+        }
+    }
+
+    self.backend = .{ .local = pty };
+    self.linkVt(allocator);
+    self.grid.dirty = true;
+}
+
 /// Read available data from the PTY and feed it through the VT parser.
 /// Returns the number of bytes read (0 if nothing available).
 pub fn readAndProcess(self: *Pane, buf: []u8) !usize {

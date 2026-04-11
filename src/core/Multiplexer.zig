@@ -40,6 +40,10 @@ notification_len: u8 = 0,
 notification_time: i128 = 0,
 notification_duration_ns: i128 = 5_000_000_000,
 
+// Immortal pane: if set, this pane cannot be closed — closing it respawns a shell instead.
+// Used by miozu compositor for workspace 0's home terminal.
+immortal_pane_id: ?u64 = null,
+
 // Session persistence (dirty flag checked by event loop when persist_session is enabled)
 persist_dirty: bool = false,
 persist_dirty_since: i128 = 0,
@@ -284,7 +288,16 @@ pub fn spawnPaneWithCommand(self: *Multiplexer, rows: u16, cols: u16, command: [
 }
 
 /// Close and remove a pane by its ID.
+/// If the pane is immortal, its shell process is killed and respawned instead of removing the pane.
 pub fn closePane(self: *Multiplexer, pane_id: u64) void {
+    // Immortal pane: respawn shell instead of closing
+    if (self.immortal_pane_id != null and pane_id == self.immortal_pane_id.?) {
+        if (self.getPaneById(pane_id)) |pane| {
+            pane.respawnShell(self.allocator, self.spawn_config);
+        }
+        return;
+    }
+
     // Remove from all workspaces (flat list and tree)
     for (&self.layout_engine.workspaces) |*ws| {
         ws.removeNode(pane_id);
