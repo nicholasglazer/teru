@@ -165,7 +165,7 @@ pub fn build(b: *std.Build) void {
         });
 
         const miozu_exe = b.addExecutable(.{
-            .name = "miozu",
+            .name = "teru-wm",
             .root_module = miozu_mod,
         });
         b.installArtifact(miozu_exe);
