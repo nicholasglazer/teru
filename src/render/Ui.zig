@@ -417,12 +417,14 @@ pub fn renderScrollOverlay(
     // Add 1 extra line when there's a pixel offset (partial line visible at boundary)
     const pane_rows: u32 = @intCast(rh / ch);
     const pixel_extra: u32 = if (scroll_pixel > 0) 1 else 0;
-    const lines_to_show = @min(scroll_offset + pixel_extra, @min(sb_lines, pane_rows -| 1));
+    // When scroll_offset >= pane_rows, entire viewport is scrollback (no grid visible)
+    const lines_to_show = @min(scroll_offset + pixel_extra, @min(sb_lines, pane_rows));
 
     // Total pixel shift: full lines + sub-cell pixel offset
     const sub_px: usize = if (scroll_pixel > 0) @intCast(scroll_pixel) else 0;
     const shift_px = lines_to_show * @as(u32, @intCast(ch)) -| @as(u32, @intCast(sub_px));
     if (shift_px > 0 and shift_px < rh) {
+        // Shift grid content down to make room for scrollback lines at top
         var y: usize = ry + rh - 1;
         while (y >= ry + shift_px) : (y -= 1) {
             const dst_start = y * fb_w + rx;
@@ -433,9 +435,13 @@ pub fn renderScrollOverlay(
             if (y == ry) break;
         }
     }
+    // When shift >= rh, entire pane is scrollback — clear everything
+    // (scrollback text render below will fill it)
 
-    // Fill the top (shift_px) rows of the pane rect with background color
-    for (ry..@min(ry + shift_px, ry + rh)) |y| {
+    // Fill the scrollback area with background color before rendering text.
+    // When shift >= rh, clear the entire pane (all scrollback, no grid visible).
+    const clear_rows = if (shift_px >= rh) rh else shift_px;
+    for (ry..@min(ry + clear_rows, ry + rh)) |y| {
         const row_start = y * fb_w + rx;
         if (row_start + rw <= cpu.framebuffer.len) {
             @memset(cpu.framebuffer[row_start..][0..rw], s.bg);
