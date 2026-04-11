@@ -49,6 +49,10 @@ terminal_count: u16 = 0,
 status_bar: ?*StatusBar = null,
 workspace_trees: [10]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** 10,
 
+// Scratchpads: 9 floating terminal panes (Alt+RAlt+1-9)
+scratchpads: [9]?*TerminalPane = [_]?*TerminalPane{null} ** 9,
+scratchpad_visible: [9]bool = [_]bool{false} ** 9,
+
 // ── Listeners ──────────────────────────────────────────────────
 
 new_output: wlr.wl_listener = makeListener(handleNewOutput),
@@ -396,6 +400,12 @@ pub fn handleKey(self: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) boo
     if (wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_CTRL, wlr.XKB_STATE_MODS_EFFECTIVE) > 0) mods.ctrl = true;
     if (wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_LOGO, wlr.XKB_STATE_MODS_EFFECTIVE) > 0) mods.super_ = true;
 
+    // ── Scratchpad toggle: Alt+RAlt+1-9 ──
+    if (mods.alt and mods.ralt and key >= '1' and key <= '9') {
+        self.toggleScratchpad(key - '1');
+        return true;
+    }
+
     // Lookup in teru's config-driven keybind table (same system standalone teru uses)
     const action = self.keybinds.lookup(.normal, mods, key) orelse return false;
 
@@ -591,6 +601,63 @@ pub fn pollTerminals(self: *Server) bool {
         }
     }
     return any_output;
+}
+
+// ── Scratchpads ───────────────────────────────────────────────
+
+/// Toggle a numbered scratchpad (0-8, mapped from keys 1-9).
+/// Creates the terminal pane on first toggle. Subsequent toggles show/hide.
+/// Scratchpads are floating — not part of workspace tiling.
+fn toggleScratchpad(self: *Server, index: u8) void {
+    if (index >= 9) return;
+
+    // Create on first use
+    if (self.scratchpads[index] == null) {
+        // 3x3 grid positions (same as XMonad config)
+        const positions = [9][2]f32{
+            .{ 0.1, 0.1 }, .{ 0.3, 0.1 }, .{ 0.5, 0.1 },
+            .{ 0.1, 0.3 }, .{ 0.3, 0.3 }, .{ 0.5, 0.3 },
+            .{ 0.1, 0.5 }, .{ 0.3, 0.5 }, .{ 0.5, 0.5 },
+        };
+        const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
+        const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
+        const sp_w: u32 = out_w * 35 / 100; // 35% width
+        const sp_h: u32 = out_h * 40 / 100; // 40% height
+        const cell_w: u32 = if (self.font_atlas) |fa| fa.cell_width else 8;
+        const cell_h: u32 = if (self.font_atlas) |fa| fa.cell_height else 16;
+        const cols: u16 = @intCast(@max(1, sp_w / cell_w));
+        const rows: u16 = @intCast(@max(1, sp_h / cell_h));
+
+        // Create scratchpad terminal (not added to any workspace's tiling)
+        const tp = TerminalPane.createFloating(self, rows, cols) orelse return;
+        self.scratchpads[index] = tp;
+
+        // Position it
+        const pos_x: i32 = @intFromFloat(positions[index][0] * @as(f32, @floatFromInt(out_w)));
+        const pos_y: i32 = @intFromFloat(positions[index][1] * @as(f32, @floatFromInt(out_h)));
+        if (wlr.miozu_scene_buffer_node(tp.scene_buffer)) |node| {
+            wlr.wlr_scene_node_set_position(node, pos_x, pos_y);
+        }
+
+        self.scratchpad_visible[index] = true;
+        self.focused_terminal = tp;
+        self.focused_view = null;
+        std.debug.print("miozu: scratchpad {d} created\n", .{index + 1});
+        return;
+    }
+
+    // Toggle visibility
+    self.scratchpad_visible[index] = !self.scratchpad_visible[index];
+    if (self.scratchpads[index]) |tp| {
+        if (wlr.miozu_scene_buffer_node(tp.scene_buffer)) |node| {
+            wlr.wlr_scene_node_set_enabled(node, self.scratchpad_visible[index]);
+        }
+        if (self.scratchpad_visible[index]) {
+            self.focused_terminal = tp;
+            self.focused_view = null;
+            tp.render(); // re-render in case content changed while hidden
+        }
+    }
 }
 
 // ── Terminal lifecycle ─────────────────────────────────────────
