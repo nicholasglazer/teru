@@ -569,11 +569,15 @@ pub const Keybinds = struct {
         _ = self.add(n, M, 'j', .pane_focus_next);
         _ = self.add(n, M, 'k', .pane_focus_prev);
         _ = self.add(n, M, 'm', .pane_focus_master);
-        _ = self.add(n, MS, 'm', .pane_set_master);
-        _ = self.add(n, MS, 'j', .pane_swap_next);
-        _ = self.add(n, MS, 'k', .pane_swap_prev);
+        _ = self.add(n, MS, 'm', .pane_set_master); // Swap focused with master
+        _ = self.add(n, MS, 'j', .pane_swap_next); // Swap focused with next
+        _ = self.add(n, MS, 'k', .pane_swap_prev); // Swap focused with previous
         _ = self.add(n, M, 'h', .resize_shrink_w);
         _ = self.add(n, M, 'l', .resize_grow_w);
+
+        // Focus also via Tab (XMonad style)
+        _ = self.add(n, M, 0xFF09, .pane_focus_next); // Mod+Tab
+        _ = self.add(n, MS, 0xFF09, .pane_focus_prev); // Mod+Shift+Tab
 
         // Pane management
         _ = self.add(n, M, 'c', .split_vertical);
