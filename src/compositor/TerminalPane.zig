@@ -51,7 +51,8 @@ fn init(server: *Server, rows: u16, cols: u16) ?*TerminalPane {
     };
 
     if (wlr.miozu_pixel_buffer_data(pixel_buffer)) |data| {
-        renderer.framebuffer = data[0 .. pixel_w * pixel_h];
+        const needed = @as(usize, pixel_w) * @as(usize, pixel_h);
+        if (needed > 0) renderer.framebuffer = data[0..needed];
     }
     if (server.font_atlas) |fa| {
         renderer.glyph_atlas = fa.atlas_data;
@@ -151,7 +152,10 @@ pub fn resize(self: *TerminalPane, pixel_w: u32, pixel_h: u32) void {
     if (!wlr.miozu_pixel_buffer_resize(self.pixel_buffer, @intCast(actual_w), @intCast(actual_h))) return;
 
     if (wlr.miozu_pixel_buffer_data(self.pixel_buffer)) |data| {
-        self.renderer.framebuffer = data[0 .. actual_w * actual_h];
+        const needed = @as(usize, actual_w) * @as(usize, actual_h);
+        if (needed > 0) {
+            self.renderer.framebuffer = data[0..needed];
+        }
         self.renderer.width = actual_w;
         self.renderer.height = actual_h;
     }
@@ -175,23 +179,27 @@ pub fn render(self: *TerminalPane) void {
 }
 
 fn drawBorder(self: *TerminalPane, color: u32) void {
-    const w = self.renderer.width;
-    const h = self.renderer.height;
+    const w: usize = self.renderer.width;
+    const h: usize = self.renderer.height;
     if (w < 5 or h < 5) return;
     const fb = self.renderer.framebuffer;
-    const len = fb.len;
+    if (fb.len < w * h) return; // safety: buffer must match dimensions
 
-    // Top 2 rows + bottom 2 rows
-    const top_end = @min(w * 2, len);
-    @memset(fb[0..top_end], color);
-    const bot_start = if (h >= 2) (h - 2) * w else 0;
-    if (bot_start < len) @memset(fb[bot_start..@min(bot_start + w * 2, len)], color);
-
-    // Left 2 cols + right 2 cols
-    for (2..h - 2) |y| {
+    // Top 2 rows
+    @memset(fb[0..@min(w * 2, fb.len)], color);
+    // Bottom 2 rows
+    if (h >= 2) {
+        const bot = (h - 2) * w;
+        if (bot + w * 2 <= fb.len) @memset(fb[bot .. bot + w * 2], color);
+    }
+    // Left 2 cols + right 2 cols (skip top/bottom 2 rows already filled)
+    var y: usize = 2;
+    while (y < h -| 2) : (y += 1) {
         const row = y * w;
-        if (row + 1 < len) { fb[row] = color; fb[row + 1] = color; }
-        if (row + w >= 2 and row + w - 1 < len) { fb[row + w - 1] = color; fb[row + w - 2] = color; }
+        fb[row] = color;
+        fb[row + 1] = color;
+        fb[row + w - 1] = color;
+        fb[row + w - 2] = color;
     }
 }
 
