@@ -93,6 +93,18 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     const scene = wlr.wlr_scene_create() orelse
         return error.SceneCreateFailed;
 
+    // Background rect (miozu base00 #232733 — covers entire output)
+    if (wlr.miozu_scene_tree(scene)) |root_tree| {
+        // ARGB float: R=0x23/255, G=0x27/255, B=0x33/255
+        const bg_color = [4]f32{
+            @as(f32, 0x23) / 255.0,
+            @as(f32, 0x27) / 255.0,
+            @as(f32, 0x33) / 255.0,
+            1.0,
+        };
+        _ = wlr.wlr_scene_rect_create(root_tree, 8192, 8192, &bg_color);
+    }
+
     // Output layout
     const output_layout = wlr.wlr_output_layout_create(display) orelse
         return error.OutputLayoutCreateFailed;
@@ -491,6 +503,22 @@ pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
         if (i >= rects.len) break;
         if (self.nodes.findById(nid)) |slot| {
             self.nodes.applyRect(slot, rects[i].x, rects[i].y, rects[i].width, rects[i].height);
+
+            // Resize terminal panes to match their assigned rect
+            if (self.nodes.kind[slot] == .terminal) {
+                for (self.terminal_panes) |maybe_tp| {
+                    if (maybe_tp) |tp| {
+                        if (tp.node_id == nid) {
+                            tp.resize(rects[i].width, rects[i].height);
+                            // Position the scene buffer at the rect position
+                            if (wlr.miozu_scene_buffer_node(tp.scene_buffer)) |scene_node| {
+                                wlr.wlr_scene_node_set_position(scene_node, rects[i].x, rects[i].y);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -515,9 +543,17 @@ pub fn focusView(self: *Server, view: *XdgView) void {
 
 // ── Terminal pane management ───────────────────────────────────
 
-/// Spawn an embedded terminal pane on the given workspace.
+/// Spawn an embedded terminal pane on the given workspace, sized to fill the output.
 pub fn spawnTerminal(self: *Server, ws: u8) void {
-    const tp = TerminalPane.create(self, ws, 24, 80) orelse {
+    // Calculate rows/cols from output dimensions
+    const cell_w: u32 = if (self.font_atlas) |fa| fa.cell_width else 8;
+    const cell_h: u32 = if (self.font_atlas) |fa| fa.cell_height else 16;
+    const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
+    const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
+    const cols: u16 = @intCast(@max(1, out_w / cell_w));
+    const rows: u16 = @intCast(@max(1, out_h / cell_h));
+
+    const tp = TerminalPane.create(self, ws, rows, cols) orelse {
         std.debug.print("miozu: failed to spawn terminal pane\n", .{});
         return;
     };

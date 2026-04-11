@@ -168,6 +168,11 @@ struct wlr_scene_tree *miozu_scene_tree(struct wlr_scene *s) {
     return &s->tree;
 }
 
+struct wlr_scene_node *miozu_scene_buffer_node(struct wlr_scene_buffer *b) {
+    if (!b) return NULL;
+    return &b->node;
+}
+
 struct wlr_scene_node *miozu_scene_tree_node(struct wlr_scene_tree *t) {
     if (!t) return NULL;
     return &t->node;
