@@ -39,6 +39,7 @@ seat: *wlr.wlr_seat,
 cursor: *wlr.wlr_cursor,
 cursor_mgr: *wlr.wlr_xcursor_manager,
 xkb_ctx: *wlr.xkb_context,
+session: ?*wlr.wlr_session = null,
 xwayland: ?*wlr.wlr_xwayland = null,
 wlr_compositor: ?*wlr.wlr_compositor = null, // needed for xwayland_create
 
@@ -110,8 +111,9 @@ pub fn initOnHeap(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allo
 }
 
 fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocator: std.mem.Allocator) !Server {
-    // Backend
-    const backend = wlr.wlr_backend_autocreate(event_loop, null) orelse
+    // Backend (capture session for VT switching)
+    var session_ptr: ?*wlr.wlr_session = null;
+    const backend = wlr.wlr_backend_autocreate(event_loop, &session_ptr) orelse
         return error.BackendCreateFailed;
 
     // Renderer + allocator
@@ -182,6 +184,7 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
         .cursor = cursor,
         .cursor_mgr = cursor_mgr,
         .xkb_ctx = xkb_ctx,
+        .session = session_ptr,
         .wlr_compositor = wlr_comp,
     };
 }
@@ -383,6 +386,43 @@ fn handleCursorButton(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c
                         server.grab_w = server.nodes.width[slot];
                         server.grab_h = server.nodes.height[slot];
                         return;
+                    }
+                }
+            }
+        }
+    }
+
+    // Click-to-focus: find which terminal pane is under the cursor
+    if (state == 1) { // press
+        const cx = wlr.miozu_cursor_x(server.cursor);
+        const cy = wlr.miozu_cursor_y(server.cursor);
+        // Check each terminal pane's rect
+        for (server.terminal_panes) |maybe_tp| {
+            if (maybe_tp) |tp| {
+                if (server.nodes.findById(tp.node_id)) |slot| {
+                    const px = server.nodes.pos_x[slot];
+                    const py = server.nodes.pos_y[slot];
+                    const pw: i32 = @intCast(server.nodes.width[slot]);
+                    const ph: i32 = @intCast(server.nodes.height[slot]);
+                    if (@as(i32, @intFromFloat(cx)) >= px and @as(i32, @intFromFloat(cx)) < px + pw and
+                        @as(i32, @intFromFloat(cy)) >= py and @as(i32, @intFromFloat(cy)) < py + ph)
+                    {
+                        server.focused_terminal = tp;
+                        server.focused_view = null;
+                        // Update layout engine focus
+                        const ws = server.layout_engine.getActiveWorkspace();
+                        for (ws.node_ids.items, 0..) |nid, idx| {
+                            if (nid == tp.node_id) {
+                                ws.active_index = @intCast(idx);
+                                break;
+                            }
+                        }
+                        // Re-render borders + bar
+                        for (server.terminal_panes) |mtp| {
+                            if (mtp) |t| t.render();
+                        }
+                        if (server.bar) |b| b.render(server);
+                        break;
                     }
                 }
             }
@@ -621,14 +661,21 @@ pub fn handleKey(self: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) boo
     // xkb keycodes are offset by 8 from evdev
     const sym = wlr.xkb_state_key_get_one_sym(xkb_state_ptr, keycode + 8);
 
-    // Convert xkb sym to ASCII key for teru's keybind lookup
-    // (teru keybinds use ASCII characters, not keysyms)
-    const key: u8 = if (sym >= 0x20 and sym <= 0x7e) @intCast(sym) else switch (sym) {
+    // ── VT switching (Ctrl+Alt+F1-F12) — must be handled before anything else ──
+    if (sym >= wlr.XKB_KEY_XF86Switch_VT_1 and sym <= wlr.XKB_KEY_XF86Switch_VT_1 + 11) {
+        if (self.session) |session| {
+            _ = wlr.wlr_session_change_vt(session, @intCast(sym - wlr.XKB_KEY_XF86Switch_VT_1 + 1));
+        }
+        return true;
+    }
+
+    // Convert xkb sym to key for teru's keybind lookup
+    const key: u32 = if (sym >= 0x20 and sym <= 0x7e) sym else switch (sym) {
         0xff0d => '\r', // Return
         0xff1b => 0x1b, // Escape
         0xff09 => '\t', // Tab
-        0xffff => 0x7f, // Delete → Backspace
-        else => return false,
+        0xff08 => 0x7f, // BackSpace
+        else => sym, // Pass full keysym for XF86/media keys
     };
 
     // Build modifier flags matching teru's Keybinds.Mods
@@ -648,7 +695,7 @@ pub fn handleKey(self: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) boo
 
     // ── Scratchpad toggle: Alt+RAlt+1-9 ──
     if (mods.alt and mods.ralt and key >= '1' and key <= '9') {
-        self.toggleScratchpad(key - '1');
+        self.toggleScratchpad(@intCast(key - '1'));
         return true;
     }
 

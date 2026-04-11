@@ -114,6 +114,14 @@ pub const SoftwareRenderer = struct {
         const fb_w: usize = self.width;
         const fb_h: usize = self.height;
 
+        // Fill entire framebuffer with background color first.
+        // This covers padding areas and any gap between the cell grid edge
+        // and the framebuffer boundary (prevents black borders).
+        const total = @min(fb_w * fb_h, self.framebuffer.len);
+        if (total > 0) {
+            @memset(self.framebuffer[0..total], self.scheme.bg);
+        }
+
         for (0..rows) |row| {
             const screen_y = row * ch + self.padding;
             if (screen_y >= fb_h) break;
