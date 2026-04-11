@@ -125,8 +125,12 @@ pub fn handleMuxCommand(
             return .enter_search;
         },
         '1'...'9' => {
-            // Switch workspace (1-based → 0-based)
+            // Switch workspace: key 1-9 → index 0-8
             mux.switchWorkspace(cmd - '1');
+        },
+        '0' => {
+            // Switch workspace: key 0 → index 9 (10th workspace)
+            mux.switchWorkspace(9);
         },
         'v' => return .enter_vi_mode,
         'z' => {

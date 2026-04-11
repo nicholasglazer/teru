@@ -38,11 +38,16 @@ pub fn build(b: *std.Build) void {
         @panic("no platform backend selected");
     }
 
+    // ── Compositor option ──────────────────────────────────────────
+    // -Dcompositor=true → build miozu Wayland compositor (links wlroots)
+    const enable_compositor = b.option(bool, "compositor", "Build miozu Wayland compositor (links wlroots)") orelse false;
+
     // Build-time options passed to Zig source via @import("build_options")
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
     build_options.addOption(bool, "enable_x11", enable_x11);
     build_options.addOption(bool, "enable_wayland", enable_wayland);
+    build_options.addOption(bool, "enable_compositor", enable_compositor);
 
     // Attach build_options to library module (needed by McpServer.zig)
     lib_mod.addOptions("build_options", build_options);
@@ -124,6 +129,52 @@ pub fn build(b: *std.Build) void {
     const run_lib_tests = b.addRunArtifact(lib_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
+
+    // ── miozu compositor (optional, -Dcompositor=true) ────────────────
+    if (enable_compositor and os_tag == .linux) {
+        const miozu_mod = b.createModule(.{
+            .root_source_file = b.path("src/compositor/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+
+        // Link libteru (lib_mod already carries build_options — don't add again)
+        miozu_mod.addImport("teru", lib_mod);
+
+        // wlroots and Wayland server deps
+        miozu_mod.linkSystemLibrary("wlroots-0.18", .{});
+        miozu_mod.linkSystemLibrary("wayland-server", .{});
+        miozu_mod.linkSystemLibrary("xkbcommon", .{});
+
+        // stb_truetype for terminal pane rendering
+        miozu_mod.addCSourceFile(.{
+            .file = b.path("vendor/stb_truetype.c"),
+            .flags = &.{"-DSTB_TRUETYPE_IMPLEMENTATION"},
+        });
+        miozu_mod.addIncludePath(b.path("vendor"));
+
+        // wlroots signal accessor glue (safe C → Zig bridge for struct fields)
+        // Needs vendor/ for xdg-shell-protocol.h (used by wlr_xdg_shell.h)
+        miozu_mod.addCSourceFile(.{
+            .file = b.path("vendor/miozu-wlr-glue.c"),
+            .flags = &.{"-DWLR_USE_UNSTABLE"},
+        });
+
+        const miozu_exe = b.addExecutable(.{
+            .name = "miozu",
+            .root_module = miozu_mod,
+        });
+        b.installArtifact(miozu_exe);
+
+        const miozu_run = b.addRunArtifact(miozu_exe);
+        miozu_run.step.dependOn(b.getInstallStep());
+        if (b.args) |args| {
+            miozu_run.addArgs(args);
+        }
+        const miozu_run_step = b.step("run-miozu", "Run miozu compositor");
+        miozu_run_step.dependOn(&miozu_run.step);
+    }
 
     // ── check step (compile lib only, no linking/frameworks needed) ──
     // Useful for cross-platform CI: `zig build check -Dtarget=x86_64-macos`
