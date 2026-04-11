@@ -50,6 +50,13 @@ prefix_active: bool = false,
 prefix_timestamp: i64 = 0,
 prefix_timeout_ms: i64 = 500,
 
+/// Debug log — writes to stderr (redirect with 2>/tmp/tui-debug.log)
+fn debugLog(comptime fmt: []const u8, args: anytype) void {
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    _ = std.c.write(2, msg.ptr, msg.len);
+}
+
 pub fn init() Self {
     return .{};
 }
@@ -68,6 +75,10 @@ pub fn initAutoDetect() Self {
 /// Process a chunk of raw input bytes.
 /// Returns true if a detach was requested (caller should exit TUI mode).
 pub fn feed(self: *Self, bytes: []const u8, daemon_fd: std.posix.fd_t) bool {
+    debugLog("feed: {d} bytes:", .{bytes.len});
+    for (bytes) |b| debugLog(" {x:0>2}", .{b});
+    debugLog("\n", .{});
+
     var raw_start: usize = 0;
     var i: usize = 0;
 
@@ -332,8 +343,13 @@ fn handlePrefixKey(_: *Self, key: u8) Action {
 fn handleCsi(self: *Self, final: u8) Action {
     const params = self.csi_buf[0..self.csi_len];
 
+    debugLog("CSI final=0x{x:0>2} params_len={d} params:", .{ final, self.csi_len });
+    for (params) |p| debugLog(" {x:0>2}", .{p});
+    debugLog("\n", .{});
+
     // SGR mouse: ESC[<btn;col;rowM (press) or ESC[<btn;col;rowm (release)
     if ((final == 'M' or final == 'm') and params.len > 0 and params[0] == '<') {
+        debugLog("SGR mouse detected!\n", .{});
         return self.parseSgrMouse(params[1..], final == 'm');
     }
 
