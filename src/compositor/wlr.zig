@@ -212,6 +212,9 @@ pub extern "c" fn miozu_output_enable_and_commit(output: *wlr_output) callconv(.
 // Output layout signals
 pub extern "c" fn miozu_output_layout_change(layout: *wlr_output_layout) callconv(.c) *wl_signal;
 
+// Seat keyboard accessor
+pub extern "c" fn miozu_seat_get_keyboard(seat: *wlr_seat) callconv(.c) ?*wlr_keyboard;
+
 // Seat request signals
 pub extern "c" fn miozu_seat_request_set_cursor(seat: *wlr_seat) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_seat_request_set_selection(seat: *wlr_seat) callconv(.c) *wl_signal;
