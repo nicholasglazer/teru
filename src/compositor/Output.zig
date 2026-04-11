@@ -52,15 +52,15 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
     const h = wlr.miozu_output_height(wlr_output);
     std.debug.print("miozu: output '{s}' connected ({d}x{d})\n", .{ name, w, h });
 
-    // On first output: spawn the immortal terminal on workspace 9 (key 0)
+    // On first output: create bars first, then spawn terminal (so tiling respects bar height)
     if (server.terminal_count == 0) {
-        server.layout_engine.switchWorkspace(9); // workspace "0" (immortal home)
-        server.spawnTerminal(9); // auto-sizes to fill output
-
-        // Create configurable dual bar system
+        // Bar must exist before spawnTerminal so arrangeworkspace accounts for bar height
         server.bar = Bar.create(server);
-        if (server.bar) |b| b.render(server);
 
+        server.layout_engine.switchWorkspace(9); // workspace "0" (immortal home)
+        server.spawnTerminal(9); // auto-sizes to fill output minus bar(s)
+
+        if (server.bar) |b| b.render(server);
         std.debug.print("miozu: immortal terminal spawned on workspace 0\n", .{});
     }
 
