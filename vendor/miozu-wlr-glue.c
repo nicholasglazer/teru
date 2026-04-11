@@ -397,6 +397,12 @@ struct wl_signal *miozu_xwayland_surface_request_configure(struct wlr_xwayland_s
     return &s->events.request_configure;
 }
 
+/* ── Seat keyboard accessor ──────────────────────────────────── */
+
+struct wlr_keyboard *miozu_seat_get_keyboard(struct wlr_seat *s) {
+    return wlr_seat_get_keyboard(s);
+}
+
 /* ── Seat request signals ────────────────────────────────────── */
 
 struct wl_signal *miozu_seat_request_set_cursor(struct wlr_seat *s) {

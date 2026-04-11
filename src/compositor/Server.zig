@@ -9,6 +9,7 @@ const TerminalPane = @import("TerminalPane.zig");
 const XwaylandView = @import("XwaylandView.zig");
 const Launcher = @import("Launcher.zig");
 const Bar = @import("Bar.zig");
+const WmConfig = @import("WmConfig.zig");
 const NodeRegistry = @import("Node.zig");
 const teru = @import("teru");
 const LayoutEngine = teru.LayoutEngine;
@@ -68,6 +69,9 @@ clipboard_len: u16 = 0,
 
 // Built-in launcher
 launcher: Launcher = .{},
+
+// teruwm-specific config (~/.config/teruwm/config)
+wm_config: WmConfig = .{},
 
 // ── Listeners ──────────────────────────────────────────────────
 
@@ -235,6 +239,27 @@ pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem
 
     // ── Color scheme for terminal pane rendering ─────────────
     // Stored on server, applied to each TerminalPane's SoftwareRenderer
+
+    // ── teruwm-specific config (~/.config/teruwm/config) ────
+    self.wm_config = WmConfig.load(io);
+    if (self.wm_config.rule_count > 0) {
+        std.debug.print("teruwm: loaded {d} window rules\n", .{self.wm_config.rule_count});
+    }
+}
+
+/// Apply teruwm bar config to the bar instance (called after bar creation).
+pub fn applyWmBar(self: *Server) void {
+    if (self.bar) |b| {
+        const wc = &self.wm_config;
+        b.configure(
+            wc.bar_top_left,
+            wc.bar_top_center,
+            wc.bar_top_right,
+            wc.bar_bottom_left,
+            wc.bar_bottom_center,
+            wc.bar_bottom_right,
+        );
+    }
 }
 
 pub fn deinit(self: *Server) void {
@@ -637,9 +662,6 @@ fn executeAction(self: *Server, action: KBAction) bool {
 // ── Tiling ─────────────────────────────────────────────────────
 
 /// Recalculate layout for a workspace and apply rects to all scene nodes.
-/// Configurable window gap (pixels between tiled panes).
-const window_gap: u16 = 4;
-
 pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
     // Get dimensions from the primary output, minus status bar height
     const w: u16 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
@@ -660,7 +682,7 @@ pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
         if (i >= rects.len) break;
         if (self.nodes.findById(nid)) |slot| {
             // Inset rect by gap (half on each side)
-            const g = window_gap;
+            const g = self.wm_config.gap;
             const rx = rects[i].x + @as(i32, g);
             const ry = rects[i].y + @as(i32, g);
             const rw = if (rects[i].width > g * 2) rects[i].width - g * 2 else rects[i].width;

@@ -56,6 +56,7 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
     if (server.terminal_count == 0) {
         // Bar must exist before spawnTerminal so arrangeworkspace accounts for bar height
         server.bar = Bar.create(server);
+        server.applyWmBar(); // apply teruwm config bar format strings
 
         server.layout_engine.switchWorkspace(9); // workspace "0" (immortal home)
         server.spawnTerminal(9); // auto-sizes to fill output minus bar(s)
