@@ -164,10 +164,12 @@ struct wlr_keyboard *miozu_input_device_keyboard(struct wlr_input_device *d) {
 /* ── Scene graph fields ──────────────────────────────────────── */
 
 struct wlr_scene_tree *miozu_scene_tree(struct wlr_scene *s) {
+    if (!s) return NULL;
     return &s->tree;
 }
 
 struct wlr_scene_node *miozu_scene_tree_node(struct wlr_scene_tree *t) {
+    if (!t) return NULL;
     return &t->node;
 }
 

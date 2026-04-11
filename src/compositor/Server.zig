@@ -49,7 +49,19 @@ request_set_cursor: wlr.wl_listener = makeListener(handleRequestSetCursor),
 
 // ── Init ───────────────────────────────────────────────────────
 
-pub fn init(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocator: std.mem.Allocator) !Server {
+/// Allocate Server on the heap and initialize in-place.
+/// Critical: wl_listeners are registered by pointer. If Server is on the stack
+/// and later moved/copied, those pointers dangle. This function ensures the
+/// Server has a stable heap address before any listener is registered.
+pub fn initOnHeap(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocator: std.mem.Allocator) !*Server {
+    const self = try allocator.create(Server);
+    errdefer allocator.destroy(self);
+    self.* = try initFields(display, event_loop, allocator);
+    registerListeners(self);
+    return self;
+}
+
+fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocator: std.mem.Allocator) !Server {
     // Backend
     const backend = wlr.wlr_backend_autocreate(event_loop, null) orelse
         return error.BackendCreateFailed;
@@ -96,7 +108,9 @@ pub fn init(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocator:
     const xkb_ctx = wlr.xkb_context_new(0) orelse
         return error.XkbContextFailed;
 
-    var server = Server{
+    // Return fields only — listeners are registered separately by initOnHeap
+    // after the struct has its final heap address.
+    return Server{
         .zig_allocator = allocator,
         .layout_engine = LayoutEngine.init(allocator),
         .nodes = .{},
@@ -112,18 +126,19 @@ pub fn init(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocator:
         .cursor_mgr = cursor_mgr,
         .xkb_ctx = xkb_ctx,
     };
+}
 
-    // Register signal listeners
-    wlr.wl_signal_add(wlr.miozu_backend_new_output(backend), &server.new_output);
-    wlr.wl_signal_add(wlr.miozu_backend_new_input(backend), &server.new_input);
-    wlr.wl_signal_add(wlr.miozu_xdg_shell_new_toplevel(xdg_shell), &server.new_xdg_toplevel);
-    wlr.wl_signal_add(wlr.miozu_cursor_motion(cursor), &server.cursor_motion);
-    wlr.wl_signal_add(wlr.miozu_cursor_motion_absolute(cursor), &server.cursor_motion_absolute);
-    wlr.wl_signal_add(wlr.miozu_cursor_button(cursor), &server.cursor_button);
-    wlr.wl_signal_add(wlr.miozu_cursor_frame(cursor), &server.cursor_frame);
-    wlr.wl_signal_add(wlr.miozu_seat_request_set_cursor(seat), &server.request_set_cursor);
-
-    return server;
+/// Register wl_signal listeners. Must be called AFTER the Server has its
+/// final heap address (listeners are stored by pointer in wlroots linked lists).
+fn registerListeners(self: *Server) void {
+    wlr.wl_signal_add(wlr.miozu_backend_new_output(self.backend), &self.new_output);
+    wlr.wl_signal_add(wlr.miozu_backend_new_input(self.backend), &self.new_input);
+    wlr.wl_signal_add(wlr.miozu_xdg_shell_new_toplevel(self.xdg_shell), &self.new_xdg_toplevel);
+    wlr.wl_signal_add(wlr.miozu_cursor_motion(self.cursor), &self.cursor_motion);
+    wlr.wl_signal_add(wlr.miozu_cursor_motion_absolute(self.cursor), &self.cursor_motion_absolute);
+    wlr.wl_signal_add(wlr.miozu_cursor_button(self.cursor), &self.cursor_button);
+    wlr.wl_signal_add(wlr.miozu_cursor_frame(self.cursor), &self.cursor_frame);
+    wlr.wl_signal_add(wlr.miozu_seat_request_set_cursor(self.seat), &self.request_set_cursor);
 }
 
 pub fn deinit(self: *Server) void {

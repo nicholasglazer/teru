@@ -23,7 +23,11 @@ pub fn main(init: std.process.Init) !void {
     };
 
     // ── Initialize compositor server ────────────────────────────
-    var server = Server.init(display, event_loop, allocator) catch |err| {
+    // Heap-allocated: Server embeds wl_listeners whose addresses are registered
+    // with wlroots via wl_signal_add. Those pointers must remain stable — if
+    // Server moves in memory, wlroots callbacks dangle. initOnHeap() allocates
+    // first, then inits in-place so listener addresses are final.
+    const server = Server.initOnHeap(display, event_loop, allocator) catch |err| {
         std.debug.print("miozu: server init failed: {}\n", .{err});
         return err;
     };
