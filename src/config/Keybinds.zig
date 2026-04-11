@@ -279,26 +279,60 @@ pub const Action = enum(u8) {
 pub const Binding = struct {
     mode: Mode,
     mods: Mods,
-    key: u8, // ASCII char or named key code
+    key: u32, // XKB keysym (0x20-0x7E for ASCII, 0x1008FFxx for XF86, etc.)
     action: Action,
+    is_keycode: bool = false, // if true, key is a raw evdev keycode, not keysym
 };
 
 // ── Named key map ───────────────────────────────────────────
 
-fn namedKey(name: []const u8) ?u8 {
-    if (name.len == 1) return name[0];
+fn namedKey(name: []const u8) ?u32 {
+    // Single ASCII character
+    if (name.len == 1 and name[0] >= 0x20 and name[0] <= 0x7E) return name[0];
+
     const map = .{
-        .{ "space", @as(u8, ' ') },
-        .{ "enter", @as(u8, '\r') },
-        .{ "return", @as(u8, '\r') },
-        .{ "esc", @as(u8, 0x1b) },
-        .{ "escape", @as(u8, 0x1b) },
-        .{ "tab", @as(u8, '\t') },
-        .{ "backspace", @as(u8, 0x7f) },
-        .{ "minus", @as(u8, '-') },
-        .{ "equal", @as(u8, '=') },
-        .{ "slash", @as(u8, '/') },
-        .{ "backslash", @as(u8, '\\') },
+        // Standard keys
+        .{ "space", @as(u32, 0x0020) }, // XKB_KEY_space
+        .{ "enter", @as(u32, 0xFF0D) }, // XKB_KEY_Return
+        .{ "return", @as(u32, 0xFF0D) },
+        .{ "esc", @as(u32, 0xFF1B) }, // XKB_KEY_Escape
+        .{ "escape", @as(u32, 0xFF1B) },
+        .{ "tab", @as(u32, 0xFF09) }, // XKB_KEY_Tab
+        .{ "backspace", @as(u32, 0xFF08) }, // XKB_KEY_BackSpace
+        .{ "delete", @as(u32, 0xFFFF) }, // XKB_KEY_Delete
+        .{ "minus", @as(u32, '-') },
+        .{ "equal", @as(u32, '=') },
+        .{ "slash", @as(u32, '/') },
+        .{ "backslash", @as(u32, '\\') },
+        // Arrow keys
+        .{ "up", @as(u32, 0xFF52) },
+        .{ "down", @as(u32, 0xFF54) },
+        .{ "left", @as(u32, 0xFF51) },
+        .{ "right", @as(u32, 0xFF53) },
+        // Function keys
+        .{ "f1", @as(u32, 0xFFBE) },
+        .{ "f2", @as(u32, 0xFFBF) },
+        .{ "f3", @as(u32, 0xFFC0) },
+        .{ "f4", @as(u32, 0xFFC1) },
+        .{ "f5", @as(u32, 0xFFC2) },
+        .{ "f6", @as(u32, 0xFFC3) },
+        .{ "f7", @as(u32, 0xFFC4) },
+        .{ "f8", @as(u32, 0xFFC5) },
+        .{ "f9", @as(u32, 0xFFC6) },
+        .{ "f10", @as(u32, 0xFFC7) },
+        .{ "f11", @as(u32, 0xFFC8) },
+        .{ "f12", @as(u32, 0xFFC9) },
+        // XF86 media keys
+        .{ "XF86AudioRaiseVolume", @as(u32, 0x1008FF13) },
+        .{ "XF86AudioLowerVolume", @as(u32, 0x1008FF11) },
+        .{ "XF86AudioMute", @as(u32, 0x1008FF12) },
+        .{ "XF86AudioPlay", @as(u32, 0x1008FF14) },
+        .{ "XF86AudioStop", @as(u32, 0x1008FF15) },
+        .{ "XF86AudioNext", @as(u32, 0x1008FF17) },
+        .{ "XF86AudioPrev", @as(u32, 0x1008FF16) },
+        .{ "XF86MonBrightnessUp", @as(u32, 0x1008FF02) },
+        .{ "XF86MonBrightnessDown", @as(u32, 0x1008FF03) },
+        .{ "Print", @as(u32, 0xFF61) }, // XKB_KEY_Print (PrintScreen)
     };
     inline for (map) |entry| {
         if (std.mem.eql(u8, name, entry[0])) return entry[1];
@@ -308,15 +342,24 @@ fn namedKey(name: []const u8) ?u8 {
 
 // ── Trigger parser ──────────────────────────────────────────
 
-/// Parse a trigger string like "alt+j", "ctrl+shift+c", "ralt+h"
-/// Returns (Mods, key) or null on parse error.
-fn parseTrigger(trigger: []const u8) ?struct { mods: Mods, key: u8 } {
+pub const ParsedTrigger = struct { mods: Mods, key: u32, is_keycode: bool = false };
+
+/// Parse a trigger string like "alt+j", "ctrl+shift+c", "super+XF86AudioMute"
+/// Also supports "keycode:44" for physical key binding.
+fn parseTrigger(trigger: []const u8) ?ParsedTrigger {
     var mods = Mods{};
     var remaining = trigger;
 
     // Strip inline comment
     if (std.mem.indexOf(u8, remaining, "#")) |idx| {
         remaining = std.mem.trim(u8, remaining[0..idx], " \t");
+    }
+
+    // Check for keycode: prefix (physical key binding)
+    if (std.mem.startsWith(u8, remaining, "keycode:")) {
+        const code_str = remaining["keycode:".len..];
+        const code = std.fmt.parseInt(u32, code_str, 10) catch return null;
+        return .{ .mods = .{}, .key = code, .is_keycode = true };
     }
 
     // Split by + and process modifiers, last token is the key
@@ -357,19 +400,21 @@ pub const Keybinds = struct {
     bindings: [MAX_BINDINGS]Binding = undefined,
     count: u16 = 0,
 
-    /// Look up an action for the given mode, modifiers, and key.
+    /// Look up an action for the given mode, modifiers, and keysym.
     /// Checks mode-specific bindings first, then shared bindings.
-    pub fn lookup(self: *const Keybinds, active_mode: Mode, mods: Mods, key: u8) ?Action {
-        // 1. Exact mode match
+    /// For keycode bindings, pass the raw evdev keycode as keysym_or_keycode
+    /// and set check_keycode=true.
+    pub fn lookup(self: *const Keybinds, active_mode: Mode, mods: Mods, keysym: u32) ?Action {
+        // 1. Exact mode match (keysym bindings)
         for (self.bindings[0..self.count]) |b| {
-            if (b.mode == active_mode and mods.eql(b.mods) and b.key == key) {
+            if (!b.is_keycode and b.mode == active_mode and mods.eql(b.mods) and b.key == keysym) {
                 return if (b.action == .none) null else b.action;
             }
         }
         // 2. Shared/shared_except matches
         for (self.bindings[0..self.count]) |b| {
-            if (b.mode != active_mode and b.mode.appliesTo(active_mode) and
-                mods.eql(b.mods) and b.key == key)
+            if (!b.is_keycode and b.mode != active_mode and b.mode.appliesTo(active_mode) and
+                mods.eql(b.mods) and b.key == keysym)
             {
                 return if (b.action == .none) null else b.action;
             }
@@ -377,29 +422,45 @@ pub const Keybinds = struct {
         return null;
     }
 
-    /// Add a binding. Returns false if full.
-    pub fn add(self: *Keybinds, mode: Mode, mods: Mods, key: u8, action: Action) bool {
+    /// Look up by raw keycode (physical key, layout-independent).
+    pub fn lookupKeycode(self: *const Keybinds, active_mode: Mode, keycode: u32) ?Action {
+        for (self.bindings[0..self.count]) |b| {
+            if (b.is_keycode and b.key == keycode and b.mode.appliesTo(active_mode)) {
+                return if (b.action == .none) null else b.action;
+            }
+        }
+        return null;
+    }
+
+    /// Add a keysym binding. Returns false if full.
+    pub fn add(self: *Keybinds, mode: Mode, mods: Mods, key: u32, action: Action) bool {
+        return self.addBinding(mode, mods, key, action, false);
+    }
+
+    /// Add a keycode binding (layout-independent physical key).
+    pub fn addKeycode(self: *Keybinds, mode: Mode, keycode: u32, action: Action) bool {
+        return self.addBinding(mode, .{}, keycode, action, true);
+    }
+
+    fn addBinding(self: *Keybinds, mode: Mode, mods: Mods, key: u32, action: Action, is_keycode: bool) bool {
         if (self.count >= MAX_BINDINGS) return false;
-        // Overwrite existing binding for same mode+mods+key
         for (self.bindings[0..self.count]) |*b| {
-            if (b.mode == mode and mods.eql(b.mods) and b.key == key) {
+            if (b.mode == mode and mods.eql(b.mods) and b.key == key and b.is_keycode == is_keycode) {
                 b.action = action;
                 return true;
             }
         }
-        self.bindings[self.count] = .{ .mode = mode, .mods = mods, .key = key, .action = action };
+        self.bindings[self.count] = .{ .mode = mode, .mods = mods, .key = key, .action = action, .is_keycode = is_keycode };
         self.count += 1;
         return true;
     }
 
     /// Parse a single keybind line: "alt+j = pane:focus_next"
-    /// The mode must be set by the caller (from section header).
+    /// Also supports: "XF86AudioMute = exec:wpctl ..." and "keycode:44 = ..."
     pub fn parseLine(self: *Keybinds, mode: Mode, line: []const u8) void {
-        // Find = separator
         const eq_idx = std.mem.indexOf(u8, line, "=") orelse return;
         const lhs = std.mem.trim(u8, line[0..eq_idx], " \t");
         const rhs_raw = if (eq_idx + 1 < line.len) line[eq_idx + 1..] else "";
-        // Strip inline comment from RHS
         var rhs = std.mem.trim(u8, rhs_raw, " \t");
         if (std.mem.indexOf(u8, rhs, "#")) |hash| {
             rhs = std.mem.trim(u8, rhs[0..hash], " \t");
@@ -407,14 +468,13 @@ pub const Keybinds = struct {
 
         const trigger = parseTrigger(lhs) orelse return;
 
-        // Empty RHS = unbind
         if (rhs.len == 0) {
-            _ = self.add(mode, trigger.mods, trigger.key, .none);
+            _ = self.addBinding(mode, trigger.mods, trigger.key, .none, trigger.is_keycode);
             return;
         }
 
         const action = Action.fromString(rhs) orelse return;
-        _ = self.add(mode, trigger.mods, trigger.key, action);
+        _ = self.addBinding(mode, trigger.mods, trigger.key, action, trigger.is_keycode);
     }
 
     /// Load defaults — the hardcoded binding set.
@@ -556,29 +616,45 @@ test "parseTrigger basic" {
     const t1 = parseTrigger("alt+j").?;
     try std.testing.expect(t1.mods.alt);
     try std.testing.expect(!t1.mods.ctrl);
-    try std.testing.expectEqual(@as(u8, 'j'), t1.key);
+    try std.testing.expectEqual(@as(u32, 'j'), t1.key);
 
     const t2 = parseTrigger("ctrl+shift+c").?;
     try std.testing.expect(t2.mods.ctrl);
     try std.testing.expect(t2.mods.shift);
-    try std.testing.expectEqual(@as(u8, 'c'), t2.key);
+    try std.testing.expectEqual(@as(u32, 'c'), t2.key);
 
     const t3 = parseTrigger("ralt+h").?;
     try std.testing.expect(t3.mods.alt);
     try std.testing.expect(t3.mods.ralt);
-    try std.testing.expectEqual(@as(u8, 'h'), t3.key);
+    try std.testing.expectEqual(@as(u32, 'h'), t3.key);
 }
 
 test "parseTrigger named keys" {
     const t1 = parseTrigger("alt+space").?;
-    try std.testing.expectEqual(@as(u8, ' '), t1.key);
+    try std.testing.expectEqual(@as(u32, 0x0020), t1.key); // XKB_KEY_space
 
     const t2 = parseTrigger("ctrl+space").?;
-    try std.testing.expectEqual(@as(u8, ' '), t2.key);
+    try std.testing.expectEqual(@as(u32, 0x0020), t2.key);
     try std.testing.expect(t2.mods.ctrl);
 
     const t3 = parseTrigger("esc").?;
-    try std.testing.expectEqual(@as(u8, 0x1b), t3.key);
+    try std.testing.expectEqual(@as(u32, 0xFF1B), t3.key); // XKB_KEY_Escape
+}
+
+test "parseTrigger XF86 keys" {
+    const t1 = parseTrigger("XF86AudioMute").?;
+    try std.testing.expectEqual(@as(u32, 0x1008FF12), t1.key);
+    try std.testing.expect(!t1.is_keycode);
+
+    const t2 = parseTrigger("super+Print").?;
+    try std.testing.expectEqual(@as(u32, 0xFF61), t2.key);
+    try std.testing.expect(t2.mods.super_);
+}
+
+test "parseTrigger keycode binding" {
+    const t1 = parseTrigger("keycode:44").?;
+    try std.testing.expectEqual(@as(u32, 44), t1.key);
+    try std.testing.expect(t1.is_keycode);
 }
 
 test "Action.fromString" {
