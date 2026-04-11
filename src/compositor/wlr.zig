@@ -204,6 +204,7 @@ pub extern "c" fn miozu_input_device_keyboard(device: *wlr_input_device) callcon
 // Scene graph fields
 pub extern "c" fn miozu_scene_tree(scene: *wlr_scene) callconv(.c) ?*wlr_scene_tree;
 pub extern "c" fn miozu_scene_tree_node(tree: *wlr_scene_tree) callconv(.c) ?*wlr_scene_node;
+pub extern "c" fn miozu_scene_buffer_node(buffer: *wlr_scene_buffer) callconv(.c) ?*wlr_scene_node;
 
 // Output enable+commit helper
 pub extern "c" fn miozu_output_enable_and_commit(output: *wlr_output) callconv(.c) bool;

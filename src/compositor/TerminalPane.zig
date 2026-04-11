@@ -102,8 +102,9 @@ pub fn create(server: *Server, ws: u8, rows: u16, cols: u16) ?*TerminalPane {
 
     std.debug.print("miozu: terminal pane created node={d} ws={d} ({d}x{d})\n", .{ node_id, ws, cols, rows });
 
-    // Trigger initial tiling
+    // Trigger initial tiling + render
     server.arrangeworkspace(ws);
+    tp.render(); // render initial frame so first output isn't blank
 
     return tp;
 }
@@ -117,6 +118,40 @@ pub fn poll(self: *TerminalPane) bool {
     // Grid changed — re-render into the pixel buffer
     self.render();
     return true;
+}
+
+/// Resize the terminal pane to fit the given pixel rect.
+/// Recalculates grid rows/cols, resizes PTY, and re-renders.
+pub fn resize(self: *TerminalPane, pixel_w: u32, pixel_h: u32) void {
+    const cell_w = self.renderer.cell_width;
+    const cell_h = self.renderer.cell_height;
+    if (cell_w == 0 or cell_h == 0) return;
+
+    const new_cols: u16 = @intCast(@max(1, pixel_w / cell_w));
+    const new_rows: u16 = @intCast(@max(1, pixel_h / cell_h));
+
+    // Actual pixel dimensions (aligned to cell grid)
+    const actual_w = @as(u32, new_cols) * cell_w;
+    const actual_h = @as(u32, new_rows) * cell_h;
+
+    // Resize the pixel buffer
+    if (!wlr.miozu_pixel_buffer_resize(self.pixel_buffer, @intCast(actual_w), @intCast(actual_h))) return;
+
+    // Resize the renderer framebuffer
+    if (wlr.miozu_pixel_buffer_data(self.pixel_buffer)) |data| {
+        self.renderer.framebuffer = data[0 .. actual_w * actual_h];
+        self.renderer.width = actual_w;
+        self.renderer.height = actual_h;
+    }
+
+    // Resize the terminal grid + PTY
+    self.pane.resize(self.server.zig_allocator, new_rows, new_cols) catch return;
+
+    // Set the scene buffer dest size to match the pixel dimensions
+    wlr.wlr_scene_buffer_set_dest_size(self.scene_buffer, @intCast(actual_w), @intCast(actual_h));
+
+    // Re-render with new dimensions
+    self.render();
 }
 
 /// Force a re-render of the terminal grid into the pixel buffer.
