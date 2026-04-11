@@ -7,6 +7,7 @@ const Output = @import("Output.zig");
 const XdgView = @import("XdgView.zig");
 const TerminalPane = @import("TerminalPane.zig");
 const XwaylandView = @import("XwaylandView.zig");
+const Launcher = @import("Launcher.zig");
 const Bar = @import("Bar.zig");
 const NodeRegistry = @import("Node.zig");
 const teru = @import("teru");
@@ -55,6 +56,9 @@ workspace_trees: [10]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** 10,
 // Scratchpads: 9 floating terminal panes (Alt+RAlt+1-9)
 scratchpads: [9]?*TerminalPane = [_]?*TerminalPane{null} ** 9,
 scratchpad_visible: [9]bool = [_]bool{false} ** 9,
+
+// Built-in launcher
+launcher: Launcher = .{},
 
 // ── Listeners ──────────────────────────────────────────────────
 
@@ -199,6 +203,9 @@ pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem
     // ── Keybinds: load teru defaults + config overrides + compositor layer ──
     self.keybinds = config.keybinds;
     self.keybinds.loadCompositorDefaults();
+
+    // ── Launcher ($PATH scan) ─────────────────────────────────
+    self.launcher.init();
 
     // ── Per-workspace layouts from config ────────────────────
     for (0..10) |i| {
@@ -451,6 +458,14 @@ pub fn handleKey(self: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) boo
     if (wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_CTRL, wlr.XKB_STATE_MODS_EFFECTIVE) > 0) mods.ctrl = true;
     if (wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_LOGO, wlr.XKB_STATE_MODS_EFFECTIVE) > 0) mods.super_ = true;
 
+    // ── Launcher mode: intercept all keys (raw keysym, not ASCII) ──
+    if (self.launcher.active) {
+        if (self.launcher.handleKey(sym, self)) {
+            self.renderLauncherBar();
+            return true;
+        }
+    }
+
     // ── Scratchpad toggle: Alt+RAlt+1-9 ──
     if (mods.alt and mods.ralt and key >= '1' and key <= '9') {
         self.toggleScratchpad(key - '1');
@@ -556,7 +571,13 @@ fn executeAction(self: *Server, action: KBAction) bool {
             return true;
         },
         .launcher_toggle => {
-            // TODO: open built-in launcher overlay
+            if (self.launcher.active) {
+                self.launcher.deactivate();
+                if (self.bar) |b| b.render(self); // restore normal bar
+            } else {
+                self.launcher.activate();
+                self.renderLauncherBar();
+            }
             return true;
         },
         .screenshot => {
@@ -704,6 +725,20 @@ pub fn pollTerminals(self: *Server) bool {
         }
     }
     return any_output;
+}
+
+// ── Launcher bar rendering ─────────────────────────────────────
+
+fn renderLauncherBar(self: *Server) void {
+    if (self.bar) |b| {
+        if (self.launcher.active) {
+            // Render launcher UI into the top bar's buffer
+            self.launcher.render(&b.top.renderer);
+            wlr.wlr_scene_buffer_set_buffer_with_damage(b.top.scene_buffer, b.top.pixel_buffer, null);
+        } else {
+            b.render(self); // restore normal bar
+        }
+    }
 }
 
 // ── Workspace visibility ──────────────────────────────────────
@@ -870,7 +905,7 @@ fn updateFocusedTerminal(self: *Server) void {
 
 /// Spawn a shell command detached from the compositor (double-fork to avoid zombies).
 /// Uses /bin/sh -c to handle commands with arguments and pipes.
-fn spawnProcess(_: *Server, cmd: [*:0]const u8) void {
+pub fn spawnProcess(_: *Server, cmd: [*:0]const u8) void {
     const pid = std.os.linux.fork();
     if (pid == 0) {
         const pid2 = std.os.linux.fork();
