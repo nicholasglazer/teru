@@ -994,7 +994,7 @@ pub fn spawnTerminal(self: *Server, ws: u8) void {
         return;
     };
 
-    // Store in terminal_panes array
+    // Store in terminal_panes array FIRST (before arrangeworkspace)
     for (&self.terminal_panes) |*slot| {
         if (slot.* == null) {
             slot.* = tp;
@@ -1003,9 +1003,18 @@ pub fn spawnTerminal(self: *Server, ws: u8) void {
         }
     }
 
+    // NOW arrange — all panes including the new one are findable
+    self.arrangeworkspace(ws);
+
     // Focus the new terminal
     self.focused_terminal = tp;
-    self.focused_view = null; // terminal takes priority over external views
+    self.focused_view = null;
+
+    // Re-render all panes (borders update for new focus)
+    for (self.terminal_panes) |maybe_tp| {
+        if (maybe_tp) |t| t.render();
+    }
+    if (self.bar) |b| b.render(self);
 }
 
 // ── Clipboard (internal buffer for Ctrl+Shift+C/V) ───────────
