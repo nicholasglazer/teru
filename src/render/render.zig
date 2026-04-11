@@ -12,8 +12,13 @@ pub const tier = @import("tier.zig");
 pub const RenderTier = tier.RenderTier;
 pub const detectTier = tier.detectTier;
 
+pub const BarWidget = @import("BarWidget.zig");
+pub const BarRenderer = @import("BarRenderer.zig");
+
 test {
     _ = @import("software.zig");
     _ = FontAtlas;
     _ = tier;
+    _ = BarWidget;
+    _ = BarRenderer;
 }
