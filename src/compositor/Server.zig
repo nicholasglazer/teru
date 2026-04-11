@@ -979,17 +979,8 @@ pub fn focusView(self: *Server, view: *XdgView) void {
 
 /// Spawn an embedded terminal pane on the given workspace, sized to fill the output.
 pub fn spawnTerminal(self: *Server, ws: u8) void {
-    // Calculate rows/cols from output dimensions minus bar height
-    const cell_w: u32 = if (self.font_atlas) |fa| fa.cell_width else 8;
-    const cell_h: u32 = if (self.font_atlas) |fa| fa.cell_height else 16;
-    const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
-    const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
-    const bar_h: u32 = if (self.bar) |b| b.totalHeight() else 0;
-    const usable_h = @max(cell_h, out_h -| bar_h);
-    const cols: u16 = @intCast(@max(1, out_w / cell_w));
-    const rows: u16 = @intCast(@max(1, usable_h / cell_h));
-
-    const tp = TerminalPane.create(self, ws, rows, cols) orelse {
+    // Create at default size — arrangeworkspace will resize to fit the layout
+    const tp = TerminalPane.create(self, ws, 24, 80) orelse {
         std.debug.print("teruwm: failed to spawn terminal pane\n", .{});
         return;
     };

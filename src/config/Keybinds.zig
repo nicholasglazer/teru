@@ -652,6 +652,7 @@ pub const Keybinds = struct {
 
         _ = self.add(n, S, 'f', .fullscreen_toggle);
         _ = self.add(n, SS, 'f', .float_toggle);
+        _ = self.add(n, S, 's', .float_toggle); // sink: floating → tiled (XMonad Mod+S)
         _ = self.add(n, S, 'd', .launcher_toggle);
         _ = self.add(n, S, 'b', .bar_toggle_top);
         _ = self.add(n, SS, 'b', .bar_toggle_bottom);
