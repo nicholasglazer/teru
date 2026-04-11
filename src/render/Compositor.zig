@@ -74,8 +74,11 @@ pub fn renderPaneIntoRect(
             if (cell.attrs.hidden) fg = bg;
 
             // Selection highlight: use selection_bg, keep fg readable
+            // Grid row must be offset by scroll_offset to get screen row —
+            // screen rows 0..scroll_offset-1 are scrollback, scroll_offset.. are grid
             if (sel) |s| {
-                if (s.isSelected(@intCast(row), @intCast(col), scroll_offset, sb_lines)) {
+                const screen_row: u16 = @intCast(scroll_offset + row);
+                if (s.isSelected(screen_row, @intCast(col), scroll_offset, sb_lines)) {
                     bg = renderer.scheme.selection_bg;
                     // If fg would be invisible against selection bg, use bright white
                     if (fg == bg) fg = renderer.scheme.ansi[15];
