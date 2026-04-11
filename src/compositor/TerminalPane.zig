@@ -90,6 +90,9 @@ fn init(server: *Server, rows: u16, cols: u16) ?*TerminalPane {
 }
 
 /// Create a tiled terminal pane on the given workspace.
+/// NOTE: caller MUST add the returned pane to server.terminal_panes[]
+/// BEFORE calling arrangeworkspace(), otherwise the pane can't be
+/// found for resize/positioning.
 pub fn create(server: *Server, ws: u8, rows: u16, cols: u16) ?*TerminalPane {
     const tp = init(server, rows, cols) orelse return null;
 
@@ -98,7 +101,7 @@ pub fn create(server: *Server, ws: u8, rows: u16, cols: u16) ?*TerminalPane {
 
     std.debug.print("teruwm: terminal pane node={d} ws={d} ({d}x{d})\n", .{ tp.node_id, ws, cols, rows });
 
-    server.arrangeworkspace(ws);
+    // Don't call arrangeworkspace here — caller does it after adding to terminal_panes[]
     tp.render();
     return tp;
 }
