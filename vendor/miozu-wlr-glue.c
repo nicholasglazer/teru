@@ -348,6 +348,55 @@ bool miozu_pixel_buffer_resize(struct wlr_buffer *wlr_buf, int width, int height
     return true;
 }
 
+/* ── XWayland signals & fields ────────────────────────────────── */
+
+#include <wlr/xwayland/xwayland.h>
+
+struct wl_signal *miozu_xwayland_new_surface(struct wlr_xwayland *xwl) {
+    return &xwl->events.new_surface;
+}
+
+struct wl_signal *miozu_xwayland_ready(struct wlr_xwayland *xwl) {
+    return &xwl->events.ready;
+}
+
+struct wlr_surface *miozu_xwayland_surface_surface(struct wlr_xwayland_surface *s) {
+    return s->surface;
+}
+
+bool miozu_xwayland_surface_override_redirect(struct wlr_xwayland_surface *s) {
+    return s->override_redirect;
+}
+
+const char *miozu_xwayland_surface_class(struct wlr_xwayland_surface *s) {
+    return s->class;
+}
+
+const char *miozu_xwayland_surface_title(struct wlr_xwayland_surface *s) {
+    return s->title;
+}
+
+int16_t miozu_xwayland_surface_x(struct wlr_xwayland_surface *s) { return s->x; }
+int16_t miozu_xwayland_surface_y(struct wlr_xwayland_surface *s) { return s->y; }
+uint16_t miozu_xwayland_surface_width(struct wlr_xwayland_surface *s) { return s->width; }
+uint16_t miozu_xwayland_surface_height(struct wlr_xwayland_surface *s) { return s->height; }
+
+struct wl_signal *miozu_xwayland_surface_map(struct wlr_xwayland_surface *s) {
+    return &s->events.associate;
+}
+
+struct wl_signal *miozu_xwayland_surface_unmap(struct wlr_xwayland_surface *s) {
+    return &s->events.dissociate;
+}
+
+struct wl_signal *miozu_xwayland_surface_destroy(struct wlr_xwayland_surface *s) {
+    return &s->events.destroy;
+}
+
+struct wl_signal *miozu_xwayland_surface_request_configure(struct wlr_xwayland_surface *s) {
+    return &s->events.request_configure;
+}
+
 /* ── Seat request signals ────────────────────────────────────── */
 
 struct wl_signal *miozu_seat_request_set_cursor(struct wlr_seat *s) {

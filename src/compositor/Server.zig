@@ -6,6 +6,7 @@ const wlr = @import("wlr.zig");
 const Output = @import("Output.zig");
 const XdgView = @import("XdgView.zig");
 const TerminalPane = @import("TerminalPane.zig");
+const XwaylandView = @import("XwaylandView.zig");
 const Bar = @import("Bar.zig");
 const NodeRegistry = @import("Node.zig");
 const teru = @import("teru");
@@ -34,6 +35,8 @@ seat: *wlr.wlr_seat,
 cursor: *wlr.wlr_cursor,
 cursor_mgr: *wlr.wlr_xcursor_manager,
 xkb_ctx: *wlr.xkb_context,
+xwayland: ?*wlr.wlr_xwayland = null,
+wlr_compositor: ?*wlr.wlr_compositor = null, // needed for xwayland_create
 
 // ── Tiling & nodes ─────────────────────────────────────────────
 
@@ -63,6 +66,7 @@ cursor_motion_absolute: wlr.wl_listener = makeListener(handleCursorMotionAbsolut
 cursor_button: wlr.wl_listener = makeListener(handleCursorButton),
 cursor_frame: wlr.wl_listener = makeListener(handleCursorFrame),
 request_set_cursor: wlr.wl_listener = makeListener(handleRequestSetCursor),
+new_xwayland_surface: wlr.wl_listener = makeListener(handleNewXwaylandSurface),
 
 // ── Init ───────────────────────────────────────────────────────
 
@@ -92,7 +96,7 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
         return error.AllocatorCreateFailed;
 
     // Compositor protocol (wl_compositor, wl_subcompositor)
-    _ = wlr.wlr_compositor_create(display, 5, renderer);
+    const wlr_comp = wlr.wlr_compositor_create(display, 5, renderer);
     _ = wlr.wlr_subcompositor_create(display);
     _ = wlr.wlr_data_device_manager_create(display);
 
@@ -151,6 +155,7 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
         .cursor = cursor,
         .cursor_mgr = cursor_mgr,
         .xkb_ctx = xkb_ctx,
+        .wlr_compositor = wlr_comp,
     };
 }
 
@@ -165,6 +170,55 @@ fn registerListeners(self: *Server) void {
     wlr.wl_signal_add(wlr.miozu_cursor_button(self.cursor), &self.cursor_button);
     wlr.wl_signal_add(wlr.miozu_cursor_frame(self.cursor), &self.cursor_frame);
     wlr.wl_signal_add(wlr.miozu_seat_request_set_cursor(self.seat), &self.request_set_cursor);
+
+    // XWayland (lazy start — only spawns Xwayland process when an X11 client connects)
+    if (self.wlr_compositor) |comp| {
+        if (wlr.wlr_xwayland_create(self.display, comp, true)) |xwl| {
+            self.xwayland = xwl;
+            wlr.wl_signal_add(wlr.miozu_xwayland_new_surface(xwl), &self.new_xwayland_surface);
+            wlr.wlr_xwayland_set_seat(xwl, self.seat);
+            std.debug.print("teruwm: XWayland enabled\n", .{});
+        } else {
+            std.debug.print("teruwm: XWayland init failed (X11 apps won't work)\n", .{});
+        }
+    }
+}
+
+/// Apply loaded config to server state: font, colors, keybinds, workspace layouts, bars.
+pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem.Allocator, io: std.Io) void {
+    // ── Font atlas from config ──────────────────────────────
+    if (teru.render.FontAtlas.init(allocator, config.font_path, config.font_size, io)) |atlas| {
+        const fa = allocator.create(teru.render.FontAtlas) catch return;
+        fa.* = atlas;
+        self.font_atlas = fa;
+        std.debug.print("teruwm: font loaded ({d}x{d} cells)\n", .{ fa.cell_width, fa.cell_height });
+    } else |err| {
+        std.debug.print("teruwm: font init failed: {}, using fallback\n", .{err});
+    }
+
+    // ── Keybinds: load teru defaults + config overrides + compositor layer ──
+    self.keybinds = config.keybinds;
+    self.keybinds.loadCompositorDefaults();
+
+    // ── Per-workspace layouts from config ────────────────────
+    for (0..10) |i| {
+        if (config.workspace_layout_counts[i] > 0) {
+            self.layout_engine.workspaces[i].setLayouts(
+                config.workspace_layout_lists[i][0..config.workspace_layout_counts[i]],
+            );
+        } else if (config.workspace_layouts[i]) |layout| {
+            self.layout_engine.workspaces[i].layout = layout;
+        }
+        if (config.workspace_ratios[i]) |ratio| {
+            self.layout_engine.workspaces[i].master_ratio = ratio;
+        }
+        if (config.workspace_names[i]) |name| {
+            self.layout_engine.workspaces[i].name = name;
+        }
+    }
+
+    // ── Color scheme for terminal pane rendering ─────────────
+    // Stored on server, applied to each TerminalPane's SoftwareRenderer
 }
 
 pub fn deinit(self: *Server) void {
@@ -231,6 +285,12 @@ fn handleCursorButton(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c
 fn handleCursorFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const server = wlr.listenerParent(Server, "cursor_frame", listener);
     wlr.wlr_seat_pointer_notify_frame(server.seat);
+}
+
+fn handleNewXwaylandSurface(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const server = wlr.listenerParent(Server, "new_xwayland_surface", listener);
+    const surface: *wlr.wlr_xwayland_surface = @ptrCast(@alignCast(data orelse return));
+    _ = XwaylandView.create(server, surface);
 }
 
 fn handleRequestSetCursor(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
