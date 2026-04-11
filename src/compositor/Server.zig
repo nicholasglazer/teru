@@ -339,6 +339,10 @@ fn handleCursorButton(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c
 
     // Button release: end any active grab
     if (state == 0) {
+        if (server.cursor_mode == .border_drag) {
+            // Drag ended — do the actual resize (re-render all panes at final size)
+            server.arrangeworkspace(server.layout_engine.active_workspace);
+        }
         if (server.cursor_mode != .normal) {
             server.cursor_mode = .normal;
             server.grab_node_id = null;
@@ -589,7 +593,7 @@ fn processCursorMotion(self: *Server, time: u32) void {
     const cx = wlr.miozu_cursor_x(self.cursor);
     const cy = wlr.miozu_cursor_y(self.cursor);
 
-    // Handle tiled border drag (adjust master ratio)
+    // Handle tiled border drag — smooth: only reposition + scale, no resize
     if (self.cursor_mode == .border_drag) {
         const out_w: f64 = @floatFromInt(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
         const delta = cx - self.grab_x;
@@ -597,7 +601,8 @@ fn processCursorMotion(self: *Server, time: u32) void {
         const ws = self.layout_engine.getActiveWorkspace();
         ws.master_ratio = @max(0.1, @min(0.9, ws.master_ratio + ratio_delta));
         self.grab_x = cx;
-        self.arrangeworkspace(self.layout_engine.active_workspace);
+        // Smooth: calculate rects and scale scene buffers without resizing grids
+        self.arrangeWorkspaceSmooth(self.layout_engine.active_workspace);
         return;
     }
 
@@ -950,6 +955,51 @@ pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Smooth arrange: reposition + scale scene buffers WITHOUT resizing terminal grids.
+/// Used during drag for instant visual feedback. Actual resize happens on release.
+pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
+    const w: u16 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
+    const full_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
+    const bar_h: u32 = if (self.bar) |b| b.totalHeight() else 0;
+    const bar_y_offset: i32 = if (self.bar) |b| @intCast(b.tilingOffsetY()) else 0;
+    const h: u16 = @intCast(@max(1, full_h - bar_h));
+    const screen = LayoutEngine.Rect{ .x = 0, .y = @intCast(bar_y_offset), .width = w, .height = h };
+
+    const rects = self.layout_engine.calculate(ws_index, screen) catch return;
+    defer self.zig_allocator.free(rects);
+
+    const ws = &self.layout_engine.workspaces[ws_index];
+    const node_ids = ws.node_ids.items;
+    const g = self.wm_config.gap;
+
+    for (node_ids, 0..) |nid, i| {
+        if (i >= rects.len) break;
+        const rx = rects[i].x + @as(i32, g);
+        const ry = rects[i].y + @as(i32, g);
+        const rw = if (rects[i].width > g * 2) rects[i].width - g * 2 else rects[i].width;
+        const rh = if (rects[i].height > g * 2) rects[i].height - g * 2 else rects[i].height;
+
+        // Only reposition + scale — don't resize grid/PTY
+        for (self.terminal_panes) |maybe_tp| {
+            if (maybe_tp) |tp| {
+                if (tp.node_id == nid) {
+                    tp.setPosition(rx, ry);
+                    // Scale existing pixels to new size (no re-render)
+                    wlr.wlr_scene_buffer_set_dest_size(tp.scene_buffer, @intCast(rw), @intCast(rh));
+                    break;
+                }
+            }
+        }
+
+        if (self.nodes.findById(nid)) |slot| {
+            self.nodes.pos_x[slot] = rx;
+            self.nodes.pos_y[slot] = ry;
+            self.nodes.width[slot] = rw;
+            self.nodes.height[slot] = rh;
         }
     }
 }
