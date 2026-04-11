@@ -168,12 +168,25 @@ pub const Action = enum(u8) {
     // Send raw key through to PTY
     send_through,
 
-    // Compositor actions (no-ops in standalone teru, handled by miozu Server)
+    // Compositor actions (no-ops in standalone teru, handled by teruwm Server)
     spawn_terminal,
     window_close,
     compositor_quit,
     launcher_toggle,
-    spawn_external, // reserved for future use
+    float_toggle,
+    fullscreen_toggle,
+    screenshot,
+    bar_toggle_top,
+    bar_toggle_bottom,
+    // Media actions (compositor spawns the appropriate command)
+    volume_up,
+    volume_down,
+    volume_mute,
+    brightness_up,
+    brightness_down,
+    media_play,
+    media_next,
+    media_prev,
 
     pub fn fromString(s: []const u8) ?Action {
         // Exact match table
@@ -223,6 +236,19 @@ pub const Action = enum(u8) {
             .{ "window:close", Action.window_close },
             .{ "compositor:quit", Action.compositor_quit },
             .{ "launcher:toggle", Action.launcher_toggle },
+            .{ "float:toggle", Action.float_toggle },
+            .{ "fullscreen:toggle", Action.fullscreen_toggle },
+            .{ "screenshot", Action.screenshot },
+            .{ "bar:toggle_top", Action.bar_toggle_top },
+            .{ "bar:toggle_bottom", Action.bar_toggle_bottom },
+            .{ "volume:up", Action.volume_up },
+            .{ "volume:down", Action.volume_down },
+            .{ "volume:mute", Action.volume_mute },
+            .{ "brightness:up", Action.brightness_up },
+            .{ "brightness:down", Action.brightness_down },
+            .{ "media:play", Action.media_play },
+            .{ "media:next", Action.media_next },
+            .{ "media:prev", Action.media_prev },
         };
         inline for (map) |entry| {
             if (std.mem.eql(u8, s, entry[0])) return entry[1];
@@ -600,6 +626,11 @@ pub const Keybinds = struct {
         _ = self.add(n, SS, 'c', .window_close);
         _ = self.add(n, SS, 'q', .compositor_quit);
 
+        _ = self.add(n, S, 'f', .fullscreen_toggle);
+        _ = self.add(n, S, 'd', .launcher_toggle);
+        _ = self.add(n, S, 'b', .bar_toggle_top);
+        _ = self.add(n, SS, 'b', .bar_toggle_bottom);
+
         // Super+1-9 workspace, Super+0 workspace 10
         for (0..9) |i| {
             const digit: u8 = @intCast('1' + i);
@@ -607,6 +638,18 @@ pub const Keybinds = struct {
             _ = self.add(n, S, digit, ws);
         }
         _ = self.add(n, S, '0', .workspace_0);
+
+        // Media keys (no modifier — XF86 keysyms)
+        const NONE = Mods{};
+        _ = self.add(n, NONE, 0x1008FF13, .volume_up); // XF86AudioRaiseVolume
+        _ = self.add(n, NONE, 0x1008FF11, .volume_down); // XF86AudioLowerVolume
+        _ = self.add(n, NONE, 0x1008FF12, .volume_mute); // XF86AudioMute
+        _ = self.add(n, NONE, 0x1008FF14, .media_play); // XF86AudioPlay
+        _ = self.add(n, NONE, 0x1008FF17, .media_next); // XF86AudioNext
+        _ = self.add(n, NONE, 0x1008FF16, .media_prev); // XF86AudioPrev
+        _ = self.add(n, NONE, 0x1008FF02, .brightness_up); // XF86MonBrightnessUp
+        _ = self.add(n, NONE, 0x1008FF03, .brightness_down); // XF86MonBrightnessDown
+        _ = self.add(n, NONE, 0xFF61, .screenshot); // Print (PrintScreen)
     }
 };
 
