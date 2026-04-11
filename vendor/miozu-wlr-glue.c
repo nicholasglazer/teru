@@ -260,6 +260,89 @@ int32_t miozu_set_cursor_event_hotspot_y(
     return e->hotspot_y;
 }
 
+/* ── Custom pixel buffer for terminal pane rendering ──────────── */
+/* Implements wlr_buffer backed by a raw ARGB8888 pixel array.    */
+/* Zero-copy: SoftwareRenderer writes directly into this buffer,  */
+/* wlroots reads it via begin_data_ptr_access.                    */
+
+#include <wlr/interfaces/wlr_buffer.h>
+#include <wlr/util/log.h>
+#include <stdlib.h>
+#include <string.h>
+
+struct miozu_pixel_buffer {
+    struct wlr_buffer base;
+    void *data;
+    uint32_t format;
+    size_t stride;
+};
+
+static void pixel_buffer_destroy(struct wlr_buffer *wlr_buf) {
+    struct miozu_pixel_buffer *buf =
+        wl_container_of(wlr_buf, buf, base);
+    free(buf->data);
+    free(buf);
+}
+
+static bool pixel_buffer_begin_data_ptr_access(struct wlr_buffer *wlr_buf,
+        uint32_t flags, void **data, uint32_t *format, size_t *stride) {
+    struct miozu_pixel_buffer *buf =
+        wl_container_of(wlr_buf, buf, base);
+    (void)flags;
+    *data = buf->data;
+    *format = buf->format;
+    *stride = buf->stride;
+    return true;
+}
+
+static void pixel_buffer_end_data_ptr_access(struct wlr_buffer *wlr_buf) {
+    (void)wlr_buf;
+}
+
+static const struct wlr_buffer_impl pixel_buffer_impl = {
+    .destroy = pixel_buffer_destroy,
+    .begin_data_ptr_access = pixel_buffer_begin_data_ptr_access,
+    .end_data_ptr_access = pixel_buffer_end_data_ptr_access,
+};
+
+/* DRM_FORMAT_ARGB8888 = 0x34325241 */
+#define MIOZU_FORMAT_ARGB8888 0x34325241
+
+struct wlr_buffer *miozu_pixel_buffer_create(int width, int height) {
+    struct miozu_pixel_buffer *buf = calloc(1, sizeof(*buf));
+    if (!buf) return NULL;
+
+    buf->stride = (size_t)width * 4;
+    buf->format = MIOZU_FORMAT_ARGB8888;
+    buf->data = calloc((size_t)height, buf->stride);
+    if (!buf->data) { free(buf); return NULL; }
+
+    wlr_buffer_init(&buf->base, &pixel_buffer_impl, width, height);
+    return &buf->base;
+}
+
+/* Get the raw pixel pointer for direct writes from SoftwareRenderer */
+void *miozu_pixel_buffer_data(struct wlr_buffer *wlr_buf) {
+    struct miozu_pixel_buffer *buf =
+        wl_container_of(wlr_buf, buf, base);
+    return buf->data;
+}
+
+/* Resize the backing store (called on output/pane resize) */
+bool miozu_pixel_buffer_resize(struct wlr_buffer *wlr_buf, int width, int height) {
+    struct miozu_pixel_buffer *buf =
+        wl_container_of(wlr_buf, buf, base);
+    size_t new_stride = (size_t)width * 4;
+    void *new_data = calloc((size_t)height, new_stride);
+    if (!new_data) return false;
+    free(buf->data);
+    buf->data = new_data;
+    buf->stride = new_stride;
+    buf->base.width = width;
+    buf->base.height = height;
+    return true;
+}
+
 /* ── Seat request signals ────────────────────────────────────── */
 
 struct wl_signal *miozu_seat_request_set_cursor(struct wlr_seat *s) {

@@ -5,6 +5,7 @@ const std = @import("std");
 const wlr = @import("wlr.zig");
 const Output = @import("Output.zig");
 const XdgView = @import("XdgView.zig");
+const TerminalPane = @import("TerminalPane.zig");
 const NodeRegistry = @import("Node.zig");
 const teru = @import("teru");
 const LayoutEngine = teru.LayoutEngine;
@@ -35,6 +36,8 @@ layout_engine: LayoutEngine,
 nodes: NodeRegistry,
 next_node_id: u64 = 1,
 focused_view: ?*XdgView = null,
+terminal_panes: [NodeRegistry.max_nodes]?*TerminalPane = [_]?*TerminalPane{null} ** NodeRegistry.max_nodes,
+terminal_count: u16 = 0,
 
 // ── Listeners ──────────────────────────────────────────────────
 
@@ -345,8 +348,8 @@ pub fn handleCompositorKey(self: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_
             return true;
         },
         wlr.XKB_KEY_Return => {
-            // Mod+Return → spawn terminal
-            self.spawnProcess("teru");
+            // Mod+Return → spawn embedded terminal pane on active workspace
+            self.spawnTerminal(self.layout_engine.active_workspace);
             return true;
         },
         wlr.XKB_KEY_space => {
@@ -427,6 +430,37 @@ pub fn focusView(self: *Server, view: *XdgView) void {
         wlr.miozu_xdg_toplevel_base(view.toplevel) orelse return,
     ) orelse return;
     wlr.wlr_seat_keyboard_notify_enter(self.seat, surface, null, 0, null);
+}
+
+// ── Terminal pane management ───────────────────────────────────
+
+/// Spawn an embedded terminal pane on the given workspace.
+pub fn spawnTerminal(self: *Server, ws: u8) void {
+    const tp = TerminalPane.create(self, ws, 24, 80) orelse {
+        std.debug.print("miozu: failed to spawn terminal pane\n", .{});
+        return;
+    };
+
+    // Store in terminal_panes array
+    for (&self.terminal_panes) |*slot| {
+        if (slot.* == null) {
+            slot.* = tp;
+            self.terminal_count += 1;
+            break;
+        }
+    }
+}
+
+/// Poll all terminal panes for PTY output. Called from the event loop.
+/// Returns true if any pane produced output (needs re-render).
+pub fn pollTerminals(self: *Server) bool {
+    var any_output = false;
+    for (self.terminal_panes) |maybe_tp| {
+        if (maybe_tp) |tp| {
+            if (tp.poll()) any_output = true;
+        }
+    }
+    return any_output;
 }
 
 // ── Process spawning ───────────────────────────────────────────

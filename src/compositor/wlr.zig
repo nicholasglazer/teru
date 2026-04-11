@@ -333,6 +333,19 @@ pub extern "c" fn miozu_keyboard_key_time(event: *anyopaque) callconv(.c) u32;
 pub const WL_SEAT_CAPABILITY_POINTER: u32 = 1;
 pub const WL_SEAT_CAPABILITY_KEYBOARD: u32 = 2;
 
+// ── Custom pixel buffer for terminal panes ─────────────────────
+
+pub extern "c" fn miozu_pixel_buffer_create(width: c_int, height: c_int) callconv(.c) ?*wlr_buffer;
+pub extern "c" fn miozu_pixel_buffer_data(buffer: *wlr_buffer) callconv(.c) ?[*]u32;
+pub extern "c" fn miozu_pixel_buffer_resize(buffer: *wlr_buffer, width: c_int, height: c_int) callconv(.c) bool;
+
+pub const wlr_buffer = opaque {};
+
+pub extern "wlroots-0.18" fn wlr_scene_buffer_create(parent: *wlr_scene_tree, buffer: ?*wlr_buffer) callconv(.c) ?*wlr_scene_buffer;
+pub extern "wlroots-0.18" fn wlr_scene_buffer_set_buffer(scene_buffer: *wlr_scene_buffer, buffer: ?*wlr_buffer) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_scene_buffer_set_dest_size(scene_buffer: *wlr_scene_buffer, width: c_int, height: c_int) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_buffer_drop(buffer: *wlr_buffer) callconv(.c) void;
+
 // ── Utility: container-of pattern ──────────────────────────────
 
 /// Helper to get the container struct from a wl_listener pointer.
