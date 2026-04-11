@@ -247,6 +247,7 @@ pub extern "wlroots-0.18" fn wlr_seat_keyboard_notify_key(seat: *wlr_seat, time_
 pub extern "wlroots-0.18" fn wlr_seat_keyboard_notify_modifiers(seat: *wlr_seat, modifiers: ?*anyopaque) callconv(.c) void;
 
 pub extern "wlroots-0.18" fn wlr_scene_xdg_surface_create(parent: *wlr_scene_tree, surface: *wlr_xdg_surface) callconv(.c) ?*wlr_scene_tree;
+pub extern "wlroots-0.18" fn wlr_scene_subsurface_tree_create(parent: *wlr_scene_tree, surface: *wlr_surface) callconv(.c) ?*wlr_scene_tree;
 pub extern "wlroots-0.18" fn wlr_scene_node_set_position(node: *wlr_scene_node, x: c_int, y: c_int) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_scene_node_set_enabled(node: *wlr_scene_node, enabled: bool) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_xdg_toplevel_set_size(toplevel: *wlr_xdg_toplevel, width: u32, height: u32) callconv(.c) u32;
@@ -339,6 +340,34 @@ pub extern "c" fn miozu_keyboard_key_time(event: *anyopaque) callconv(.c) u32;
 // WL_SEAT capability bits
 pub const WL_SEAT_CAPABILITY_POINTER: u32 = 1;
 pub const WL_SEAT_CAPABILITY_KEYBOARD: u32 = 2;
+
+// ── XWayland ───────────────────────────────────────────────────
+
+pub const wlr_xwayland = opaque {};
+pub const wlr_xwayland_surface = opaque {};
+
+pub extern "wlroots-0.18" fn wlr_xwayland_create(display: *wl_display, compositor: *wlr_compositor, lazy: bool) callconv(.c) ?*wlr_xwayland;
+pub extern "wlroots-0.18" fn wlr_xwayland_destroy(xwayland: *wlr_xwayland) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_xwayland_surface_configure(surface: *wlr_xwayland_surface, x: i16, y: i16, width: u16, height: u16) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_xwayland_surface_activate(surface: *wlr_xwayland_surface, activated: bool) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_xwayland_surface_close(surface: *wlr_xwayland_surface) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_xwayland_set_seat(xwayland: *wlr_xwayland, seat: *wlr_seat) callconv(.c) void;
+
+// XWayland C glue accessors
+pub extern "c" fn miozu_xwayland_new_surface(xwl: *wlr_xwayland) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_xwayland_ready(xwl: *wlr_xwayland) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_xwayland_surface_surface(surface: *wlr_xwayland_surface) callconv(.c) ?*wlr_surface;
+pub extern "c" fn miozu_xwayland_surface_override_redirect(surface: *wlr_xwayland_surface) callconv(.c) bool;
+pub extern "c" fn miozu_xwayland_surface_class(surface: *wlr_xwayland_surface) callconv(.c) ?[*:0]const u8;
+pub extern "c" fn miozu_xwayland_surface_title(surface: *wlr_xwayland_surface) callconv(.c) ?[*:0]const u8;
+pub extern "c" fn miozu_xwayland_surface_x(surface: *wlr_xwayland_surface) callconv(.c) i16;
+pub extern "c" fn miozu_xwayland_surface_y(surface: *wlr_xwayland_surface) callconv(.c) i16;
+pub extern "c" fn miozu_xwayland_surface_width(surface: *wlr_xwayland_surface) callconv(.c) u16;
+pub extern "c" fn miozu_xwayland_surface_height(surface: *wlr_xwayland_surface) callconv(.c) u16;
+pub extern "c" fn miozu_xwayland_surface_map(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_xwayland_surface_unmap(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_xwayland_surface_destroy(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_xwayland_surface_request_configure(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
 
 // ── Custom pixel buffer for terminal panes ─────────────────────
 

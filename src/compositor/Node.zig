@@ -48,7 +48,7 @@ count: u16 = 0,
 // ── Public API ─────────────────────────────────────────────────
 
 /// Register a new Wayland surface node. Returns the slot index.
-pub fn addSurface(self: *Node, id: u64, ws: u8, toplevel: *wlr.wlr_xdg_toplevel, tree: *wlr.wlr_scene_tree) ?u16 {
+pub fn addSurface(self: *Node, id: u64, ws: u8, toplevel: ?*wlr.wlr_xdg_toplevel, tree: *wlr.wlr_scene_tree) ?u16 {
     const slot = self.findEmptySlot() orelse return null;
     self.kind[slot] = .wayland_surface;
     self.node_id[slot] = id;
