@@ -720,7 +720,10 @@ pub fn handleKey(self: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) boo
     }
 
     // Convert xkb sym to key for teru's keybind lookup
-    const key: u32 = if (sym >= 0x20 and sym <= 0x7e) sym else switch (sym) {
+    // Normalize uppercase ASCII to lowercase for keybind matching.
+    // When Shift is held, xkb returns 'J' (0x4A) not 'j' (0x6A).
+    // Bindings use lowercase — the shift flag is separate in Mods.
+    const key: u32 = if (sym >= 'A' and sym <= 'Z') sym + 32 else if (sym >= 0x20 and sym <= 0x7e) sym else switch (sym) {
         0xff0d => '\r', // Return
         0xff1b => 0x1b, // Escape
         0xff09 => '\t', // Tab
