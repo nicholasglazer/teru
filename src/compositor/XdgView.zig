@@ -66,14 +66,20 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const view: *XdgView = @fieldParentPtr("map", listener);
     const server = view.server;
 
-    // Register in the node registry on the active workspace
-    const ws = server.layout_engine.active_workspace;
+    const app_id = wlr.miozu_xdg_toplevel_app_id(view.toplevel);
+
+    // Check window rules for workspace assignment
+    const ws = if (app_id) |aid|
+        server.wm_config.matchRule(std.mem.sliceTo(aid, 0)) orelse server.layout_engine.active_workspace
+    else
+        server.layout_engine.active_workspace;
+
+    // Register in the node registry on the target workspace
     _ = server.nodes.addSurface(view.node_id, ws, view.toplevel, view.scene_tree);
 
     // Add to tiling engine workspace
     server.layout_engine.workspaces[ws].addNode(server.zig_allocator, view.node_id) catch return;
 
-    const app_id = wlr.miozu_xdg_toplevel_app_id(view.toplevel);
     std.debug.print("teruwm: surface mapped app_id='{s}' node={d} ws={d}\n", .{
         app_id orelse "none",
         view.node_id,

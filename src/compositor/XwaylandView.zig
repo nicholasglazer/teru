@@ -71,7 +71,12 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         std.debug.print("teruwm: X11 OR surface mapped class='{s}'\n", .{class orelse "none"});
     } else {
         // Regular X11 window: tile like XDG surface
-        const ws = server.layout_engine.active_workspace;
+        // Check window rules for workspace assignment
+        const ws = if (class) |cls|
+            server.wm_config.matchRule(std.mem.sliceTo(cls, 0)) orelse server.layout_engine.active_workspace
+        else
+            server.layout_engine.active_workspace;
+
         view.node_id = server.next_node_id;
         server.next_node_id += 1;
 
@@ -80,7 +85,7 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         }
         server.layout_engine.workspaces[ws].addNode(server.zig_allocator, view.node_id) catch return;
 
-        std.debug.print("teruwm: X11 surface mapped class='{s}' node={d}\n", .{ class orelse "none", view.node_id });
+        std.debug.print("teruwm: X11 surface mapped class='{s}' node={d} ws={d}\n", .{ class orelse "none", view.node_id, ws });
 
         server.arrangeworkspace(ws);
     }

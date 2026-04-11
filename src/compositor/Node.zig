@@ -37,6 +37,7 @@ height: [max_nodes]u32 = [_]u32{0} ** max_nodes,
 kind: [max_nodes]Kind = [_]Kind{.empty} ** max_nodes,
 node_id: [max_nodes]u64 = [_]u64{0} ** max_nodes,
 workspace: [max_nodes]u8 = [_]u8{0} ** max_nodes,
+floating: [max_nodes]bool = [_]bool{false} ** max_nodes,
 
 // Cold path: touched only on render or surface interaction
 scene_tree: [max_nodes]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** max_nodes,
@@ -59,6 +60,7 @@ pub fn addSurface(self: *Node, id: u64, ws: u8, toplevel: ?*wlr.wlr_xdg_toplevel
     self.pos_y[slot] = 0;
     self.width[slot] = 0;
     self.height[slot] = 0;
+    self.floating[slot] = false;
     self.count += 1;
     return slot;
 }
@@ -75,6 +77,7 @@ pub fn addTerminal(self: *Node, id: u64, ws: u8) ?u16 {
     self.pos_y[slot] = 0;
     self.width[slot] = 0;
     self.height[slot] = 0;
+    self.floating[slot] = false;
     self.count += 1;
     return slot;
 }
@@ -87,6 +90,7 @@ pub fn remove(self: *Node, id: u64) bool {
             self.node_id[i] = 0;
             self.scene_tree[i] = null;
             self.xdg_toplevel[i] = null;
+            self.floating[i] = false;
             self.count -= 1;
             return true;
         }
