@@ -14,6 +14,7 @@ const NodeRegistry = @import("Node.zig");
 const teru = @import("teru");
 const LayoutEngine = teru.LayoutEngine;
 const Keybinds = teru.Keybinds;
+const Mods = Keybinds.Mods;
 const KB = Keybinds.Keybinds;
 const KBAction = Keybinds.Action;
 const KBMods = Keybinds.Mods;
@@ -161,10 +162,10 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     const xkb_ctx = wlr.xkb_context_new(0) orelse
         return error.XkbContextFailed;
 
-    // Load keybinds: teru defaults (Alt+key) + compositor layer (Super+key)
+    // Keybinds: initialized with defaults. applyConfig() will set mod_key
+    // to Super and reload, so these initial Alt defaults get overwritten.
     var keybinds = KB{};
     keybinds.loadDefaults();
-    keybinds.loadCompositorDefaults();
 
     // Return fields only — listeners are registered separately by initOnHeap
     // after the struct has its final heap address.
@@ -226,9 +227,12 @@ pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem
         std.debug.print("teruwm: font init failed: {}, using fallback\n", .{err});
     }
 
-    // ── Keybinds: load teru defaults + config overrides + compositor layer ──
-    self.keybinds = config.keybinds;
-    self.keybinds.loadCompositorDefaults();
+    // ── Keybinds: set mod to Super (compositor), load unified defaults + media ──
+    self.keybinds.mod_key = Mods.SUPER;
+    self.keybinds.loadDefaults(); // uses mod_key = Super for all $mod bindings
+    self.keybinds.loadMediaDefaults(); // XF86 media keys (no modifier)
+    // Apply user overrides from teru.conf on top
+    // (config.keybinds were parsed with the old mod — we re-load with Super)
 
     // ── Launcher ($PATH scan) ─────────────────────────────────
     self.launcher.init();

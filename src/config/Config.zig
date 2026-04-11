@@ -537,6 +537,18 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         self.bell = parseBell(value) orelse return;
     } else if (std.mem.eql(u8, key, "alt_workspace_switch")) {
         self.alt_workspace_switch = parseBool(value) orelse return;
+    } else if (std.mem.eql(u8, key, "mod")) {
+        // Set the primary modifier key: mod = alt | super | ctrl+alt
+        const Mods = @import("Keybinds.zig").Mods;
+        if (std.mem.eql(u8, value, "alt")) {
+            self.keybinds.mod_key = Mods.ALT;
+        } else if (std.mem.eql(u8, value, "super")) {
+            self.keybinds.mod_key = Mods.SUPER;
+        } else if (std.mem.eql(u8, value, "ctrl+alt")) {
+            self.keybinds.mod_key = Mods{ .ctrl = true, .alt = true };
+        }
+        // Re-load defaults with the new mod key
+        self.keybinds.loadDefaults();
     } else if (std.mem.eql(u8, key, "mouse_hide_when_typing")) {
         self.mouse_hide_when_typing = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "restore_layout")) {
