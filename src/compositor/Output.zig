@@ -58,11 +58,12 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
         server.bar = Bar.create(server);
         server.applyWmBar(); // apply teruwm config bar format strings
 
-        server.layout_engine.switchWorkspace(9); // workspace "0" (immortal home)
-        server.spawnTerminal(9); // auto-sizes to fill output minus bar(s)
+        // Start on workspace 1 (key 1, index 0) with a terminal
+        server.layout_engine.switchWorkspace(0);
+        server.spawnTerminal(0);
 
         if (server.bar) |b| b.render(server);
-        std.debug.print("teruwm: immortal terminal spawned on workspace 0\n", .{});
+        std.debug.print("teruwm: terminal spawned on workspace 1\n", .{});
     }
 
     return output;

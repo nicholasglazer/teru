@@ -20,7 +20,7 @@ const KBMods = Keybinds.Mods;
 
 const Server = @This();
 
-pub const CursorMode = enum { normal, move, resize };
+pub const CursorMode = enum { normal, move, resize, border_drag };
 
 // ── Zig allocator ─────────────────────────────────────────────
 
@@ -392,6 +392,35 @@ fn handleCursorButton(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c
         }
     }
 
+    // Tiled border drag: if click is on the gap between panes, start master ratio resize
+    if (state == 1 and !super_held) {
+        const ws = server.layout_engine.getActiveWorkspace();
+        if (ws.node_ids.items.len >= 2) {
+            // Check if cursor is near a pane border (within gap area)
+            var on_border = false;
+            for (server.terminal_panes) |maybe_tp| {
+                if (maybe_tp) |tp| {
+                    if (server.nodes.findById(tp.node_id)) |slot| {
+                        const px = server.nodes.pos_x[slot];
+                        const pw: i32 = @intCast(server.nodes.width[slot]);
+                        const right_edge = px + pw;
+                        const cursor_x: i32 = @intFromFloat(wlr.miozu_cursor_x(server.cursor));
+                        // Within 8px of a right edge = on border
+                        if (cursor_x >= right_edge - 2 and cursor_x <= right_edge + 8) {
+                            on_border = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (on_border) {
+                server.cursor_mode = .border_drag;
+                server.grab_x = wlr.miozu_cursor_x(server.cursor);
+                return;
+            }
+        }
+    }
+
     // Click-to-focus: find which terminal pane is under the cursor
     if (state == 1) { // press
         const cx = wlr.miozu_cursor_x(server.cursor);
@@ -559,6 +588,18 @@ fn setupKeyboard(self: *Server, device: *wlr.wlr_input_device) void {
 fn processCursorMotion(self: *Server, time: u32) void {
     const cx = wlr.miozu_cursor_x(self.cursor);
     const cy = wlr.miozu_cursor_y(self.cursor);
+
+    // Handle tiled border drag (adjust master ratio)
+    if (self.cursor_mode == .border_drag) {
+        const out_w: f64 = @floatFromInt(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
+        const delta = cx - self.grab_x;
+        const ratio_delta: f32 = @floatCast(delta / out_w);
+        const ws = self.layout_engine.getActiveWorkspace();
+        ws.master_ratio = @max(0.1, @min(0.9, ws.master_ratio + ratio_delta));
+        self.grab_x = cx;
+        self.arrangeworkspace(self.layout_engine.active_workspace);
+        return;
+    }
 
     // Handle floating window move/resize
     if (self.cursor_mode == .move) {
@@ -1349,18 +1390,24 @@ fn updateFocusedTerminal(self: *Server) void {
     const ws = self.layout_engine.getActiveWorkspace();
     const active_id = ws.getActiveNodeId() orelse return;
 
+    var found = false;
     for (self.terminal_panes) |maybe_tp| {
         if (maybe_tp) |tp| {
             if (tp.node_id == active_id) {
                 self.focused_terminal = tp;
                 self.focused_view = null;
-                if (self.bar) |b| b.render(self);
-                return;
+                found = true;
+                break;
             }
         }
     }
-    // Active node is not a terminal — might be an external view
-    self.focused_terminal = null;
+    if (!found) self.focused_terminal = null;
+
+    // Re-render ALL visible panes so border colors update immediately
+    for (self.terminal_panes) |maybe_tp| {
+        if (maybe_tp) |tp| tp.render();
+    }
+    if (self.bar) |b| b.render(self);
 }
 
 // ── Process spawning ───────────────────────────────────────────
