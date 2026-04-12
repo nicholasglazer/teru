@@ -24,6 +24,12 @@ node_ids: std.ArrayListUnmanaged(u64),
 active_index: usize = 0,
 master_ratio: f32 = 0.6,
 
+// Number of panes considered "master". Layouts that have a master
+// concept (master-stack, three-col, dishes) respect this; layouts
+// without one (grid, monocle, spiral, accordion, columns) ignore it.
+// Inc/dec via Mod+,/Mod+. (xmonad IncMasterN).
+master_count: u8 = 1,
+
 // Per-workspace layout list (xmonad ||| pattern)
 // When layout_count > 0, cycleLayout cycles within this list.
 // When layout_count == 0, cycles through all layouts (legacy behavior).
@@ -186,6 +192,47 @@ pub fn promoteToMaster(self: *Workspace) void {
     }
     items[0] = promoted;
     self.active_index = 0;
+}
+
+/// Swap focused pane with the master (index 0). Symmetric: calling
+/// it again un-swaps. xmonad's `W.swapMaster`.
+pub fn swapWithMaster(self: *Workspace) void {
+    const items = self.node_ids.items;
+    if (items.len < 2 or self.active_index == 0) return;
+    const tmp = items[0];
+    items[0] = items[self.active_index];
+    items[self.active_index] = tmp;
+    self.active_index = 0;
+}
+
+/// Rotate the slave region (items[master_count..]) by one slot.
+/// Keeps master(s) and focus index in place — xmonad `rotSlavesUp/Down`.
+/// No-op if fewer than 2 slaves.
+pub fn rotateSlaves(self: *Workspace, up: bool) void {
+    const items = self.node_ids.items;
+    const mc: usize = @min(self.master_count, items.len);
+    if (items.len - mc < 2) return;
+    if (up) {
+        // slaves[0] becomes the last slave; everyone else shifts up
+        const first = items[mc];
+        var i: usize = mc;
+        while (i + 1 < items.len) : (i += 1) items[i] = items[i + 1];
+        items[items.len - 1] = first;
+    } else {
+        // slaves[last] becomes the first slave; everyone else shifts down
+        const last = items[items.len - 1];
+        var i: usize = items.len - 1;
+        while (i > mc) : (i -= 1) items[i] = items[i - 1];
+        items[mc] = last;
+    }
+}
+
+/// Adjust master_count by `delta`, clamped to [1, node_ids.len].
+pub fn adjustMasterCount(self: *Workspace, delta: i8) void {
+    const n: i32 = @intCast(self.node_ids.items.len);
+    const current: i32 = self.master_count;
+    const target = @max(1, @min(n, current + @as(i32, delta)));
+    self.master_count = @intCast(@max(1, target));
 }
 
 // ── Queries ────────────────────────────────────────────────────

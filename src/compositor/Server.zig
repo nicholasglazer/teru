@@ -108,6 +108,18 @@ wm_config: WmConfig = .{},
 // hot-restart must not re-spawn clients that are still connected).
 autostart_fired: bool = false,
 
+// Previous workspace, for Mod+Escape toggle-last. Updated on every
+// workspace switch.
+prev_workspace: ?u8 = null,
+
+// User-defined spawn chord commands. Each slot pairs with the
+// spawn_0..spawn_31 action variants; the keybind table maps chords
+// to those actions, this array resolves to the shell command.
+// Populated from `[keybind]` config section entries of the form
+// `Mod+Return = spawn:teru`.
+spawn_table: [32][256]u8 = [_][256]u8{[_]u8{0} ** 256} ** 32,
+spawn_table_len: [32]u16 = [_]u16{0} ** 32,
+
 // MCP server for compositor control
 wm_mcp: ?*WmMcpServer = null,
 
@@ -338,6 +350,41 @@ pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem
     self.wm_config = WmConfig.load(io);
     if (self.wm_config.rule_count > 0) {
         std.debug.print("teruwm: loaded {d} window rules\n", .{self.wm_config.rule_count});
+    }
+
+    // ── User-defined spawn chords from [keybind] section ────
+    self.applyWmSpawnChords();
+}
+
+/// Resolve each `[keybind] chord = spawn:cmd` entry into a spawn_table
+/// slot and install the binding in the keybinds table.
+fn applyWmSpawnChords(self: *Server) void {
+    var slot: u8 = 0;
+    for (self.wm_config.spawn_chords[0..self.wm_config.spawn_chord_count]) |*entry| {
+        if (slot >= self.spawn_table.len) break;
+
+        // Parse the chord ("Mod+Return") via the shared trigger parser
+        const trig = Keybinds.parseTriggerWithMod(entry.getChord(), self.keybinds.mod_key) orelse {
+            std.debug.print("teruwm: skipping bad keybind chord '{s}'\n", .{entry.getChord()});
+            continue;
+        };
+
+        // Store cmd in spawn_table[slot]
+        const cmd = entry.getCmd();
+        const n = @min(cmd.len, self.spawn_table[slot].len);
+        @memcpy(self.spawn_table[slot][0..n], cmd[0..n]);
+        self.spawn_table_len[slot] = @intCast(n);
+
+        // Map to spawn_N action
+        const first_tag: u8 = @intFromEnum(Keybinds.Action.spawn_0);
+        const action: Keybinds.Action = @enumFromInt(first_tag + slot);
+
+        // Install in normal mode (shared works too but normal is the daily path)
+        _ = self.keybinds.add(.normal, trig.mods, trig.key, action);
+        slot += 1;
+    }
+    if (slot > 0) {
+        std.debug.print("teruwm: loaded {d} spawn chords\n", .{slot});
     }
 }
 
@@ -1207,6 +1254,8 @@ pub fn executeAction(self: *Server, action: KBAction) bool {
     // Workspace switching
     if (action.workspaceIndex()) |ws| {
         const old_ws = self.layout_engine.active_workspace;
+        if (ws == old_ws) return true; // no-op
+        self.prev_workspace = old_ws;
         self.layout_engine.switchWorkspace(ws);
         self.setWorkspaceVisibility(old_ws, false);
         self.setWorkspaceVisibility(ws, true);
@@ -1277,6 +1326,80 @@ pub fn executeAction(self: *Server, action: KBAction) bool {
         .pane_set_master => {
             self.layout_engine.getActiveWorkspace().promoteToMaster();
             self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
+        },
+        .pane_swap_master => {
+            self.layout_engine.getActiveWorkspace().swapWithMaster();
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
+        },
+        .pane_rotate_slaves_up => {
+            self.layout_engine.getActiveWorkspace().rotateSlaves(true);
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
+        },
+        .pane_rotate_slaves_down => {
+            self.layout_engine.getActiveWorkspace().rotateSlaves(false);
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
+        },
+        .master_count_inc => {
+            self.layout_engine.getActiveWorkspace().adjustMasterCount(1);
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
+        },
+        .master_count_dec => {
+            self.layout_engine.getActiveWorkspace().adjustMasterCount(-1);
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
+        },
+        .pane_sink => {
+            self.sinkFocused();
+            return true;
+        },
+        .pane_sink_all => {
+            self.sinkAllOnActiveWorkspace();
+            return true;
+        },
+        .layout_reset => {
+            const ws = self.layout_engine.getActiveWorkspace();
+            ws.layout = .master_stack;
+            ws.master_count = 1;
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            if (self.bar) |b| b.render(self);
+            return true;
+        },
+        .workspace_toggle_last => {
+            if (self.prev_workspace) |prev| {
+                const old_ws = self.layout_engine.active_workspace;
+                if (prev != old_ws) {
+                    self.prev_workspace = old_ws;
+                    self.layout_engine.switchWorkspace(prev);
+                    self.setWorkspaceVisibility(old_ws, false);
+                    self.setWorkspaceVisibility(prev, true);
+                    self.arrangeworkspace(prev);
+                    self.updateFocusedTerminal();
+                    if (self.bar) |b| b.render(self);
+                }
+            }
+            return true;
+        },
+        .workspace_next_nonempty => {
+            const start: u8 = self.layout_engine.active_workspace;
+            var step: u8 = 1;
+            while (step < 10) : (step += 1) {
+                const cand: u8 = (start + step) % 10;
+                if (self.nodes.countInWorkspace(cand) > 0) {
+                    self.prev_workspace = start;
+                    self.layout_engine.switchWorkspace(cand);
+                    self.setWorkspaceVisibility(start, false);
+                    self.setWorkspaceVisibility(cand, true);
+                    self.arrangeworkspace(cand);
+                    self.updateFocusedTerminal();
+                    if (self.bar) |b| b.render(self);
+                    break;
+                }
+            }
             return true;
         },
         .resize_shrink_w => {
@@ -1427,8 +1550,52 @@ pub fn executeAction(self: *Server, action: KBAction) bool {
             }
             return true;
         },
-        else => return false,
+        else => {
+            // User-defined spawn chord? Each spawn_N action variant
+            // resolves to spawn_table[N] if that slot is populated.
+            const tag: u8 = @intFromEnum(action);
+            const first: u8 = @intFromEnum(KBAction.spawn_0);
+            const last: u8 = @intFromEnum(KBAction.spawn_31);
+            if (tag >= first and tag <= last) {
+                const slot: u8 = tag - first;
+                const len: usize = self.spawn_table_len[slot];
+                if (len > 0) {
+                    self.spawnShell(self.spawn_table[slot][0..len]);
+                }
+                return true;
+            }
+            return false;
+        },
     }
+}
+
+/// Un-float the focused node if it's currently floating. Reversed by
+/// another float_toggle. Mirrors xmonad's W.sink on one window.
+pub fn sinkFocused(self: *Server) void {
+    const active_ws = self.layout_engine.getActiveWorkspace();
+    const nid = active_ws.getActiveNodeId() orelse return;
+    const slot = self.nodes.findById(nid) orelse return;
+    if (!self.nodes.floating[slot]) return;
+    self.nodes.floating[slot] = false;
+    self.layout_engine.workspaces[self.layout_engine.active_workspace].addNode(self.zig_allocator, nid) catch {};
+    self.arrangeworkspace(self.layout_engine.active_workspace);
+}
+
+/// Sink every floating node on the active workspace back into tiling.
+/// Skips scratchpads (they live outside the tiled node list).
+pub fn sinkAllOnActiveWorkspace(self: *Server) void {
+    const ws_index = self.layout_engine.active_workspace;
+    var changed = false;
+    for (0..NodeRegistry.max_nodes) |i| {
+        if (self.nodes.kind[i] == .empty) continue;
+        if (self.nodes.workspace[i] != ws_index) continue;
+        if (!self.nodes.floating[i]) continue;
+        const nid = self.nodes.node_id[i];
+        self.nodes.floating[i] = false;
+        self.layout_engine.workspaces[ws_index].addNode(self.zig_allocator, nid) catch continue;
+        changed = true;
+    }
+    if (changed) self.arrangeworkspace(ws_index);
 }
 
 // ── Tiling ─────────────────────────────────────────────────────

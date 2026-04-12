@@ -72,7 +72,7 @@ pub fn calculate(self: *LayoutEngine, workspace_index: u8, screen: Rect) ![]Rect
     }
 
     return switch (ws.layout) {
-        .master_stack => try layouts.masterStack(self.allocator, count, screen, ws.master_ratio),
+        .master_stack => try layouts.masterStackN(self.allocator, count, screen, ws.master_ratio, ws.master_count),
         .grid => try layouts.grid(self.allocator, count, screen),
         .monocle => try layouts.monocle(self.allocator, count, screen, ws.active_index),
         .dishes => try layouts.dishes(self.allocator, count, screen, ws.master_ratio),
