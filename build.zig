@@ -118,6 +118,26 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run teru terminal");
     run_step.dependOn(&run_cmd.step);
 
+    // ── bench (vtebench-style throughput harness) ────────────────────
+    // `zig build bench -- tools/bench-payloads` runs teru's VT pipeline on
+    // pre-captured payloads and prints JSON to stdout. See docs/BENCHMARKS.md.
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("tools/bench.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+    });
+    bench_mod.addImport("teru", lib_mod);
+    const bench_exe = b.addExecutable(.{
+        .name = "teru-bench",
+        .root_module = bench_mod,
+    });
+    // Not installed into zig-out/bin by default; accessed via `zig build bench`.
+    const bench_run = b.addRunArtifact(bench_exe);
+    if (b.args) |args| bench_run.addArgs(args);
+    const bench_step = b.step("bench", "Run the throughput benchmark harness (args: <payload-dir>)");
+    bench_step.dependOn(&bench_run.step);
+
     // ── tests (pure Zig, no system deps needed) ──────────────────────
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),

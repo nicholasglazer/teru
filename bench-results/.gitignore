@@ -1,0 +1,3 @@
+# Dated bench snapshots — committed only when publishing a BENCHMARKS.md update.
+*.json
+*.raw
