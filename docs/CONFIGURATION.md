@@ -569,6 +569,37 @@ Steam = 7
 
 Key is matched exactly against the window's class / app_id. Value is a 1-based workspace number (internally stored 0-based).
 
+### `[workspace.N]` — DynamicProjects (cwd + startup)
+
+*(Since v0.4.17.)* Attach a working directory and a startup command to
+each workspace. Semantics match xmonad `DynamicProjects`:
+
+- When the workspace is visited and **empty**, the `startup` command
+  runs (once until the workspace empties again, then re-fires on next
+  visit).
+- `cwd` is inherited by panes spawned on that workspace via
+  `$mod+Enter` / `spawn:teru` chord — new shells land there.
+
+```conf
+[workspace.1]
+name    = web
+cwd     = ~/
+startup = chromium
+
+[workspace.2]
+name    = emacs
+cwd     = ~/code
+startup = emacsclient -c -a emacs
+
+[workspace.4]
+name    = work
+cwd     = ~/work
+```
+
+`layout`, `master_ratio`, and `layouts` for `[workspace.N]` remain in
+`teru.conf` (shared config); `cwd` and `startup` are teruwm-specific
+and live in `teruwm/config`.
+
 ### `[autostart]` — Run Programs on Startup
 
 Commands launched once, right after the first output is ready. Skipped

@@ -57,6 +57,10 @@ pub const BarData = struct {
     // Workspace state
     workspace_active: u8 = 0,
     workspace_has_nodes: [10]bool = [_]bool{false} ** 10,
+    /// Urgency flag per workspace — set iff any node on that workspace
+    /// has its `urgent` bit set (via xdg_activation_v1). Rendered as a
+    /// visible marker on the bar pill.
+    workspace_urgent: [10]bool = [_]bool{false} ** 10,
     workspace_names: [10][]const u8 = [_][]const u8{
         "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
     },
@@ -109,7 +113,13 @@ pub fn renderWidgets(
                 for (0..10) |wi| {
                     if (!data.workspace_has_nodes[wi] and wi != data.workspace_active) continue;
                     const ws_char: u8 = if (wi < 9) '1' + @as(u8, @intCast(wi)) else '0';
-                    const color = if (wi == data.workspace_active) s.cursor else s.ansi[8];
+                    // Urgent > active > has-nodes for color precedence.
+                    const color = if (data.workspace_urgent[wi])
+                        s.ansi[1] // red (attention)
+                    else if (wi == data.workspace_active)
+                        s.cursor
+                    else
+                        s.ansi[8];
                     Ui.blitCharAt(cpu, ' ', x, y, s.bg);
                     x += cw;
                     Ui.blitCharAt(cpu, ws_char, x, y, color);

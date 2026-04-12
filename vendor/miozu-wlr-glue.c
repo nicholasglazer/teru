@@ -18,6 +18,7 @@
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wayland-server-core.h>
 
 /* ── Backend signals ─────────────────────────────────────────── */
@@ -436,4 +437,21 @@ struct wl_signal *miozu_seat_request_set_cursor(struct wlr_seat *s) {
 
 struct wl_signal *miozu_seat_request_set_selection(struct wlr_seat *s) {
     return &s->events.request_set_selection;
+}
+
+/* ── xdg_activation_v1 (v0.4.17) ─────────────────────────────── */
+
+struct wl_signal *miozu_xdg_activation_request_activate(struct wlr_xdg_activation_v1 *a) {
+    return &a->events.request_activate;
+}
+
+struct wlr_surface *miozu_xdg_activation_event_surface(
+    struct wlr_xdg_activation_v1_request_activate_event *e) {
+    return e->surface;
+}
+
+/* Wrapper for wlr_xdg_toplevel_try_from_wlr_surface — expose as a function
+ * pointer callable from Zig with a stable name. */
+struct wlr_xdg_toplevel *miozu_xdg_toplevel_from_surface(struct wlr_surface *s) {
+    return wlr_xdg_toplevel_try_from_wlr_surface(s);
 }

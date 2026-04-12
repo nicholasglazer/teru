@@ -179,6 +179,7 @@ fn buildBarData(_: *Bar, server: *Server) BarData {
 
     for (0..10) |wi| {
         data.workspace_has_nodes[wi] = server.layout_engine.workspaces[wi].node_ids.items.len > 0;
+        data.workspace_urgent[wi] = server.nodes.anyUrgentOnWorkspace(@intCast(wi));
     }
 
     if (server.focused_terminal) |tp| {
