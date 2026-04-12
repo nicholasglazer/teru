@@ -193,6 +193,61 @@ Fields:
 | `task` | Current task description |
 | `exit` | `success`, `failure`, or a free-form error message |
 
+## In-band MCP over OSC 9999
+
+*(Since v0.4.14.)* An agent running **inside a teru pane** can call MCP
+tools through the PTY teru is already parsing — **no socket, no
+subprocess, no extra process hop**. The same mechanism every terminal
+already uses to answer `ESC[6n` (cursor-position report), just with a
+wider vocabulary.
+
+```
+Request (agent stdout):
+  ESC ] 9999 ; query ; id=<N> ; tool=<NAME> [ ; k=v ]* BEL
+
+Reply (teru → agent stdin):
+  ESC P 9999 ; id=<N> ; <json-body> ESC \
+```
+
+`ST` can be `BEL` (`\x07`) or `ESC \`. Arguments are flat `key=value`
+pairs; integer-typed values are forwarded as JSON numbers, bare
+`true`/`false` as booleans, everything else as escaped strings. For
+complex inputs (arrays, nested objects) use the socket path instead.
+
+### The `teru-query` shell helper
+
+```sh
+teru-query teru_list_panes
+teru-query teru_read_output pane_id=1 lines=30
+teru-query teru_broadcast workspace=0 text='hello agents'
+```
+
+Under the hood: writes the OSC request to `/dev/tty`, reads the DCS
+reply, extracts the JSON body, prints to stdout. `~/.local/bin/teru-query`
+or `tools/teru-query` from this repo.
+
+### Shell one-liner (no helper)
+
+```sh
+printf '\e]9999;query;id=1;tool=teru_list_panes\x07' > /dev/tty
+# then read reply from /dev/tty, strip DCS envelope ESC P 9999;id=1; ... ESC \
+```
+
+### Why this exists
+
+- **Zero-process** inside the compositor/daemon. One PTY write, one
+  McpServer.dispatch, one PTY write back.
+- **Works in every mode** teru supports — windowed, `--raw` over SSH,
+  inside a `--daemon` session — because it's just bytes on the PTY.
+- **No auth surface.** The PTY is already the trust boundary; only teru
+  has the master fd.
+
+### Current scope
+
+Tools exposed: all 19 teru-agent tools (`teru_*`). The teruwm compositor
+tools (`teruwm_*`) still require the socket path — forwarding them over
+the OSC channel is planned for a later release.
+
 ## Session persistence — `.tsess` templates
 
 `.tsess` files are declarative session layouts: workspaces, panes,

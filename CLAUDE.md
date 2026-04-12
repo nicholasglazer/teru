@@ -23,7 +23,7 @@ zig build run -- --raw                # run debug teru (TTY mode)
 - `src/server/` — Session daemon (`daemon.zig`), wire protocol, cross-platform IPC (`ipc.zig`)
 - `src/pty/` — `pty.zig` comptime dispatch, `PosixPty.zig`, `WinPty.zig` (ConPTY), `RemotePty.zig`
 - `src/graph/` — `ProcessGraph` (DAG of processes/agents, MCP-queryable)
-- `src/agent/` — OSC 9999 parser, HookHandler/Listener, `McpServer.zig` (19 tools), `PaneBackend.zig`
+- `src/agent/` — OSC 9999 parser, HookHandler/Listener, `McpServer.zig` + `McpDispatch.zig` (19 tools, line-JSON), `McpBridge.zig` (stdio proxy), `in_band.zig` (in-band MCP over OSC 9999 + DCS), `PaneBackend.zig`
 - `src/tiling/` — Layout engine + workspace state; 8 layouts (master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion)
 - `src/persist/` — Session serialization, scrollback compression (keyframe + delta)
 - `src/config/` — Config parser, `Keybinds.zig` (configurable), `ConfigWatcher.zig` (inotify/kqueue/poll), `themes.zig`
@@ -63,9 +63,18 @@ bash tools/run-bench.sh               # reproduce benchmarks from docs/BENCHMARK
 
 ## Version
 
-Current: see `build.zig` line 10 (`const version`). Propagated via
-`build_options.version` to `main.zig`, `McpServer.zig`,
+Current: **0.4.14** — see `build.zig` line 10 (`const version`).
+Propagated via `build_options.version` to `main.zig`, `McpServer.zig`,
 `WmMcpServer.zig`. Bump with `make bump-version V=x.y.z`.
+
+The 0.4.x line is patches leading to the 0.5.0 milestone. v0.4.2..v0.4.12
+were retroactively tagged against past feature waves; 0.4.13 (smart
+borders + autostart) and 0.4.14 (MCP three-tier refactor) ship today's
+work. Remaining 0.4.x → 0.5.0: 0.4.15 Foundation (per-output,
+rotate_slaves, spawn chords, sink_all), 0.4.16 AI-Surface (xdg_activation
++ MCP events + DynamicProjects + named scratchpads), 0.4.17 Screen-Capture
+(wlr-screencopy + area shot + fade + record). See `git tag` for the full
+series.
 
 ## User-facing surface
 

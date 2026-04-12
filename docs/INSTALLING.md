@@ -94,8 +94,13 @@ sudo install -m755 zig-out/bin/teruwm /usr/local/bin/teruwm
 |---------|------------|---------------|--------|
 | wlroots 0.18 | `wlroots0.18` | `libwlroots-0.18-dev` | `wlroots-devel` |
 | wayland-server | `wayland` | `libwayland-dev` | `wayland-devel` |
+| XWayland (optional, for X11 clients) | `xorg-xwayland` | `xwayland` | `xorg-x11-server-Xwayland` |
 
-Verify with `pkg-config --exists wlroots-0.18 && echo ok`.
+Verify with `pkg-config --exists wlroots-0.18 && echo ok`. XWayland is
+optional at runtime — teruwm lazy-starts it the first time an X11 client
+connects; without the package installed, teruwm runs fine for pure
+Wayland clients (firefox, chromium --ozone-platform=wayland, foot,
+teru, …).
 
 ### Minimal builds (fewer dependencies)
 

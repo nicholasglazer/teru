@@ -55,8 +55,10 @@ integrations on top.
 | `render/BarRenderer.zig` | Bar compositor shared by teru and teruwm | Widget dispatch, color thresholds, class → palette resolution. |
 | `render/BarWidget.zig` · `PushWidget.zig` | Widget parsing and push-widget storage | Fixed-size arrays; no heap. |
 | `tiling/` | Layout engine | 8 pure functions (rect-in → rects-out). Workspace state + layout cycling. |
-| `agent/McpServer.zig` | 19-tool MCP server for teru | HTTP-framed JSON-RPC over Unix socket. |
-| `agent/protocol.zig` | OSC 9999 parser | Parses `agent:start` / `status` / `stop` events; updates ProcessGraph. |
+| `agent/McpServer.zig` · `McpDispatch.zig` | 19-tool MCP server for teru | Line-delimited JSON-RPC over Unix socket (since v0.4.14). Dispatch table + schemas assembled at compile time. |
+| `agent/McpBridge.zig` | `--mcp-server` stdio proxy | Line-JSON proxy between stdin/stdout and the Unix socket. |
+| `agent/in_band.zig` | OSC 9999 in-band MCP | Agents inside a teru pane call tools over the PTY — zero socket, zero subprocess. |
+| `agent/protocol.zig` | OSC 9999 parser | Parses `agent:start` / `status` / `stop` events + `query` (in-band MCP); updates ProcessGraph. |
 | `agent/PaneBackend.zig` | Claude Code `CustomPaneBackend` protocol | 7-op JSON-RPC wire format. |
 | `graph/ProcessGraph.zig` | DAG of processes/agents | Per-pane + per-agent nodes, lifecycle tracking, MCP-queryable. |
 | `persist/Session.zig` | Binary (re)serialization of multiplexer state | Survives across daemon restarts. |
@@ -76,7 +78,7 @@ VtParser → Grid, then renders on demand. Four modes:
 | **windowed** | `teru` | Opens an X11 / Wayland / AppKit / Win32 window. |
 | **raw TTY** | `teru --raw` | Uses the host TTY directly; no window. SSH/container use. |
 | **named session** | `teru -n NAME` | Auto-starts or attaches to a headless daemon (`src/server/daemon.zig`). PTYs survive window close. |
-| **stdio MCP bridge** | `teru --mcp-bridge` | Pipes the MCP socket to stdio; for embedding as an MCP subprocess (Claude Code, agent workflows). |
+| **stdio MCP proxy** | `teru --mcp-server` (alias `--mcp-bridge`) | Pipes stdin/stdout JSON-RPC to a running teru's socket; for embedding as an MCP subprocess (Claude Code, agent workflows). |
 
 ### Session daemon
 
