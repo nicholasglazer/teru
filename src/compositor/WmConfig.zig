@@ -27,6 +27,7 @@ const std = @import("std");
 const teru = @import("teru");
 const Io = std.Io;
 const Dir = Io.Dir;
+const Thresholds = teru.render.BarRenderer.Thresholds;
 
 const WmConfig = @This();
 
@@ -75,6 +76,12 @@ border_width: u16 = 2,
 /// panes/bars. Config accepts `bg = 0x1a1d24` or `bg = #1a1d24`.
 /// Default: miozu dark gray (0xFF1a1d24).
 bg_color: u32 = 0xFF1a1d24,
+
+// ── Bar widget color thresholds ────────────────────────────────
+// Low/high boundaries for each numeric widget. Values below `_low` are
+// green, below `_high` yellow, else red (battery is inverted).
+// Configure via `[bar.thresholds]` section — e.g. `cpu_low = 40`.
+bar_thresholds: Thresholds = .{},
 
 // ── Bar format strings ──────────────────────────────────────────
 
@@ -185,6 +192,7 @@ fn parse(self: *WmConfig, content: []const u8) void {
             .global => self.applyGlobal(key, value),
             .bar_top => self.applyBarTop(key, value),
             .bar_bottom => self.applyBarBottom(key, value),
+            .bar_thresholds => self.applyThreshold(key, value),
             .rules => self.applyRule(key, value),
             .names => self.applyNameRule(key, value),
         }
@@ -195,6 +203,7 @@ const Section = enum {
     global,
     bar_top,
     bar_bottom,
+    bar_thresholds,
     rules,
     names,
 };
@@ -203,6 +212,7 @@ fn parseSection(name: []const u8) Section {
     if (std.mem.eql(u8, name, "names")) return .names;
     if (std.mem.eql(u8, name, "bar.top")) return .bar_top;
     if (std.mem.eql(u8, name, "bar.bottom")) return .bar_bottom;
+    if (std.mem.eql(u8, name, "bar.thresholds")) return .bar_thresholds;
     if (std.mem.eql(u8, name, "rules")) return .rules;
     return .global;
 }
@@ -222,6 +232,26 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         // If user gave 6 hex chars (RRGGBB), add full alpha
         self.bg_color = if (v.len <= 6) 0xFF000000 | parsed else parsed;
     }
+}
+
+/// Parse `[bar.thresholds]` entries. Unknown keys are silently ignored
+/// so users can have comments or future keys without breaking.
+fn applyThreshold(self: *WmConfig, key: []const u8, value: []const u8) void {
+    const t = &self.bar_thresholds;
+    const val_u16 = std.fmt.parseInt(u16, value, 10) catch return;
+    const val_u32 = std.fmt.parseInt(u32, value, 10) catch return;
+    if (std.mem.eql(u8, key, "cpu_low")) t.cpu_low = val_u16
+    else if (std.mem.eql(u8, key, "cpu_high")) t.cpu_high = val_u16
+    else if (std.mem.eql(u8, key, "cputemp_low")) t.cputemp_low = val_u16
+    else if (std.mem.eql(u8, key, "cputemp_high")) t.cputemp_high = val_u16
+    else if (std.mem.eql(u8, key, "mem_low")) t.mem_low = val_u16
+    else if (std.mem.eql(u8, key, "mem_high")) t.mem_high = val_u16
+    else if (std.mem.eql(u8, key, "battery_low")) t.battery_low = val_u16
+    else if (std.mem.eql(u8, key, "battery_high")) t.battery_high = val_u16
+    else if (std.mem.eql(u8, key, "watts_low")) t.watts_low = val_u16
+    else if (std.mem.eql(u8, key, "watts_high")) t.watts_high = val_u16
+    else if (std.mem.eql(u8, key, "perf_us_low")) t.perf_us_low = val_u32
+    else if (std.mem.eql(u8, key, "perf_us_high")) t.perf_us_high = val_u32;
 }
 
 fn applyBarTop(self: *WmConfig, key: []const u8, value: []const u8) void {
