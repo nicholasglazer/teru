@@ -1,0 +1,4 @@
+# External vtebench clone — not shipped, built locally if needed.
+bench-bin/
+# Generated payloads — reproducible from gen-payloads.py
+bench-payloads/
