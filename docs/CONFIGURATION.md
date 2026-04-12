@@ -591,6 +591,28 @@ works: `1`, `2`, `web`, `panel`, …). Values are full shell commands
 (passed to `/bin/sh -c`, so pipes, args, and quoting work). Max 16
 entries. Command max 255 bytes.
 
+### `[keybind]` — User-Defined Spawn Chords
+
+*(Since v0.4.15.)* Bind any key chord to a shell command. Compositor-only
+(the terminal binary uses `[keybinds.normal]` etc. in `teru.conf` for
+shared action bindings — only commands that don't fit the pure `Action`
+enum belong here).
+
+```conf
+[keybind]
+Mod+Return        = spawn:teru
+Mod+Shift+Return  = spawn:teru --class Scratchpad
+Mod+E             = spawn:emacsclient -c -a emacs
+Mod+Shift+D       = spawn:dunstctl close-all
+Mod+X             = spawn:chromium
+```
+
+Syntax: `<chord> = spawn:<cmd>`. The LHS follows the same `Mod+Ctrl+X`
+grammar as other keybind sections. The RHS is passed to `/bin/sh -c`,
+so pipes, args, and quoting work. Up to 32 entries. Commands inherit
+the compositor's environment (`WAYLAND_DISPLAY`, `DISPLAY` for
+Xwayland), same as `[autostart]`.
+
 ### `[names]` — Human-Readable Window Names
 
 Map a window class or `app_id` to a short display name used by the bar's `{title}` widget and any compositor MCP output. Max 32 name rules. Class max 64 bytes, name max 32 bytes.
@@ -641,6 +663,12 @@ battery_critical = 15
 2 = emacs
 3 = dunst
 4 = nm-applet
+
+# ── User-defined spawn chords (v0.4.15) ────────
+[keybind]
+Mod+Return       = spawn:teru
+Mod+E            = spawn:emacsclient -c -a emacs
+Mod+Shift+D      = spawn:dunstctl close-all
 
 # ── Workspace assignments ──────────────────────
 [rules]

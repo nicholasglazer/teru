@@ -8,6 +8,13 @@ const Allocator = std.mem.Allocator;
 const Rect = @import("types.zig").Rect;
 
 pub fn masterStack(allocator: Allocator, count: usize, screen: Rect, ratio: f32) ![]Rect {
+    return masterStackN(allocator, count, screen, ratio, 1);
+}
+
+/// Master-stack with `master_count` panes stacked vertically in the master
+/// region. master_count = 1 is the classic layout; higher values split the
+/// master column into N cells (xmonad IncMasterN).
+pub fn masterStackN(allocator: Allocator, count: usize, screen: Rect, ratio: f32, master_count_in: u8) ![]Rect {
     const rects = try allocator.alloc(Rect, count);
 
     if (count == 1) {
@@ -15,28 +22,51 @@ pub fn masterStack(allocator: Allocator, count: usize, screen: Rect, ratio: f32)
         return rects;
     }
 
-    const master_w: u16 = @intFromFloat(@as(f32, @floatFromInt(screen.width)) * ratio);
+    const mc_u: usize = @min(@as(usize, @intCast(master_count_in)), count);
+    const sc_u: usize = count - mc_u;
+
+    // If every pane is a master, the stack region collapses — full width.
+    const master_w: u16 = if (sc_u == 0)
+        screen.width
+    else
+        @intFromFloat(@as(f32, @floatFromInt(screen.width)) * ratio);
     const stack_w: u16 = screen.width - master_w;
-    const stack_count: u16 = @intCast(count - 1);
 
-    rects[0] = .{ .x = screen.x, .y = screen.y, .width = master_w, .height = screen.height };
+    // Split the master column into mc_u vertical cells (even, with
+    // remainder spread across the first N cells).
+    const mc_u16: u16 = @intCast(mc_u);
+    const m_cell_h = screen.height / mc_u16;
+    const m_remainder = screen.height % mc_u16;
+    var m_y_acc: u16 = 0;
+    for (0..mc_u) |i| {
+        const extra: u16 = if (i < m_remainder) 1 else 0;
+        const this_h = m_cell_h + extra;
+        rects[i] = .{
+            .x = screen.x,
+            .y = screen.y + m_y_acc,
+            .width = master_w,
+            .height = this_h,
+        };
+        m_y_acc += this_h;
+    }
 
-    const cell_h = screen.height / stack_count;
-    const remainder = screen.height % stack_count;
+    if (sc_u == 0) return rects;
 
-    // Distribute remainder pixels evenly (1 extra px to the first N panes)
-    // instead of dumping all remainder on the last pane
-    var y_acc: u16 = 0;
-    for (0..stack_count) |i| {
-        const extra: u16 = if (i < remainder) 1 else 0;
-        const this_h = cell_h + extra;
-        rects[i + 1] = .{
+    // Split the stack column into sc_u vertical cells.
+    const sc_u16: u16 = @intCast(sc_u);
+    const s_cell_h = screen.height / sc_u16;
+    const s_remainder = screen.height % sc_u16;
+    var s_y_acc: u16 = 0;
+    for (0..sc_u) |i| {
+        const extra: u16 = if (i < s_remainder) 1 else 0;
+        const this_h = s_cell_h + extra;
+        rects[mc_u + i] = .{
             .x = screen.x + master_w,
-            .y = screen.y + y_acc,
+            .y = screen.y + s_y_acc,
             .width = stack_w,
             .height = this_h,
         };
-        y_acc += this_h;
+        s_y_acc += this_h;
     }
 
     return rects;

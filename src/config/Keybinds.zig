@@ -105,6 +105,13 @@ pub const Action = enum(u8) {
     pane_set_master,
     pane_swap_next,
     pane_swap_prev,
+    pane_swap_master,
+    pane_rotate_slaves_up,
+    pane_rotate_slaves_down,
+    pane_sink,
+    pane_sink_all,
+    master_count_inc,
+    master_count_dec,
     pane_close,
     pane_move_to_1,
     pane_move_to_2,
@@ -135,6 +142,11 @@ pub const Action = enum(u8) {
 
     // Layout
     layout_cycle,
+    layout_reset,
+
+    // Workspace navigation helpers
+    workspace_toggle_last,
+    workspace_next_nonempty,
 
     // Zoom
     zoom_in,
@@ -206,6 +218,15 @@ pub const Action = enum(u8) {
     media_next,
     media_prev,
 
+    // User-defined spawn chords (B3). Each slot maps to a command
+    // string stored in Server.spawn_table[slot]. Config file assigns
+    // via [keybind] section: `Mod+Return = spawn:teru`. 32 slots is
+    // more than anyone needs; Action stays u8-sized.
+    spawn_0, spawn_1, spawn_2, spawn_3, spawn_4, spawn_5, spawn_6, spawn_7,
+    spawn_8, spawn_9, spawn_10, spawn_11, spawn_12, spawn_13, spawn_14, spawn_15,
+    spawn_16, spawn_17, spawn_18, spawn_19, spawn_20, spawn_21, spawn_22, spawn_23,
+    spawn_24, spawn_25, spawn_26, spawn_27, spawn_28, spawn_29, spawn_30, spawn_31,
+
     pub fn fromString(s: []const u8) ?Action {
         // Exact match table
         const map = .{
@@ -215,6 +236,16 @@ pub const Action = enum(u8) {
             .{ "pane:set_master", Action.pane_set_master },
             .{ "pane:swap_next", Action.pane_swap_next },
             .{ "pane:swap_prev", Action.pane_swap_prev },
+            .{ "pane:swap_master", Action.pane_swap_master },
+            .{ "pane:rotate_slaves_up", Action.pane_rotate_slaves_up },
+            .{ "pane:rotate_slaves_down", Action.pane_rotate_slaves_down },
+            .{ "pane:sink", Action.pane_sink },
+            .{ "pane:sink_all", Action.pane_sink_all },
+            .{ "master:count_inc", Action.master_count_inc },
+            .{ "master:count_dec", Action.master_count_dec },
+            .{ "layout:reset", Action.layout_reset },
+            .{ "workspace:toggle_last", Action.workspace_toggle_last },
+            .{ "workspace:next_nonempty", Action.workspace_next_nonempty },
             .{ "pane:close", Action.pane_close },
             .{ "split:vertical", Action.split_vertical },
             .{ "split:horizontal", Action.split_horizontal },
@@ -422,7 +453,7 @@ fn parseTrigger(trigger: []const u8) ?ParsedTrigger {
     return parseTriggerWithMod(trigger, Mods.ALT);
 }
 
-fn parseTriggerWithMod(trigger: []const u8, mod_key: Mods) ?ParsedTrigger {
+pub fn parseTriggerWithMod(trigger: []const u8, mod_key: Mods) ?ParsedTrigger {
     var mods = Mods{};
     var remaining = trigger;
 
@@ -575,11 +606,26 @@ pub const Keybinds = struct {
         _ = self.add(n, M, 'j', .pane_focus_next);
         _ = self.add(n, M, 'k', .pane_focus_prev);
         _ = self.add(n, M, 'm', .pane_focus_master);
-        _ = self.add(n, MS, 'm', .pane_set_master); // Swap focused with master
+        _ = self.add(n, MS, 'm', .pane_swap_master); // Swap focused ↔ master (xmonad semantics)
         _ = self.add(n, MS, 'j', .pane_swap_next); // Swap focused with next
         _ = self.add(n, MS, 'k', .pane_swap_prev); // Swap focused with previous
         _ = self.add(n, M, 'h', .resize_shrink_w);
         _ = self.add(n, M, 'l', .resize_grow_w);
+
+        // Master-workflow (v0.4.15 — xmonad rotSlaves + IncMasterN)
+        const MC = Mods{ .ctrl = true, .super_ = true };
+        _ = self.add(n, MC, 'j', .pane_rotate_slaves_down);
+        _ = self.add(n, MC, 'k', .pane_rotate_slaves_up);
+        _ = self.add(n, MC, 's', .pane_sink_all);
+        _ = self.add(n, M, ',', .master_count_inc);
+        _ = self.add(n, M, '.', .master_count_dec);
+
+        // Workspace navigation (v0.4.15)
+        _ = self.add(n, M, 0xFF1B, .workspace_toggle_last); // Mod+Escape
+        _ = self.add(n, MC, '`', .workspace_next_nonempty); // Mod+Ctrl+grave
+
+        // Layout (v0.4.15)
+        _ = self.add(n, MS, ' ', .layout_reset);
 
         // Focus also via Tab (XMonad style)
         _ = self.add(n, M, 0xFF09, .pane_focus_next); // Mod+Tab

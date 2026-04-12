@@ -59,6 +59,26 @@ pub const AutostartEntry = struct {
     }
 };
 
+pub const max_spawn_chords = 32; // matches Action.spawn_0..spawn_31
+
+/// User-defined spawn keybind. Chord is the unparsed token on the LHS
+/// of a `[keybind]` entry (e.g. "Mod+Return"); cmd is the shell command
+/// to exec. Server resolves `chord` into (mods, key) and wires it into
+/// the active Keybinds table on init.
+pub const SpawnChord = struct {
+    chord: [64]u8 = undefined,
+    chord_len: u8 = 0,
+    cmd: [256]u8 = undefined,
+    cmd_len: u16 = 0,
+
+    pub fn getChord(self: *const SpawnChord) []const u8 {
+        return self.chord[0..self.chord_len];
+    }
+    pub fn getCmd(self: *const SpawnChord) []const u8 {
+        return self.cmd[0..self.cmd_len];
+    }
+};
+
 pub const max_name_rules = 32;
 
 pub const NameRule = struct {
@@ -123,6 +143,14 @@ name_rule_count: u8 = 0,
 /// runs the program — the rule puts it on the right workspace.
 autostart: [max_autostart]AutostartEntry = undefined,
 autostart_count: u8 = 0,
+
+// ── User-defined spawn chords ──────────────────────────────────
+
+/// Keybinds from the `[keybind]` section with `spawn:<cmd>` actions.
+/// Applied by the compositor on init/reload — each entry gets a
+/// spawn_table slot in Server and a binding in Keybinds.
+spawn_chords: [max_spawn_chords]SpawnChord = undefined,
+spawn_chord_count: u8 = 0,
 
 // ── String storage (static buffers, no allocator needed) ────────
 
@@ -216,6 +244,7 @@ fn parse(self: *WmConfig, content: []const u8) void {
             .rules => self.applyRule(key, value),
             .names => self.applyNameRule(key, value),
             .autostart => self.applyAutostart(key, value),
+            .keybind => self.applyKeybind(key, value),
         }
     }
 }
@@ -228,6 +257,7 @@ const Section = enum {
     rules,
     names,
     autostart,
+    keybind,
 };
 
 fn parseSection(name: []const u8) Section {
@@ -237,6 +267,7 @@ fn parseSection(name: []const u8) Section {
     if (std.mem.eql(u8, name, "bar.thresholds")) return .bar_thresholds;
     if (std.mem.eql(u8, name, "rules")) return .rules;
     if (std.mem.eql(u8, name, "autostart")) return .autostart;
+    if (std.mem.eql(u8, name, "keybind")) return .keybind;
     return .global;
 }
 
@@ -359,6 +390,29 @@ fn applyAutostart(self: *WmConfig, key: []const u8, value: []const u8) void {
 
     self.autostart[self.autostart_count] = entry;
     self.autostart_count += 1;
+}
+
+/// Parse `[keybind]` entries. Current v1 scope: only `spawn:<cmd>`
+/// actions. Other action types should use the shared `[keybinds.*]`
+/// syntax in teru.conf — this section is for commands that don't
+/// fit the pure Action enum (user-typed shell commands).
+fn applyKeybind(self: *WmConfig, key: []const u8, value: []const u8) void {
+    if (self.spawn_chord_count >= max_spawn_chords) return;
+    const prefix = "spawn:";
+    if (!std.mem.startsWith(u8, value, prefix)) return;
+    const cmd = std.mem.trim(u8, value[prefix.len..], &std.ascii.whitespace);
+    if (cmd.len == 0 or key.len == 0) return;
+
+    var chord = SpawnChord{};
+    const chord_len = @min(key.len, chord.chord.len);
+    @memcpy(chord.chord[0..chord_len], key[0..chord_len]);
+    chord.chord_len = @intCast(chord_len);
+    const cmd_len = @min(cmd.len, chord.cmd.len);
+    @memcpy(chord.cmd[0..cmd_len], cmd[0..cmd_len]);
+    chord.cmd_len = @intCast(cmd_len);
+
+    self.spawn_chords[self.spawn_chord_count] = chord;
+    self.spawn_chord_count += 1;
 }
 
 // ── Rule lookup ─────────────────────────────────────────────────

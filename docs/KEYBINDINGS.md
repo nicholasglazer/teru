@@ -35,14 +35,18 @@ There are three keyboard modes:
 | `$mod+Tab` / `$mod+Shift+Tab` | Focus next / previous (XMonad-style) |
 | `$mod+Shift+J` / `$mod+Shift+K` | Swap focused pane with next / previous |
 | `$mod+M` | Focus the master pane |
-| `$mod+Shift+M` | Mark focused pane as master |
+| `$mod+Shift+M` | Swap focused pane ↔ master (xmonad `W.swapMaster`) |
 | `$mod+H` / `$mod+L` | Shrink / grow master width |
+| `$mod+Ctrl+J` / `$mod+Ctrl+K` | Rotate slaves down / up (keeps master + focus in place; xmonad `rotSlaves`) |
+| `$mod+,` / `$mod+.` | Inc / dec **master count** — master-stack supports N masters stacked vertically |
+| `$mod+Ctrl+S` | Sink *all* floating windows back into tiling |
 
 ## Layout
 
 | Key | Action |
 |-----|--------|
 | `$mod+Space` | Cycle through this workspace's layouts |
+| `$mod+Shift+Space` | Reset layout to `master-stack` (and `master_count` to 1) |
 | `$mod+Z` | Toggle zoom (monocle) on focused pane |
 | `$mod+F` | Toggle fullscreen |
 | `$mod+S` | Toggle floating for focused window |
@@ -57,6 +61,8 @@ layouts: `master-stack`, `grid`, `monocle`, `dishes`, `spiral`, `three-col`,
 |-----|--------|
 | `$mod+1` … `$mod+9`, `$mod+0` | Switch to workspace 1–9, 0 |
 | `$mod+Shift+1` … `$mod+Shift+0` | Move focused window to workspace N |
+| `$mod+Escape` | Toggle **last visited** workspace (xmonad `toggleWS`) |
+| `$mod+Ctrl+`` ` | Jump to next **non-empty** workspace (skips empties) |
 
 ## Scratchpads (teruwm)
 
