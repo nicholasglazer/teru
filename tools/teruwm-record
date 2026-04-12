@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# teruwm-record — recording presets built on wf-recorder + wlr-screencopy.
+#
+# Presets (since v0.4.16):
+#   product   30 fps full-output MP4 — Ctrl-C to stop.
+#   area      User slurps a region, then records at 30 fps to MP4.
+#   gif       10-second full-output GIF, auto-stops.
+#   tutorial  60 fps full-output MP4 for long-form captures.
+#   stop      Stop any running teruwm-record instance.
+#
+# Depends on: wf-recorder, slurp, grim (all available from any distro).
+# Output dir: $MIOZU_RECORD_DIR (default ~/Videos/teruwm).
+
+set -euo pipefail
+
+OUT_DIR="${MIOZU_RECORD_DIR:-$HOME/Videos/teruwm}"
+mkdir -p "$OUT_DIR"
+STAMP="$(date +%Y-%m-%d_%H-%M-%S)"
+PIDFILE="/tmp/teruwm-record-$USER.pid"
+
+need() {
+    for cmd in "$@"; do
+        command -v "$cmd" >/dev/null 2>&1 || { echo "teruwm-record: missing '$cmd'. Install it and retry." >&2; exit 1; }
+    done
+}
+
+case "${1:-}" in
+    product)
+        need wf-recorder
+        out="$OUT_DIR/product-$STAMP.mp4"
+        echo "teruwm-record: recording full output at 30 fps → $out"
+        wf-recorder -f "$out" -r 30 & echo $! > "$PIDFILE"
+        wait
+        ;;
+    area)
+        need wf-recorder slurp
+        geom="$(slurp)"
+        [ -z "$geom" ] && exit 1
+        out="$OUT_DIR/area-$STAMP.mp4"
+        echo "teruwm-record: recording $geom at 30 fps → $out"
+        wf-recorder -g "$geom" -f "$out" -r 30 & echo $! > "$PIDFILE"
+        wait
+        ;;
+    gif)
+        need wf-recorder
+        out="$OUT_DIR/gif-$STAMP.gif"
+        echo "teruwm-record: recording 10 s GIF → $out"
+        wf-recorder -c gif -f "$out" -r 15 & pid=$!
+        echo $pid > "$PIDFILE"
+        sleep 10
+        kill -INT $pid 2>/dev/null || true
+        wait $pid 2>/dev/null || true
+        rm -f "$PIDFILE"
+        ;;
+    tutorial)
+        need wf-recorder
+        out="$OUT_DIR/tutorial-$STAMP.mp4"
+        echo "teruwm-record: recording full output at 60 fps → $out"
+        wf-recorder -f "$out" -r 60 & echo $! > "$PIDFILE"
+        wait
+        ;;
+    stop)
+        if [ -f "$PIDFILE" ]; then
+            kill -INT "$(cat "$PIDFILE")" 2>/dev/null || true
+            rm -f "$PIDFILE"
+        fi
+        # Also catch any wf-recorder we didn't spawn ourselves.
+        pkill -INT -x wf-recorder 2>/dev/null || true
+        echo "teruwm-record: stopped"
+        ;;
+    *)
+        echo "Usage: $0 {product|area|gif|tutorial|stop}" >&2
+        exit 2
+        ;;
+esac

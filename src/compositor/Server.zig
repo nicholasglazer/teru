@@ -209,6 +209,13 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     _ = wlr.wlr_subcompositor_create(display);
     _ = wlr.wlr_data_device_manager_create(display);
 
+    // zwlr_screencopy_manager_v1 — enables grim, slurp+grim, wf-recorder,
+    // OBS screencopy, and any other screen-capture client. wlroots hooks
+    // wlr_output.commit internally and samples the composited framebuffer
+    // every vsync; no extra render pass. Owned by the wl_display, so no
+    // cleanup needed (tears down on display_destroy).
+    _ = wlr.wlr_screencopy_manager_v1_create(display);
+
     // Scene graph
     const scene = wlr.wlr_scene_create() orelse
         return error.SceneCreateFailed;
@@ -1440,6 +1447,15 @@ pub fn executeAction(self: *Server, action: KBAction) bool {
             self.takeScreenshot();
             return true;
         },
+        .screenshot_area => {
+            // Uses external slurp + grim, both of which now work thanks
+            // to teruwm's wlr-screencopy global. Output lands alongside
+            // our own screenshots in $HOME/Pictures/.
+            self.spawnShell(
+                "mkdir -p \"$HOME/Pictures\" && grim -g \"$(slurp)\" \"$HOME/Pictures/teruwm-area-$(date +%s).png\"",
+            );
+            return true;
+        },
         .screenshot_pane => {
             if (self.focused_terminal) |tp| {
                 tp.render();
@@ -2243,11 +2259,35 @@ pub fn updateFocusedTerminal(self: *Server) void {
     }
     if (!found) self.focused_terminal = null;
 
+    self.applyFocusOpacity();
+
     // Re-render ALL visible panes so border colors update immediately
     for (self.terminal_panes) |maybe_tp| {
         if (maybe_tp) |tp| tp.render();
     }
     if (self.bar) |b| b.render(self);
+}
+
+/// Apply wm_config.unfocused_opacity to every terminal pane's
+/// scene_buffer: 1.0 for the focused one, wm_config.unfocused_opacity
+/// for the rest. wlroots blends on composite; zero CPU renderer cost.
+/// When opacity == 1.0 (default), this is a noop and skipped.
+fn applyFocusOpacity(self: *Server) void {
+    const op = self.wm_config.unfocused_opacity;
+    if (op >= 0.999) {
+        // Default: force every buffer back to full opacity in case a
+        // prior config change left someone faded.
+        for (self.terminal_panes) |maybe_tp| {
+            if (maybe_tp) |tp| wlr.wlr_scene_buffer_set_opacity(tp.scene_buffer, 1.0);
+        }
+        return;
+    }
+    for (self.terminal_panes) |maybe_tp| {
+        if (maybe_tp) |tp| {
+            const o: f32 = if (tp == self.focused_terminal) 1.0 else op;
+            wlr.wlr_scene_buffer_set_opacity(tp.scene_buffer, o);
+        }
+    }
 }
 
 // ── Process spawning ───────────────────────────────────────────

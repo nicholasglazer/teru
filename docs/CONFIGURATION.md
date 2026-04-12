@@ -471,6 +471,7 @@ These keys are set above any section header.
 | `gap` | integer | `4` | Uniform gap in pixels. Same value applied between panes and between panes and screen edges / bars |
 | `border_width` | integer | `2` | Border width in pixels around focused and unfocused windows. Suppressed ("smart borders") when a pane is the only window on its workspace — a focus indicator on the sole visible window carries no information |
 | `bg_color` (or `bg`) | hex color | `0xFF1a1d24` | Compositor background color, visible through gaps. Accepts `#rrggbb`, `0xrrggbb`, `rrggbb` (alpha defaulted to `0xFF`), or full ARGB `0xaarrggbb` |
+| `unfocused_opacity` | float 0.0–1.0 | `1.0` | *(Since v0.4.16.)* Alpha applied to unfocused terminal panes on focus change. `1.0` disables fading; `0.85` is subtle. wlroots blends at composite, so there's no CPU renderer cost. Currently terminal panes only — XDG client fade is a follow-up |
 
 ### `[bar.top]` and `[bar.bottom]`
 
@@ -590,6 +591,36 @@ Keys are arbitrary (used only to disambiguate lines — any unique label
 works: `1`, `2`, `web`, `panel`, …). Values are full shell commands
 (passed to `/bin/sh -c`, so pipes, args, and quoting work). Max 16
 entries. Command max 255 bytes.
+
+### Screen capture + recording
+
+*(Since v0.4.16.)* teruwm registers `zwlr_screencopy_manager_v1`, so
+standard Wayland screen-capture tools work natively:
+
+```sh
+grim screen.png                       # full output
+grim -g "$(slurp)" region.png         # drag-select region
+wf-recorder -f video.mp4              # record to MP4 (full output)
+wf-recorder -g "$(slurp)" -f clip.mp4 # record a region
+```
+
+For one-key recording presets, `tools/teruwm-record` wraps wf-recorder
+with sensible defaults. Bind in `[keybind]`:
+
+```conf
+[keybind]
+Mod+R            = spawn:teruwm-record product
+Mod+Shift+R      = spawn:teruwm-record area
+Mod+Ctrl+R       = spawn:teruwm-record gif
+Mod+Alt+R        = spawn:teruwm-record tutorial
+Mod+Shift+Ctrl+R = spawn:teruwm-record stop
+```
+
+Presets: **product** (30 fps MP4), **area** (slurp + 30 fps), **gif**
+(10 s auto-stop), **tutorial** (60 fps for long captures), **stop**
+(ends any running session). Output dir: `$MIOZU_RECORD_DIR` (default
+`~/Videos/teruwm`). Depends on `wf-recorder`, `slurp`, `grim` being
+installed.
 
 ### `[keybind]` — User-Defined Spawn Chords
 
