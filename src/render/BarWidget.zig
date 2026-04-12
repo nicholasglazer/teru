@@ -8,10 +8,15 @@
 //!   {workspaces}        — workspace tabs (active highlighted)
 //!   {title}             — focused pane/window title
 //!   {layout}            — current layout indicator [M] [G] etc.
-//!   {clock}             — current time (HH:MM)
-//!   {clock:%H:%M:%S}    — custom strftime format
+//!   {clock}             — current local time (HH:MM)
+//!   {clock:%H:%M:%S}    — custom strftime format (uses libc strftime)
 //!   {panes}             — pane count for active workspace
-//!   {mem}               — RAM usage from /proc/meminfo
+//!   {mem}               — RAM usage % from /proc/meminfo
+//!   {cpu}               — CPU usage % from /proc/stat
+//!   {cputemp}           — CPU temperature °C from /sys/class/hwmon
+//!   {battery} / {bat}   — Battery % from /sys/class/power_supply
+//!   {keymap} / {lang}   — Active keyboard layout (teruwm only)
+//!   {perf}              — frame avg/max µs (teruwm only)
 //!   {exec:N:command}    — shell command output, refreshed every N seconds
 //!   literal text        — rendered as-is
 
@@ -27,6 +32,10 @@ pub const WidgetKind = enum {
     clock,
     panes,
     mem,
+    cpu,      // CPU usage % from /proc/stat (sampled across render calls)
+    cputemp,  // CPU temperature °C from /sys/class/hwmon
+    battery,  // Battery % from /sys/class/power_supply
+    keymap,   // Active keyboard layout (compositor only — populated in BarData)
     perf,
     exec,
     text,
@@ -71,17 +80,28 @@ pub fn parse(format: []const u8) WidgetList {
                 list.append(.{ .kind = .text, .arg = format[text_start..i] });
             }
 
-            // Find closing brace
-            const end = std.mem.indexOfPos(u8, format, i + 1, "}") orelse {
+            // Find closing brace. Balance depth so tokens like
+            // `{exec:5:awk '{print $1}'}` containing `{...}` inside a
+            // shell command aren't truncated at the first `}`.
+            var depth: u32 = 1;
+            var j: usize = i + 1;
+            while (j < format.len) : (j += 1) {
+                if (format[j] == '{') depth += 1;
+                if (format[j] == '}') {
+                    depth -= 1;
+                    if (depth == 0) break;
+                }
+            }
+            if (j >= format.len) {
                 // Unclosed brace — treat rest as text
                 list.append(.{ .kind = .text, .arg = format[i..] });
                 return list;
-            };
+            }
 
-            const token = format[i + 1 .. end];
+            const token = format[i + 1 .. j];
             list.append(parseToken(token));
 
-            i = end + 1;
+            i = j + 1;
             text_start = i;
         } else {
             i += 1;
@@ -103,6 +123,10 @@ fn parseToken(token: []const u8) Widget {
     if (std.mem.eql(u8, token, "layout")) return .{ .kind = .layout };
     if (std.mem.eql(u8, token, "panes")) return .{ .kind = .panes };
     if (std.mem.eql(u8, token, "mem")) return .{ .kind = .mem };
+    if (std.mem.eql(u8, token, "cpu")) return .{ .kind = .cpu };
+    if (std.mem.eql(u8, token, "cputemp")) return .{ .kind = .cputemp };
+    if (std.mem.eql(u8, token, "battery") or std.mem.eql(u8, token, "bat")) return .{ .kind = .battery };
+    if (std.mem.eql(u8, token, "keymap") or std.mem.eql(u8, token, "lang")) return .{ .kind = .keymap };
     if (std.mem.eql(u8, token, "perf")) return .{ .kind = .perf };
     if (std.mem.eql(u8, token, "clock")) return .{ .kind = .clock, .arg = "%H:%M" };
 
@@ -131,10 +155,13 @@ fn parseToken(token: []const u8) Widget {
 
 pub const default_top_left = "{workspaces}";
 pub const default_top_center = "{title}";
-pub const default_top_right = "{clock}";
-pub const default_bottom_left = "{mem} | {perf}";
+// Top right: keyboard layout + battery + time (xmobar-style, no duplicate)
+pub const default_top_right = "{keymap} | {battery} | {clock}";
+// Bottom left: system stats — CPU %, CPU temp, RAM
+pub const default_bottom_left = "CPU {cpu} {cputemp} | RAM {mem}";
 pub const default_bottom_center = "";
-pub const default_bottom_right = "{clock:%a %Y-%m-%d}";
+// Bottom right: GPU via exec (vendor-specific; NVIDIA by default, falls back to N/A)
+pub const default_bottom_right = "GPU {exec:5:nvidia-smi --query-gpu=utilization.gpu,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | awk -F, '{print $1\"% \"$2\"C\"}' || echo N/A}";
 
 // ── Tests ──────────────────────────────────────────────────────
 
@@ -174,6 +201,15 @@ test "parse mixed text and tokens" {
 test "parse empty string" {
     const list = parse("");
     try std.testing.expectEqual(@as(u8, 0), list.count);
+}
+
+test "parse exec with embedded braces" {
+    // awk scripts often contain {…}; the parser must balance braces so the
+    // whole command is captured (regression for GPU widget default).
+    const list = parse("{exec:5:awk '{print $1}' file}");
+    try std.testing.expectEqual(@as(u8, 1), list.count);
+    try std.testing.expectEqual(WidgetKind.exec, list.items[0].kind);
+    try std.testing.expectEqualStrings("awk '{print $1}' file", list.items[0].arg);
 }
 
 test "parse plain text only" {

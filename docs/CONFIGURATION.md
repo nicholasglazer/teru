@@ -449,3 +449,120 @@ Theme files are loaded from `~/.config/teru/themes/<name>.conf`.
 ## Boolean Values
 
 Boolean options accept: `true`, `yes`, `1` for true; `false`, `no`, `0` for false.
+
+---
+
+## teruwm Compositor Config
+
+The teruwm compositor reads a **separate** config file from the terminal: `~/.config/teruwm/config`. This file covers window manager concerns only (gaps, borders, bars, window rules). Font, colors, and terminal behavior still come from `~/.config/teru/teru.conf` and are shared with the embedded teru terminal panes.
+
+If `~/.config/teruwm/config` does not exist, all defaults are used.
+
+### File Format
+
+Same `key = value` syntax as `teru.conf`. Lines starting with `#` are comments. Sections use `[section]` headers. Unknown keys are silently ignored. Max file size: 64 KB.
+
+### Global Keys
+
+These keys are set above any section header.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `gap` | integer | `4` | Uniform gap in pixels. Same value applied between panes and between panes and screen edges / bars |
+| `border_width` | integer | `2` | Border width in pixels around focused and unfocused windows |
+| `bg_color` (or `bg`) | hex color | `0xFF1a1d24` | Compositor background color, visible through gaps. Accepts `#rrggbb`, `0xrrggbb`, `rrggbb` (alpha defaulted to `0xFF`), or full ARGB `0xaarrggbb` |
+
+### `[bar.top]` and `[bar.bottom]`
+
+Each bar has three format-string slots: `left`, `center`, `right`. Omit a slot to leave it empty. Max length per string: 256 bytes.
+
+| Key | Description |
+|-----|-------------|
+| `left` | Left-aligned bar content |
+| `center` | Center-aligned bar content |
+| `right` | Right-aligned bar content |
+
+Defaults when unset:
+
+- `[bar.top]` left=`{workspaces}`, center=`{title}`, right=`{clock}`
+- `[bar.bottom]` left=`{mem} | {perf}`, center=(empty), right=`{clock:%a %Y-%m-%d}`
+
+### Bar Widget Tokens
+
+Format strings are plain text with `{name}` or `{name:arg}` tokens. Any literal text between tokens renders as-is. Unknown tokens render as literal text.
+
+| Token | Output |
+|-------|--------|
+| `{workspaces}` | Workspace tabs (active highlighted) |
+| `{title}` | Focused pane/window title |
+| `{layout}` | Current layout indicator, e.g. `[M]`, `[G]`, `[#]` |
+| `{panes}` | Pane count for the active workspace |
+| `{mem}` | RAM usage pulled from `/proc/meminfo` |
+| `{perf}` | Compositor perf indicator |
+| `{clock}` | Current time in `HH:MM` (shorthand for `{clock:%H:%M}`) |
+| `{clock:%FMT}` | Current time with any `strftime(3)` format, e.g. `{clock:%H:%M:%S}`, `{clock:%a %Y-%m-%d}` |
+| `{exec:N:cmd}` | Output of shell command `cmd`, refreshed every `N` seconds. Output capped at 128 bytes |
+| `{exec:cmd}` | Same as above with default 5 second interval |
+| literal text | Rendered as-is (e.g. `" | "`, `"cpu: "`) |
+
+### `[rules]` — Window → Workspace
+
+Map an X11 window class or Wayland `app_id` to a target workspace (1-9). When a matching window maps, the compositor sends it to that workspace. Max 32 rules.
+
+```conf
+[rules]
+Chromium = 2
+Firefox = 1
+Steam = 7
+```
+
+Key is matched exactly against the window's class / app_id. Value is a 1-based workspace number (internally stored 0-based).
+
+### `[names]` — Human-Readable Window Names
+
+Map a window class or `app_id` to a short display name used by the bar's `{title}` widget and any compositor MCP output. Max 32 name rules. Class max 64 bytes, name max 32 bytes.
+
+```conf
+[names]
+Chromium = web
+org.mozilla.firefox = ff
+code-url-handler = vscode
+```
+
+### Example `~/.config/teruwm/config`
+
+Drop this in as a starting point:
+
+```conf
+# ~/.config/teruwm/config
+
+# ── Window layout ──────────────────────────────
+gap = 8
+border_width = 2
+bg_color = #1a1d24
+
+# ── Top bar ────────────────────────────────────
+[bar.top]
+left   = {workspaces}
+center = {title}
+right  = {clock:%a %H:%M}
+
+# ── Bottom bar ─────────────────────────────────
+[bar.bottom]
+left   = {layout} | {panes} panes
+center = {mem}
+right  = {exec:2:uptime | awk '{print $(NF-2)}'} | {clock:%Y-%m-%d}
+
+# ── Workspace assignments ──────────────────────
+[rules]
+Firefox    = 1
+Chromium   = 2
+Steam      = 7
+Slack      = 8
+
+# ── Friendly window names ──────────────────────
+[names]
+org.mozilla.firefox = ff
+Chromium            = web
+code-url-handler    = code
+```

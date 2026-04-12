@@ -272,6 +272,16 @@ pub extern "xkbcommon" fn xkb_state_key_get_one_sym(state: *xkb_state, key: u32)
 pub extern "xkbcommon" fn xkb_state_mod_name_is_active(state: *xkb_state, name: [*:0]const u8, kind: c_int) callconv(.c) c_int;
 pub extern "xkbcommon" fn xkb_state_key_get_utf8(state: *xkb_state, key: u32, buffer: [*]u8, size: usize) callconv(.c) c_int;
 
+// Active layout detection (for status-bar keymap widget)
+pub extern "xkbcommon" fn xkb_state_serialize_layout(state: *xkb_state, components: c_uint) callconv(.c) u32;
+pub extern "xkbcommon" fn xkb_keymap_layout_get_name(keymap: *xkb_keymap, idx: u32) callconv(.c) ?[*:0]const u8;
+pub extern "xkbcommon" fn xkb_state_get_keymap(state: *xkb_state) callconv(.c) ?*xkb_keymap;
+pub extern "xkbcommon" fn xkb_keymap_get_as_string(keymap: *xkb_keymap, format: c_int) callconv(.c) ?[*:0]u8;
+pub const XKB_STATE_LAYOUT_EFFECTIVE: c_uint = 0x80;
+pub const XKB_KEYMAP_FORMAT_TEXT_V1: c_int = 1;
+// free() for strings allocated by xkbcommon
+pub extern "c" fn free(ptr: ?*anyopaque) callconv(.c) void;
+
 // xkb modifier name constants
 pub const XKB_MOD_NAME_LOGO = "Mod4";
 pub const XKB_MOD_NAME_ALT = "Mod1";
