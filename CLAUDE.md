@@ -1,44 +1,82 @@
-# teru -- AI-first terminal emulator
+# teru — project notes for Claude Code
 
-Written in Zig 0.16+. Uses libc.
+Two binaries, one source tree. `teru` is a terminal emulator + multiplexer;
+`teruwm` is a wlroots Wayland compositor built on the same libteru library.
+Written in Zig 0.16+. Links libc via `src/compat.zig`.
 
 ## Build
-zig build          # build
-zig build test     # test
-zig build run      # run (windowed)
-zig build run -- --raw  # run (TTY mode)
+
+```sh
+zig build                             # debug teru
+zig build -Doptimize=ReleaseFast      # release teru   → zig-out/bin/teru
+zig build -Dcompositor                # debug teruwm
+zig build -Doptimize=ReleaseFast -Dcompositor   # release teruwm → zig-out/bin/teruwm
+zig build test                        # 472+ inline tests (library-level)
+zig build bench -- tools/bench-payloads   # throughput benchmarks
+zig build run                         # run debug teru (windowed)
+zig build run -- --raw                # run debug teru (TTY mode)
+```
 
 ## Architecture
-- src/core/ -- VtParser, Grid, Pane, Multiplexer, Selection, KeyHandler, Clipboard, ViMode
-- src/server/ -- Daemon persistence (daemon.zig, protocol.zig, ipc.zig cross-platform IPC)
-- src/pty/ -- PTY management (pty.zig dispatch, PosixPty.zig POSIX, WinPty.zig ConPTY, RemotePty.zig daemon-backed)
-- src/graph/ -- ProcessGraph (DAG of all processes/agents)
-- src/agent/ -- OSC 9999 protocol, HookHandler, HookListener, McpServer, PaneBackend
-- src/tiling/ -- Layout engine (master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion)
-- src/persist/ -- Session serialization, binary format
-- src/config/ -- Config file parser (key=value format), Keybinds.zig (configurable bindings), ConfigWatcher.zig
-- src/render/ -- CPU SIMD renderer, stb_truetype FontAtlas
-- src/compat.zig -- Cross-platform primitives: monotonicNow, sleepNs, getPid, getUid, posixFork, forkExec, MemWriter/MemReader
-- src/platform/ -- Platform shells: X11+Wayland/Linux, AppKit/macOS, Win32/Windows; keyboard translation per OS
 
-## Key Rules
-- Thread `io: std.Io` through every function that does I/O
-- See `.claude/skills/zig16.md` for complete Zig 0.16 API reference
-- See `.claude/rules/zig-terminal.md` for dev rules, anti-patterns, and perf targets
+- `src/core/` — VtParser, Grid, Pane, Multiplexer, Selection, KeyHandler, Clipboard, ViMode
+- `src/server/` — Session daemon (`daemon.zig`), wire protocol, cross-platform IPC (`ipc.zig`)
+- `src/pty/` — `pty.zig` comptime dispatch, `PosixPty.zig`, `WinPty.zig` (ConPTY), `RemotePty.zig`
+- `src/graph/` — `ProcessGraph` (DAG of processes/agents, MCP-queryable)
+- `src/agent/` — OSC 9999 parser, HookHandler/Listener, `McpServer.zig` (19 tools), `PaneBackend.zig`
+- `src/tiling/` — Layout engine + workspace state; 8 layouts (master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion)
+- `src/persist/` — Session serialization, scrollback compression (keyframe + delta)
+- `src/config/` — Config parser, `Keybinds.zig` (configurable), `ConfigWatcher.zig` (inotify/kqueue/poll), `themes.zig`
+- `src/render/` — `software.zig` (SIMD renderer), `FontAtlas.zig` (stb_truetype), `BarRenderer.zig` (shared), `BarWidget.zig`, `PushWidget.zig`
+- `src/platform/` — X11 (XCB) + Wayland (xdg-shell) + AppKit + Win32; keyboard translation per OS
+- `src/compositor/` — **teruwm only.** `main.zig`, `Server.zig`, `Bar.zig`, `TerminalPane.zig`, `XdgView.zig`, `XwaylandView.zig`, `WmMcpServer.zig` (24 tools), `WmConfig.zig`, `Node.zig`, wlroots `wlr.zig` bindings, `miozu-wlr-glue.c`
+- `src/compat.zig` — `monotonicNow`, `sleepNs`, `getPid`, `getUid`, `posixFork`, `forkExec`, `MemWriter/MemReader`
+- `tools/bench.zig` — vtebench payload throughput harness (zig build bench)
 
-## Version
-Current: 0.4.0. Single source of truth: `build.zig` (line 10). Propagated via `build_options.version` to main.zig and McpServer.zig at compile time. Bump with: `make bump-version V=x.y.z` (updates build.zig + build.zig.zon)
+Map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## MCP
+
+Two servers. 43 tools total.
+
+- **teru agent** (`src/agent/McpServer.zig`) — 19 tools, socket `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock`
+- **teruwm compositor** (`src/compositor/WmMcpServer.zig`) — 24 tools, socket `$XDG_RUNTIME_DIR/teru-wmmcp-$PID.sock`
+
+Reference: [docs/MCP-API.md](docs/MCP-API.md).
+
+## Key rules
+
+- Thread `io: std.Io` through every function that does file / network / timer I/O.
+- Prefer `.claude/skills/zig16.md` and `.claude/rules/zig-terminal.md` over guessing at Zig 0.16 API shapes.
+- Zero allocations in the render hot path. `renderDirty` uses `grid.dirty_row_min..=max` — don't break dirty tracking.
+- VtParser is pure: no I/O, no allocation. CSI params capped at 16, OSC at 256 — overflow truncates.
+- teruwm MCP calls always schedule a frame so state changes paint next vsync.
+- No new dependencies without discussion — the binary size and zero-GPU property are load-bearing.
 
 ## Testing
-All modules have inline tests (526+ test blocks). Run with `zig build test`.
 
-## Session Persistence
-```bash
-teru                              # fresh terminal (scratchpad)
-teru -e htop                      # run command instead of shell
-teru --no-bar                     # start with status bar hidden
-teru -n myproject                 # persistent named session (daemon auto-started)
-teru -n myproject -t claude-power # start from template
-teru -l                           # list active sessions
-# Alt+D to detach from session
+```sh
+zig build test                        # 472+ inline tests
+python3 /tmp/teruwm-full-e2e.py       # E2E covering every MCP tool + Mod+drag (see /tmp for latest)
+bash tools/run-bench.sh               # reproduce benchmarks from docs/BENCHMARKS.md
 ```
+
+## Version
+
+Current: see `build.zig` line 10 (`const version`). Propagated via
+`build_options.version` to `main.zig`, `McpServer.zig`,
+`WmMcpServer.zig`. Bump with `make bump-version V=x.y.z`.
+
+## User-facing surface
+
+- [README.md](README.md) — what teru and teruwm are; link tree
+- [docs/INSTALLING.md](docs/INSTALLING.md) — per-platform install + teruwm TTY caveat
+- [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md) — every default keybind for both binaries
+- [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — teru.conf, teruwm/config, widgets, thresholds, rules
+- [docs/MCP-API.md](docs/MCP-API.md) — all 43 tools with schemas + examples
+- [docs/AI-INTEGRATION.md](docs/AI-INTEGRATION.md) — CustomPaneBackend, push widgets, OSC 9999, .tsess templates
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module map, rendering pipeline, hot-restart, gap arithmetic
+- [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — methodology + numbers, explicitly-not-measured items
+
+When you change something user-facing, update the relevant doc in the
+same PR. Stale docs are worse than no docs.
