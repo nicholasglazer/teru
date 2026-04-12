@@ -58,6 +58,20 @@ layouts: `master-stack`, `grid`, `monocle`, `dishes`, `spiral`, `three-col`,
 | `$mod+1` … `$mod+9`, `$mod+0` | Switch to workspace 1–9, 0 |
 | `$mod+Shift+1` … `$mod+Shift+0` | Move focused window to workspace N |
 
+## Scratchpads (teruwm)
+
+Nine floating terminal panes, independent of any workspace. Useful for
+always-available scratch shells — the pane holds its state when
+toggled off.
+
+| Key | Action |
+|-----|--------|
+| `Alt+RAlt+1` … `Alt+RAlt+9` | Toggle scratchpad 1–9 (create on first call; show/hide thereafter) |
+
+The chord is explicitly Alt + Right-Alt + digit: both Alt keys must be
+held. This avoids collision with the single-Alt or single-Super
+workspace shortcuts.
+
 ## UI / compositor (teruwm)
 
 | Key | Action |
@@ -161,7 +175,8 @@ Or set `copy_on_select = true` in config for auto-copy on mouse release.
 | `Shift+Click` | Open URL under cursor |
 | `Shift+Hover` | Underline URL under cursor |
 | Drag pane border | Resize master ratio (teruwm) |
-| `$mod+Click` drag | Move floating window (teruwm) |
+| `$mod+Click` drag on **tiled** pane | Detach from layout → becomes floating under the cursor (teruwm) |
+| `$mod+Click` drag on floating | Move floating window (teruwm) |
 | `$mod+Right-click` drag | Resize floating window (teruwm) |
 | Wheel | Smooth pixel scroll |
 
