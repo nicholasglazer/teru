@@ -130,9 +130,9 @@ fn parseToken(token: []const u8) Widget {
 pub const default_top_left = "{workspaces}";
 pub const default_top_center = "{title}";
 pub const default_top_right = "{clock}";
-pub const default_bottom_left = "";
+pub const default_bottom_left = "{mem}";
 pub const default_bottom_center = "";
-pub const default_bottom_right = "";
+pub const default_bottom_right = "{clock:%a %Y-%m-%d}";
 
 // ── Tests ──────────────────────────────────────────────────────
 

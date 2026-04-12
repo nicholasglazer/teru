@@ -218,6 +218,14 @@ uint32_t miozu_pointer_button_button(struct wlr_pointer_button_event *e) { retur
 uint32_t miozu_pointer_button_state(struct wlr_pointer_button_event *e) { return e->state; }
 uint32_t miozu_pointer_button_time(struct wlr_pointer_button_event *e) { return e->time_msec; }
 
+/* ── Axis (scroll wheel) event accessors ─────────────────────── */
+
+double miozu_pointer_axis_delta(struct wlr_pointer_axis_event *e) { return e->delta; }
+uint32_t miozu_pointer_axis_orientation(struct wlr_pointer_axis_event *e) { return e->orientation; }
+uint32_t miozu_pointer_axis_source(struct wlr_pointer_axis_event *e) { return e->source; }
+uint32_t miozu_pointer_axis_time(struct wlr_pointer_axis_event *e) { return e->time_msec; }
+int32_t miozu_pointer_axis_delta_discrete(struct wlr_pointer_axis_event *e) { return e->delta_discrete; }
+
 /* ── Keyboard event accessors ────────────────────────────────── */
 
 uint32_t miozu_keyboard_key_keycode(struct wlr_keyboard_key_event *e) { return e->keycode; }

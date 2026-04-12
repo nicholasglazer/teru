@@ -1,6 +1,6 @@
-# teru Development Team: Parser + Renderer + Agent Integration
+# teru Development Team: Parser + Renderer + Agent + Compositor
 
-Spawn a 3-teammate agent team for teru terminal emulator work spanning VT parsing, SIMD rendering, and AI agent integration.
+Spawn a 3-4 teammate agent team for teru work spanning VT parsing, SIMD rendering, AI agent integration, and Wayland compositor.
 
 ## Feature
 
@@ -14,10 +14,11 @@ You are the team lead. Follow phases in order. Do NOT skip phases.
 
 1. Enter plan mode
 2. Read `CLAUDE.md` and the roadmap: `docs/plans/2026-03-31-roadmap.md`
-3. Identify affected files across all 3 domains:
+3. Identify affected files across all 4 domains:
    - **Parser domain**: `src/core/VtParser.zig`, `src/core/Grid.zig`, `src/core/Terminal.zig`, `src/core/Selection.zig`, `src/core/KeyHandler.zig`
    - **Renderer domain**: `src/render/software.zig`, `src/render/FontAtlas.zig`, `src/render/render.zig`, `src/platform/`
    - **Agent domain**: `src/agent/PaneBackend.zig`, `src/agent/McpServer.zig`, `src/agent/HookHandler.zig`, `src/agent/HookListener.zig`, `src/agent/protocol.zig`, `src/graph/ProcessGraph.zig`
+   - **Compositor domain**: `src/compositor/Server.zig`, `src/compositor/TerminalPane.zig`, `src/compositor/Output.zig`, `src/compositor/WmMcpServer.zig`, `src/compositor/Bar.zig`, `src/compositor/WmConfig.zig`, `vendor/miozu-wlr-glue.c`
 4. Identify cross-module interfaces (Grid is shared by all three domains)
 5. Break into tasks: 3-6 per teammate, 9-18 total
 6. Map task dependencies:
@@ -179,6 +180,56 @@ prompt: |
 
   ## Workflow
   1. Check TaskList for your assigned tasks (owner: "agent-dev")
+  2. Set task to in_progress with TaskUpdate before starting
+  3. Read the target file completely before making changes
+  4. Implement the task with inline tests
+  5. Run `zig build test` to verify
+  6. Mark task completed with TaskUpdate when done
+  7. Check TaskList for next available task
+  8. When all your tasks are done, send a summary to team lead via SendMessage
+```
+
+**Compositor Dev** (spawn only if feature touches `src/compositor/`):
+```
+name: "compositor-dev"
+subagent_type: "wm-dev"
+model: "sonnet"
+team_name: "<team-name>"
+prompt: |
+  You are the compositor teammate on team <team-name>.
+  Read ~/.claude/teams/<team-name>/config.json to see your teammates.
+
+  ## Feature
+  <feature description -- paste the full feature spec>
+
+  ## Your Scope
+  src/compositor/ and vendor/miozu-wlr-glue.c ONLY. You own:
+  - Server.zig -- core compositor: tiling, input handling, keybinds, gap logic
+  - TerminalPane.zig -- terminal pane rendering, PTY integration, dirty tracking
+  - Output.zig -- per-output frame callback (vsync render loop)
+  - WmMcpServer.zig -- compositor MCP server (13 tools over Unix socket)
+  - Bar.zig -- top/bottom status bars with widget system
+  - WmConfig.zig -- config parser for ~/.config/teruwm/config
+  - wlr.zig -- wlroots C binding declarations
+  - vendor/miozu-wlr-glue.c -- C glue for wlroots struct field access
+
+  ## Rules
+  - Read `.claude/rules/wm-compositor.md` FIRST -- compositor anti-patterns
+  - NEVER render from ptyReadable — render only in frame callback (Output.handleFrame)
+  - Gap math: pre-inset screen by gap/2, layout divides, post-inset each pane by gap/2
+  - wlroots C glue: add struct accessors in miozu-wlr-glue.c, declare in wlr.zig
+  - PTY fds must survive exec() for compositor restart — never set O_CLOEXEC
+  - Two MCP layers: terminal (teru-mcp-*.sock) vs compositor (teru-wmmcp-*.sock)
+  - ALL new code MUST have inline tests
+  - Thread `io: std.Io` for any function that does I/O
+  - NEVER touch files in src/core/, src/agent/, src/render/, or src/platform/
+
+  ## Testing
+  After implementation, run: `zig build test`
+  Build compositor: `zig build -Dcompositor=true`
+
+  ## Workflow
+  1. Check TaskList for your assigned tasks (owner: "compositor-dev")
   2. Set task to in_progress with TaskUpdate before starting
   3. Read the target file completely before making changes
   4. Implement the task with inline tests

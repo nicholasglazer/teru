@@ -16,6 +16,8 @@ Read these before writing any code:
 - `CLAUDE.md` -- project overview and architecture
 - `.claude/rules/zig-terminal.md` -- dev rules, anti-patterns, perf targets
 - `.claude/skills/zig16.md` -- complete Zig 0.16 API reference
+- `.claude/rules/wm-compositor.md` -- compositor rules (when touching src/compositor/)
+- `.claude/skills/teruwm.md` -- compositor MCP tools and diagnostics (when running inside teruwm)
 
 ## Compiler
 

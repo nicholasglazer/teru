@@ -96,12 +96,85 @@ fn init(server: *Server, rows: u16, cols: u16) ?*TerminalPane {
 pub fn create(server: *Server, ws: u8, rows: u16, cols: u16) ?*TerminalPane {
     const tp = init(server, rows, cols) orelse return null;
 
-    _ = server.nodes.addTerminal(tp.node_id, ws);
+    const slot = server.nodes.addTerminal(tp.node_id, ws);
     server.layout_engine.workspaces[ws].addNode(server.zig_allocator, tp.node_id) catch return null;
+
+    // Auto-name: "term-{ws}-{id}"
+    if (slot) |s| {
+        var name_buf: [32]u8 = undefined;
+        const auto_name = std.fmt.bufPrint(&name_buf, "term-{d}-{d}", .{ ws, tp.node_id }) catch "term";
+        server.nodes.setName(s, auto_name);
+    }
 
     std.debug.print("teruwm: terminal pane node={d} ws={d} ({d}x{d})\n", .{ tp.node_id, ws, cols, rows });
 
-    // Don't call arrangeworkspace here — caller does it after adding to terminal_panes[]
+    tp.render();
+    return tp;
+}
+
+/// Create a terminal pane from a restored Pane (compositor restart).
+/// The Pane already has an attached PTY fd with a running shell.
+pub fn createRestored(server: *Server, ws: u8, pane: *Pane) ?*TerminalPane {
+    const allocator = server.zig_allocator;
+    const cell_w: u32 = if (server.font_atlas) |fa| fa.cell_width else 8;
+    const cell_h: u32 = if (server.font_atlas) |fa| fa.cell_height else 16;
+    const pixel_w: u32 = @as(u32, pane.grid.cols) * cell_w;
+    const pixel_h: u32 = @as(u32, pane.grid.rows) * cell_h;
+
+    const pixel_buffer = wlr.miozu_pixel_buffer_create(@intCast(pixel_w), @intCast(pixel_h)) orelse return null;
+    const scene_tree_root = wlr.miozu_scene_tree(server.scene) orelse return null;
+    const scene_buffer = wlr.wlr_scene_buffer_create(scene_tree_root, pixel_buffer) orelse return null;
+
+    var renderer = SoftwareRenderer.init(allocator, pixel_w, pixel_h, cell_w, cell_h) catch return null;
+    if (wlr.miozu_pixel_buffer_data(pixel_buffer)) |data| {
+        const needed = @as(usize, pixel_w) * @as(usize, pixel_h);
+        if (needed > 0) renderer.framebuffer = data[0..needed];
+    }
+    if (server.font_atlas) |fa| {
+        renderer.glyph_atlas = fa.atlas_data;
+        renderer.atlas_width = fa.atlas_width;
+        renderer.atlas_height = fa.atlas_height;
+    }
+
+    const tp = allocator.create(TerminalPane) catch return null;
+    tp.* = .{
+        .server = server,
+        .pane = pane.*,
+        .renderer = renderer,
+        .pixel_buffer = pixel_buffer,
+        .scene_buffer = scene_buffer,
+        .node_id = pane.id,
+    };
+
+    tp.pane.linkVt(allocator);
+
+    // Register PTY fd with wlroots event loop
+    if (tp.getPtyFd()) |fd| {
+        if (wlr.wl_display_get_event_loop(server.display)) |event_loop| {
+            tp.event_source = wlr.wl_event_loop_add_fd(event_loop, fd, wlr.WL_EVENT_READABLE, ptyReadable, @ptrCast(tp));
+        }
+    }
+
+    // Register with node registry and workspace
+    const slot = server.nodes.addTerminal(tp.node_id, ws);
+    server.layout_engine.workspaces[ws].addNode(server.zig_allocator, tp.node_id) catch {};
+
+    // Auto-name restored pane
+    if (slot) |s| {
+        var name_buf: [32]u8 = undefined;
+        const auto_name = std.fmt.bufPrint(&name_buf, "term-{d}-{d}", .{ ws, tp.node_id }) catch "term";
+        server.nodes.setName(s, auto_name);
+    }
+
+    // Add to terminal_panes array
+    for (server.terminal_panes, 0..) |maybe, i| {
+        if (maybe == null) {
+            server.terminal_panes[i] = tp;
+            server.terminal_count += 1;
+            break;
+        }
+    }
+
     tp.render();
     return tp;
 }
@@ -115,11 +188,18 @@ pub fn createFloating(server: *Server, rows: u16, cols: u16) ?*TerminalPane {
 
 // ── I/O ────────────────────────────────────────────────────────
 
-/// Read PTY output and re-render if dirty.
+/// Read PTY output. Does NOT render — rendering happens in the frame callback
+/// to coalesce multiple PTY reads into a single render per vsync.
 pub fn poll(self: *TerminalPane) bool {
     const n = self.pane.readAndProcess(&self.read_buf) catch return false;
-    if (n == 0) return false;
+    return n > 0;
+}
+
+/// Render if the grid has pending changes. Called from the frame callback.
+pub fn renderIfDirty(self: *TerminalPane) bool {
+    if (!self.pane.grid.dirty) return false;
     self.render();
+    self.pane.grid.dirty = false;
     return true;
 }
 
@@ -234,7 +314,13 @@ fn ptyReadable(_: c_int, mask: u32, data: ?*anyopaque) callconv(.c) c_int {
         tp.server.handleTerminalExit(tp);
         return 0;
     }
-    _ = tp.poll();
+    if (tp.poll()) {
+        // Grid is dirty — tell wlroots we need a new frame so handleFrame
+        // renders the updated content on the next vsync.
+        if (tp.server.primary_output) |output| {
+            wlr.wlr_output_schedule_frame(output);
+        }
+    }
     return 0;
 }
 
