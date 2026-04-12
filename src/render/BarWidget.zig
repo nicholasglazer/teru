@@ -15,6 +15,7 @@
 //!   {cpu}               — CPU usage % from /proc/stat
 //!   {cputemp}           — CPU temperature °C from /sys/class/hwmon
 //!   {battery} / {bat}   — Battery % from /sys/class/power_supply
+//!   {watts} / {power}   — Battery power draw (W) from power_now
 //!   {keymap} / {lang}   — Active keyboard layout (teruwm only)
 //!   {perf}              — frame avg/max µs (teruwm only)
 //!   {exec:N:command}    — shell command output, refreshed every N seconds
@@ -35,6 +36,7 @@ pub const WidgetKind = enum {
     cpu,      // CPU usage % from /proc/stat (sampled across render calls)
     cputemp,  // CPU temperature °C from /sys/class/hwmon
     battery,  // Battery % from /sys/class/power_supply
+    watts,    // Battery power draw from /sys/class/power_supply/BAT*/power_now
     keymap,   // Active keyboard layout (compositor only — populated in BarData)
     perf,
     exec,
@@ -126,6 +128,7 @@ fn parseToken(token: []const u8) Widget {
     if (std.mem.eql(u8, token, "cpu")) return .{ .kind = .cpu };
     if (std.mem.eql(u8, token, "cputemp")) return .{ .kind = .cputemp };
     if (std.mem.eql(u8, token, "battery") or std.mem.eql(u8, token, "bat")) return .{ .kind = .battery };
+    if (std.mem.eql(u8, token, "watts") or std.mem.eql(u8, token, "power")) return .{ .kind = .watts };
     if (std.mem.eql(u8, token, "keymap") or std.mem.eql(u8, token, "lang")) return .{ .kind = .keymap };
     if (std.mem.eql(u8, token, "perf")) return .{ .kind = .perf };
     if (std.mem.eql(u8, token, "clock")) return .{ .kind = .clock, .arg = "%H:%M" };
@@ -155,12 +158,14 @@ fn parseToken(token: []const u8) Widget {
 
 pub const default_top_left = "{workspaces}";
 pub const default_top_center = "{title}";
-// Top right: keyboard layout + battery + time (xmobar-style, no duplicate)
-pub const default_top_right = "{keymap} | {battery} | {clock}";
+// Top right: keyboard layout + battery % + live wattage + time
+pub const default_top_right = "{keymap} | {battery} {watts} | {clock}";
 // Bottom left: system stats — CPU %, CPU temp, RAM
 pub const default_bottom_left = "CPU {cpu} {cputemp} | RAM {mem}";
 pub const default_bottom_center = "";
-// Bottom right: GPU via exec (vendor-specific; NVIDIA by default, falls back to N/A)
+// Bottom right: GPU via exec (vendor-specific; NVIDIA by default, falls back to N/A).
+// The awk command rewrites "0, 36" → "0% 36C". Braces inside {print …} are
+// now handled correctly by the parser.
 pub const default_bottom_right = "GPU {exec:5:nvidia-smi --query-gpu=utilization.gpu,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | awk -F, '{print $1\"% \"$2\"C\"}' || echo N/A}";
 
 // ── Tests ──────────────────────────────────────────────────────

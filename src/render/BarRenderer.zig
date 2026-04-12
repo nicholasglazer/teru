@@ -129,6 +129,9 @@ pub fn renderWidgets(
             .battery => {
                 x = renderBatteryWidget(cpu, x, y, cw, s, max_x);
             },
+            .watts => {
+                x = renderWattsWidget(cpu, x, y, cw, s, max_x);
+            },
             .keymap => {
                 const str = if (data.keymap.len > 0) data.keymap else "";
                 for (str) |ch| {
@@ -153,6 +156,14 @@ pub fn renderWidgets(
                 }
             },
             .exec => {
+                // Refresh the cache if enough time has elapsed.
+                const now_ns = compat.monotonicNow();
+                const age_s: u32 = if (w.last_eval == 0) std.math.maxInt(u32) else blk: {
+                    const age = @divTrunc(now_ns -| w.last_eval, std.time.ns_per_s);
+                    break :blk if (age > std.math.maxInt(u32)) std.math.maxInt(u32) else @as(u32, @intCast(age));
+                };
+                if (age_s >= w.interval) evalExec(w, now_ns);
+
                 for (w.cache[0..w.cache_len]) |ch| {
                     if (ch < 32 or ch > 126) continue;
                     Ui.blitCharAt(cpu, ch, x, y, s.fg);
@@ -193,6 +204,7 @@ pub fn measureWidgets(widgets: []BarWidget.Widget, data: *const BarData, cw: usi
             .cpu => 6 * cw,       // "99%  " worst case
             .cputemp => 6 * cw,   // "99C"
             .battery => 6 * cw,   // "100%"
+            .watts => 7 * cw,     // "12.3W"
             .keymap => @max(data.keymap.len, 2) * cw,
             .perf => 12 * cw,
             .exec => @as(usize, w.cache_len) * cw,
@@ -416,6 +428,124 @@ fn readBattery() ?Battery {
     return null;
 }
 
+// ── Exec widget evaluator ───────────────────────────────────────
+// Runs the widget's shell command via popen, captures stdout into the
+// widget's fixed cache buffer. Called at most once per interval.
+// Blocking: acceptable because exec widgets are opt-in, have high
+// intervals (default 5s), and short commands. If a command blocks too
+// long (>2s) it'll stall the bar render — user's fault.
+
+fn evalExec(w: *BarWidget.Widget, now_ns: i128) void {
+    w.last_eval = now_ns;
+    w.cache_len = 0;
+
+    // Null-terminate the command (popen wants c-string)
+    var cmd_z: [max_exec_cmd]u8 = undefined;
+    if (w.arg.len == 0 or w.arg.len >= cmd_z.len) return;
+    @memcpy(cmd_z[0..w.arg.len], w.arg);
+    cmd_z[w.arg.len] = 0;
+
+    const fp = libc.popen(@ptrCast(cmd_z[0..w.arg.len :0]), "r") orelse return;
+    defer _ = libc.pclose(fp);
+
+    // Read into widget cache. Stop at first newline — bar is single line.
+    var buf: [BarWidget.max_exec_output]u8 = undefined;
+    const got = libc.fread(&buf, 1, buf.len, fp);
+    if (got == 0) return;
+
+    // Trim trailing whitespace / newlines
+    var end: usize = got;
+    while (end > 0) : (end -= 1) {
+        const c = buf[end - 1];
+        if (c != '\n' and c != '\r' and c != ' ' and c != '\t') break;
+    }
+    // Only keep first line
+    if (std.mem.indexOfScalar(u8, buf[0..end], '\n')) |nl| end = nl;
+
+    const copy_n = @min(end, w.cache.len);
+    @memcpy(w.cache[0..copy_n], buf[0..copy_n]);
+    w.cache_len = @intCast(copy_n);
+}
+
+const max_exec_cmd = 512;
+
+// ── Watts widget ────────────────────────────────────────────────
+// Battery power draw in watts. Source of truth: /sys/class/power_supply/
+// BAT*/power_now (microwatts). Some platforms only expose current_now /
+// voltage_now — compute W from those as fallback. Shows a '+' prefix
+// when charging.
+
+fn renderWattsWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, max_x: usize) usize {
+    var x = start_x;
+    var buf: [16]u8 = undefined;
+    const w_opt = readWatts();
+    const text = if (w_opt) |pw|
+        std.fmt.bufPrint(&buf, "{c}{d:.1}W", .{ if (pw.charging) @as(u8, '+') else @as(u8, ' '), pw.watts }) catch "?W"
+    else
+        "";
+    // Color: green if charging, yellow <15W, red ≥15W
+    const color: u32 = if (w_opt) |pw|
+        (if (pw.charging) s.ansi[2] else if (pw.watts < 15.0) s.ansi[3] else s.ansi[1])
+    else
+        s.ansi[8];
+    for (text) |ch| {
+        Ui.blitCharAt(cpu, ch, x, y, color);
+        x += cw;
+        if (x >= max_x) break;
+    }
+    return x;
+}
+
+const Power = struct { watts: f32, charging: bool };
+
+fn readWatts() ?Power {
+    var i: u8 = 0;
+    while (i < 4) : (i += 1) {
+        // Try power_now first (most direct)
+        var pn_buf: [64]u8 = undefined;
+        const pn_path = std.fmt.bufPrintZ(&pn_buf, "/sys/class/power_supply/BAT{d}/power_now", .{i}) catch continue;
+        if (readSysfsInt(pn_path)) |uw| {
+            const charging = isCharging(i);
+            return .{ .watts = @as(f32, @floatFromInt(uw)) / 1_000_000.0, .charging = charging };
+        }
+        // Fallback: current_now * voltage_now (both µ)
+        var cn_buf: [64]u8 = undefined;
+        var vn_buf: [64]u8 = undefined;
+        const cn_path = std.fmt.bufPrintZ(&cn_buf, "/sys/class/power_supply/BAT{d}/current_now", .{i}) catch continue;
+        const vn_path = std.fmt.bufPrintZ(&vn_buf, "/sys/class/power_supply/BAT{d}/voltage_now", .{i}) catch continue;
+        const current = readSysfsInt(cn_path) orelse continue;
+        const voltage = readSysfsInt(vn_path) orelse continue;
+        // current µA × voltage µV = 10^-12 W, divide by 1e12 for W
+        const watts = (@as(f32, @floatFromInt(current)) * @as(f32, @floatFromInt(voltage))) / 1.0e12;
+        return .{ .watts = watts, .charging = isCharging(i) };
+    }
+    return null;
+}
+
+fn isCharging(bat_idx: u8) bool {
+    var buf: [64]u8 = undefined;
+    const path = std.fmt.bufPrintZ(&buf, "/sys/class/power_supply/BAT{d}/status", .{bat_idx}) catch return false;
+    const fd = libc.open(path.ptr, 0, 0);
+    if (fd < 0) return false;
+    defer _ = libc.close(fd);
+    var sbuf: [16]u8 = undefined;
+    const n = libc.read(fd, &sbuf, sbuf.len);
+    if (n <= 0) return false;
+    const data = sbuf[0..@as(usize, @intCast(n))];
+    return std.mem.startsWith(u8, data, "Charging") or std.mem.startsWith(u8, data, "Full");
+}
+
+fn readSysfsInt(path: [:0]const u8) ?u64 {
+    const fd = libc.open(path.ptr, 0, 0);
+    if (fd < 0) return null;
+    defer _ = libc.close(fd);
+    var buf: [24]u8 = undefined;
+    const n = libc.read(fd, &buf, buf.len);
+    if (n <= 0) return null;
+    const s = std.mem.trimEnd(u8, buf[0..@as(usize, @intCast(n))], " \n\t");
+    return std.fmt.parseInt(u64, s, 10) catch null;
+}
+
 const libc = struct {
     extern "c" fn time(timer: ?*i64) callconv(.c) i64;
     extern "c" fn localtime(timer: *const i64) callconv(.c) ?*tm;
@@ -423,6 +553,9 @@ const libc = struct {
     extern "c" fn open(path: [*:0]const u8, flags: c_int, mode: c_int) callconv(.c) c_int;
     extern "c" fn close(fd: c_int) callconv(.c) c_int;
     extern "c" fn read(fd: c_int, buf: [*]u8, count: usize) callconv(.c) isize;
+    extern "c" fn popen(cmd: [*:0]const u8, mode: [*:0]const u8) callconv(.c) ?*anyopaque;
+    extern "c" fn pclose(fp: *anyopaque) callconv(.c) c_int;
+    extern "c" fn fread(ptr: [*]u8, size: usize, nmemb: usize, fp: *anyopaque) callconv(.c) usize;
 
     // Opaque — we only pass the pointer to strftime.
     pub const tm = extern struct {
