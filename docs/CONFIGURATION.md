@@ -482,14 +482,20 @@ Each bar has three format-string slots: `left`, `center`, `right`. Omit a slot t
 | `center` | Center-aligned bar content |
 | `right` | Right-aligned bar content |
 
-Defaults when unset:
+Defaults when unset (match the current build — if you want them
+different, just set the slot in your config):
 
-- `[bar.top]` left=`{workspaces}`, center=`{title}`, right=`{clock}`
-- `[bar.bottom]` left=`{mem} | {perf}`, center=(empty), right=`{clock:%a %Y-%m-%d}`
+- `[bar.top]` left=`{workspaces}`, center=`{title}`, right=`{keymap} | {battery} {watts} | {clock}`
+- `[bar.bottom]` left=`CPU {cpu} {cputemp} | RAM {mem}`, center=(empty), right=`GPU {exec:5:nvidia-smi ...}`
 
-### Bar Widget Tokens
+### Bar widget tokens
 
-Format strings are plain text with `{name}` or `{name:arg}` tokens. Any literal text between tokens renders as-is. Unknown tokens render as literal text.
+Format strings are plain text with `{name}` or `{name:arg}` tokens. Any literal
+text between tokens renders as-is. Unknown tokens render as literal text.
+The parser balances `{`/`}` depth inside tokens, so `awk '{print $1}'` inside
+an `{exec:...}` command works without escaping.
+
+**Static / UI:**
 
 | Token | Output |
 |-------|--------|
@@ -497,13 +503,57 @@ Format strings are plain text with `{name}` or `{name:arg}` tokens. Any literal 
 | `{title}` | Focused pane/window title |
 | `{layout}` | Current layout indicator, e.g. `[M]`, `[G]`, `[#]` |
 | `{panes}` | Pane count for the active workspace |
-| `{mem}` | RAM usage pulled from `/proc/meminfo` |
-| `{perf}` | Compositor perf indicator |
-| `{clock}` | Current time in `HH:MM` (shorthand for `{clock:%H:%M}`) |
-| `{clock:%FMT}` | Current time with any `strftime(3)` format, e.g. `{clock:%H:%M:%S}`, `{clock:%a %Y-%m-%d}` |
-| `{exec:N:cmd}` | Output of shell command `cmd`, refreshed every `N` seconds. Output capped at 128 bytes |
-| `{exec:cmd}` | Same as above with default 5 second interval |
+| `{clock}` | Local time in `HH:MM` (shorthand for `{clock:%H:%M}`) |
+| `{clock:%FMT}` | Local time via `strftime(3)`, e.g. `{clock:%H:%M:%S}`, `{clock:%a %Y-%m-%d}` |
 | literal text | Rendered as-is (e.g. `" | "`, `"cpu: "`) |
+
+**System metrics** (all numeric, color-ramp via `[bar.thresholds]`):
+
+| Token | Output | Source |
+|-------|--------|--------|
+| `{cpu}` | CPU usage `%` | `/proc/stat` diff between frames |
+| `{cputemp}` | CPU temperature `°C` | `/sys/class/hwmon/*/temp1_input` (known CPU sensor names) |
+| `{mem}` | RAM used `%` | `/proc/meminfo` |
+| `{battery}` / `{bat}` | Battery `%` (`+` prefix when charging) | `/sys/class/power_supply/BAT*/capacity` |
+| `{watts}` / `{power}` | Battery power draw in W | `/sys/class/power_supply/BAT*/power_now` |
+| `{keymap}` / `{lang}` | Active keyboard layout code, e.g. `Us`, `Ua`, `Dv` | XKB — updates live on layout switch |
+| `{perf}` | Compositor frame avg / max time (µs) | Internal `PerfStats` |
+
+**External:**
+
+| Token | Output |
+|-------|--------|
+| `{exec:N:cmd}` | Output of shell command `cmd`, first line only, refreshed every `N` seconds. 128-byte output cap. |
+| `{exec:cmd}` | Same with default 5-second interval |
+| `{widget:NAME}` | External push widget, content set via `teruwm_set_widget` MCP tool. [See AI-INTEGRATION.md](AI-INTEGRATION.md#push-widgets-—-event-driven-status-bar-content). |
+
+### `[bar.thresholds]` — color ramps for numeric widgets
+
+Each numeric widget goes green / yellow / red based on its value. The
+boundaries are configurable — names follow the waybar / polybar / i3status
+convention (`_warning` and `_critical`) rather than `low`/`high`, because
+the semantics read identically for widgets where "low" is bad (battery)
+and widgets where "high" is bad (CPU).
+
+```ini
+[bar.thresholds]
+cpu_warning      = 30    # CPU ≥30%  → yellow
+cpu_critical     = 70    # CPU ≥70%  → red
+cputemp_warning  = 60
+cputemp_critical = 80
+mem_warning      = 30
+mem_critical     = 80
+battery_warning  = 50    # battery ≤50% → yellow  (inverted)
+battery_critical = 20    # battery ≤20% → red
+watts_warning    = 15    # discharge ≥15W → yellow (charging is always green)
+watts_critical   = 30
+perf_us_warning  = 50
+perf_us_critical = 100
+```
+
+The older `*_low` / `*_high` names are accepted as aliases. Unknown
+keys are silently ignored. The widget `{watts}` is always green when
+the battery is charging, regardless of thresholds.
 
 ### `[rules]` — Window → Workspace
 
@@ -549,9 +599,18 @@ right  = {clock:%a %H:%M}
 
 # ── Bottom bar ─────────────────────────────────
 [bar.bottom]
-left   = {layout} | {panes} panes
-center = {mem}
-right  = {exec:2:uptime | awk '{print $(NF-2)}'} | {clock:%Y-%m-%d}
+left   = CPU {cpu} {cputemp} | RAM {mem}
+center = {widget:mpris}
+right  = GPU {exec:5:nvidia-smi --query-gpu=utilization.gpu,temperature.gpu --format=csv,noheader,nounits | awk -F, '{print $1"% "$2"C"}'}
+
+# ── Color thresholds (widget colors adapt to values) ──
+[bar.thresholds]
+cpu_warning      = 40
+cpu_critical     = 85
+cputemp_warning  = 70
+cputemp_critical = 90
+battery_warning  = 50
+battery_critical = 15
 
 # ── Workspace assignments ──────────────────────
 [rules]
