@@ -205,7 +205,56 @@ fn buildBarData(_: *Bar, server: *Server) BarData {
     if (data.frame_max_us == std.math.maxInt(u64)) data.frame_max_us = 0;
     data.pty_bytes_total = server.perf.pty_bytes;
 
+    // Active keyboard layout short name. xkb layout names look like
+    // "English (US)", "Ukrainian", "English (Dvorak)"; we shorten them.
+    data.keymap = shortKeymap(server.active_keymap_name);
+
     return data;
+}
+
+/// Thread-local storage for the short form returned by shortKeymap.
+threadlocal var keymap_buf: [8]u8 = undefined;
+
+/// Format an XKB layout identifier for display in the bar.
+/// Prefers the raw code extracted upstream from xkb_keymap_get_as_string
+/// (`us`, `ua`, `us(dvorak)`). If a variant is present, uses the variant
+/// (Us(dvorak) → Dv). Otherwise uppercases the first letter:
+///   "us" → "Us", "ua" → "Ua", "us(dvorak)" → "Dv"
+///   "English (US)" (friendly-name fallback) → "Us"
+fn shortKeymap(name: []const u8) []const u8 {
+    if (name.len == 0) return "";
+
+    // Prefer the variant in parens if there is one.
+    var src: []const u8 = name;
+    if (std.mem.lastIndexOfScalar(u8, name, '(')) |lp| {
+        if (std.mem.indexOfScalarPos(u8, name, lp + 1, ')')) |rp| {
+            if (rp > lp + 1) src = name[lp + 1 .. rp];
+        }
+    }
+
+    var i: usize = 0;
+    while (i < src.len and !std.ascii.isAlphabetic(src[i])) i += 1;
+    if (i >= src.len) return "";
+
+    keymap_buf[0] = std.ascii.toUpper(src[i]);
+    if (i + 1 < src.len and std.ascii.isAlphabetic(src[i + 1])) {
+        keymap_buf[1] = std.ascii.toLower(src[i + 1]);
+        return keymap_buf[0..2];
+    }
+    return keymap_buf[0..1];
+}
+
+test "shortKeymap raw xkb codes" {
+    // Raw codes from xkb_keymap_get_as_string
+    try std.testing.expectEqualStrings("Us", shortKeymap("us"));
+    try std.testing.expectEqualStrings("Ua", shortKeymap("ua"));
+    try std.testing.expectEqualStrings("Dv", shortKeymap("us(dvorak)"));
+    try std.testing.expectEqualStrings("Co", shortKeymap("us(colemak)"));
+    // Friendly-name fallback
+    try std.testing.expectEqualStrings("Dv", shortKeymap("English (Dvorak)"));
+    try std.testing.expectEqualStrings("Us", shortKeymap("English (US)"));
+    try std.testing.expectEqualStrings("Uk", shortKeymap("Ukrainian"));
+    try std.testing.expectEqualStrings("", shortKeymap(""));
 }
 
 // Widget rendering moved to libteru's src/render/BarRenderer.zig (shared with standalone teru).

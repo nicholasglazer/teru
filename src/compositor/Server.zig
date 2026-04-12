@@ -64,6 +64,12 @@ bar: ?*Bar = null,
 primary_output: ?*wlr.wlr_output = null,
 workspace_trees: [10]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** 10,
 
+// Active XKB layout name (for the {keymap} bar widget).
+// Stored as a static buffer because the xkb string can outlive
+// the keymap it came from between reads.
+active_keymap_name_buf: [64]u8 = [_]u8{0} ** 64,
+active_keymap_name: []const u8 = "",
+
 // Fullscreen state: tracks which node is fullscreen (null = none)
 fullscreen_node: ?u64 = null,
 fullscreen_prev_bar_top: bool = true,
@@ -791,8 +797,86 @@ const Keyboard = struct {
         const kb: *Keyboard = @fieldParentPtr("modifiers_listener", listener);
         wlr.wlr_seat_set_keyboard(kb.server.seat, kb.wlr_keyboard);
         wlr.wlr_seat_keyboard_notify_modifiers(kb.server.seat, wlr.miozu_keyboard_modifiers_ptr(kb.wlr_keyboard));
+
+        // Refresh the layout-name cache so the {keymap} bar widget reflects
+        // layout changes (e.g. Ctrl+Shift toggling us ↔ ua).
+        kb.server.refreshActiveKeymap(kb.wlr_keyboard);
     }
 };
+
+/// Read the currently effective XKB layout CODE (e.g. "us", "ua",
+/// "us(dvorak)") from the given keyboard and stash a copy in
+/// `active_keymap_name`. Prefers the raw layout code parsed from
+/// xkb_keymap_get_as_string (the XKB rules file input, same thing
+/// xmobar and polybar display) over the friendly name.
+pub fn refreshActiveKeymap(self: *Server, keyboard: *wlr.wlr_keyboard) void {
+    const st = wlr.miozu_keyboard_xkb_state(keyboard) orelse return;
+    const keymap = wlr.xkb_state_get_keymap(st) orelse return;
+    const layout_idx = wlr.xkb_state_serialize_layout(st, wlr.XKB_STATE_LAYOUT_EFFECTIVE);
+
+    // Try to extract the short XKB code from the keymap's symbols section.
+    // Falls back to the friendly name if parsing fails.
+    const short = extractLayoutCode(keymap, layout_idx);
+    const name_slice: []const u8 = if (short.len > 0)
+        short
+    else blk: {
+        const name_ptr = wlr.xkb_keymap_layout_get_name(keymap, layout_idx) orelse return;
+        break :blk std.mem.sliceTo(name_ptr, 0);
+    };
+
+    const n = @min(name_slice.len, self.active_keymap_name_buf.len);
+    @memcpy(self.active_keymap_name_buf[0..n], name_slice[0..n]);
+    self.active_keymap_name = self.active_keymap_name_buf[0..n];
+
+    if (self.bar) |b| b.render(self);
+}
+
+/// Extract the Nth XKB layout code from the keymap's `xkb_symbols` header.
+/// Format seen in practice: `pc_us(dvorak)_ua_2_inet(evdev)` — tokens
+/// separated by `_`. Layout codes are 2-letter tokens optionally followed
+/// by `(variant)`, skipping "pc"/"inet"/bare digits.
+/// Returns an empty slice on failure; the caller falls back to the
+/// friendly layout name.
+/// NOTE: the returned slice points into a scratch buffer owned by the
+/// Server (keymap_raw_buf). Valid until the next refreshActiveKeymap.
+fn extractLayoutCode(keymap: *wlr.xkb_keymap, target_idx: u32) []const u8 {
+    const raw_ptr = wlr.xkb_keymap_get_as_string(keymap, wlr.XKB_KEYMAP_FORMAT_TEXT_V1) orelse return "";
+    defer wlr.free(@as(*anyopaque, @ptrCast(raw_ptr)));
+    const raw = std.mem.sliceTo(raw_ptr, 0);
+
+    // Find the xkb_symbols "…" line.
+    const hdr = "xkb_symbols";
+    const hdr_pos = std.mem.indexOf(u8, raw, hdr) orelse return "";
+    const q1 = std.mem.indexOfScalarPos(u8, raw, hdr_pos + hdr.len, '"') orelse return "";
+    const q2 = std.mem.indexOfScalarPos(u8, raw, q1 + 1, '"') orelse return "";
+    const sig = raw[q1 + 1 .. q2]; // e.g. pc_us(dvorak)_ua_2_inet(evdev)
+
+    // Walk tokens split on '_'. Tokens that look like a layout code are
+    // 2 lowercase letters, optionally followed by `(variant)`.
+    var it = std.mem.splitScalar(u8, sig, '_');
+    var idx: u32 = 0;
+    while (it.next()) |tok| {
+        if (tok.len == 0) continue;
+        if (std.mem.eql(u8, tok, "pc") or std.mem.eql(u8, tok, "inet")) continue;
+        // Skip bare numeric group tokens (e.g. "2")
+        if (tok[0] >= '0' and tok[0] <= '9') continue;
+        // Must start with two lowercase letters to look like a layout code
+        if (tok.len < 2 or !std.ascii.isLower(tok[0]) or !std.ascii.isLower(tok[1])) continue;
+
+        if (idx == target_idx) {
+            const n = @min(tok.len, keymap_raw_buf.len);
+            @memcpy(keymap_raw_buf[0..n], tok[0..n]);
+            return keymap_raw_buf[0..n];
+        }
+        idx += 1;
+    }
+    return "";
+}
+
+// Scratch buffer for the XKB code returned by extractLayoutCode. Lives
+// at module scope so the returned slice stays valid across the xkbcommon
+// free() — the caller copies it into Server.active_keymap_name_buf.
+var keymap_raw_buf: [32]u8 = undefined;
 
 fn setupKeyboard(self: *Server, device: *wlr.wlr_input_device) void {
     const keyboard = wlr.miozu_input_device_keyboard(device) orelse return;
@@ -817,6 +901,9 @@ fn setupKeyboard(self: *Server, device: *wlr.wlr_input_device) void {
     wlr.wl_signal_add(wlr.miozu_keyboard_modifiers(keyboard), &kb.modifiers_listener);
 
     wlr.wlr_seat_set_keyboard(self.seat, keyboard);
+
+    // Capture the initial layout name for the {keymap} bar widget.
+    self.refreshActiveKeymap(keyboard);
 
     std.debug.print("teruwm: keyboard configured\n", .{});
 }
