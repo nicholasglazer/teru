@@ -608,6 +608,9 @@ pub const Keybinds = struct {
         _ = self.add(n, M, '\\', .zoom_reset);
         _ = self.add(n, MS, 'q', .compositor_quit);
         _ = self.add(n, MS, 'r', .config_reload);
+        // Mod+Ctrl+Shift+R: hot-restart compositor (preserves terminal sessions)
+        const MCS = Mods{ .ctrl = true, .shift = true, .super_ = true };
+        _ = self.add(n, MCS, 'r', .compositor_restart);
         _ = self.add(n, M, 'w', .screenshot);
         _ = self.add(n, MS, 'w', .screenshot_pane);
 

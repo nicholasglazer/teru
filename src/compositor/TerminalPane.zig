@@ -49,6 +49,7 @@ fn init(server: *Server, rows: u16, cols: u16) ?*TerminalPane {
         pane.deinit(allocator);
         return null;
     };
+    renderer.padding = 0; // compositor fb is exactly cols*cell_w — no room for padding
 
     if (wlr.miozu_pixel_buffer_data(pixel_buffer)) |data| {
         const needed = @as(usize, pixel_w) * @as(usize, pixel_h);
@@ -126,6 +127,7 @@ pub fn createRestored(server: *Server, ws: u8, pane: *Pane) ?*TerminalPane {
     const scene_buffer = wlr.wlr_scene_buffer_create(scene_tree_root, pixel_buffer) orelse return null;
 
     var renderer = SoftwareRenderer.init(allocator, pixel_w, pixel_h, cell_w, cell_h) catch return null;
+    renderer.padding = 0; // compositor fb is exactly cols*cell_w — no room for padding
     if (wlr.miozu_pixel_buffer_data(pixel_buffer)) |data| {
         const needed = @as(usize, pixel_w) * @as(usize, pixel_h);
         if (needed > 0) renderer.framebuffer = data[0..needed];
@@ -190,16 +192,33 @@ pub fn createFloating(server: *Server, rows: u16, cols: u16) ?*TerminalPane {
 
 /// Read PTY output. Does NOT render — rendering happens in the frame callback
 /// to coalesce multiple PTY reads into a single render per vsync.
+/// Read PTY data with throttling. Processes up to max_reads_per_tick chunks
+/// to prevent heavy output (e.g., Claude AI streaming) from starving mouse/keyboard.
 pub fn poll(self: *TerminalPane) bool {
-    const n = self.pane.readAndProcess(&self.read_buf) catch return false;
-    return n > 0;
+    const max_reads_per_tick = 4; // 4 * 8KB = 32KB max per event loop tick
+    var any = false;
+    for (0..max_reads_per_tick) |_| {
+        const n = self.pane.readAndProcess(&self.read_buf) catch return any;
+        if (n == 0) break;
+        self.server.perf.recordPtyRead(n);
+        any = true;
+    }
+    return any;
 }
 
-/// Render if the grid has pending changes. Called from the frame callback.
+/// Incremental render if the grid has pending changes. Called from the frame callback.
+/// Only re-renders dirty rows + cursor rows, not the entire grid.
 pub fn renderIfDirty(self: *TerminalPane) bool {
     if (!self.pane.grid.dirty) return false;
-    self.render();
-    self.pane.grid.dirty = false;
+    self.renderer.renderDirty(&self.pane.grid);
+
+    // 2px focus border
+    const is_focused = (self.server.focused_terminal == self);
+    const border_color: u32 = if (is_focused) 0xFFFF9837 else 0xFF3E4359;
+    self.drawBorder(border_color);
+
+    // Signal wlroots that buffer content changed
+    wlr.wlr_scene_buffer_set_buffer_with_damage(self.scene_buffer, self.pixel_buffer, null);
     return true;
 }
 
@@ -224,33 +243,36 @@ pub fn resize(self: *TerminalPane, pixel_w: u32, pixel_h: u32) void {
     const cell_h = self.renderer.cell_height;
     if (cell_w == 0 or cell_h == 0) return;
 
+    // Grid cells must be integer counts, but the framebuffer itself should
+    // fill the FULL allocated pixel rect — otherwise the leftover pixels
+    // (< one cell) contribute to gap-asymmetry between panes.
     const new_cols: u16 = @intCast(@max(1, pixel_w / cell_w));
     const new_rows: u16 = @intCast(@max(1, pixel_h / cell_h));
-    const actual_w = @as(u32, new_cols) * cell_w;
-    const actual_h = @as(u32, new_rows) * cell_h;
+    const fb_w = pixel_w;
+    const fb_h = pixel_h;
 
     // Skip resize if dimensions haven't changed
-    if (actual_w == self.renderer.width and actual_h == self.renderer.height) return;
+    if (fb_w == self.renderer.width and fb_h == self.renderer.height) return;
 
     // Skip unreasonable sizes
-    if (actual_w == 0 or actual_h == 0 or actual_w > 8192 or actual_h > 8192) return;
+    if (fb_w == 0 or fb_h == 0 or fb_w > 8192 or fb_h > 8192) return;
 
     // Detach old buffer from scene before resizing (prevents stale references)
     wlr.wlr_scene_buffer_set_buffer(self.scene_buffer, null);
 
-    if (!wlr.miozu_pixel_buffer_resize(self.pixel_buffer, @intCast(actual_w), @intCast(actual_h))) return;
+    if (!wlr.miozu_pixel_buffer_resize(self.pixel_buffer, @intCast(fb_w), @intCast(fb_h))) return;
 
     const data = wlr.miozu_pixel_buffer_data(self.pixel_buffer) orelse return;
-    const needed = @as(usize, actual_w) * @as(usize, actual_h);
+    const needed = @as(usize, fb_w) * @as(usize, fb_h);
     if (needed == 0) return;
 
     // Update renderer ATOMICALLY — all three must be consistent
     self.renderer.framebuffer = data[0..needed];
-    self.renderer.width = actual_w;
-    self.renderer.height = actual_h;
+    self.renderer.width = fb_w;
+    self.renderer.height = fb_h;
 
     self.pane.resize(self.server.zig_allocator, new_rows, new_cols) catch return;
-    wlr.wlr_scene_buffer_set_dest_size(self.scene_buffer, @intCast(actual_w), @intCast(actual_h));
+    wlr.wlr_scene_buffer_set_dest_size(self.scene_buffer, @intCast(fb_w), @intCast(fb_h));
     self.render();
 }
 

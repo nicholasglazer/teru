@@ -71,6 +71,11 @@ gap: u16 = 4,
 /// Border width in pixels around focused/unfocused windows.
 border_width: u16 = 2,
 
+/// Compositor background color (ARGB u32). Visible through gaps between
+/// panes/bars. Config accepts `bg = 0x1a1d24` or `bg = #1a1d24`.
+/// Default: miozu dark gray (0xFF1a1d24).
+bg_color: u32 = 0xFF1a1d24,
+
 // ── Bar format strings ──────────────────────────────────────────
 
 bar_top_left: ?[]const u8 = null,
@@ -207,6 +212,15 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.gap = std.fmt.parseInt(u16, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "border_width")) {
         self.border_width = std.fmt.parseInt(u16, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "bg_color") or std.mem.eql(u8, key, "bg")) {
+        // Accept "#rrggbb", "0xrrggbb", "rrggbb", or full ARGB "0xaarrggbb"
+        var v = value;
+        if (v.len > 0 and v[0] == '#') v = v[1..];
+        if (v.len > 2 and v[0] == '0' and (v[1] == 'x' or v[1] == 'X')) v = v[2..];
+        if (v.len == 0) return;
+        const parsed = std.fmt.parseInt(u32, v, 16) catch return;
+        // If user gave 6 hex chars (RRGGBB), add full alpha
+        self.bg_color = if (v.len <= 6) 0xFF000000 | parsed else parsed;
     }
 }
 

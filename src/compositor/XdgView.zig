@@ -141,9 +141,16 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
 }
 
 fn handleCommit(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
-    _ = listener;
-    // Surface committed a new buffer — wlr_scene handles this automatically.
-    // We only need this for future damage tracking optimization.
+    const view: *XdgView = @fieldParentPtr("commit", listener);
+
+    // XDG protocol: on the client's initial commit, the compositor MUST
+    // send a configure event before the client can map the surface.
+    // Passing (0, 0) tells the client "you pick the size" — we'll override
+    // it later via arrangeworkspace() once the surface maps.
+    const xdg_surface = wlr.miozu_xdg_toplevel_base(view.toplevel) orelse return;
+    if (wlr.miozu_xdg_surface_initial_commit(xdg_surface)) {
+        _ = wlr.wlr_xdg_toplevel_set_size(view.toplevel, 0, 0);
+    }
 }
 
 // ── Helper ─────────────────────────────────────────────────────

@@ -175,12 +175,16 @@ fn handleToolsList(_: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teruwm_switch_workspace","description":"Switch active workspace (0-9)","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer"}}}},"required":["workspace"]}}}},
         \\{{"name":"teruwm_set_layout","description":"Set layout for a workspace","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer","default":0}},"layout":{{"type":"string","enum":["master-stack","grid","monocle","dishes","spiral","three-col","columns","accordion"]}}}},"required":["layout"]}}}},
         \\{{"name":"teruwm_get_config","description":"Get compositor config (gap, border_width, bar settings)","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
-        \\{{"name":"teruwm_set_config","description":"Set a compositor config value live (gap, border_width)","inputSchema":{{"type":"object","properties":{{"key":{{"type":"string"}},"value":{{"type":"string"}}}},"required":["key","value"]}}}},
+        \\{{"name":"teruwm_set_config","description":"Set a compositor config value live. Keys: gap (int), border_width (int), bg_color (hex #rrggbb or 0xaarrggbb).","inputSchema":{{"type":"object","properties":{{"key":{{"type":"string","enum":["gap","border_width","bg_color"]}},"value":{{"type":"string"}}}},"required":["key","value"]}}}},
         \\{{"name":"teruwm_screenshot","description":"Capture the full compositor output as PNG. Uses grim if available, otherwise returns error.","inputSchema":{{"type":"object","properties":{{"path":{{"type":"string","description":"Output path (default: /tmp/teruwm-screenshot.png)"}}}},"required":[]}}}},
         \\{{"name":"teruwm_notify","description":"Show a notification overlay on the compositor","inputSchema":{{"type":"object","properties":{{"message":{{"type":"string"}}}},"required":["message"]}}}},
         \\{{"name":"teruwm_reload_config","description":"Reload compositor config from ~/.config/teruwm/config. Re-applies gap, border, bar settings live.","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
         \\{{"name":"teruwm_screenshot_pane","description":"Capture a single pane as PNG by name or node_id. Works for terminal panes.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"Pane name (e.g. term-0-1, editor)"}},"node_id":{{"type":"integer"}},"path":{{"type":"string","description":"Output path (default: /tmp/teruwm-pane-NAME.png)"}}}},"required":[]}}}},
-        \\{{"name":"teruwm_set_name","description":"Assign a human-readable name to a window/pane.","inputSchema":{{"type":"object","properties":{{"node_id":{{"type":"integer"}},"name":{{"type":"string"}},"new_name":{{"type":"string"}}}},"required":["new_name"]}}}}
+        \\{{"name":"teruwm_set_name","description":"Assign a human-readable name to a window/pane.","inputSchema":{{"type":"object","properties":{{"node_id":{{"type":"integer"}},"name":{{"type":"string"}},"new_name":{{"type":"string"}}}},"required":["new_name"]}}}},
+        \\{{"name":"teruwm_perf","description":"Get compositor performance stats: frame timing (avg/max us), PTY throughput, terminal count","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
+        \\{{"name":"teruwm_restart","description":"Hot-restart the compositor: serializes PTY state, exec()s new binary. Terminal sessions survive. Use after rebuild.","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
+        \\{{"name":"teruwm_toggle_bar","description":"Toggle top or bottom status bar visibility. Triggers a re-arrange of all workspaces.","inputSchema":{{"type":"object","properties":{{"which":{{"type":"string","enum":["top","bottom"]}}}},"required":["which"]}}}},
+        \\{{"name":"teruwm_set_bar","description":"Set the enabled state of the top or bottom status bar explicitly.","inputSchema":{{"type":"object","properties":{{"which":{{"type":"string","enum":["top","bottom"]}},"enabled":{{"type":"boolean"}}}},"required":["which","enabled"]}}}}
         \\]}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
@@ -189,7 +193,8 @@ fn handleToolsList(_: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
 fn handleToolsCall(self: *WmMcpServer, body: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const params_body = extractJsonObject(body, "params") orelse
         return jsonRpcError(buf, id, -32602, "Missing params");
-    const tool_name = extractNestedJsonString(params_body, "name") orelse
+    // "name" is a sibling of "arguments" in params, not nested inside it
+    const tool_name = extractJsonString(params_body, "name") orelse
         return jsonRpcError(buf, id, -32602, "Missing tool name");
 
     if (std.mem.eql(u8, tool_name, "teruwm_list_windows")) {
@@ -246,6 +251,21 @@ fn handleToolsCall(self: *WmMcpServer, body: []const u8, buf: []u8, id: ?[]const
         const new_name = extractNestedJsonString(params_body, "new_name") orelse
             return jsonRpcError(buf, id, -32602, "Missing new_name");
         return self.toolSetName(params_body, new_name, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_perf")) {
+        return self.toolPerf(buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_restart")) {
+        return self.toolRestart(buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_toggle_bar")) {
+        const which = extractNestedJsonString(params_body, "which") orelse
+            return jsonRpcError(buf, id, -32602, "Missing which (top|bottom)");
+        return self.toolToggleBar(which, null, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_set_bar")) {
+        const which = extractNestedJsonString(params_body, "which") orelse
+            return jsonRpcError(buf, id, -32602, "Missing which (top|bottom)");
+        // Bool extraction: look for "enabled":true / "enabled":false
+        const args = extractJsonObject(params_body, "arguments") orelse params_body;
+        const enabled: bool = std.mem.indexOf(u8, args, "\"enabled\":true") != null;
+        return self.toolToggleBar(which, enabled, buf, id);
     } else {
         return jsonRpcError(buf, id, -32602, "Unknown tool");
     }
@@ -503,9 +523,12 @@ fn toolGetConfig(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
     const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(srv.output_layout)));
     const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(srv.output_layout)));
 
+    const top_enabled = if (srv.bar) |b| b.top.enabled else false;
+    const bot_enabled = if (srv.bar) |b| b.bottom.enabled else false;
+
     return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"gap\":{d},\"border_width\":{d},\"output_width\":{d},\"output_height\":{d},\"terminal_count\":{d},\"active_workspace\":{d}}}"}}]}},"id":{s}}}
-    , .{ cfg.gap, cfg.border_width, out_w, out_h, srv.terminal_count, srv.layout_engine.active_workspace, id_str }) catch
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"gap\":{d},\"border_width\":{d},\"bg_color\":\"0x{x:0>8}\",\"output_width\":{d},\"output_height\":{d},\"terminal_count\":{d},\"active_workspace\":{d},\"top_bar\":{any},\"bottom_bar\":{any}}}"}}]}},"id":{s}}}
+    , .{ cfg.gap, cfg.border_width, cfg.bg_color, out_w, out_h, srv.terminal_count, srv.layout_engine.active_workspace, top_enabled, bot_enabled, id_str }) catch
         jsonRpcError(buf, id, -32603, "Internal error");
 }
 
@@ -516,13 +539,32 @@ fn toolSetConfig(self: *WmMcpServer, key: []const u8, value: []const u8, buf: []
     if (std.mem.eql(u8, key, "gap")) {
         cfg.gap = std.fmt.parseInt(u16, value, 10) catch
             return jsonRpcError(buf, id, -32602, "Invalid gap value");
-        // Re-arrange to apply new gap
-        self.server.arrangeworkspace(self.server.layout_engine.active_workspace);
+        // Re-arrange all workspaces to apply new gap
+        for (0..self.server.layout_engine.workspaces.len) |ws| {
+            self.server.arrangeworkspace(@intCast(ws));
+        }
     } else if (std.mem.eql(u8, key, "border_width")) {
         cfg.border_width = std.fmt.parseInt(u16, value, 10) catch
             return jsonRpcError(buf, id, -32602, "Invalid border_width value");
+    } else if (std.mem.eql(u8, key, "bg_color") or std.mem.eql(u8, key, "bg")) {
+        var v = value;
+        if (v.len > 0 and v[0] == '#') v = v[1..];
+        if (v.len > 2 and v[0] == '0' and (v[1] == 'x' or v[1] == 'X')) v = v[2..];
+        const parsed = std.fmt.parseInt(u32, v, 16) catch
+            return jsonRpcError(buf, id, -32602, "Invalid bg_color (hex: #rrggbb or 0xaarrggbb)");
+        cfg.bg_color = if (v.len <= 6) 0xFF000000 | parsed else parsed;
+        if (self.server.bg_rect) |rect| {
+            const col = cfg.bg_color;
+            const rgba: [4]f32 = .{
+                @as(f32, @floatFromInt((col >> 16) & 0xFF)) / 255.0,
+                @as(f32, @floatFromInt((col >> 8) & 0xFF)) / 255.0,
+                @as(f32, @floatFromInt(col & 0xFF)) / 255.0,
+                @as(f32, @floatFromInt((col >> 24) & 0xFF)) / 255.0,
+            };
+            wlr.wlr_scene_rect_set_color(rect, &rgba);
+        }
     } else {
-        return jsonRpcError(buf, id, -32602, "Unknown config key");
+        return jsonRpcError(buf, id, -32602, "Unknown config key (gap, border_width, bg_color)");
     }
 
     return std.fmt.bufPrint(buf,
@@ -626,6 +668,67 @@ fn toolSetName(self: *WmMcpServer, params_body: []const u8, new_name: []const u8
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"renamed node {d} to {s}"}}]}},"id":{s}}}
     , .{ self.server.nodes.node_id[slot], new_name, id_str }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolRestart(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
+    // Schedule restart after response is sent (via deferred flag)
+    self.server.restart_pending = true;
+    if (self.server.primary_output) |output| wlr.wlr_output_schedule_frame(output);
+    const id_str = id orelse "null";
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"restart scheduled — compositor will exec() on next frame"}}]}},"id":{s}}}
+    , .{id_str}) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolPerf(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+    const perf = &self.server.perf;
+    const max_us = if (perf.frame_time_max_us == std.math.maxInt(u64)) @as(u64, 0) else perf.frame_time_max_us;
+
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"frames: {d}, avg: {d}us, max: {d}us, min: {d}us, pty_reads: {d}, pty_bytes: {d}, terminals: {d}"}}]}},"id":{s}}}
+    , .{
+        perf.frame_count,
+        perf.avgFrameUs(),
+        max_us,
+        if (perf.frame_time_min_us == std.math.maxInt(u64)) @as(u64, 0) else perf.frame_time_min_us,
+        perf.pty_reads,
+        perf.pty_bytes,
+        self.server.terminal_count,
+        id_str,
+    }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+/// Toggle (explicit=null) or set (explicit=true/false) a bar's enabled state.
+fn toolToggleBar(self: *WmMcpServer, which: []const u8, explicit: ?bool, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+    const bar = self.server.bar orelse
+        return jsonRpcError(buf, id, -32603, "bar not initialized");
+
+    const is_top = std.mem.eql(u8, which, "top");
+    const is_bot = std.mem.eql(u8, which, "bottom");
+    if (!is_top and !is_bot)
+        return jsonRpcError(buf, id, -32602, "which must be 'top' or 'bottom'");
+
+    const bar_instance = if (is_top) &bar.top else &bar.bottom;
+    const new_val = explicit orelse !bar_instance.enabled;
+    bar_instance.enabled = new_val;
+
+    // Hide/show the bar's scene node so it doesn't occupy pixels when disabled
+    bar.updateVisibility();
+
+    // Re-arrange every workspace — layout area changes when bar toggles
+    for (0..self.server.layout_engine.workspaces.len) |ws| {
+        self.server.arrangeworkspace(@intCast(ws));
+    }
+    if (new_val) bar.render(self.server);
+
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{s} bar {s}"}}]}},"id":{s}}}
+    , .{ which, if (new_val) "enabled" else "disabled", id_str }) catch
         jsonRpcError(buf, id, -32603, "Internal error");
 }
 

@@ -189,6 +189,8 @@ left_margin: u16 = 0,
 right_margin: u16 = 0, // 0 means "use cols" (full width)
 margins_enabled: bool = false,
 dirty: bool = true,
+dirty_row_min: u16 = 0,
+dirty_row_max: u16 = 0, // inclusive; reset by renderer after paint
 cursor_shape: CursorShape = .block,
 bell: bool = false,
 tab_width: u8 = 8,
@@ -241,6 +243,7 @@ pub fn init(allocator: std.mem.Allocator, rows: u16, cols: u16) !Grid {
         .rows = rows,
         .cols = cols,
         .scroll_bottom = rows -| 1,
+        .dirty_row_max = rows -| 1,
         .row_meta = meta,
     };
 }
@@ -287,7 +290,7 @@ pub fn write(self: *Grid, char: u21) void {
     cell.attrs = self.pen_attrs;
 
     self.cursor_col += 1;
-    self.dirty = true;
+    self.markRowDirty(self.cursor_row);
 }
 
 /// Move the cursor down one row. If at the scroll region bottom, scroll up.
@@ -303,7 +306,7 @@ pub fn cursorDown(self: *Grid) void {
 /// Per VT100/VT510: LF only moves down. CR (0x0D) handles column reset separately.
 pub fn lineFeed(self: *Grid) void {
     self.cursorDown();
-    self.dirty = true;
+    self.markRowDirty(self.cursor_row);
 }
 
 /// Handle newline (CR+LF combined): move to left margin and down.
@@ -312,7 +315,7 @@ pub fn lineFeed(self: *Grid) void {
 pub fn newline(self: *Grid) void {
     self.cursor_col = @intCast(self.getLeftMargin());
     self.cursorDown();
-    self.dirty = true;
+    self.markRowDirty(self.cursor_row);
 }
 
 /// Scroll the scroll region up by one line (content moves up, new blank line at bottom).
@@ -420,7 +423,7 @@ pub fn scrollUpN(self: *Grid, n: u16) void {
             self.row_meta[bottom] = .{};
         }
     }
-    self.dirty = true;
+    self.markAllDirty();
 }
 
 /// Scroll the scroll region down by one line (content moves down, new blank line at top).
@@ -470,7 +473,7 @@ pub fn scrollDownN(self: *Grid, n: u16) void {
             self.row_meta[top] = .{};
         }
     }
-    self.dirty = true;
+    self.markAllDirty();
 }
 
 /// Clear a single row to blank cells.
@@ -503,7 +506,7 @@ pub fn clearLine(self: *Grid, row: u16, mode: u8) void {
         },
         else => {},
     }
-    self.dirty = true;
+    self.markRowDirty(self.cursor_row);
 }
 
 /// Clear the screen (0 = cursor to end, 1 = start to cursor, 2 = whole screen, 3 = whole screen + scrollback).
@@ -531,7 +534,7 @@ pub fn clearScreen(self: *Grid, mode: u8) void {
         },
         else => {},
     }
-    self.dirty = true;
+    self.markAllDirty();
 }
 
 /// Resize the grid, preserving content where possible.
@@ -588,7 +591,37 @@ pub fn resize(self: *Grid, allocator: std.mem.Allocator, new_rows: u16, new_cols
     // Clamp cursor
     self.cursor_row = @min(self.cursor_row, new_rows -| 1);
     self.cursor_col = @min(self.cursor_col, new_cols -| 1);
+    self.markAllDirty();
+}
+
+// ── Dirty tracking helpers ────────────────────────────────────
+
+/// Mark a single row as dirty (expands the dirty range).
+pub inline fn markRowDirty(self: *Grid, row: u16) void {
+    if (!self.dirty) {
+        self.dirty = true;
+        self.dirty_row_min = row;
+        self.dirty_row_max = row;
+    } else {
+        if (row < self.dirty_row_min) self.dirty_row_min = row;
+        if (row > self.dirty_row_max) self.dirty_row_max = row;
+    }
+}
+
+/// Mark all rows dirty (resize, scroll, clear screen).
+pub inline fn markAllDirty(self: *Grid) void {
     self.dirty = true;
+    self.dirty_row_min = 0;
+    self.dirty_row_max = self.rows -| 1;
+}
+
+/// Reset dirty state after rendering.
+/// Sets inverted range so that external `grid.dirty = true` (without
+/// markRowDirty) is detected as "all rows dirty" by renderDirty.
+pub inline fn clearDirty(self: *Grid) void {
+    self.dirty = false;
+    self.dirty_row_min = self.rows; // sentinel: min > max means "no tracked range"
+    self.dirty_row_max = 0;
 }
 
 // ── Left/right margin helpers (DECLRMM / DECSLRM) ──────────────
@@ -677,7 +710,7 @@ pub fn switchToAltScreen(self: *Grid, allocator: std.mem.Allocator) !void {
     self.left_margin = 0;
     self.right_margin = 0;
     self.margins_enabled = false;
-    self.dirty = true;
+    self.markAllDirty();
 }
 
 /// Switch back to the main screen buffer. Restores saved cursor and
@@ -698,7 +731,7 @@ pub fn switchToMainScreen(self: *Grid) void {
     self.left_margin = self.alt_saved_left_margin;
     self.right_margin = self.alt_saved_right_margin;
     self.margins_enabled = self.alt_saved_margins_enabled;
-    self.dirty = true;
+    self.markAllDirty();
 }
 
 /// Insert n blank lines at the cursor row (within scroll region).
@@ -746,7 +779,7 @@ pub fn insertLines(self: *Grid, n: u16) void {
     if (margin_bounded) {
         self.cursor_col = @intCast(lm);
     }
-    self.dirty = true;
+    self.markAllDirty();
 }
 
 /// Delete n lines at the cursor row (within scroll region).
@@ -794,7 +827,7 @@ pub fn deleteLines(self: *Grid, n: u16) void {
     if (margin_bounded) {
         self.cursor_col = @intCast(lm);
     }
-    self.dirty = true;
+    self.markAllDirty();
 }
 
 /// Delete n characters at cursor position, shifting the rest of the line left.
@@ -829,7 +862,7 @@ pub fn deleteChars(self: *Grid, n: u16) void {
     // Blank the rightmost cells within the bounded region
     const blank_start = row_start + right_edge - count;
     for (self.cells[blank_start..row_start + right_edge]) |*c| c.* = Cell.blank();
-    self.dirty = true;
+    self.markRowDirty(self.cursor_row);
 }
 
 /// Insert n blank characters at cursor position, shifting existing chars right.
@@ -862,7 +895,7 @@ pub fn insertBlanks(self: *Grid, n: u16) void {
     }
     // Blank the inserted cells
     for (self.cells[row_start + col ..][0..count]) |*c| c.* = Cell.blank();
-    self.dirty = true;
+    self.markRowDirty(self.cursor_row);
 }
 
 /// Erase n characters at cursor position (overwrite with blanks, no shift).
@@ -875,7 +908,7 @@ pub fn eraseChars(self: *Grid, n: u16) void {
     const row_start = row * w;
 
     for (self.cells[row_start + col ..][0..count]) |*c| c.* = Cell.blank();
-    self.dirty = true;
+    self.markRowDirty(self.cursor_row);
 }
 
 // ── Tests ────────────────────────────────────────────────────────

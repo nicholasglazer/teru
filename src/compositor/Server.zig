@@ -45,6 +45,10 @@ session: ?*wlr.wlr_session = null,
 xwayland: ?*wlr.wlr_xwayland = null,
 wlr_compositor: ?*wlr.wlr_compositor = null, // needed for xwayland_create
 
+/// Full-screen background scene rect (solid color). Created on output
+/// attach, lowered beneath all other scene nodes. Color from wm_config.
+bg_rect: ?*wlr.wlr_scene_rect = null,
+
 // ── Tiling & nodes ─────────────────────────────────────────────
 
 layout_engine: LayoutEngine,
@@ -90,6 +94,18 @@ wm_config: WmConfig = .{},
 // MCP server for compositor control
 wm_mcp: ?*WmMcpServer = null,
 
+// Deferred layout/resize — set by mouse handlers, applied in frame callback
+layout_dirty: bool = false,
+resize_pending_id: ?u64 = null,
+resize_pending_w: u32 = 0,
+resize_pending_h: u32 = 0,
+
+// Performance stats
+perf: PerfStats = .{},
+
+// Restart flag — set by MCP, executed in frame callback (after response is sent)
+restart_pending: bool = false,
+
 // ── Listeners ──────────────────────────────────────────────────
 
 new_output: wlr.wl_listener = makeListener(handleNewOutput),
@@ -102,6 +118,34 @@ cursor_axis: wlr.wl_listener = makeListener(handleCursorAxis),
 cursor_frame: wlr.wl_listener = makeListener(handleCursorFrame),
 request_set_cursor: wlr.wl_listener = makeListener(handleRequestSetCursor),
 new_xwayland_surface: wlr.wl_listener = makeListener(handleNewXwaylandSurface),
+
+// ── Types ─────────────────────────────────────────────────────
+
+pub const PerfStats = struct {
+    frame_count: u64 = 0,
+    frame_time_sum_us: u64 = 0,
+    frame_time_max_us: u64 = 0,
+    frame_time_min_us: u64 = std.math.maxInt(u64),
+    pty_reads: u64 = 0,
+    pty_bytes: u64 = 0,
+
+    pub fn recordFrame(self: *PerfStats, elapsed_us: u64) void {
+        self.frame_count += 1;
+        self.frame_time_sum_us += elapsed_us;
+        if (elapsed_us > self.frame_time_max_us) self.frame_time_max_us = elapsed_us;
+        if (elapsed_us < self.frame_time_min_us) self.frame_time_min_us = elapsed_us;
+    }
+
+    pub fn recordPtyRead(self: *PerfStats, bytes: usize) void {
+        self.pty_reads += 1;
+        self.pty_bytes += bytes;
+    }
+
+    pub fn avgFrameUs(self: *const PerfStats) u64 {
+        if (self.frame_count == 0) return 0;
+        return self.frame_time_sum_us / self.frame_count;
+    }
+};
 
 // ── Init ───────────────────────────────────────────────────────
 
@@ -215,7 +259,16 @@ fn registerListeners(self: *Server) void {
             self.xwayland = xwl;
             wlr.wl_signal_add(wlr.miozu_xwayland_new_surface(xwl), &self.new_xwayland_surface);
             wlr.wlr_xwayland_set_seat(xwl, self.seat);
-            std.debug.print("teruwm: XWayland enabled\n", .{});
+
+            // Set DISPLAY env var so X11 clients (xterm, emacs, ...) can connect.
+            // The display socket is reserved immediately by wlr_xwayland_create
+            // even in lazy mode; the Xwayland process only spawns on first connect.
+            if (wlr.miozu_xwayland_display_name(xwl)) |dn| {
+                _ = wlr.setenv("DISPLAY", dn, 1);
+                std.debug.print("teruwm: XWayland enabled (DISPLAY={s})\n", .{dn});
+            } else {
+                std.debug.print("teruwm: XWayland enabled\n", .{});
+            }
         } else {
             std.debug.print("teruwm: XWayland init failed (X11 apps won't work)\n", .{});
         }
@@ -310,6 +363,18 @@ pub fn reloadWmConfig(self: *Server) void {
         b.render(self);
     }
 
+    // Apply new background color to the scene rect
+    if (self.bg_rect) |rect| {
+        const col = self.wm_config.bg_color;
+        const rgba: [4]f32 = .{
+            @as(f32, @floatFromInt((col >> 16) & 0xFF)) / 255.0,
+            @as(f32, @floatFromInt((col >> 8) & 0xFF)) / 255.0,
+            @as(f32, @floatFromInt(col & 0xFF)) / 255.0,
+            @as(f32, @floatFromInt((col >> 24) & 0xFF)) / 255.0,
+        };
+        wlr.wlr_scene_rect_set_color(rect, &rgba);
+    }
+
     // Re-arrange all workspaces with new gap
     for (0..10) |wi| {
         const ws = &self.layout_engine.workspaces[wi];
@@ -318,7 +383,7 @@ pub fn reloadWmConfig(self: *Server) void {
         }
     }
 
-    std.debug.print("teruwm: config reloaded (gap={d}, border={d})\n", .{ self.wm_config.gap, self.wm_config.border_width });
+    std.debug.print("teruwm: config reloaded (gap={d}, border={d}, bg=0x{x:0>8})\n", .{ self.wm_config.gap, self.wm_config.border_width, self.wm_config.bg_color });
 }
 
 /// Restart the compositor: serialize state, exec new binary.
@@ -762,7 +827,7 @@ fn processCursorMotion(self: *Server, time: u32) void {
     const cx = wlr.miozu_cursor_x(self.cursor);
     const cy = wlr.miozu_cursor_y(self.cursor);
 
-    // Handle tiled border drag — smooth: only reposition + scale, no resize
+    // Handle tiled border drag — update ratio, defer layout to frame callback
     if (self.cursor_mode == .border_drag) {
         const out_w: f64 = @floatFromInt(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
         const delta = cx - self.grab_x;
@@ -770,8 +835,9 @@ fn processCursorMotion(self: *Server, time: u32) void {
         const ws = self.layout_engine.getActiveWorkspace();
         ws.master_ratio = @max(0.1, @min(0.9, ws.master_ratio + ratio_delta));
         self.grab_x = cx;
-        // Smooth: calculate rects and scale scene buffers without resizing grids
-        self.arrangeWorkspaceSmooth(self.layout_engine.active_workspace);
+        // Defer layout to frame callback — one arrange per vsync, not per motion event
+        self.layout_dirty = true;
+        if (self.primary_output) |output| wlr.wlr_output_schedule_frame(output);
         return;
     }
 
@@ -816,22 +882,18 @@ fn processCursorMotion(self: *Server, time: u32) void {
                 self.nodes.width[slot] = new_w;
                 self.nodes.height[slot] = new_h;
 
-                // Resize xdg toplevel
+                // Resize xdg toplevel immediately (Wayland clients handle their own rendering)
                 if (self.nodes.kind[slot] == .wayland_surface) {
                     if (self.nodes.xdg_toplevel[slot]) |toplevel| {
                         _ = wlr.wlr_xdg_toplevel_set_size(toplevel, new_w, new_h);
                     }
                 }
-                // Resize terminal pane
+                // Defer terminal pane resize to frame callback (avoids buffer realloc per motion)
                 if (self.nodes.kind[slot] == .terminal) {
-                    for (self.terminal_panes) |maybe_tp| {
-                        if (maybe_tp) |tp| {
-                            if (tp.node_id == id) {
-                                tp.resize(new_w, new_h);
-                                break;
-                            }
-                        }
-                    }
+                    self.resize_pending_id = id;
+                    self.resize_pending_w = new_w;
+                    self.resize_pending_h = new_h;
+                    if (self.primary_output) |output| wlr.wlr_output_schedule_frame(output);
                 }
             }
         }
@@ -1058,16 +1120,22 @@ fn executeAction(self: *Server, action: KBAction) bool {
         .bar_toggle_top => {
             if (self.bar) |b| {
                 b.top.enabled = !b.top.enabled;
+                b.updateVisibility();
                 if (b.top.enabled) b.render(self);
-                self.arrangeworkspace(self.layout_engine.active_workspace);
+                for (0..self.layout_engine.workspaces.len) |ws| {
+                    self.arrangeworkspace(@intCast(ws));
+                }
             }
             return true;
         },
         .bar_toggle_bottom => {
             if (self.bar) |b| {
                 b.bottom.enabled = !b.bottom.enabled;
+                b.updateVisibility();
                 if (b.bottom.enabled) b.render(self);
-                self.arrangeworkspace(self.layout_engine.active_workspace);
+                for (0..self.layout_engine.workspaces.len) |ws| {
+                    self.arrangeworkspace(@intCast(ws));
+                }
             }
             return true;
         },
@@ -1762,8 +1830,8 @@ pub fn takeScreenshotToPath(self: *Server, path: []const u8) bool {
     const pixels = self.zig_allocator.alloc(u32, total) catch return false;
     defer self.zig_allocator.free(pixels);
 
-    // Clear to background
-    @memset(pixels, 0xFF232733);
+    // Clear to configured background color (what the user actually sees in gaps)
+    @memset(pixels, self.wm_config.bg_color);
 
     // Composite visible terminal panes
     const ws = self.layout_engine.active_workspace;

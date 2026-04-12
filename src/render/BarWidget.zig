@@ -27,6 +27,7 @@ pub const WidgetKind = enum {
     clock,
     panes,
     mem,
+    perf,
     exec,
     text,
 };
@@ -102,6 +103,7 @@ fn parseToken(token: []const u8) Widget {
     if (std.mem.eql(u8, token, "layout")) return .{ .kind = .layout };
     if (std.mem.eql(u8, token, "panes")) return .{ .kind = .panes };
     if (std.mem.eql(u8, token, "mem")) return .{ .kind = .mem };
+    if (std.mem.eql(u8, token, "perf")) return .{ .kind = .perf };
     if (std.mem.eql(u8, token, "clock")) return .{ .kind = .clock, .arg = "%H:%M" };
 
     // {clock:format}
@@ -130,7 +132,7 @@ fn parseToken(token: []const u8) Widget {
 pub const default_top_left = "{workspaces}";
 pub const default_top_center = "{title}";
 pub const default_top_right = "{clock}";
-pub const default_bottom_left = "{mem}";
+pub const default_bottom_left = "{mem} | {perf}";
 pub const default_bottom_center = "";
 pub const default_bottom_right = "{clock:%a %Y-%m-%d}";
 
