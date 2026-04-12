@@ -141,6 +141,17 @@ pub extern "wlroots-0.18" fn wlr_data_device_manager_create(display: *wl_display
 pub const wlr_screencopy_manager_v1 = opaque {};
 pub extern "wlroots-0.18" fn wlr_screencopy_manager_v1_create(display: *wl_display) callconv(.c) ?*wlr_screencopy_manager_v1;
 
+// ── xdg_activation_v1 — focus-request / urgency (since v0.4.17) ──
+
+pub const wlr_xdg_activation_v1 = opaque {};
+pub const wlr_xdg_activation_v1_request_activate_event = opaque {};
+pub extern "wlroots-0.18" fn wlr_xdg_activation_v1_create(display: *wl_display) callconv(.c) ?*wlr_xdg_activation_v1;
+
+// Glue accessors (defined in vendor/miozu-wlr-glue.c)
+pub extern "c" fn miozu_xdg_activation_request_activate(a: *wlr_xdg_activation_v1) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_xdg_activation_event_surface(e: *wlr_xdg_activation_v1_request_activate_event) callconv(.c) ?*wlr_surface;
+pub extern "c" fn miozu_xdg_toplevel_from_surface(s: *wlr_surface) callconv(.c) ?*wlr_xdg_toplevel;
+
 // ── wlroots cursor ────────────────────────────────────────────
 
 pub extern "wlroots-0.18" fn wlr_cursor_create() callconv(.c) ?*wlr_cursor;

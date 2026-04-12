@@ -148,6 +148,10 @@ cursor_frame: wlr.wl_listener = makeListener(handleCursorFrame),
 request_set_cursor: wlr.wl_listener = makeListener(handleRequestSetCursor),
 new_xwayland_surface: wlr.wl_listener = makeListener(handleNewXwaylandSurface),
 
+// xdg_activation_v1 — clients asking for focus (v0.4.17).
+xdg_activate: wlr.wl_listener = makeListener(handleXdgActivation),
+xdg_activation: ?*wlr.wlr_xdg_activation_v1 = null,
+
 // ── Types ─────────────────────────────────────────────────────
 
 pub const PerfStats = struct {
@@ -216,6 +220,11 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     // cleanup needed (tears down on display_destroy).
     _ = wlr.wlr_screencopy_manager_v1_create(display);
 
+    // xdg_activation_v1 — clients ask "please focus me." We route this
+    // to the urgency bit (not focus-steal) so hidden apps visibly flag
+    // themselves on their workspace pill in the bar.
+    const xdg_act = wlr.wlr_xdg_activation_v1_create(display);
+
     // Scene graph
     const scene = wlr.wlr_scene_create() orelse
         return error.SceneCreateFailed;
@@ -273,6 +282,7 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
         .xkb_ctx = xkb_ctx,
         .session = session_ptr,
         .wlr_compositor = wlr_comp,
+        .xdg_activation = xdg_act,
     };
 }
 
@@ -282,6 +292,12 @@ fn registerListeners(self: *Server) void {
     wlr.wl_signal_add(wlr.miozu_backend_new_output(self.backend), &self.new_output);
     wlr.wl_signal_add(wlr.miozu_backend_new_input(self.backend), &self.new_input);
     wlr.wl_signal_add(wlr.miozu_xdg_shell_new_toplevel(self.xdg_shell), &self.new_xdg_toplevel);
+
+    // xdg_activation_v1 — request_activate fires when a client asks to
+    // be focused (e.g. chromium background tab opening a new window).
+    if (self.xdg_activation) |xa| {
+        wlr.wl_signal_add(wlr.miozu_xdg_activation_request_activate(xa), &self.xdg_activate);
+    }
     wlr.wl_signal_add(wlr.miozu_cursor_motion(self.cursor), &self.cursor_motion);
     wlr.wl_signal_add(wlr.miozu_cursor_motion_absolute(self.cursor), &self.cursor_motion_absolute);
     wlr.wl_signal_add(wlr.miozu_cursor_button(self.cursor), &self.cursor_button);
@@ -591,6 +607,29 @@ fn handleNewXdgToplevel(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
     const toplevel: *wlr.wlr_xdg_toplevel = @ptrCast(@alignCast(data orelse return));
 
     _ = XdgView.create(server, toplevel);
+}
+
+/// Client requested focus via xdg_activation_v1. We don't steal focus —
+/// we just mark the node urgent so the bar indicator flips and agents
+/// polling `teruwm_list_windows` see the flag. Focus-steal-prevention
+/// policy matches i3/sway default.
+fn handleXdgActivation(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const server = wlr.listenerParent(Server, "xdg_activate", listener);
+    const ev: *wlr.wlr_xdg_activation_v1_request_activate_event = @ptrCast(@alignCast(data orelse return));
+    const surface = wlr.miozu_xdg_activation_event_surface(ev) orelse return;
+    const toplevel = wlr.miozu_xdg_toplevel_from_surface(surface) orelse return;
+    const slot = server.nodes.findByToplevel(toplevel) orelse return;
+
+    // If this window is already focused, nothing urgent about it.
+    if (server.focused_view) |v| {
+        if (v.toplevel == toplevel) return;
+    }
+
+    if (server.nodes.markUrgent(slot)) {
+        std.debug.print("teruwm: urgent node={d} ws={d}\n", .{ server.nodes.node_id[slot], server.nodes.workspace[slot] });
+        if (server.bar) |b| b.render(server);
+        if (server.primary_output) |out| wlr.wlr_output_schedule_frame(out);
+    }
 }
 
 fn handleCursorMotion(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
@@ -1268,6 +1307,7 @@ pub fn executeAction(self: *Server, action: KBAction) bool {
         self.setWorkspaceVisibility(ws, true);
         self.arrangeworkspace(ws);
         self.updateFocusedTerminal();
+        self.maybeFireWorkspaceStartup(ws);
         if (self.bar) |b| b.render(self);
         return true;
     }
@@ -1740,6 +1780,11 @@ pub fn focusView(self: *Server, view: *XdgView) void {
     self.focused_view = view;
     self.focused_terminal = null;
 
+    // Clear urgency on focus gain
+    if (self.nodes.findByToplevel(view.toplevel)) |slot| {
+        _ = self.nodes.clearUrgent(slot);
+    }
+
     // Send keyboard focus to the surface
     const surface = wlr.miozu_xdg_surface_surface(
         wlr.miozu_xdg_toplevel_base(view.toplevel) orelse return,
@@ -2188,6 +2233,10 @@ pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
         ws.removeNode(tp.node_id);
     }
 
+    // DynamicProjects: if this empties any workspace, reset its
+    // startup-fired flag so the next visit re-runs its startup hook.
+    for (0..10) |ws_i| self.resetWorkspaceStartupIfEmpty(@intCast(ws_i));
+
     // Remove event source
     if (tp.event_source) |es| {
         _ = wlr.wl_event_source_remove(es);
@@ -2259,6 +2308,11 @@ pub fn updateFocusedTerminal(self: *Server) void {
     }
     if (!found) self.focused_terminal = null;
 
+    // Clear urgency for the newly-focused node, if any.
+    if (self.nodes.findById(active_id)) |slot| {
+        _ = self.nodes.clearUrgent(slot);
+    }
+
     self.applyFocusOpacity();
 
     // Re-render ALL visible panes so border colors update immediately
@@ -2266,6 +2320,30 @@ pub fn updateFocusedTerminal(self: *Server) void {
         if (maybe_tp) |tp| tp.render();
     }
     if (self.bar) |b| b.render(self);
+}
+
+/// DynamicProjects (v0.4.17). If the workspace we're switching into
+/// is empty and has a `startup` command configured, spawn it. The
+/// flag tracks "has fired at least once since the workspace last
+/// became empty" so revisits during the same session don't re-spawn.
+/// When the workspace empties (last pane closed), the flag resets so
+/// a fresh visit re-fires (xmonad-ish).
+pub fn maybeFireWorkspaceStartup(self: *Server, ws: u8) void {
+    if (ws >= 10) return;
+    const cmd = self.wm_config.workspace_startup[ws] orelse return;
+    if (self.wm_config.workspace_startup_fired[ws]) return;
+    if (self.nodes.countInWorkspace(ws) > 0) return;
+    self.wm_config.workspace_startup_fired[ws] = true;
+    self.spawnShell(cmd);
+}
+
+/// Reset the startup-fired flag for a workspace (call when its count
+/// drops to zero) so the next visit re-runs the startup hook.
+pub fn resetWorkspaceStartupIfEmpty(self: *Server, ws: u8) void {
+    if (ws >= 10) return;
+    if (self.nodes.countInWorkspace(ws) == 0) {
+        self.wm_config.workspace_startup_fired[ws] = false;
+    }
 }
 
 /// Apply wm_config.unfocused_opacity to every terminal pane's

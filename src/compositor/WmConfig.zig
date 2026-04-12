@@ -157,6 +157,28 @@ autostart_count: u8 = 0,
 spawn_chords: [max_spawn_chords]SpawnChord = undefined,
 spawn_chord_count: u8 = 0,
 
+// ── DynamicProjects — per-workspace CWD + startup (v0.4.17) ────
+
+/// Startup command for workspace N (1-indexed in config, 0-indexed
+/// internally). Fired when the workspace is visited and empty
+/// (xmonad DynamicProjects `projectStartHook` semantics). Null = no
+/// startup action.
+workspace_startup: [10]?[]const u8 = [_]?[]const u8{null} ** 10,
+workspace_startup_buf: [10][256]u8 = undefined,
+workspace_startup_len: [10]u16 = [_]u16{0} ** 10,
+
+/// Working directory for panes spawned on workspace N via
+/// spawn_terminal (xmonad `projectDirectory`). Tilde-expanded at
+/// startup. Null = inherit the compositor's CWD.
+workspace_cwd: [10]?[]const u8 = [_]?[]const u8{null} ** 10,
+workspace_cwd_buf: [10][256]u8 = undefined,
+workspace_cwd_len: [10]u16 = [_]u16{0} ** 10,
+
+/// Which workspaces have already had their startup hook fired. Flips
+/// true on first switch-to-empty; reset when workspace becomes
+/// empty again (so revisit re-runs the hook).
+workspace_startup_fired: [10]bool = [_]bool{false} ** 10,
+
 // ── String storage (static buffers, no allocator needed) ────────
 
 bar_top_left_buf: [max_bar_str]u8 = undefined,
@@ -216,6 +238,7 @@ pub fn load(io: Io) WmConfig {
 /// Parse config file content (key=value with [section] headers).
 fn parse(self: *WmConfig, content: []const u8) void {
     var current_section: Section = .global;
+    var current_ws_idx: ?u8 = null;
     var line_iter = std.mem.splitScalar(u8, content, '\n');
 
     while (line_iter.next()) |raw_line| {
@@ -229,7 +252,25 @@ fn parse(self: *WmConfig, content: []const u8) void {
         if (line[0] == '[') {
             if (std.mem.indexOfScalar(u8, line, ']')) |end| {
                 const sec_name = line[1..end];
+                // Parse `[workspace.N]` with embedded index.
+                if (std.mem.startsWith(u8, sec_name, "workspace.")) {
+                    const idx_str = sec_name["workspace.".len..];
+                    const idx_1 = std.fmt.parseInt(u8, idx_str, 10) catch {
+                        current_section = .global;
+                        current_ws_idx = null;
+                        continue;
+                    };
+                    if (idx_1 >= 1 and idx_1 <= 10) {
+                        current_section = .workspace;
+                        current_ws_idx = idx_1 - 1;
+                    } else {
+                        current_section = .global;
+                        current_ws_idx = null;
+                    }
+                    continue;
+                }
                 current_section = parseSection(sec_name);
+                current_ws_idx = null;
             }
             continue;
         }
@@ -250,6 +291,7 @@ fn parse(self: *WmConfig, content: []const u8) void {
             .names => self.applyNameRule(key, value),
             .autostart => self.applyAutostart(key, value),
             .keybind => self.applyKeybind(key, value),
+            .workspace => if (current_ws_idx) |idx| self.applyWorkspace(idx, key, value),
         }
     }
 }
@@ -263,6 +305,7 @@ const Section = enum {
     names,
     autostart,
     keybind,
+    workspace,
 };
 
 fn parseSection(name: []const u8) Section {
@@ -421,6 +464,24 @@ fn applyKeybind(self: *WmConfig, key: []const u8, value: []const u8) void {
 
     self.spawn_chords[self.spawn_chord_count] = chord;
     self.spawn_chord_count += 1;
+}
+
+/// Populate `[workspace.N]` fields (cwd, startup). Ignores `name`,
+/// `layout`, `master_ratio` etc. — those are handled by the shared
+/// teru Config and applied to the layout engine separately.
+fn applyWorkspace(self: *WmConfig, idx: u8, key: []const u8, value: []const u8) void {
+    if (idx >= 10) return;
+    if (std.mem.eql(u8, key, "startup")) {
+        const n = @min(value.len, self.workspace_startup_buf[idx].len);
+        @memcpy(self.workspace_startup_buf[idx][0..n], value[0..n]);
+        self.workspace_startup_len[idx] = @intCast(n);
+        self.workspace_startup[idx] = self.workspace_startup_buf[idx][0..n];
+    } else if (std.mem.eql(u8, key, "cwd")) {
+        const n = @min(value.len, self.workspace_cwd_buf[idx].len);
+        @memcpy(self.workspace_cwd_buf[idx][0..n], value[0..n]);
+        self.workspace_cwd_len[idx] = @intCast(n);
+        self.workspace_cwd[idx] = self.workspace_cwd_buf[idx][0..n];
+    }
 }
 
 // ── Rule lookup ─────────────────────────────────────────────────

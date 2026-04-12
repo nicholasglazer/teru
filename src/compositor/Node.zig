@@ -50,6 +50,11 @@ group_id: [max_nodes]u8 = [_]u8{0} ** max_nodes, // 0=none, 1-255=group index
 app_id: [max_nodes][64]u8 = [_][64]u8{[_]u8{0} ** 64} ** max_nodes,
 app_id_len: [max_nodes]u8 = [_]u8{0} ** max_nodes,
 
+// Urgency bit — set by xdg_activation_v1 when a hidden client
+// requests focus. Cleared on focus gain. Bar renders an indicator
+// on workspaces containing any urgent node.
+urgent: [max_nodes]bool = [_]bool{false} ** max_nodes,
+
 // Bookkeeping
 count: u16 = 0,
 
@@ -71,6 +76,7 @@ pub fn addSurface(self: *Node, id: u64, ws: u8, toplevel: ?*wlr.wlr_xdg_toplevel
     self.name_len[slot] = 0;
     self.group_id[slot] = 0;
     self.app_id_len[slot] = 0;
+    self.urgent[slot] = false;
     self.count += 1;
     return slot;
 }
@@ -91,6 +97,7 @@ pub fn addTerminal(self: *Node, id: u64, ws: u8) ?u16 {
     self.name_len[slot] = 0;
     self.group_id[slot] = 0;
     self.app_id_len[slot] = 0;
+    self.urgent[slot] = false;
     self.count += 1;
     return slot;
 }
@@ -107,9 +114,37 @@ pub fn remove(self: *Node, id: u64) bool {
             self.name_len[i] = 0;
             self.group_id[i] = 0;
             self.app_id_len[i] = 0;
+            self.urgent[i] = false;
             self.count -= 1;
             return true;
         }
+    }
+    return false;
+}
+
+// ── Urgency ────────────────────────────────────────────────────
+
+/// Set the urgent bit on a node. Returns true iff the bit transitioned
+/// from false → true (so callers only fire notifications on the edge).
+pub fn markUrgent(self: *Node, slot: u16) bool {
+    if (slot >= max_nodes or self.kind[slot] == .empty) return false;
+    if (self.urgent[slot]) return false;
+    self.urgent[slot] = true;
+    return true;
+}
+
+/// Clear the urgent bit. Returns true iff it was set.
+pub fn clearUrgent(self: *Node, slot: u16) bool {
+    if (slot >= max_nodes) return false;
+    if (!self.urgent[slot]) return false;
+    self.urgent[slot] = false;
+    return true;
+}
+
+/// Any urgent node on workspace `ws`? Bar uses this for pill rendering.
+pub fn anyUrgentOnWorkspace(self: *const Node, ws: u8) bool {
+    for (0..max_nodes) |i| {
+        if (self.kind[i] != .empty and self.workspace[i] == ws and self.urgent[i]) return true;
     }
     return false;
 }
