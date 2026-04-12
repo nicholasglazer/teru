@@ -1,195 +1,206 @@
 # Keybindings
 
-teru has two layers of keyboard shortcuts: **prefix commands** (Ctrl+Space + key) and **global shortcuts** (Alt+key, no prefix needed).
+teru ships two binaries that share the same keybinding definitions but use
+different modifier keys:
 
-All global shortcuts can be disabled with `alt_workspace_switch = false` in `teru.conf`.
+| Binary | `$mod` (default) | Notes |
+|--------|------------------|-------|
+| **teru** (standalone terminal) | **Alt** | tiling inside one window |
+| **teruwm** (Wayland compositor) | **Super** (Win) | tiling the whole screen |
 
----
+The `$mod` key can be overridden in config (`mod_key = alt|super|ctrl`). Every
+keybind below uses `$mod` — swap in the modifier for whichever binary you're
+running. When this page says "Super" it means Super by default in teruwm; in
+teru the same action is bound to Alt.
 
-## Global Shortcuts (Alt+key)
+There are three keyboard modes:
 
-No prefix required. These work instantly from any state.
-
-### Workspace
-
-| Key | Action |
-|-----|--------|
-| `Alt+1`-`9` | Switch to workspace 1-9 |
-| `RAlt+1`-`9` | Move active pane to workspace 1-9 |
-
-### Pane Navigation
-
-| Key | Action |
-|-----|--------|
-| `Alt+J` | Focus next pane |
-| `Alt+K` | Focus previous pane |
-| `RAlt+J` | Swap pane with next (move down in layout order) |
-| `RAlt+K` | Swap pane with previous (move up in layout order) |
-
-### Pane Management
-
-| Key | Action |
-|-----|--------|
-| `Alt+Enter` | New pane (vertical split) |
-| `RAlt+Enter` | New pane (horizontal split) |
-| `Alt+C` | New pane (vertical split) |
-| `RAlt+C` | New pane (horizontal split) |
-| `Alt+X` | Close active pane |
-
-### Master Pane
-
-| Key | Action |
-|-----|--------|
-| `Alt+M` | Focus the master pane |
-| `RAlt+M` | Mark active pane as master |
-
-Mark any pane as "master" per workspace. Press `Alt+M` from anywhere to jump back to it. The master designation persists until you mark a different pane or close it.
-
-### Font Zoom
-
-| Key | Action |
-|-----|--------|
-| `Alt+-` | Zoom out (decrease font size by 1px) |
-| `Alt+=` | Zoom in (increase font size by 1px) |
-| `Alt+\` | Reset zoom (restore config font size) |
-
-### UI
-
-| Key | Action |
-|-----|--------|
-| `Alt+B` | Toggle status bar visibility |
-
-Font zoom re-rasterizes glyphs from memory (no disk I/O). Grid resize and SIGWINCH are deferred 150ms after the last zoom event, so rapid zooming is smooth.
-
-### Right Alt (RAlt)
-
-Right Alt is used as a modifier for pane manipulation shortcuts. It's tracked by physical keycode, independent of keyboard layout. The distinction:
-
-- **Alt+key** = navigation / read-only actions (focus, switch workspace)
-- **RAlt+key** = mutation actions (move pane, swap, mark master, horizontal split)
+- **Normal** — default. All `$mod+key` shortcuts live here.
+- **Prefix** — entered with `Ctrl+Space`, next key triggers a prefix command
+  (tmux-style).
+- **Scroll / Vi copy** — entered with `$mod+V`. Use vi motions to navigate
+  scrollback and copy text.
 
 ---
 
-## Prefix Commands (Ctrl+Space + key)
-
-Press the prefix key (default: `Ctrl+Space`), then press a command key within the timeout (default: 500ms).
-
-### Pane Management
+## Pane / window management
 
 | Key | Action |
 |-----|--------|
-| prefix + `c` or `\` | Spawn pane (vertical split) |
-| prefix + `-` | Spawn pane (horizontal split) |
-| prefix + `x` | Close active pane |
+| `$mod+Enter` | Spawn new terminal pane |
+| `$mod+C` | Spawn new pane (vertical split) |
+| `$mod+X` | **Close focused pane or window** |
+| `$mod+Shift+C` | Close focused window (alias) |
+| `$mod+J` / `$mod+K` | Focus next / previous pane |
+| `$mod+Tab` / `$mod+Shift+Tab` | Focus next / previous (XMonad-style) |
+| `$mod+Shift+J` / `$mod+Shift+K` | Swap focused pane with next / previous |
+| `$mod+M` | Focus the master pane |
+| `$mod+Shift+M` | Mark focused pane as master |
+| `$mod+H` / `$mod+L` | Shrink / grow master width |
 
-### Navigation
-
-| Key | Action |
-|-----|--------|
-| prefix + `n` | Focus next pane |
-| prefix + `p` | Focus previous pane |
-| prefix + `1`-`9` | Switch workspace |
-
-### Layout
-
-| Key | Action |
-|-----|--------|
-| prefix + `Space` | Cycle layout (within workspace layout list) |
-| prefix + `z` | Toggle zoom (monocle layout) |
-| prefix + `H` / `L` | Shrink / grow master width |
-| prefix + `K` / `J` | Shrink / grow master height (dishes layout) |
-
-### Modes
+## Layout
 
 | Key | Action |
 |-----|--------|
-| prefix + `v` | Enter vi/copy mode |
-| prefix + `/` | Search in terminal output |
+| `$mod+Space` | Cycle through this workspace's layouts |
+| `$mod+Z` | Toggle zoom (monocle) on focused pane |
+| `$mod+F` | Toggle fullscreen |
+| `$mod+S` | Toggle floating for focused window |
 
-### Session
+Workspaces have an ordered list of layouts. `$mod+Space` cycles. Available
+layouts: `master-stack`, `grid`, `monocle`, `dishes`, `spiral`, `three-col`,
+`columns`, `accordion`.
 
-| Key | Action |
-|-----|--------|
-| prefix + `d` | Detach (save session, exit) |
-
----
-
-## Scrolling
+## Workspaces
 
 | Key | Action |
 |-----|--------|
-| `Shift+PageUp` / `PageUp` | Scroll up |
-| `Shift+PageDown` / `PageDown` | Scroll down |
-| Mouse wheel | Smooth pixel scroll |
-| Any printable key | Exit scroll mode |
+| `$mod+1` … `$mod+9`, `$mod+0` | Switch to workspace 1–9, 0 |
+| `$mod+Shift+1` … `$mod+Shift+0` | Move focused window to workspace N |
 
----
-
-## Vi/Copy Mode (prefix + v)
+## UI / compositor (teruwm)
 
 | Key | Action |
 |-----|--------|
-| `h` `j` `k` `l` / arrows | Move cursor |
+| `$mod+B` | Toggle **top** status bar |
+| `$mod+Shift+B` | Toggle **bottom** status bar |
+| `$mod+D` | Open launcher (rofi-like) |
+| `$mod+W` | Screenshot full output → `/tmp/teruwm-screenshot.png` |
+| `$mod+Shift+W` | Screenshot focused pane |
+| `$mod+Shift+R` | Reload config from `~/.config/teruwm/config` |
+| `$mod+Ctrl+Shift+R` | **Hot-restart** compositor (PTYs survive) |
+| `$mod+Shift+Q` | Quit compositor |
+
+## Font zoom (teru standalone)
+
+| Key | Action |
+|-----|--------|
+| `$mod+=` | Zoom in (+1 px) |
+| `$mod+-` | Zoom out (-1 px) |
+| `$mod+\` | Reset zoom |
+
+## Modes
+
+| Key | Action |
+|-----|--------|
+| `$mod+/` | Enter search mode in scrollback |
+| `$mod+V` | Enter vi / copy / scroll mode |
+| `Ctrl+Space` | Enter prefix mode (next key is a prefix command) |
+
+## Prefix commands (`Ctrl+Space`, then …)
+
+| Key | Action |
+|-----|--------|
+| `c` or `\` | Spawn pane (vertical split) |
+| `-` | Spawn pane (horizontal split) |
+| `x` | Close focused pane |
+| `n` / `p` | Focus next / previous pane |
+| `1` … `9`, `0` | Switch to workspace N |
+| `Space` | Cycle layout |
+| `z` | Zoom toggle |
+| `Shift+H` / `Shift+L` | Shrink / grow master width |
+| `Shift+K` / `Shift+J` | Shrink / grow master height |
+| `/` | Search |
+| `v` | Vi / copy mode |
+| `d` | Detach session (teru only) |
+| `Esc` | Leave prefix mode |
+
+## Scroll mode (`$mod+V`)
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Scroll one line down / up |
+| `Ctrl+D` / `Ctrl+U` | Scroll half page down / up |
+| `g` / `Shift+G` | Jump to top / bottom of scrollback |
+| `/` | Enter search |
+| `v` | Start visual selection |
+| `y` | Yank selection to clipboard |
+| `q` / `Esc` | Return to normal mode |
+
+## Vi / copy mode (inside scroll mode, after `v`)
+
+| Key | Action |
+|-----|--------|
+| `h j k l` / arrows | Move cursor |
 | `w` `b` `e` | Word motion |
-| `g` / `G` | Top / bottom of scrollback |
-| `Ctrl+U` / `Ctrl+D` | Half-page up / down |
 | `H` `M` `L` | Viewport top / middle / bottom |
-| `v` | Start character selection |
-| `V` | Start line selection |
-| `o` | Swap selection endpoint |
+| `v` | Character selection |
+| `V` | Line selection |
+| `o` | Swap selection endpoints |
 | `y` | Yank to clipboard |
-| `q` / `ESC` | Exit vi mode |
 
----
+## Media keys (teruwm only)
+
+These require `loadMediaDefaults()` at startup (on by default in compositor):
+
+| Key | Action |
+|-----|--------|
+| `XF86AudioRaiseVolume` | `wpctl set-volume @DEFAULT_SINK@ 5%+` |
+| `XF86AudioLowerVolume` | `wpctl set-volume @DEFAULT_SINK@ 5%-` |
+| `XF86AudioMute` | Mute / unmute |
+| `XF86AudioPlay` / `Next` / `Prev` | MPRIS media control |
+| `XF86MonBrightnessUp` / `Down` | `brightnessctl set 5%+/-` |
+| `Print` | Screenshot |
+
+## Clipboard / selection
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+Shift+C` | Copy selection |
+| `Ctrl+Shift+V` | Paste |
+
+Or set `copy_on_select = true` in config for auto-copy on mouse release.
 
 ## Mouse
 
 | Action | Effect |
 |--------|--------|
-| Click | Focus pane under cursor |
+| Click | Focus window under cursor |
 | Drag | Select text |
 | Double-click | Select word |
-| Shift+click | Open URL under cursor |
-| Shift+hover | Underline URL under cursor |
-| Drag border | Resize master ratio |
+| `Shift+Click` | Open URL under cursor |
+| `Shift+Hover` | Underline URL under cursor |
+| Drag pane border | Resize master ratio (teruwm) |
+| `$mod+Click` drag | Move floating window (teruwm) |
+| `$mod+Right-click` drag | Resize floating window (teruwm) |
+| Wheel | Smooth pixel scroll |
 
 ---
 
-## Clipboard
+## Customizing
 
-| Key | Action |
-|-----|--------|
-| `Ctrl+Shift+C` | Copy selection to clipboard |
-| `Ctrl+Shift+V` | Paste from clipboard |
-| Select text | Auto-copy (when `copy_on_select = true`) |
+Keybinds are parsed at compositor / terminal startup from config files.
+See `~/.config/teru/teru.conf` or `~/.config/teruwm/config`. Every default
+binding above comes from `src/config/Keybinds.zig:loadDefaults`. Custom
+bindings use this syntax:
 
----
-
-## Configuration
-
-The prefix key and timeout are configurable in `~/.config/teru/teru.conf`:
-
-```conf
-prefix_key = ctrl+space    # default
-prefix_timeout_ms = 500    # milliseconds to wait for command key
-alt_workspace_switch = true # enable Alt+key global shortcuts
+```ini
+# teruwm example
+[keybinds]
+super+e     = spawn:thunar
+super+p     = launcher_toggle
+super+grave = mode_scroll
 ```
 
-See [CONFIGURATION.md](CONFIGURATION.md) for all options.
+Action names match the identifiers in `Keybinds.Action` (e.g. `pane_close`,
+`workspace_3`, `bar_toggle_top`).
+
+## MCP control (teruwm)
+
+The compositor exposes its window-manager controls over MCP at
+`/run/user/$UID/teru-wmmcp-$PID.sock` — see `teruwm_list_windows`,
+`teruwm_close_window`, `teruwm_switch_workspace`, `teruwm_set_layout`,
+`teruwm_toggle_bar`, `teruwm_set_config`, etc. Any keybind action can be
+scripted from outside.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md#compositor-mcp) for the full tool list.
 
 ---
 
-## Claude Code Compatibility
+## Claude Code compatibility
 
-teru's Alt+key shortcuts are designed to avoid conflicts with Claude Code's keybindings:
-
-| Claude Code | teru | Conflict |
-|---|---|---|
-| `Alt+T` (thinking) | unused | none |
-| `Alt+P` (model switch) | unused | none |
-| `Alt+O` (fast mode) | unused | none |
-| `Alt+B` (word back) | toggle status bar | conflict — remap if needed |
-| `Alt+F` (word forward) | unused | none |
-| `Shift+Tab` (permissions) | unused | none |
-
-All shortcuts are safe to use with Claude Code running inside teru.
+teruwm uses Super by default; teru standalone uses Alt. Claude Code's Alt
+shortcuts (`Alt+T`, `Alt+P`, `Alt+O`, `Alt+F`) don't conflict with teruwm.
+Inside the standalone terminal, `Alt+B` toggles the bar — if you use Claude
+Code's `Alt+B` (word back), either rebind `bar_toggle_top` or switch
+`mod_key = super` in `teru.conf`.

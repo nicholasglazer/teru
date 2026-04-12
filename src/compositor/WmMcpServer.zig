@@ -365,32 +365,12 @@ fn toolSpawnTerminal(self: *WmMcpServer, ws: u8, buf: []u8, id: ?[]const u8) []c
 
 fn toolCloseWindow(self: *WmMcpServer, node_id: u64, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
-    const srv = self.server;
-
-    // Find and close terminal pane
-    for (srv.terminal_panes, 0..) |maybe_tp, i| {
-        if (maybe_tp) |tp| {
-            if (tp.node_id == node_id) {
-                // Remove from layout engine
-                const ws = if (srv.nodes.findById(node_id)) |slot| srv.nodes.workspace[slot] else srv.layout_engine.active_workspace;
-                srv.layout_engine.workspaces[ws].removeNode(node_id);
-                if (srv.nodes.findById(node_id)) |_| _ = srv.nodes.remove(node_id);
-
-                tp.deinit(srv.zig_allocator);
-                srv.zig_allocator.destroy(tp);
-                srv.terminal_panes[i] = null;
-                srv.terminal_count -|= 1;
-                srv.arrangeworkspace(ws);
-                srv.updateFocusedTerminal();
-                if (srv.bar) |b| b.render(srv);
-                return std.fmt.bufPrint(buf,
-                    \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"closed window {d}"}}]}},"id":{s}}}
-                , .{ node_id, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
-            }
-        }
+    if (!self.server.closeNode(node_id)) {
+        return jsonRpcError(buf, id, -32602, "Window not found");
     }
-
-    return jsonRpcError(buf, id, -32602, "Window not found");
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"closed window {d}"}}]}},"id":{s}}}
+    , .{ node_id, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolFocusWindow(self: *WmMcpServer, node_id: u64, buf: []u8, id: ?[]const u8) []const u8 {
