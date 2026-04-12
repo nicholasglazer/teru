@@ -5,6 +5,8 @@
 //! commit the wlr_scene to this output.
 
 const std = @import("std");
+const teru = @import("teru");
+const compat = teru.compat;
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 const Bar = @import("Bar.zig");
@@ -52,8 +54,25 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
     const h = wlr.miozu_output_height(wlr_output);
     std.debug.print("teruwm: output '{s}' connected ({d}x{d})\n", .{ name, w, h });
 
-    // On first output: create bars first, then spawn terminal (so tiling respects bar height)
+    // On first output: create background, bars, then spawn terminal
     if (server.terminal_count == 0) {
+        // Background rect: covers full output, lowered below everything else.
+        // Color is solid ARGB from wm_config.bg_color.
+        const scene_tree_root = wlr.miozu_scene_tree(server.scene);
+        if (scene_tree_root) |root| {
+            const col = server.wm_config.bg_color;
+            const rgba: [4]f32 = .{
+                @as(f32, @floatFromInt((col >> 16) & 0xFF)) / 255.0,
+                @as(f32, @floatFromInt((col >> 8) & 0xFF)) / 255.0,
+                @as(f32, @floatFromInt(col & 0xFF)) / 255.0,
+                @as(f32, @floatFromInt((col >> 24) & 0xFF)) / 255.0,
+            };
+            if (wlr.wlr_scene_rect_create(root, w, h, &rgba)) |rect| {
+                server.bg_rect = rect;
+                wlr.wlr_scene_node_lower_to_bottom(wlr.miozu_scene_rect_node(rect));
+            }
+        }
+
         // Bar must exist before spawnTerminal so arrangeworkspace accounts for bar height
         server.bar = Bar.create(server);
         server.applyWmBar(); // apply teruwm config bar format strings
@@ -74,6 +93,26 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
 fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const output: *Output = @fieldParentPtr("frame", listener);
     const server = output.server;
+    const frame_start = compat.monotonicNow();
+
+    // Apply deferred layout from border drag (once per vsync, not per mouse motion)
+    if (server.layout_dirty) {
+        server.arrangeWorkspaceSmooth(server.layout_engine.active_workspace);
+        server.layout_dirty = false;
+    }
+
+    // Apply deferred terminal resize from floating drag
+    if (server.resize_pending_id) |rid| {
+        for (server.terminal_panes) |maybe_tp| {
+            if (maybe_tp) |tp| {
+                if (tp.node_id == rid) {
+                    tp.resize(server.resize_pending_w, server.resize_pending_h);
+                    break;
+                }
+            }
+        }
+        server.resize_pending_id = null;
+    }
 
     // Render dirty terminal panes before compositing (coalesces PTY reads to vsync)
     for (server.terminal_panes) |maybe_tp| {
@@ -82,6 +121,18 @@ fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
 
     const scene_output = wlr.wlr_scene_get_scene_output(server.scene, output.wlr_output) orelse return;
     _ = wlr.wlr_scene_output_commit(scene_output, null);
+
+    // MCP-triggered restart (deferred to after response is sent)
+    if (server.restart_pending) {
+        server.restart_pending = false;
+        server.execRestart();
+        // If we get here, exec() failed
+    }
+
+    // Record frame timing
+    const elapsed_ns = compat.monotonicNow() - frame_start;
+    const elapsed_us: u64 = @intCast(@max(0, @divTrunc(elapsed_ns, 1000)));
+    server.perf.recordFrame(elapsed_us);
 }
 
 fn handleRequestState(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {

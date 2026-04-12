@@ -177,6 +177,7 @@ pub extern "c" fn miozu_xdg_toplevel_title(toplevel: *wlr_xdg_toplevel) callconv
 
 // XDG surface fields
 pub extern "c" fn miozu_xdg_surface_surface(surface: *wlr_xdg_surface) callconv(.c) ?*wlr_surface;
+pub extern "c" fn miozu_xdg_surface_initial_commit(surface: *wlr_xdg_surface) callconv(.c) bool;
 
 // wlr_surface signals (map/unmap/commit live on wlr_surface in 0.18)
 pub extern "c" fn miozu_surface_map(surface: *wlr_surface) callconv(.c) *wl_signal;
@@ -257,6 +258,10 @@ pub extern "wlroots-0.18" fn wlr_scene_node_set_enabled(node: *wlr_scene_node, e
 pub extern "wlroots-0.18" fn wlr_xdg_toplevel_set_size(toplevel: *wlr_xdg_toplevel, width: u32, height: u32) callconv(.c) u32;
 pub extern "wlroots-0.18" fn wlr_xdg_toplevel_set_activated(toplevel: *wlr_xdg_toplevel, activated: bool) callconv(.c) u32;
 pub extern "wlroots-0.18" fn wlr_scene_rect_create(parent: *wlr_scene_tree, width: c_int, height: c_int, color: *const [4]f32) callconv(.c) ?*wlr_scene_rect;
+pub extern "wlroots-0.18" fn wlr_scene_rect_set_size(rect: *wlr_scene_rect, width: c_int, height: c_int) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_scene_rect_set_color(rect: *wlr_scene_rect, color: *const [4]f32) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_scene_node_lower_to_bottom(node: *wlr_scene_node) callconv(.c) void;
+pub extern "c" fn miozu_scene_rect_node(rect: *wlr_scene_rect) callconv(.c) *wlr_scene_node;
 
 // xkbcommon
 pub extern "xkbcommon" fn xkb_context_new(flags: c_int) callconv(.c) ?*xkb_context;
@@ -376,6 +381,7 @@ pub extern "wlroots-0.18" fn wlr_xwayland_set_seat(xwayland: *wlr_xwayland, seat
 // XWayland C glue accessors
 pub extern "c" fn miozu_xwayland_new_surface(xwl: *wlr_xwayland) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_xwayland_ready(xwl: *wlr_xwayland) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_xwayland_display_name(xwl: *wlr_xwayland) callconv(.c) ?[*:0]const u8;
 pub extern "c" fn miozu_xwayland_surface_surface(surface: *wlr_xwayland_surface) callconv(.c) ?*wlr_surface;
 pub extern "c" fn miozu_xwayland_surface_override_redirect(surface: *wlr_xwayland_surface) callconv(.c) bool;
 pub extern "c" fn miozu_xwayland_surface_class(surface: *wlr_xwayland_surface) callconv(.c) ?[*:0]const u8;

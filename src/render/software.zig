@@ -44,6 +44,7 @@ pub const SoftwareRenderer = struct {
     padding: u32, // pixels of padding around content
     scheme: ColorScheme, // runtime color scheme (palette + semantic colors)
     cursor_blink_on: bool = true, // toggled by blink timer
+    last_cursor_row: u16 = 0, // previous cursor row (for dirty tracking)
     allocator: std.mem.Allocator,
 
     /// Init with default color scheme and cursor color.
@@ -105,8 +106,43 @@ pub const SoftwareRenderer = struct {
         self.framebuffer = &.{};
     }
 
-    /// Render the entire grid into the framebuffer.
+    /// Full render — all rows. Used on first paint and by standalone terminal.
     pub fn render(self: *SoftwareRenderer, grid: *const Grid) void {
+        self.renderRange(grid, 0, grid.rows);
+        self.last_cursor_row = grid.cursor_row;
+    }
+
+    /// Incremental render — only dirty rows + cursor rows.
+    /// Call this instead of render() when grid.dirty_row_min/max are tracked.
+    /// Falls back to full render if external code set grid.dirty = true
+    /// without going through markRowDirty (detected by inverted range).
+    pub fn renderDirty(self: *SoftwareRenderer, grid: *Grid) void {
+        // Inverted range = external code set dirty without row tracking → full repaint
+        if (grid.dirty_row_min > grid.dirty_row_max) {
+            self.renderRange(grid, 0, grid.rows);
+            self.last_cursor_row = grid.cursor_row;
+            grid.clearDirty();
+            return;
+        }
+
+        // Expand dirty range to include old and new cursor rows
+        // (cursor overlay must be redrawn when cursor moves)
+        var rmin = grid.dirty_row_min;
+        var rmax = grid.dirty_row_max;
+        if (self.last_cursor_row < rmin) rmin = self.last_cursor_row;
+        if (self.last_cursor_row > rmax) rmax = self.last_cursor_row;
+        if (grid.cursor_row < rmin) rmin = grid.cursor_row;
+        if (grid.cursor_row > rmax) rmax = grid.cursor_row;
+
+        self.renderRange(grid, rmin, rmax +| 1);
+        self.last_cursor_row = grid.cursor_row;
+        grid.clearDirty();
+    }
+
+    /// Render a range of rows [row_min..row_max) into the framebuffer.
+    /// Called by render() with the dirty range, or with the full range
+    /// on first paint / resize.
+    fn renderRange(self: *SoftwareRenderer, grid: *const Grid, row_min: u16, row_max: u16) void {
         const cols: usize = grid.cols;
         const rows: usize = grid.rows;
         const cw: usize = self.cell_width;
@@ -114,15 +150,42 @@ pub const SoftwareRenderer = struct {
         const fb_w: usize = self.width;
         const fb_h: usize = self.height;
 
-        // Fill entire framebuffer with background color first.
-        // This covers padding areas and any gap between the cell grid edge
-        // and the framebuffer boundary (prevents black borders).
-        const total = @min(fb_w * fb_h, self.framebuffer.len);
-        if (total > 0) {
-            @memset(self.framebuffer[0..total], self.scheme.bg);
+        // Fill only padding + non-cell strips (not the entire framebuffer).
+        // The per-cell loop below fills each cell's bg, so a full memset
+        // is redundant and wastes ~16MB of writes at 2560x1600.
+        // Padding areas AND leftover pixels beyond the grid need filling.
+        const pad = self.padding;
+        const grid_bottom = rows * ch + pad; // last cell y+h
+        const grid_right = cols * cw + pad;  // last cell x+w
+        const has_bottom_strip = grid_bottom < fb_h;
+        const has_right_strip = grid_right < fb_w;
+        if ((pad > 0 or has_bottom_strip or has_right_strip) and row_min == 0) {
+            const bg_fill = self.scheme.bg;
+            // Top padding rows
+            if (pad > 0) {
+                const top_end = @min(pad * fb_w, self.framebuffer.len);
+                if (top_end > 0) @memset(self.framebuffer[0..top_end], bg_fill);
+            }
+            // Bottom leftover: from grid_bottom to fb_h (covers both padding and cell-size remainder)
+            if (has_bottom_strip) {
+                const bot_start = grid_bottom * fb_w;
+                const bot_end = @min(fb_w * fb_h, self.framebuffer.len);
+                if (bot_start < bot_end) @memset(self.framebuffer[bot_start..bot_end], bg_fill);
+            }
+            // Left and right strips for each row between top padding and grid bottom.
+            // `has_right_strip` covers both padding and cell-size remainder.
+            if (pad > 0 or has_right_strip) {
+                for (pad..@min(grid_bottom, fb_h)) |py| {
+                    const row_start = py * fb_w;
+                    if (pad > 0) @memset(self.framebuffer[row_start..][0..@min(pad, fb_w)], bg_fill);
+                    if (has_right_strip) {
+                        @memset(self.framebuffer[row_start + grid_right .. row_start + fb_w], bg_fill);
+                    }
+                }
+            }
         }
 
-        for (0..rows) |row| {
+        for (@as(usize, row_min)..@as(usize, @min(row_max, @as(u16, @intCast(rows))))) |row| {
             const screen_y = row * ch + self.padding;
             if (screen_y >= fb_h) break;
 
@@ -171,8 +234,9 @@ pub const SoftwareRenderer = struct {
                 }
 
                 // 2. Blit glyph from atlas with foreground color (alpha blending)
+                // Skip space/null — bg fill above is sufficient, avoids atlas lookup
                 const cp = cell.char;
-                if (self.atlas_width > 0 and self.glyph_atlas.len > 0) {
+                if (cp > 0x20 and self.atlas_width > 0 and self.glyph_atlas.len > 0) {
                     if (FontAtlas.glyphSlot(cp)) |slot| {
                         const glyph_atlas = self.getAtlasForAttrs(cell.attrs.bold, cell.attrs.italic);
                         self.blitGlyph(

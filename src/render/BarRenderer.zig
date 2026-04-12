@@ -28,6 +28,11 @@ pub const BarData = struct {
 
     // Pane count
     pane_count: u16 = 0,
+
+    // Performance (compositor only)
+    frame_avg_us: u64 = 0,
+    frame_max_us: u64 = 0,
+    pty_bytes_total: u64 = 0,
 };
 
 /// Render a section (left/center/right) of widgets into the framebuffer.
@@ -98,6 +103,20 @@ pub fn renderWidgets(
             .mem => {
                 x = renderMemWidget(cpu, x, y, cw, s);
             },
+            .perf => {
+                var buf: [32]u8 = undefined;
+                const text = std.fmt.bufPrint(&buf, "{d}us/{d}us", .{
+                    data.frame_avg_us, data.frame_max_us,
+                }) catch "?us";
+                for (text) |ch| {
+                    const color: u32 = if (data.frame_avg_us > 100) s.ansi[1] // red if slow
+                    else if (data.frame_avg_us > 50) s.ansi[3] // yellow
+                    else s.ansi[2]; // green
+                    Ui.blitCharAt(cpu, ch, x, y, color);
+                    x += cw;
+                    if (x >= max_x) break;
+                }
+            },
             .exec => {
                 for (w.cache[0..w.cache_len]) |ch| {
                     if (ch < 32 or ch > 126) continue;
@@ -136,6 +155,7 @@ pub fn measureWidgets(widgets: []BarWidget.Widget, data: *const BarData, cw: usi
             .clock => 5 * cw,
             .panes => 8 * cw,
             .mem => 8 * cw,
+            .perf => 12 * cw,
             .exec => @as(usize, w.cache_len) * cw,
             .text => w.arg.len * cw,
         };

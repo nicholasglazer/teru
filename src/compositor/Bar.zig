@@ -115,6 +115,17 @@ fn createBarInstance(server: *Server, allocator: std.mem.Allocator, width: u32, 
     };
 }
 
+/// Show/hide each bar's scene node to match `.enabled`.
+/// Call this after toggling `bar.top.enabled` or `bar.bottom.enabled`.
+pub fn updateVisibility(self: *Bar) void {
+    if (wlr.miozu_scene_buffer_node(self.top.scene_buffer)) |node| {
+        wlr.wlr_scene_node_set_enabled(node, self.top.enabled);
+    }
+    if (wlr.miozu_scene_buffer_node(self.bottom.scene_buffer)) |node| {
+        wlr.wlr_scene_node_set_enabled(node, self.bottom.enabled);
+    }
+}
+
 /// Render both bars from compositor state.
 pub fn render(self: *Bar, server: *Server) void {
     if (self.top.enabled) {
@@ -187,6 +198,13 @@ fn buildBarData(_: *Bar, server: *Server) BarData {
     };
 
     data.pane_count = server.nodes.countInWorkspace(server.layout_engine.active_workspace);
+
+    // Performance stats
+    data.frame_avg_us = server.perf.avgFrameUs();
+    data.frame_max_us = server.perf.frame_time_max_us;
+    if (data.frame_max_us == std.math.maxInt(u64)) data.frame_max_us = 0;
+    data.pty_bytes_total = server.perf.pty_bytes;
+
     return data;
 }
 

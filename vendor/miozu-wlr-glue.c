@@ -94,6 +94,13 @@ struct wlr_surface *miozu_xdg_surface_surface(struct wlr_xdg_surface *s) {
     return s->surface;
 }
 
+/* True when the most recent commit is the client's initial commit.
+ * The compositor MUST respond with an initial configure (e.g.,
+ * wlr_xdg_toplevel_set_size) before the client can map the surface. */
+bool miozu_xdg_surface_initial_commit(struct wlr_xdg_surface *s) {
+    return s->initial_commit;
+}
+
 /* ── wlr_surface signals (map/unmap/commit are here in 0.18) ── */
 
 struct wl_signal *miozu_surface_map(struct wlr_surface *s) {
@@ -366,6 +373,16 @@ struct wl_signal *miozu_xwayland_new_surface(struct wlr_xwayland *xwl) {
 
 struct wl_signal *miozu_xwayland_ready(struct wlr_xwayland *xwl) {
     return &xwl->events.ready;
+}
+
+const char *miozu_xwayland_display_name(struct wlr_xwayland *xwl) {
+    return xwl->display_name;
+}
+
+/* ── scene_rect node accessor ───────────────────────────────── */
+
+struct wlr_scene_node *miozu_scene_rect_node(struct wlr_scene_rect *rect) {
+    return &rect->node;
 }
 
 struct wlr_surface *miozu_xwayland_surface_surface(struct wlr_xwayland_surface *s) {

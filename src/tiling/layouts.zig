@@ -231,8 +231,16 @@ pub fn accordion(allocator: Allocator, count: usize, screen: Rect, active: usize
         return rects;
     }
 
-    const min_h: u16 = @min(2, screen.height / @as(u16, @intCast(count)));
-    const collapsed_total: u16 = min_h * @as(u16, @intCast(count - 1));
+    // Collapsed panes get a fixed minimum height (≥ 1 row + border),
+    // clamped so the active pane always has positive height. Previous
+    // code used @min(2, …) which made collapsed panes 2px tall — a bug.
+    const cnt_u16: u16 = @intCast(count);
+    const base_min: u16 = 36; // enough to show a title line comfortably
+    const avail_for_collapsed: u16 = screen.height / 2; // at most half the screen
+    const per_collapsed: u16 = if (count > 1) avail_for_collapsed / (cnt_u16 - 1) else base_min;
+    const min_h: u16 = @max(@min(base_min, per_collapsed), 8);
+
+    const collapsed_total: u16 = min_h * (cnt_u16 - 1);
     const active_h: u16 = screen.height -| collapsed_total;
     const clamped_active = @min(active, count - 1);
 
