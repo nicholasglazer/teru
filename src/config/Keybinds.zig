@@ -206,6 +206,7 @@ pub const Action = enum(u8) {
     fullscreen_toggle,
     screenshot,
     screenshot_pane,
+    screenshot_area,
     bar_toggle_top,
     bar_toggle_bottom,
     // Media actions (compositor spawns the appropriate command)
@@ -291,6 +292,7 @@ pub const Action = enum(u8) {
             .{ "fullscreen:toggle", Action.fullscreen_toggle },
             .{ "screenshot", Action.screenshot },
             .{ "screenshot:pane", Action.screenshot_pane },
+            .{ "screenshot:area", Action.screenshot_area },
             .{ "bar:toggle_top", Action.bar_toggle_top },
             .{ "bar:toggle_bottom", Action.bar_toggle_bottom },
             .{ "volume:up", Action.volume_up },
@@ -659,6 +661,8 @@ pub const Keybinds = struct {
         _ = self.add(n, MCS, 'r', .compositor_restart);
         _ = self.add(n, M, 'w', .screenshot);
         _ = self.add(n, MS, 'w', .screenshot_pane);
+        const MCW = Mods{ .ctrl = true, .super_ = true };
+        _ = self.add(n, MCW, 'w', .screenshot_area); // slurp + grim
 
         // Workspaces: $mod+1-9, $mod+shift+1-9 move pane
         for (0..9) |i| {

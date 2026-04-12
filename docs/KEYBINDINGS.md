@@ -85,8 +85,9 @@ workspace shortcuts.
 | `$mod+B` | Toggle **top** status bar |
 | `$mod+Shift+B` | Toggle **bottom** status bar |
 | `$mod+D` | Open launcher (rofi-like) |
-| `$mod+W` | Screenshot full output → `/tmp/teruwm-screenshot.png` |
+| `$mod+W` | Screenshot full output → `$HOME/Pictures/screenshot_<ts>.png` |
 | `$mod+Shift+W` | Screenshot focused pane |
+| `$mod+Ctrl+W` | Screenshot area (drag to select; uses `slurp` + `grim`) |
 | `$mod+Shift+R` | Reload config from `~/.config/teruwm/config` |
 | `$mod+Ctrl+Shift+R` | **Hot-restart** compositor (PTYs survive) |
 | `$mod+Shift+Q` | Quit compositor |

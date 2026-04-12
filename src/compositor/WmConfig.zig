@@ -108,6 +108,11 @@ border_width: u16 = 2,
 /// Default: miozu dark gray (0xFF1a1d24).
 bg_color: u32 = 0xFF1a1d24,
 
+/// Opacity applied to unfocused terminal panes on focus change
+/// (since v0.4.16). Range [0.0, 1.0]; 1.0 = no fade. wlroots blends
+/// on composite — CPU renderer cost is unchanged.
+unfocused_opacity: f32 = 1.0,
+
 // ── Bar widget color thresholds ────────────────────────────────
 // Low/high boundaries for each numeric widget. Values below `_low` are
 // green, below `_high` yellow, else red (battery is inverted).
@@ -276,6 +281,9 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.gap = std.fmt.parseInt(u16, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "border_width")) {
         self.border_width = std.fmt.parseInt(u16, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "unfocused_opacity")) {
+        const f = std.fmt.parseFloat(f32, value) catch return;
+        self.unfocused_opacity = @max(0.0, @min(1.0, f));
     } else if (std.mem.eql(u8, key, "bg_color") or std.mem.eql(u8, key, "bg")) {
         // Accept "#rrggbb", "0xrrggbb", "rrggbb", or full ARGB "0xaarrggbb"
         var v = value;

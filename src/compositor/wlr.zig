@@ -133,6 +133,14 @@ pub extern "wlroots-0.18" fn wlr_compositor_create(display: *wl_display, version
 pub extern "wlroots-0.18" fn wlr_subcompositor_create(display: *wl_display) callconv(.c) ?*wlr_subcompositor;
 pub extern "wlroots-0.18" fn wlr_data_device_manager_create(display: *wl_display) callconv(.c) ?*wlr_data_device_manager;
 
+// ── zwlr_screencopy_manager_v1 ────────────────────────────────
+// Wayland protocol for screen/output capture. wlroots ships the entire
+// implementation — one call wires it up and advertises the global.
+// Consumers: grim, slurp+grim, wf-recorder, OBS via PipeWire, …
+
+pub const wlr_screencopy_manager_v1 = opaque {};
+pub extern "wlroots-0.18" fn wlr_screencopy_manager_v1_create(display: *wl_display) callconv(.c) ?*wlr_screencopy_manager_v1;
+
 // ── wlroots cursor ────────────────────────────────────────────
 
 pub extern "wlroots-0.18" fn wlr_cursor_create() callconv(.c) ?*wlr_cursor;
@@ -418,6 +426,7 @@ pub extern "wlroots-0.18" fn wlr_scene_buffer_create(parent: *wlr_scene_tree, bu
 pub extern "wlroots-0.18" fn wlr_scene_buffer_set_buffer(scene_buffer: *wlr_scene_buffer, buffer: ?*wlr_buffer) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_scene_buffer_set_buffer_with_damage(scene_buffer: *wlr_scene_buffer, buffer: ?*wlr_buffer, damage: ?*anyopaque) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_scene_buffer_set_dest_size(scene_buffer: *wlr_scene_buffer, width: c_int, height: c_int) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_scene_buffer_set_opacity(scene_buffer: *wlr_scene_buffer, opacity: f32) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_buffer_drop(buffer: *wlr_buffer) callconv(.c) void;
 
 // ── Utility: container-of pattern ──────────────────────────────
