@@ -1,0 +1,42 @@
+{
+  "timestamp": "2026-04-12_161849",
+  "system": {
+    "cpu": "Intel(R) Core(TM) Ultra 9 185H",
+    "kernel": "6.19.11-zen1-1-zen",
+    "mesa": "1:26.0.4-1",
+    "zig": "0.16.0-dev.3144+ac6fb0b59"
+  },
+  "binary_size_bytes": {
+    "teru": 6924040,
+    "teruwm": 5851880
+  },
+  "startup_ms": {
+    "p50": 0.734,
+    "p95": 1.384,
+    "p99": 1.449,
+    "note": "teru --help with 3-run warmup + 30 samples (subprocess time, includes fork/exec overhead)"
+  },
+  "vt_throughput": [
+  {"name":"cursor_motion","bytes":2412800,
+   "parse_ns":{"p50":5808664,"p95":5908788,"p99":5948089},"parse_mb_s":396.1,
+   "render_ns":{"p50":6173309,"p95":6272921,"p99":6278669},"render_mb_s":372.7},
+  {"name":"dense_cells","bytes":7020078,
+   "parse_ns":{"p50":16684675,"p95":16780634,"p99":16781122},"parse_mb_s":401.3,
+   "render_ns":{"p50":17138794,"p95":17439639,"p99":17467457},"render_mb_s":390.6},
+  {"name":"light_cells","bytes":260078,
+   "parse_ns":{"p50":975894,"p95":1012914,"p99":1016419},"parse_mb_s":254.2,
+   "render_ns":{"p50":1349029,"p95":1398630,"p99":1405316},"render_mb_s":183.9},
+  {"name":"medium_cells","bytes":178761,
+   "parse_ns":{"p50":1106698,"p95":1163837,"p99":1201993},"parse_mb_s":154.0,
+   "render_ns":{"p50":1492039,"p95":1560930,"p99":1587649},"render_mb_s":114.3},
+  {"name":"scrolling_fullscreen","bytes":5252,
+   "parse_ns":{"p50":19367,"p95":20347,"p99":21417},"parse_mb_s":258.6,
+   "render_ns":{"p50":383973,"p95":401751,"p99":408110},"render_mb_s":13.0},
+  {"name":"sync_medium_cells","bytes":186153,
+   "parse_ns":{"p50":1123123,"p95":1185110,"p99":1199138},"parse_mb_s":158.1,
+   "render_ns":{"p50":1516105,"p95":1543040,"p99":1550599},"render_mb_s":117.1},
+  {"name":"unicode","bytes":138298,
+   "parse_ns":{"p50":941124,"p95":1010550,"p99":1026569},"parse_mb_s":140.1,
+   "render_ns":{"p50":1305557,"p95":1342543,"p99":1360494},"render_mb_s":101.0}
+]
+}
