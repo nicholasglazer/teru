@@ -1,6 +1,11 @@
 # Installing teru
 
-See also: [teru.sh](https://teru.sh)
+Two binaries exist. `teru` is the terminal emulator / multiplexer — it
+runs on Linux (X11 + Wayland), macOS, and Windows. `teruwm` is a
+Wayland compositor built on wlroots and runs as the root display
+server; Linux only, requires wlroots 0.18.
+
+See also: [teru.sh](https://teru.sh), [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Pre-built Binaries
 
@@ -73,9 +78,24 @@ Requires **Zig 0.16+**. Linux builds need system libraries.
 ```bash
 git clone https://github.com/nicholasglazer/teru.git
 cd teru
-make release              # 1.4MB binary at zig-out/bin/teru
-sudo make install         # /usr/local/bin/teru
+
+# Terminal binary → zig-out/bin/teru (≈6.6 MB ReleaseFast)
+zig build -Doptimize=ReleaseFast
+sudo install -m755 zig-out/bin/teru /usr/local/bin/teru
+
+# Compositor binary → zig-out/bin/teruwm (≈5.6 MB). Linux + wlroots only.
+zig build -Doptimize=ReleaseFast -Dcompositor
+sudo install -m755 zig-out/bin/teruwm /usr/local/bin/teruwm
 ```
+
+### Compositor extra dependencies
+
+| Package | Arch Linux | Debian/Ubuntu | Fedora |
+|---------|------------|---------------|--------|
+| wlroots 0.18 | `wlroots0.18` | `libwlroots-0.18-dev` | `wlroots-devel` |
+| wayland-server | `wayland` | `libwayland-dev` | `wayland-devel` |
+
+Verify with `pkg-config --exists wlroots-0.18 && echo ok`.
 
 ### Minimal builds (fewer dependencies)
 
@@ -95,3 +115,21 @@ zig build -Doptimize=ReleaseSafe
 ```bash
 zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu
 ```
+
+## Running `teruwm` (compositor)
+
+Unlike `teru`, which runs inside your existing desktop, `teruwm` **is
+the desktop** — a root Wayland compositor. Launch it from a TTY:
+
+```
+# Switch to a spare TTY: Ctrl+Alt+F3 (or similar)
+# Log in, then:
+exec teruwm
+```
+
+Don't run `teruwm` inside another compositor (sway, GNOME, KDE, …) —
+it requires DRM + libinput access. Nested execution isn't supported.
+
+Config goes in `~/.config/teruwm/config`. See
+[CONFIGURATION.md](CONFIGURATION.md#teruwm-compositor-config) and
+[KEYBINDINGS.md](KEYBINDINGS.md).
