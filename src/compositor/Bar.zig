@@ -212,6 +212,10 @@ fn buildBarData(_: *Bar, server: *Server) BarData {
     // Color thresholds come from the user's config file ([bar.thresholds]).
     data.thresholds = server.wm_config.bar_thresholds;
 
+    // Push widgets registered via MCP. Pass the whole fixed-size array;
+    // the renderer filters by `used` and matches on name.
+    data.push_widgets = &server.push_widgets;
+
     return data;
 }
 

@@ -19,6 +19,7 @@
 //!   {keymap} / {lang}   — Active keyboard layout (teruwm only)
 //!   {perf}              — frame avg/max µs (teruwm only)
 //!   {exec:N:command}    — shell command output, refreshed every N seconds
+//!   {widget:name}       — push widget, text comes from MCP (see PushWidget.zig)
 //!   literal text        — rendered as-is
 
 const std = @import("std");
@@ -40,6 +41,7 @@ pub const WidgetKind = enum {
     keymap,   // Active keyboard layout (compositor only — populated in BarData)
     perf,
     exec,
+    push_widget, // External push widget (compositor only — registered via MCP)
     text,
 };
 
@@ -136,6 +138,11 @@ fn parseToken(token: []const u8) Widget {
     // {clock:format}
     if (std.mem.startsWith(u8, token, "clock:")) {
         return .{ .kind = .clock, .arg = token["clock:".len..] };
+    }
+
+    // {widget:name} — push widget, content from MCP (see PushWidget.zig)
+    if (std.mem.startsWith(u8, token, "widget:")) {
+        return .{ .kind = .push_widget, .arg = token["widget:".len..] };
     }
 
     // {exec:N:command}

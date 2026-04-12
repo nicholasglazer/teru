@@ -14,6 +14,7 @@ pub const detectTier = tier.detectTier;
 
 pub const BarWidget = @import("BarWidget.zig");
 pub const BarRenderer = @import("BarRenderer.zig");
+pub const PushWidget = @import("PushWidget.zig");
 
 test {
     _ = @import("software.zig");
@@ -21,4 +22,5 @@ test {
     _ = tier;
     _ = BarWidget;
     _ = BarRenderer;
+    _ = PushWidget;
 }
