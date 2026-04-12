@@ -234,24 +234,35 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
     }
 }
 
-/// Parse `[bar.thresholds]` entries. Unknown keys are silently ignored
-/// so users can have comments or future keys without breaking.
+/// Parse `[bar.thresholds]` entries. Primary names are `_warning` and
+/// `_critical` (waybar/polybar/i3status convention). The old `_low` /
+/// `_high` names are kept as aliases — `_low` → `_warning`, `_high` →
+/// `_critical` — so configs written against the first revision keep
+/// working. Unknown keys are silently ignored.
 fn applyThreshold(self: *WmConfig, key: []const u8, value: []const u8) void {
     const t = &self.bar_thresholds;
     const val_u16 = std.fmt.parseInt(u16, value, 10) catch return;
     const val_u32 = std.fmt.parseInt(u32, value, 10) catch return;
-    if (std.mem.eql(u8, key, "cpu_low")) t.cpu_low = val_u16
-    else if (std.mem.eql(u8, key, "cpu_high")) t.cpu_high = val_u16
-    else if (std.mem.eql(u8, key, "cputemp_low")) t.cputemp_low = val_u16
-    else if (std.mem.eql(u8, key, "cputemp_high")) t.cputemp_high = val_u16
-    else if (std.mem.eql(u8, key, "mem_low")) t.mem_low = val_u16
-    else if (std.mem.eql(u8, key, "mem_high")) t.mem_high = val_u16
-    else if (std.mem.eql(u8, key, "battery_low")) t.battery_low = val_u16
-    else if (std.mem.eql(u8, key, "battery_high")) t.battery_high = val_u16
-    else if (std.mem.eql(u8, key, "watts_low")) t.watts_low = val_u16
-    else if (std.mem.eql(u8, key, "watts_high")) t.watts_high = val_u16
-    else if (std.mem.eql(u8, key, "perf_us_low")) t.perf_us_low = val_u32
-    else if (std.mem.eql(u8, key, "perf_us_high")) t.perf_us_high = val_u32;
+
+    const eqi = std.mem.eql;
+    // CPU
+    if (eqi(u8, key, "cpu_warning") or eqi(u8, key, "cpu_low")) t.cpu_warning = val_u16
+    else if (eqi(u8, key, "cpu_critical") or eqi(u8, key, "cpu_high")) t.cpu_critical = val_u16
+    // CPU temperature
+    else if (eqi(u8, key, "cputemp_warning") or eqi(u8, key, "cputemp_low")) t.cputemp_warning = val_u16
+    else if (eqi(u8, key, "cputemp_critical") or eqi(u8, key, "cputemp_high")) t.cputemp_critical = val_u16
+    // Memory
+    else if (eqi(u8, key, "mem_warning") or eqi(u8, key, "mem_low")) t.mem_warning = val_u16
+    else if (eqi(u8, key, "mem_critical") or eqi(u8, key, "mem_high")) t.mem_critical = val_u16
+    // Battery (inverted: low % is bad)
+    else if (eqi(u8, key, "battery_warning") or eqi(u8, key, "battery_low")) t.battery_warning = val_u16
+    else if (eqi(u8, key, "battery_critical") or eqi(u8, key, "battery_high")) t.battery_critical = val_u16
+    // Power draw
+    else if (eqi(u8, key, "watts_warning") or eqi(u8, key, "watts_low")) t.watts_warning = val_u16
+    else if (eqi(u8, key, "watts_critical") or eqi(u8, key, "watts_high")) t.watts_critical = val_u16
+    // Render perf (µs)
+    else if (eqi(u8, key, "perf_us_warning") or eqi(u8, key, "perf_us_low")) t.perf_us_warning = val_u32
+    else if (eqi(u8, key, "perf_us_critical") or eqi(u8, key, "perf_us_high")) t.perf_us_critical = val_u32;
 }
 
 fn applyBarTop(self: *WmConfig, key: []const u8, value: []const u8) void {
