@@ -70,6 +70,12 @@ workspace_trees: [10]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** 10,
 active_keymap_name_buf: [64]u8 = [_]u8{0} ** 64,
 active_keymap_name: []const u8 = "",
 
+/// Push widgets registered via MCP. Referenced by bar format strings
+/// with `{widget:name}`. Fixed-size array; slot 0..N with `.used=false`
+/// are empty. No heap allocation. Not persisted across hot-restart.
+push_widgets: [teru.render.PushWidget.max_widgets]teru.render.PushWidget.PushWidget =
+    [_]teru.render.PushWidget.PushWidget{.{}} ** teru.render.PushWidget.max_widgets,
+
 // Fullscreen state: tracks which node is fullscreen (null = none)
 fullscreen_node: ?u64 = null,
 fullscreen_prev_bar_top: bool = true,
@@ -527,10 +533,19 @@ fn handleCursorMotionAbsolute(listener: *wlr.wl_listener, data: ?*anyopaque) cal
 fn handleCursorButton(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const server = wlr.listenerParent(Server, "cursor_button", listener);
     const event: *wlr.wlr_pointer_button_event = @ptrCast(@alignCast(data orelse return));
+    server.processCursorButton(
+        wlr.miozu_pointer_button_button(event),
+        wlr.miozu_pointer_button_state(event),
+        wlr.miozu_pointer_button_time(event),
+        null, // null = read actual xkb state
+    );
+}
 
-    const button = wlr.miozu_pointer_button_button(event);
-    const state = wlr.miozu_pointer_button_state(event);
-
+/// Pointer button dispatch. Shared by the wlroots listener and the MCP
+/// test tools. `super_override = null` reads the live xkb state;
+/// `.some(true|false)` forces the Super-held value (used by E2E tests
+/// so the drag path works regardless of the synthetic keyboard state).
+pub fn processCursorButton(server: *Server, button: u32, state: u32, time: u32, super_override: ?bool) void {
     // Button release: end any active grab
     if (state == 0) {
         if (server.cursor_mode == .border_drag) {
@@ -541,50 +556,76 @@ fn handleCursorButton(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c
             server.cursor_mode = .normal;
             server.grab_node_id = null;
         }
-        _ = wlr.wlr_seat_pointer_notify_button(server.seat, wlr.miozu_pointer_button_time(event), button, state);
+        _ = wlr.wlr_seat_pointer_notify_button(server.seat, time, button, state);
         return;
     }
 
     // Button press: check for Super modifier to initiate move/resize on floating windows
-    const keyboard = wlr.miozu_seat_get_keyboard(server.seat);
-    const super_held = if (keyboard) |kb|
-        if (wlr.miozu_keyboard_xkb_state(kb)) |xkb_st|
-            wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_LOGO, wlr.XKB_STATE_MODS_EFFECTIVE) > 0
-        else
-            false
-    else
-        false;
+    const super_held: bool = if (super_override) |v| v else blk: {
+        const keyboard = wlr.miozu_seat_get_keyboard(server.seat);
+        break :blk if (keyboard) |kb|
+            if (wlr.miozu_keyboard_xkb_state(kb)) |xkb_st|
+                wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_LOGO, wlr.XKB_STATE_MODS_EFFECTIVE) > 0
+            else false
+        else false;
+    };
 
     if (super_held) {
-        // Find the focused floating node to grab
-        const nid: ?u64 = if (server.focused_terminal) |tp|
-            tp.node_id
-        else if (server.focused_view) |view|
-            view.node_id
-        else
-            null;
+        // Identify the pane under the cursor (not necessarily focused).
+        // Focused pane is a fallback for clicks not on any pane's rect.
+        const cx = wlr.miozu_cursor_x(server.cursor);
+        const cy = wlr.miozu_cursor_y(server.cursor);
+        const nid: ?u64 = server.nodeAtPoint(cx, cy) orelse
+            (if (server.focused_terminal) |tp| tp.node_id
+             else if (server.focused_view) |view| view.node_id
+             else null);
 
         if (nid) |id| {
             if (server.nodes.findById(id)) |slot| {
-                if (server.nodes.floating[slot]) {
-                    const cx = wlr.miozu_cursor_x(server.cursor);
-                    const cy = wlr.miozu_cursor_y(server.cursor);
+                // Auto-float: if the pane is still tiled, detach it from
+                // the layout engine, mark floating, and give it a cursor-
+                // anchored rect so the drag starts naturally under the
+                // mouse instead of jumping to screen center.
+                if (!server.nodes.floating[slot]) {
+                    const cur_w = server.nodes.width[slot];
+                    const cur_h = server.nodes.height[slot];
+                    const float_w: u32 = if (cur_w > 0) cur_w else 640;
+                    const float_h: u32 = if (cur_h > 0) cur_h else 480;
+                    const fx: i32 = @intFromFloat(cx - @as(f64, @floatFromInt(float_w)) / 2.0);
+                    const fy: i32 = @intFromFloat(cy - @as(f64, @floatFromInt(float_h)) / 2.0);
 
-                    if (button == 272) { // BTN_LEFT: move
-                        server.cursor_mode = .move;
-                        server.grab_node_id = id;
-                        server.grab_x = cx - @as(f64, @floatFromInt(server.nodes.pos_x[slot]));
-                        server.grab_y = cy - @as(f64, @floatFromInt(server.nodes.pos_y[slot]));
-                        return;
-                    } else if (button == 274) { // BTN_RIGHT: resize
-                        server.cursor_mode = .resize;
-                        server.grab_node_id = id;
-                        server.grab_x = cx;
-                        server.grab_y = cy;
-                        server.grab_w = server.nodes.width[slot];
-                        server.grab_h = server.nodes.height[slot];
-                        return;
+                    server.nodes.floating[slot] = true;
+                    server.layout_engine.workspaces[server.layout_engine.active_workspace].removeNode(id);
+                    server.nodes.applyRect(slot, fx, fy, float_w, float_h);
+                    // Resize terminal pane framebuffer to match new rect
+                    if (server.nodes.kind[slot] == .terminal) {
+                        for (server.terminal_panes) |maybe_tp| {
+                            if (maybe_tp) |tp| {
+                                if (tp.node_id == id) {
+                                    tp.resize(float_w, float_h);
+                                    break;
+                                }
+                            }
+                        }
                     }
+                    // Re-tile remaining siblings
+                    server.arrangeworkspace(server.layout_engine.active_workspace);
+                }
+
+                if (button == 272) { // BTN_LEFT: move
+                    server.cursor_mode = .move;
+                    server.grab_node_id = id;
+                    server.grab_x = cx - @as(f64, @floatFromInt(server.nodes.pos_x[slot]));
+                    server.grab_y = cy - @as(f64, @floatFromInt(server.nodes.pos_y[slot]));
+                    return;
+                } else if (button == 274) { // BTN_RIGHT: resize
+                    server.cursor_mode = .resize;
+                    server.grab_node_id = id;
+                    server.grab_x = cx;
+                    server.grab_y = cy;
+                    server.grab_w = server.nodes.width[slot];
+                    server.grab_h = server.nodes.height[slot];
+                    return;
                 }
             }
         }
@@ -656,7 +697,7 @@ fn handleCursorButton(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c
         }
     }
 
-    _ = wlr.wlr_seat_pointer_notify_button(server.seat, wlr.miozu_pointer_button_time(event), button, state);
+    _ = wlr.wlr_seat_pointer_notify_button(server.seat, time, button, state);
 }
 
 fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
@@ -809,6 +850,71 @@ const Keyboard = struct {
 /// `active_keymap_name`. Prefers the raw layout code parsed from
 /// xkb_keymap_get_as_string (the XKB rules file input, same thing
 /// xmobar and polybar display) over the friendly name.
+// ── Push widget helpers ─────────────────────────────────────────
+
+/// Upsert a push widget. Returns false only if all slots are full AND
+/// no existing slot has the given name. Updates are O(n≤32).
+pub fn setPushWidget(self: *Server, name: []const u8, text: []const u8, class: teru.render.PushWidget.Class) bool {
+    if (name.len == 0) return false;
+
+    var empty_slot: ?*teru.render.PushWidget.PushWidget = null;
+    for (&self.push_widgets) |*pw| {
+        if (pw.used and std.mem.eql(u8, pw.name(), name)) {
+            writeWidgetText(pw, text, class);
+            self.scheduleRender();
+            return true;
+        }
+        if (!pw.used and empty_slot == null) empty_slot = pw;
+    }
+
+    const slot = empty_slot orelse return false;
+    const n_n = @min(name.len, slot.name_buf.len);
+    @memcpy(slot.name_buf[0..n_n], name[0..n_n]);
+    slot.name_len = @intCast(n_n);
+    slot.used = true;
+    writeWidgetText(slot, text, class);
+    self.scheduleRender();
+    return true;
+}
+
+fn writeWidgetText(slot: *teru.render.PushWidget.PushWidget, text: []const u8, class: teru.render.PushWidget.Class) void {
+    const t_n = @min(text.len, slot.text_buf.len);
+    @memcpy(slot.text_buf[0..t_n], text[0..t_n]);
+    slot.text_len = @intCast(t_n);
+    slot.class = class;
+    slot.last_update_ns = @intCast(teru.compat.monotonicNow());
+}
+
+/// Remove a push widget by name. Returns true if found and removed.
+pub fn deletePushWidget(self: *Server, name: []const u8) bool {
+    for (&self.push_widgets) |*pw| {
+        if (pw.used and std.mem.eql(u8, pw.name(), name)) {
+            pw.used = false;
+            pw.name_len = 0;
+            pw.text_len = 0;
+            self.scheduleRender();
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Count currently-registered widgets. Used by teruwm_list_widgets.
+pub fn countPushWidgets(self: *const Server) usize {
+    var n: usize = 0;
+    for (&self.push_widgets) |*pw| if (pw.used) { n += 1; };
+    return n;
+}
+
+/// Ask wlroots to fire a frame callback on the primary output. Used after
+/// any push-widget update so the bar paints the new value without waiting
+/// for the next vsync on a dirty terminal pane.
+fn scheduleRender(self: *Server) void {
+    if (self.primary_output) |out| {
+        wlr.wlr_output_schedule_frame(out);
+    }
+}
+
 pub fn refreshActiveKeymap(self: *Server, keyboard: *wlr.wlr_keyboard) void {
     const st = wlr.miozu_keyboard_xkb_state(keyboard) orelse return;
     const keymap = wlr.xkb_state_get_keymap(st) orelse return;
@@ -910,7 +1016,7 @@ fn setupKeyboard(self: *Server, device: *wlr.wlr_input_device) void {
 
 // ── Cursor processing ──────────────────────────────────────────
 
-fn processCursorMotion(self: *Server, time: u32) void {
+pub fn processCursorMotion(self: *Server, time: u32) void {
     const cx = wlr.miozu_cursor_x(self.cursor);
     const cy = wlr.miozu_cursor_y(self.cursor);
 
@@ -1074,7 +1180,7 @@ pub fn handleKey(self: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) boo
 
 /// Execute a keybind action. Shared by both compositor keybinds and
 /// terminal pane keybinds (same Action enum, same execution logic).
-fn executeAction(self: *Server, action: KBAction) bool {
+pub fn executeAction(self: *Server, action: KBAction) bool {
     // Workspace switching
     if (action.workspaceIndex()) |ws| {
         const old_ws = self.layout_engine.active_workspace;
@@ -1789,6 +1895,34 @@ fn toggleScratchpad(self: *Server, index: u8) void {
 /// Handle terminal pane exit (shell process died).
 /// Close a window (terminal pane or XDG view) by node_id.
 /// Returns true if a window was closed.
+/// Hit-test: return the node_id of the pane whose rect contains (x, y),
+/// or null. Floating panes win over tiled because they render on top in
+/// the scene graph. Linear scan — fine given the node count budget.
+pub fn nodeAtPoint(self: *const Server, x: f64, y: f64) ?u64 {
+    var best_floating: ?u64 = null;
+    var best_tiled: ?u64 = null;
+    const ix: i32 = @intFromFloat(x);
+    const iy: i32 = @intFromFloat(y);
+    const cur_ws = self.layout_engine.active_workspace;
+
+    for (0..NodeRegistry.max_nodes) |slot| {
+        if (self.nodes.kind[slot] == .empty) continue;
+        if (self.nodes.workspace[slot] != cur_ws) continue;
+        const px = self.nodes.pos_x[slot];
+        const py = self.nodes.pos_y[slot];
+        const pw: i32 = @intCast(self.nodes.width[slot]);
+        const ph: i32 = @intCast(self.nodes.height[slot]);
+        if (ix < px or ix >= px + pw) continue;
+        if (iy < py or iy >= py + ph) continue;
+        if (self.nodes.floating[slot]) {
+            best_floating = self.nodes.node_id[slot];
+        } else {
+            best_tiled = self.nodes.node_id[slot];
+        }
+    }
+    return best_floating orelse best_tiled;
+}
+
 pub fn closeNode(self: *Server, node_id: u64) bool {
     // Try terminal pane first
     for (&self.terminal_panes, 0..) |*slot, i| {

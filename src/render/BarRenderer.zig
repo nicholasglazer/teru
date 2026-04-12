@@ -9,6 +9,8 @@ const std = @import("std");
 const SoftwareRenderer = @import("software.zig").SoftwareRenderer;
 const Ui = @import("Ui.zig");
 const BarWidget = @import("BarWidget.zig");
+const PushWidget = @import("PushWidget.zig").PushWidget;
+const WidgetClass = @import("PushWidget.zig").Class;
 const compat = @import("../compat.zig");
 
 /// Color-ramp thresholds for numeric widgets. Named after the *state
@@ -81,6 +83,11 @@ pub const BarData = struct {
     // Color-ramp thresholds for every numeric widget. Caller overrides
     // these from config; defaults match xmobar conventions.
     thresholds: Thresholds = .{},
+
+    // Push widgets registered via MCP (teruwm only). The renderer iterates
+    // on every `.push_widget` token and does a linear name lookup — fine
+    // for the ≤32-slot budget. Slots with `.used = false` are skipped.
+    push_widgets: []const PushWidget = &.{},
 };
 
 /// Render a section (left/center/right) of widgets into the framebuffer.
@@ -218,6 +225,26 @@ pub fn renderWidgets(
                     if (x >= max_x) break;
                 }
             },
+            .push_widget => {
+                // Linear scan over the ≤32-slot array. Missing widget
+                // renders empty (no placeholder) so users can conditionally
+                // hide a widget by unregistering it.
+                const found: ?*const PushWidget = blk: {
+                    for (data.push_widgets) |*pw| {
+                        if (pw.used and std.mem.eql(u8, pw.name(), w.arg)) break :blk pw;
+                    }
+                    break :blk null;
+                };
+                if (found) |pw| {
+                    const color = classColor(pw.class, s);
+                    for (pw.text()) |ch| {
+                        if (ch < 32 or ch > 126) continue;
+                        Ui.blitCharAt(cpu, ch, x, y, color);
+                        x += cw;
+                        if (x >= max_x) break;
+                    }
+                }
+            },
             .text => {
                 for (w.arg) |ch| {
                     if (ch < 32 or ch > 126) continue;
@@ -255,10 +282,32 @@ pub fn measureWidgets(widgets: []BarWidget.Widget, data: *const BarData, cw: usi
             .keymap => @max(data.keymap.len, 2) * cw,
             .perf => 12 * cw,
             .exec => @as(usize, w.cache_len) * cw,
+            .push_widget => blk: {
+                // Same linear scan as in render; worst case 32 comparisons.
+                for (data.push_widgets) |*pw| {
+                    if (pw.used and std.mem.eql(u8, pw.name(), w.arg))
+                        break :blk pw.text_len * cw;
+                }
+                break :blk 0;
+            },
             .text => w.arg.len * cw,
         };
     }
     return total;
+}
+
+/// Map a push-widget Class to a ColorScheme palette entry. Keeps theming
+/// centralized: switch themes → widget colors follow automatically.
+fn classColor(c: WidgetClass, s: anytype) u32 {
+    return switch (c) {
+        .none => s.fg,
+        .muted => s.ansi[8],
+        .info => s.ansi[4],
+        .success => s.ansi[2],
+        .warning => s.ansi[3],
+        .critical => s.ansi[1],
+        .accent => s.ansi[6],
+    };
 }
 
 /// Read /proc/meminfo and render used-memory percentage. Just "N%" — the

@@ -312,6 +312,7 @@ pub const wlr_pointer_button_event = opaque {};
 // Cursor motion helpers
 pub extern "wlroots-0.18" fn wlr_cursor_move(cursor: *wlr_cursor, device: ?*wlr_input_device, delta_x: f64, delta_y: f64) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_cursor_warp_absolute(cursor: *wlr_cursor, device: ?*wlr_input_device, x: f64, y: f64) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_cursor_warp_closest(cursor: *wlr_cursor, device: ?*wlr_input_device, lx: f64, ly: f64) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_cursor_set_xcursor(cursor: *wlr_cursor, mgr: *wlr_xcursor_manager, name: [*:0]const u8) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_cursor_set_surface(cursor: *wlr_cursor, surface: ?*wlr_surface, hotspot_x: i32, hotspot_y: i32) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_seat_pointer_notify_enter(seat: *wlr_seat, surface: *wlr_surface, sx: f64, sy: f64) callconv(.c) void;

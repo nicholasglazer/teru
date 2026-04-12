@@ -184,7 +184,12 @@ fn handleToolsList(_: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teruwm_perf","description":"Get compositor performance stats: frame timing (avg/max us), PTY throughput, terminal count","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
         \\{{"name":"teruwm_restart","description":"Hot-restart the compositor: serializes PTY state, exec()s new binary. Terminal sessions survive. Use after rebuild.","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
         \\{{"name":"teruwm_toggle_bar","description":"Toggle top or bottom status bar visibility. Triggers a re-arrange of all workspaces.","inputSchema":{{"type":"object","properties":{{"which":{{"type":"string","enum":["top","bottom"]}}}},"required":["which"]}}}},
-        \\{{"name":"teruwm_set_bar","description":"Set the enabled state of the top or bottom status bar explicitly.","inputSchema":{{"type":"object","properties":{{"which":{{"type":"string","enum":["top","bottom"]}},"enabled":{{"type":"boolean"}}}},"required":["which","enabled"]}}}}
+        \\{{"name":"teruwm_set_bar","description":"Set the enabled state of the top or bottom status bar explicitly.","inputSchema":{{"type":"object","properties":{{"which":{{"type":"string","enum":["top","bottom"]}},"enabled":{{"type":"boolean"}}}},"required":["which","enabled"]}}}},
+        \\{{"name":"teruwm_set_widget","description":"Register or update a push widget shown in a bar via {{widget:name}}. Upsert semantics — idempotent.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"widget name, ≤32 chars"}},"text":{{"type":"string","description":"text to display, ≤128 chars"}},"class":{{"type":"string","enum":["none","muted","info","success","warning","critical","accent"],"description":"semantic color class (defaults to fg)"}}}},"required":["name","text"]}}}},
+        \\{{"name":"teruwm_delete_widget","description":"Remove a push widget by name.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string"}}}},"required":["name"]}}}},
+        \\{{"name":"teruwm_list_widgets","description":"List registered push widgets with their current text, class, and last update timestamp.","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
+        \\{{"name":"teruwm_test_drag","description":"TEST ONLY: synthesize a pointer drag from (from_x,from_y) to (to_x,to_y). Optional super=true simulates Mod-held drag (tiling → floating). Used by E2E suites; not normally invoked by users.","inputSchema":{{"type":"object","properties":{{"from_x":{{"type":"integer"}},"from_y":{{"type":"integer"}},"to_x":{{"type":"integer"}},"to_y":{{"type":"integer"}},"super":{{"type":"boolean"}},"button":{{"type":"integer","description":"linux input-event code; 272=left (default), 274=right"}}}},"required":["from_x","from_y","to_x","to_y"]}}}},
+        \\{{"name":"teruwm_test_key","description":"TEST ONLY: dispatch a keybind action by name, bypassing xkb. Use for E2E tests of keybind-triggered compositor actions.","inputSchema":{{"type":"object","properties":{{"action":{{"type":"string","description":"action name e.g. 'layout_cycle', 'bar_toggle_top'"}}}},"required":["action"]}}}}
         \\]}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
@@ -266,6 +271,39 @@ fn handleToolsCall(self: *WmMcpServer, body: []const u8, buf: []u8, id: ?[]const
         const args = extractJsonObject(params_body, "arguments") orelse params_body;
         const enabled: bool = std.mem.indexOf(u8, args, "\"enabled\":true") != null;
         return self.toolToggleBar(which, enabled, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_set_widget")) {
+        const w_name = extractNestedJsonString(params_body, "name") orelse
+            return jsonRpcError(buf, id, -32602, "Missing name");
+        const w_text = extractNestedJsonString(params_body, "text") orelse
+            return jsonRpcError(buf, id, -32602, "Missing text");
+        const w_class = extractNestedJsonString(params_body, "class") orelse "";
+        return self.toolSetWidget(w_name, w_text, w_class, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_delete_widget")) {
+        const w_name = extractNestedJsonString(params_body, "name") orelse
+            return jsonRpcError(buf, id, -32602, "Missing name");
+        return self.toolDeleteWidget(w_name, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_list_widgets")) {
+        return self.toolListWidgets(buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_test_drag")) {
+        const fx = extractNestedJsonInt(params_body, "from_x") orelse
+            return jsonRpcError(buf, id, -32602, "Missing from_x");
+        const fy = extractNestedJsonInt(params_body, "from_y") orelse
+            return jsonRpcError(buf, id, -32602, "Missing from_y");
+        const tx = extractNestedJsonInt(params_body, "to_x") orelse
+            return jsonRpcError(buf, id, -32602, "Missing to_x");
+        const ty = extractNestedJsonInt(params_body, "to_y") orelse
+            return jsonRpcError(buf, id, -32602, "Missing to_y");
+        const args = extractJsonObject(params_body, "arguments") orelse params_body;
+        const super_held = std.mem.indexOf(u8, args, "\"super\":true") != null;
+        const button: u32 = blk: {
+            const b = extractNestedJsonInt(params_body, "button") orelse break :blk 272;
+            break :blk @intCast(b);
+        };
+        return self.toolTestDrag(@intCast(fx), @intCast(fy), @intCast(tx), @intCast(ty), super_held, button, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_test_key")) {
+        const action = extractNestedJsonString(params_body, "action") orelse
+            return jsonRpcError(buf, id, -32602, "Missing action");
+        return self.toolTestKey(action, buf, id);
     } else {
         return jsonRpcError(buf, id, -32602, "Unknown tool");
     }
@@ -715,6 +753,126 @@ fn toolToggleBar(self: *WmMcpServer, which: []const u8, explicit: ?bool, buf: []
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{s} bar {s}"}}]}},"id":{s}}}
     , .{ which, if (new_val) "enabled" else "disabled", id_str }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+// ── Push widget tools ──────────────────────────────────────────
+
+fn toolSetWidget(self: *WmMcpServer, name: []const u8, text: []const u8, class_str: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    if (name.len == 0) return jsonRpcError(buf, id, -32602, "Empty name");
+    if (name.len > teru.render.PushWidget.max_name)
+        return jsonRpcError(buf, id, -32602, "Name too long (max 32)");
+    if (text.len > teru.render.PushWidget.max_text)
+        return jsonRpcError(buf, id, -32602, "Text too long (max 128)");
+
+    const class = teru.render.PushWidget.Class.fromString(class_str);
+    const ok = self.server.setPushWidget(name, text, class);
+    if (!ok) return jsonRpcError(buf, id, -32603, "Out of widget slots (max 32)");
+
+    const id_str = id orelse "null";
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"widget '{s}' set"}}]}},"id":{s}}}
+    , .{ name, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolDeleteWidget(self: *WmMcpServer, name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    if (name.len == 0) return jsonRpcError(buf, id, -32602, "Empty name");
+    const removed = self.server.deletePushWidget(name);
+    const id_str = id orelse "null";
+    const msg = if (removed) "deleted" else "not found";
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"widget '{s}' {s}"}}]}},"id":{s}}}
+    , .{ name, msg, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolListWidgets(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+    const srv = self.server;
+    var pos: usize = 0;
+
+    const prefix = std.fmt.bufPrint(buf[pos..],
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"[
+    , .{}) catch return jsonRpcError(buf, id, -32603, "Internal error");
+    pos += prefix.len;
+
+    var first = true;
+    const now_ns: i64 = @intCast(teru.compat.monotonicNow());
+    for (&srv.push_widgets) |*pw| {
+        if (!pw.used) continue;
+        if (!first) {
+            if (pos < buf.len) { buf[pos] = ','; pos += 1; }
+        }
+        first = false;
+
+        const age_ms: u64 = blk: {
+            if (pw.last_update_ns == 0) break :blk 0;
+            const diff: i64 = now_ns -| pw.last_update_ns;
+            if (diff < 0) break :blk 0;
+            break :blk @intCast(@divTrunc(diff, std.time.ns_per_ms));
+        };
+        const class_name = @tagName(pw.class);
+
+        var text_esc_buf: [256]u8 = undefined;
+        const safe_text = jsonEscapeString(pw.text(), &text_esc_buf);
+        var name_esc_buf: [64]u8 = undefined;
+        const safe_name = jsonEscapeString(pw.name(), &name_esc_buf);
+
+        const entry = std.fmt.bufPrint(buf[pos..],
+            \\{{\\\"name\\\":\\\"{s}\\\",\\\"text\\\":\\\"{s}\\\",\\\"class\\\":\\\"{s}\\\",\\\"age_ms\\\":{d}}}
+        , .{ safe_name, safe_text, class_name, age_ms }) catch break;
+        pos += entry.len;
+    }
+
+    const suffix = std.fmt.bufPrint(buf[pos..],
+        \\]"}}]}},"id":{s}}}
+    , .{id_str}) catch return jsonRpcError(buf, id, -32603, "Internal error");
+    pos += suffix.len;
+    return buf[0..pos];
+}
+
+// ── E2E test tools (internal) ──────────────────────────────────
+
+fn toolTestDrag(self: *WmMcpServer, from_x: i32, from_y: i32, to_x: i32, to_y: i32, super_held: bool, button: u32, buf: []u8, id: ?[]const u8) []const u8 {
+    const srv = self.server;
+
+    // Phase 1: warp cursor to start, fire motion so focus follows
+    wlr.wlr_cursor_warp_closest(srv.cursor, null, @floatFromInt(from_x), @floatFromInt(from_y));
+    srv.processCursorMotion(0);
+
+    // Phase 2: button press at start position — this is where auto-float happens
+    srv.processCursorButton(button, 1, 0, super_held);
+
+    // Phase 3: warp cursor to destination, fire motion so drag tracks
+    wlr.wlr_cursor_warp_closest(srv.cursor, null, @floatFromInt(to_x), @floatFromInt(to_y));
+    srv.processCursorMotion(0);
+
+    // Phase 4: button release
+    srv.processCursorButton(button, 0, 0, super_held);
+
+    const id_str = id orelse "null";
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"drag ({d},{d})->({d},{d}) super={any} button={d}"}}]}},"id":{s}}}
+    , .{ from_x, from_y, to_x, to_y, super_held, button, id_str }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolTestKey(self: *WmMcpServer, action_name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const Action = teru.Keybinds.Action;
+    // Parse action from string (exhaustive — unknown → error)
+    const action: Action = blk: {
+        inline for (@typeInfo(Action).@"enum".fields) |f| {
+            if (std.mem.eql(u8, f.name, action_name)) {
+                break :blk @enumFromInt(f.value);
+            }
+        }
+        return jsonRpcError(buf, id, -32602, "Unknown action name");
+    };
+
+    const handled = self.server.executeAction(action);
+    const id_str = id orelse "null";
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"action '{s}' handled={any}"}}]}},"id":{s}}}
+    , .{ action_name, handled, id_str }) catch
         jsonRpcError(buf, id, -32603, "Internal error");
 }
 
