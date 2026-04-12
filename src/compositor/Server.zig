@@ -1017,9 +1017,7 @@ fn executeAction(self: *Server, action: KBAction) bool {
             return true;
         },
         .window_close, .pane_close => {
-            if (self.focused_view) |view| {
-                wlr.wlr_xdg_toplevel_send_close(view.toplevel);
-            }
+            self.closeFocused();
             return true;
         },
         .compositor_quit => {
@@ -1702,6 +1700,55 @@ fn toggleScratchpad(self: *Server, index: u8) void {
 // ── Terminal lifecycle ─────────────────────────────────────────
 
 /// Handle terminal pane exit (shell process died).
+/// Close a window (terminal pane or XDG view) by node_id.
+/// Returns true if a window was closed.
+pub fn closeNode(self: *Server, node_id: u64) bool {
+    // Try terminal pane first
+    for (&self.terminal_panes, 0..) |*slot, i| {
+        _ = i;
+        if (slot.*) |tp| {
+            if (tp.node_id == node_id) {
+                const ws = if (self.nodes.findById(node_id)) |s| self.nodes.workspace[s] else self.layout_engine.active_workspace;
+                self.layout_engine.workspaces[ws].removeNode(node_id);
+                if (self.nodes.findById(node_id)) |_| _ = self.nodes.remove(node_id);
+
+                tp.deinit(self.zig_allocator);
+                self.zig_allocator.destroy(tp);
+                slot.* = null;
+                self.terminal_count -|= 1;
+                self.arrangeworkspace(ws);
+                self.updateFocusedTerminal();
+                if (self.bar) |b| b.render(self);
+                return true;
+            }
+        }
+    }
+
+    // XDG view: find the view with matching node_id and send close request
+    if (self.focused_view) |view| {
+        if (view.node_id == node_id) {
+            wlr.wlr_xdg_toplevel_send_close(view.toplevel);
+            return true;
+        }
+    }
+    // Search all XDG views for node_id match (walk the scene? no tracking, so
+    // we need to iterate differently). For now, handle only focused_view —
+    // MCP callers close by node_id through NodeRegistry instead.
+    return false;
+}
+
+/// Close whatever window is currently focused (terminal pane or XDG view).
+/// Bound to Win+X. No-op if nothing focused.
+pub fn closeFocused(self: *Server) void {
+    if (self.focused_view) |view| {
+        wlr.wlr_xdg_toplevel_send_close(view.toplevel);
+        return;
+    }
+    if (self.focused_terminal) |tp| {
+        _ = self.closeNode(tp.node_id);
+    }
+}
+
 pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
     std.debug.print("teruwm: terminal exited node={d}\n", .{tp.node_id});
 
