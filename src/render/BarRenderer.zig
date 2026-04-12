@@ -11,32 +11,41 @@ const Ui = @import("Ui.zig");
 const BarWidget = @import("BarWidget.zig");
 const compat = @import("../compat.zig");
 
-/// Color-ramp thresholds for numeric widgets. All units match the widget's
-/// native unit (cpu=%, cputemp=°C, battery=%, watts=W, mem=%, perf_us=µs).
-/// `inverted=true` semantics: lower value is *worse* (battery).
+/// Color-ramp thresholds for numeric widgets. Named after the *state
+/// entered* at that value (`warning` / `critical`) rather than the
+/// direction ("low" / "high"), following waybar, polybar and i3status.
+/// The benefit: the naming works identically for widgets where "higher
+/// is bad" (CPU, temperature) and those where "lower is bad" (battery).
+///
+/// Reading: "cpu_warning = 30" → CPU goes yellow at ≥30 %. "battery_
+/// warning = 50" → battery goes yellow at ≤50 %. Both read naturally.
 pub const Thresholds = struct {
-    cpu_low: u16 = 30,        cpu_high: u16 = 70,
-    cputemp_low: u16 = 60,    cputemp_high: u16 = 80,
-    mem_low: u16 = 30,        mem_high: u16 = 80,
-    battery_low: u16 = 20,    battery_high: u16 = 50,  // inverted: <low = red
-    watts_low: u16 = 15,      watts_high: u16 = 30,    // ignored when charging
-    perf_us_low: u32 = 50,    perf_us_high: u32 = 100,
+    cpu_warning: u16 = 30,         cpu_critical: u16 = 70,
+    cputemp_warning: u16 = 60,     cputemp_critical: u16 = 80,
+    mem_warning: u16 = 30,         mem_critical: u16 = 80,
+    battery_warning: u16 = 50,     battery_critical: u16 = 20,  // low % is bad
+    watts_warning: u16 = 15,       watts_critical: u16 = 30,    // ignored when charging
+    perf_us_warning: u32 = 50,     perf_us_critical: u32 = 100,
 };
 
-/// Return green / yellow / red from the ColorScheme palette based on `v`.
-/// Normal direction (inverted=false): below low = green, below high = yellow,
-/// else red. Inverted (battery): below low = red, below high = yellow, else green.
-pub fn rampColor(v: i64, low: i64, high: i64, inverted: bool, s: anytype) u32 {
+/// Pick green / yellow / red from the ColorScheme palette based on `v`
+/// and its warning / critical thresholds. The `inverted` flag marks
+/// widgets where lower is worse (battery): in that case `warning` is
+/// the value at which state enters yellow from the high side and
+/// `critical` is the value where it drops into red.
+pub fn rampColor(v: i64, warning: i64, critical: i64, inverted: bool, s: anytype) u32 {
     const green = s.ansi[2];
     const yellow = s.ansi[3];
     const red = s.ansi[1];
     if (!inverted) {
-        if (v < low) return green;
-        if (v < high) return yellow;
-        return red;
+        // Higher = worse
+        if (v >= critical) return red;
+        if (v >= warning) return yellow;
+        return green;
     } else {
-        if (v < low) return red;
-        if (v < high) return yellow;
+        // Lower = worse (e.g. battery percentage)
+        if (v <= critical) return red;
+        if (v <= warning) return yellow;
         return green;
     }
 }
@@ -182,8 +191,8 @@ pub fn renderWidgets(
                 }) catch "?us";
                 const color = rampColor(
                     @intCast(data.frame_avg_us),
-                    data.thresholds.perf_us_low,
-                    data.thresholds.perf_us_high,
+                    data.thresholds.perf_us_warning,
+                    data.thresholds.perf_us_critical,
                     false,
                     s,
                 );
@@ -272,7 +281,7 @@ fn renderMemWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, 
         used_pct = @intCast(100 - (available * 100 / total));
         break :blk std.fmt.bufPrint(&pct_buf, "{d}%", .{used_pct}) catch "?%";
     };
-    const color = rampColor(@intCast(used_pct), th.mem_low, th.mem_high, false, s);
+    const color = rampColor(@intCast(used_pct), th.mem_warning, th.mem_critical, false, s);
     for (mem_str) |ch| {
         Ui.blitCharAt(cpu, ch, x, y, color);
         x += cw;
@@ -342,7 +351,7 @@ fn renderCpuWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, 
         }
         return x;
     };
-    const color = rampColor(@intCast(pct), th.cpu_low, th.cpu_high, false, s);
+    const color = rampColor(@intCast(pct), th.cpu_warning, th.cpu_critical, false, s);
     const text = std.fmt.bufPrint(&buf, "{d}%", .{pct}) catch "?%";
     for (text) |ch| {
         Ui.blitCharAt(cpu, ch, x, y, color);
@@ -362,7 +371,7 @@ fn renderCpuTempWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usi
     const temp = readCpuTempC();
     const text = if (temp) |t| std.fmt.bufPrint(&buf, "{d}C", .{t}) catch "?C" else "?C";
     const color: u32 = if (temp) |t|
-        rampColor(@intCast(t), th.cputemp_low, th.cputemp_high, false, s)
+        rampColor(@intCast(t), th.cputemp_warning, th.cputemp_critical, false, s)
     else
         s.ansi[8];
     for (text) |ch| {
@@ -422,7 +431,7 @@ fn renderBatteryWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usi
         "";
     // inverted=true: low % is bad (red), high % is good (green)
     const color: u32 = if (b) |bat|
-        rampColor(bat.percent, th.battery_low, th.battery_high, true, s)
+        rampColor(bat.percent, th.battery_warning, th.battery_critical, true, s)
     else
         s.ansi[8];
     for (text) |ch| {
@@ -518,7 +527,7 @@ fn renderWattsWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize
         "";
     // Charging always green; otherwise ramp against discharge thresholds.
     const color: u32 = if (w_opt) |pw|
-        (if (pw.charging) s.ansi[2] else rampColor(@intFromFloat(pw.watts), th.watts_low, th.watts_high, false, s))
+        (if (pw.charging) s.ansi[2] else rampColor(@intFromFloat(pw.watts), th.watts_warning, th.watts_critical, false, s))
     else
         s.ansi[8];
     for (text) |ch| {
@@ -597,3 +606,27 @@ const libc = struct {
         _zone: ?[*:0]const u8,
     };
 };
+
+// ── Tests ─────────────────────────────────────────────────────
+
+test "rampColor normal direction (higher = worse)" {
+    const Scheme = struct { ansi: [9]u32 = .{ 0, 0xFFFF0000, 0xFF00FF00, 0xFFFFFF00, 0, 0, 0, 0, 0 } };
+    const s = Scheme{};
+    // warning=30, critical=70: red ≥70, yellow ≥30, else green
+    try std.testing.expectEqual(@as(u32, 0xFF00FF00), rampColor(10, 30, 70, false, s));
+    try std.testing.expectEqual(@as(u32, 0xFFFFFF00), rampColor(30, 30, 70, false, s));
+    try std.testing.expectEqual(@as(u32, 0xFFFFFF00), rampColor(50, 30, 70, false, s));
+    try std.testing.expectEqual(@as(u32, 0xFFFF0000), rampColor(70, 30, 70, false, s));
+    try std.testing.expectEqual(@as(u32, 0xFFFF0000), rampColor(90, 30, 70, false, s));
+}
+
+test "rampColor inverted direction (lower = worse, e.g. battery)" {
+    const Scheme = struct { ansi: [9]u32 = .{ 0, 0xFFFF0000, 0xFF00FF00, 0xFFFFFF00, 0, 0, 0, 0, 0 } };
+    const s = Scheme{};
+    // warning=50, critical=20: red ≤20, yellow ≤50, else green
+    try std.testing.expectEqual(@as(u32, 0xFF00FF00), rampColor(80, 50, 20, true, s));
+    try std.testing.expectEqual(@as(u32, 0xFFFFFF00), rampColor(50, 50, 20, true, s));
+    try std.testing.expectEqual(@as(u32, 0xFFFFFF00), rampColor(30, 50, 20, true, s));
+    try std.testing.expectEqual(@as(u32, 0xFFFF0000), rampColor(20, 50, 20, true, s));
+    try std.testing.expectEqual(@as(u32, 0xFFFF0000), rampColor(5, 50, 20, true, s));
+}
