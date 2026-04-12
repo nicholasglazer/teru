@@ -10,6 +10,7 @@ const platform = @import("platform/platform.zig");
 const render = @import("render/render.zig");
 const Ui = @import("render/Ui.zig");
 const protocol = @import("agent/protocol.zig");
+const in_band = @import("agent/in_band.zig");
 const McpServer = @import("agent/McpServer.zig");
 const McpBridge = @import("agent/McpBridge.zig");
 const PaneBackend = @import("agent/PaneBackend.zig");
@@ -143,7 +144,7 @@ pub fn main(init: std.process.Init) !void {
                 \\  --no-bar                Start with status bar hidden
                 \\  --raw                   Raw TTY mode (no window)
                 \\  --daemon <name>         Start headless daemon (server use)
-                \\  --mcp-bridge            MCP stdio bridge
+                \\  --mcp-server            MCP stdio proxy (alias: --mcp-bridge)
                 \\  --class <name>          Set WM_CLASS
                 \\
                 \\Templates:
@@ -165,7 +166,10 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, arg, "--raw")) { mode_raw = true; continue; }
         if (std.mem.eql(u8, arg, "--no-bar")) { cli_no_bar = true; continue; }
         if (std.mem.eql(u8, arg, "--attach")) { mode_attach = true; continue; }
-        if (std.mem.eql(u8, arg, "--mcp-bridge")) { mode_mcp_bridge = true; continue; }
+        if (std.mem.eql(u8, arg, "--mcp-server") or std.mem.eql(u8, arg, "--mcp-bridge")) {
+            mode_mcp_bridge = true;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--list") or std.mem.eql(u8, arg, "-l")) { list_sessions = true; continue; }
         if (std.mem.eql(u8, arg, "--daemon")) { daemon_session = args_iter.next(); continue; }
         if (std.mem.eql(u8, arg, "--session")) { session_name = args_iter.next(); continue; }
@@ -1944,6 +1948,14 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
                         },
                         .group => {}, // handled at start
                         .meta => {}, // future use
+                        .query => {
+                            // In-band MCP tool call from an agent inside
+                            // this pane. Reply is written back on the
+                            // PTY so the agent reads it on its stdin.
+                            if (mcp) |*m| {
+                                in_band.handleQuery(pane, event_data, m);
+                            }
+                        },
                     }
                 }
             }
