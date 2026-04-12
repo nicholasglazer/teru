@@ -81,7 +81,7 @@ teru                                 # windowed, X11/Wayland auto-detected
 teru -n work                         # named persistent session (auto-starts daemon)
 teru --raw                           # over SSH — no windowing, full VT support
 teru -e htop                         # run a specific command instead of the shell
-teru --mcp-bridge                    # stdio MCP bridge, for embedding
+teru --mcp-server                    # stdio MCP proxy (alias: --mcp-bridge)
 ```
 
 Keybinds (Alt is the mod): `Alt+Enter` new pane, `Alt+J/K` focus, `Alt+1..9` workspace,

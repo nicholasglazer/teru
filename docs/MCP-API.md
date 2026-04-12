@@ -20,19 +20,17 @@ teruwm (one compositor-wide MCP).
 
 ## Protocol
 
-Every call is a single JSON-RPC 2.0 request/response. HTTP framing with
-`Content-Length` is used for chunking:
+Every call is a single JSON-RPC 2.0 request/response. The two servers
+use different transports on the wire — same JSON-RPC envelope, different
+framing:
 
-```
-POST / HTTP/1.1
-Content-Length: 74
+| Server | Transport | Request shape |
+|---|---|---|
+| **teru agent** | Line-delimited JSON-RPC (since v0.4.14) | `<json>\n` |
+| **teruwm compositor** | HTTP-framed JSON-RPC | `POST / HTTP/1.1\r\nContent-Length: N\r\n\r\n<json>` |
 
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"teru_list_panes"},"id":1}
-```
-
-Connections are short-lived (`Connection: close`). No session, no auth
-beyond filesystem permissions on the socket (which is `0700` under
-`/run/user/$UID/`).
+Connections are short-lived. No session, no auth beyond filesystem
+permissions on the socket (`0700` under `/run/user/$UID/`).
 
 Responses wrap the tool output:
 
@@ -43,12 +41,38 @@ Responses wrap the tool output:
 Most tools that return structured data double-encode JSON into the
 `text` field (MCP spec). Your client unwraps with `json.loads` twice.
 
-### Minimal Python client
+### Calling the teru agent MCP (line-delimited JSON)
 
 ```python
 import json, socket
 
-def mcp(sock_path, tool, args=None):
+def teru_mcp(sock_path, tool, args=None):
+    params = {"name": tool}
+    if args: params["arguments"] = args
+    body = json.dumps({"jsonrpc":"2.0","method":"tools/call","params":params,"id":1})
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(sock_path); s.sendall((body + "\n").encode())
+    resp = b""
+    while True:
+        c = s.recv(65536)
+        if not c: break
+        resp += c
+    s.close()
+    j = json.loads(resp.decode().rstrip())
+    if "error" in j: raise RuntimeError(j["error"]["message"])
+    text = j["result"]["content"][0]["text"]
+    try: return json.loads(text)
+    except json.JSONDecodeError: return text
+
+print(teru_mcp("/run/user/1000/teru-mcp-12345.sock", "teru_list_panes"))
+```
+
+### Calling the teruwm compositor MCP (HTTP-framed)
+
+```python
+import json, socket
+
+def teruwm_mcp(sock_path, tool, args=None):
     params = {"name": tool}
     if args: params["arguments"] = args
     body = json.dumps({"jsonrpc":"2.0","method":"tools/call","params":params,"id":1},
@@ -71,8 +95,38 @@ def mcp(sock_path, tool, args=None):
         try: return json.loads(text.replace('\\"', '"'))
         except: return text
 
-print(mcp("/run/user/1000/teru-wmmcp-12345.sock", "teruwm_list_windows"))
+print(teruwm_mcp("/run/user/1000/teru-wmmcp-12345.sock", "teruwm_list_windows"))
 ```
+
+### Alternative transport: stdio proxy (`teru --mcp-server`)
+
+For clients that speak MCP-stdio (Claude Code, Cursor, anything following
+the MCP SDK's stdio convention), run `teru --mcp-server` as a subprocess.
+It proxies stdin/stdout line-JSON to a running teru's socket. The legacy
+flag `--mcp-bridge` is kept as an alias for older `.mcp.json` files.
+
+### Alternative transport: in-band OSC 9999 (inside a teru pane)
+
+An agent running *inside* a teru pane can call tools through the PTY it's
+already connected to — no socket, no subprocess. Request is OSC 9999,
+reply is DCS 9999:
+
+```
+Request:  ESC ] 9999 ; query ; id=<N> ; tool=<NAME> [ ; k=v ]* ST
+Reply:    ESC P 9999 ; id=<N> ; <json-body> ESC \
+```
+
+Use the `tools/teru-query` helper:
+
+```sh
+teru-query teru_list_panes
+teru-query teru_read_output pane_id=1 lines=30
+```
+
+Teruwm tool forwarding over the in-band path is planned for a later
+release — today, `teruwm_*` tools must still go through the compositor
+socket. See [AI-INTEGRATION.md](AI-INTEGRATION.md#in-band-mcp-over-osc-9999)
+for the full protocol spec.
 
 ## teru (terminal) MCP — 19 tools
 

@@ -180,6 +180,11 @@ Or set `copy_on_select = true` in config for auto-copy on mouse release.
 | `$mod+Right-click` drag | Resize floating window (teruwm) |
 | Wheel | Smooth pixel scroll |
 
+**Smart borders** *(since v0.4.13)* — teruwm hides the focus outline when
+the pane is the only window on its workspace. A border around the sole
+visible window carries no information. The border re-appears automatically
+the moment a second window joins the workspace.
+
 ---
 
 ## Customizing
