@@ -11,6 +11,36 @@ const Ui = @import("Ui.zig");
 const BarWidget = @import("BarWidget.zig");
 const compat = @import("../compat.zig");
 
+/// Color-ramp thresholds for numeric widgets. All units match the widget's
+/// native unit (cpu=%, cputemp=°C, battery=%, watts=W, mem=%, perf_us=µs).
+/// `inverted=true` semantics: lower value is *worse* (battery).
+pub const Thresholds = struct {
+    cpu_low: u16 = 30,        cpu_high: u16 = 70,
+    cputemp_low: u16 = 60,    cputemp_high: u16 = 80,
+    mem_low: u16 = 30,        mem_high: u16 = 80,
+    battery_low: u16 = 20,    battery_high: u16 = 50,  // inverted: <low = red
+    watts_low: u16 = 15,      watts_high: u16 = 30,    // ignored when charging
+    perf_us_low: u32 = 50,    perf_us_high: u32 = 100,
+};
+
+/// Return green / yellow / red from the ColorScheme palette based on `v`.
+/// Normal direction (inverted=false): below low = green, below high = yellow,
+/// else red. Inverted (battery): below low = red, below high = yellow, else green.
+pub fn rampColor(v: i64, low: i64, high: i64, inverted: bool, s: anytype) u32 {
+    const green = s.ansi[2];
+    const yellow = s.ansi[3];
+    const red = s.ansi[1];
+    if (!inverted) {
+        if (v < low) return green;
+        if (v < high) return yellow;
+        return red;
+    } else {
+        if (v < low) return red;
+        if (v < high) return yellow;
+        return green;
+    }
+}
+
 /// Data provider for bar widgets. Populated by the caller (Multiplexer or Server).
 pub const BarData = struct {
     // Workspace state
@@ -38,6 +68,10 @@ pub const BarData = struct {
     // Populated by the compositor from the XKB layout name; empty in
     // standalone teru.
     keymap: []const u8 = "",
+
+    // Color-ramp thresholds for every numeric widget. Caller overrides
+    // these from config; defaults match xmobar conventions.
+    thresholds: Thresholds = .{},
 };
 
 /// Render a section (left/center/right) of widgets into the framebuffer.
@@ -118,19 +152,19 @@ pub fn renderWidgets(
                 }
             },
             .mem => {
-                x = renderMemWidget(cpu, x, y, cw, s);
+                x = renderMemWidget(cpu, x, y, cw, s, &data.thresholds);
             },
             .cpu => {
-                x = renderCpuWidget(cpu, x, y, cw, s, max_x);
+                x = renderCpuWidget(cpu, x, y, cw, s, max_x, &data.thresholds);
             },
             .cputemp => {
-                x = renderCpuTempWidget(cpu, x, y, cw, s, max_x);
+                x = renderCpuTempWidget(cpu, x, y, cw, s, max_x, &data.thresholds);
             },
             .battery => {
-                x = renderBatteryWidget(cpu, x, y, cw, s, max_x);
+                x = renderBatteryWidget(cpu, x, y, cw, s, max_x, &data.thresholds);
             },
             .watts => {
-                x = renderWattsWidget(cpu, x, y, cw, s, max_x);
+                x = renderWattsWidget(cpu, x, y, cw, s, max_x, &data.thresholds);
             },
             .keymap => {
                 const str = if (data.keymap.len > 0) data.keymap else "";
@@ -146,10 +180,14 @@ pub fn renderWidgets(
                 const text = std.fmt.bufPrint(&buf, "{d}us/{d}us", .{
                     data.frame_avg_us, data.frame_max_us,
                 }) catch "?us";
+                const color = rampColor(
+                    @intCast(data.frame_avg_us),
+                    data.thresholds.perf_us_low,
+                    data.thresholds.perf_us_high,
+                    false,
+                    s,
+                );
                 for (text) |ch| {
-                    const color: u32 = if (data.frame_avg_us > 100) s.ansi[1] // red if slow
-                    else if (data.frame_avg_us > 50) s.ansi[3] // yellow
-                    else s.ansi[2]; // green
                     Ui.blitCharAt(cpu, ch, x, y, color);
                     x += cw;
                     if (x >= max_x) break;
@@ -216,10 +254,11 @@ pub fn measureWidgets(widgets: []BarWidget.Widget, data: *const BarData, cw: usi
 
 /// Read /proc/meminfo and render used-memory percentage. Just "N%" — the
 /// caller's format string is responsible for any label ("RAM {mem}" etc).
-fn renderMemWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype) usize {
+fn renderMemWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, th: *const Thresholds) usize {
     var x = start_x;
     var mem_buf: [512]u8 = undefined;
     var pct_buf: [16]u8 = undefined;
+    var used_pct: u32 = 0;
     const mem_str = blk: {
         const fd = libc.open("/proc/meminfo", 0, 0);
         if (fd < 0) break :blk "?%";
@@ -230,18 +269,10 @@ fn renderMemWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, 
         const total = parseMemLine(data, "MemTotal:") orelse break :blk "?%";
         const available = parseMemLine(data, "MemAvailable:") orelse break :blk "?%";
         if (total == 0) break :blk "0%";
-        const used_pct = 100 - (available * 100 / total);
+        used_pct = @intCast(100 - (available * 100 / total));
         break :blk std.fmt.bufPrint(&pct_buf, "{d}%", .{used_pct}) catch "?%";
     };
-    // Color ramp like xmobar Low/High thresholds
-    const color: u32 = blk: {
-        // Re-parse the digit to pick color (simple)
-        var v: u32 = 0;
-        for (mem_str) |ch| {
-            if (ch >= '0' and ch <= '9') v = v * 10 + (ch - '0') else break;
-        }
-        break :blk if (v < 30) s.ansi[2] else if (v < 80) s.ansi[3] else s.ansi[1];
-    };
+    const color = rampColor(@intCast(used_pct), th.mem_low, th.mem_high, false, s);
     for (mem_str) |ch| {
         Ui.blitCharAt(cpu, ch, x, y, color);
         x += cw;
@@ -301,7 +332,7 @@ fn readCpuPct() ?u32 {
     return @intCast(@min(100, busy * 100 / total_diff));
 }
 
-fn renderCpuWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, max_x: usize) usize {
+fn renderCpuWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, max_x: usize, th: *const Thresholds) usize {
     var x = start_x;
     var buf: [16]u8 = undefined;
     const pct = readCpuPct() orelse {
@@ -311,8 +342,7 @@ fn renderCpuWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, 
         }
         return x;
     };
-    // Color ramp: green <30, yellow <70, red otherwise (matches xmobar Low/High)
-    const color: u32 = if (pct < 30) s.ansi[2] else if (pct < 70) s.ansi[3] else s.ansi[1];
+    const color = rampColor(@intCast(pct), th.cpu_low, th.cpu_high, false, s);
     const text = std.fmt.bufPrint(&buf, "{d}%", .{pct}) catch "?%";
     for (text) |ch| {
         Ui.blitCharAt(cpu, ch, x, y, color);
@@ -326,13 +356,13 @@ fn renderCpuWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, 
 // Walks /sys/class/hwmon/hwmon*/name, picks a CPU sensor (k10temp, coretemp,
 // zenpower, thinkpad) and reads temp1_input (millidegrees).
 
-fn renderCpuTempWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, max_x: usize) usize {
+fn renderCpuTempWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, max_x: usize, th: *const Thresholds) usize {
     var x = start_x;
     var buf: [16]u8 = undefined;
     const temp = readCpuTempC();
     const text = if (temp) |t| std.fmt.bufPrint(&buf, "{d}C", .{t}) catch "?C" else "?C";
     const color: u32 = if (temp) |t|
-        (if (t < 60) s.ansi[2] else if (t < 80) s.ansi[3] else s.ansi[1])
+        rampColor(@intCast(t), th.cputemp_low, th.cputemp_high, false, s)
     else
         s.ansi[8];
     for (text) |ch| {
@@ -382,7 +412,7 @@ fn readCpuTempC() ?u32 {
 // ── Battery widget ──────────────────────────────────────────────
 // Reads /sys/class/power_supply/BAT*/capacity (+ status for charging arrow).
 
-fn renderBatteryWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, max_x: usize) usize {
+fn renderBatteryWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, max_x: usize, th: *const Thresholds) usize {
     var x = start_x;
     const b = readBattery();
     var buf: [16]u8 = undefined;
@@ -390,8 +420,11 @@ fn renderBatteryWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usi
         std.fmt.bufPrint(&buf, "{c}{d}%", .{ if (bat.charging) @as(u8, '+') else @as(u8, ' '), bat.percent }) catch "?"
     else
         "";
-    // Color thresholds similar to xmobar (<20 red, <85 yellow else green)
-    const color: u32 = if (b) |bat| (if (bat.percent < 20) s.ansi[1] else if (bat.percent < 50) s.ansi[3] else s.ansi[2]) else s.ansi[8];
+    // inverted=true: low % is bad (red), high % is good (green)
+    const color: u32 = if (b) |bat|
+        rampColor(bat.percent, th.battery_low, th.battery_high, true, s)
+    else
+        s.ansi[8];
     for (text) |ch| {
         Ui.blitCharAt(cpu, ch, x, y, color);
         x += cw;
@@ -475,7 +508,7 @@ const max_exec_cmd = 512;
 // voltage_now — compute W from those as fallback. Shows a '+' prefix
 // when charging.
 
-fn renderWattsWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, max_x: usize) usize {
+fn renderWattsWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, max_x: usize, th: *const Thresholds) usize {
     var x = start_x;
     var buf: [16]u8 = undefined;
     const w_opt = readWatts();
@@ -483,9 +516,9 @@ fn renderWattsWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize
         std.fmt.bufPrint(&buf, "{c}{d:.1}W", .{ if (pw.charging) @as(u8, '+') else @as(u8, ' '), pw.watts }) catch "?W"
     else
         "";
-    // Color: green if charging, yellow <15W, red ≥15W
+    // Charging always green; otherwise ramp against discharge thresholds.
     const color: u32 = if (w_opt) |pw|
-        (if (pw.charging) s.ansi[2] else if (pw.watts < 15.0) s.ansi[3] else s.ansi[1])
+        (if (pw.charging) s.ansi[2] else rampColor(@intFromFloat(pw.watts), th.watts_low, th.watts_high, false, s))
     else
         s.ansi[8];
     for (text) |ch| {

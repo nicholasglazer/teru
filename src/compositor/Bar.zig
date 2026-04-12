@@ -209,6 +209,9 @@ fn buildBarData(_: *Bar, server: *Server) BarData {
     // "English (US)", "Ukrainian", "English (Dvorak)"; we shorten them.
     data.keymap = shortKeymap(server.active_keymap_name);
 
+    // Color thresholds come from the user's config file ([bar.thresholds]).
+    data.thresholds = server.wm_config.bar_thresholds;
+
     return data;
 }
 
