@@ -189,7 +189,9 @@ fn handleToolsList(_: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teruwm_delete_widget","description":"Remove a push widget by name.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string"}}}},"required":["name"]}}}},
         \\{{"name":"teruwm_list_widgets","description":"List registered push widgets with their current text, class, and last update timestamp.","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
         \\{{"name":"teruwm_test_drag","description":"TEST ONLY: synthesize a pointer drag from (from_x,from_y) to (to_x,to_y). Optional super=true simulates Mod-held drag (tiling → floating). Used by E2E suites; not normally invoked by users.","inputSchema":{{"type":"object","properties":{{"from_x":{{"type":"integer"}},"from_y":{{"type":"integer"}},"to_x":{{"type":"integer"}},"to_y":{{"type":"integer"}},"super":{{"type":"boolean"}},"button":{{"type":"integer","description":"linux input-event code; 272=left (default), 274=right"}}}},"required":["from_x","from_y","to_x","to_y"]}}}},
-        \\{{"name":"teruwm_test_key","description":"TEST ONLY: dispatch a keybind action by name, bypassing xkb. Use for E2E tests of keybind-triggered compositor actions.","inputSchema":{{"type":"object","properties":{{"action":{{"type":"string","description":"action name e.g. 'layout_cycle', 'bar_toggle_top'"}}}},"required":["action"]}}}}
+        \\{{"name":"teruwm_test_key","description":"TEST ONLY: dispatch a keybind action by name, bypassing xkb. Use for E2E tests of keybind-triggered compositor actions.","inputSchema":{{"type":"object","properties":{{"action":{{"type":"string","description":"action name e.g. 'layout_cycle', 'bar_toggle_top'"}}}},"required":["action"]}}}},
+        \\{{"name":"teruwm_test_move","description":"TEST ONLY: warp the cursor to (x, y) and fire a motion event, no button. Useful for tests that verify hover focus, scroll mode, etc.","inputSchema":{{"type":"object","properties":{{"x":{{"type":"integer"}},"y":{{"type":"integer"}}}},"required":["x","y"]}}}},
+        \\{{"name":"teruwm_toggle_scratchpad","description":"Toggle scratchpad N (0..8). Creates on first call; shows/hides thereafter. Equivalent to the Alt+RAlt+(N+1) keybind.","inputSchema":{{"type":"object","properties":{{"index":{{"type":"integer","description":"scratchpad index 0..8"}}}},"required":["index"]}}}}
         \\]}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
@@ -304,6 +306,18 @@ fn handleToolsCall(self: *WmMcpServer, body: []const u8, buf: []u8, id: ?[]const
         const action = extractNestedJsonString(params_body, "action") orelse
             return jsonRpcError(buf, id, -32602, "Missing action");
         return self.toolTestKey(action, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_test_move")) {
+        const x = extractNestedJsonInt(params_body, "x") orelse
+            return jsonRpcError(buf, id, -32602, "Missing x");
+        const y = extractNestedJsonInt(params_body, "y") orelse
+            return jsonRpcError(buf, id, -32602, "Missing y");
+        return self.toolTestMove(@intCast(x), @intCast(y), buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_toggle_scratchpad")) {
+        const idx = extractNestedJsonInt(params_body, "index") orelse
+            return jsonRpcError(buf, id, -32602, "Missing index");
+        if (idx < 0 or idx > 8)
+            return jsonRpcError(buf, id, -32602, "index must be 0..8");
+        return self.toolToggleScratchpad(@intCast(idx), buf, id);
     } else {
         return jsonRpcError(buf, id, -32602, "Unknown tool");
     }
@@ -854,6 +868,26 @@ fn toolTestDrag(self: *WmMcpServer, from_x: i32, from_y: i32, to_x: i32, to_y: i
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"drag ({d},{d})->({d},{d}) super={any} button={d}"}}]}},"id":{s}}}
     , .{ from_x, from_y, to_x, to_y, super_held, button, id_str }) catch
         jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolTestMove(self: *WmMcpServer, x: i32, y: i32, buf: []u8, id: ?[]const u8) []const u8 {
+    const srv = self.server;
+    wlr.wlr_cursor_warp_closest(srv.cursor, null, @floatFromInt(x), @floatFromInt(y));
+    srv.processCursorMotion(0);
+    const id_str = id orelse "null";
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"cursor at ({d},{d})"}}]}},"id":{s}}}
+    , .{ x, y, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolToggleScratchpad(self: *WmMcpServer, index: u8, buf: []u8, id: ?[]const u8) []const u8 {
+    self.server.toggleScratchpad(index);
+    const id_str = id orelse "null";
+    const visible = self.server.scratchpad_visible[index];
+    const created = self.server.scratchpads[index] != null;
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"scratchpad {d} visible={any} created={any}"}}]}},"id":{s}}}
+    , .{ index, visible, created, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolTestKey(self: *WmMcpServer, action_name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {

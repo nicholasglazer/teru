@@ -1838,7 +1838,7 @@ fn toggleFullscreen(self: *Server) void {
 /// Toggle a numbered scratchpad (0-8, mapped from keys 1-9).
 /// Creates the terminal pane on first toggle. Subsequent toggles show/hide.
 /// Scratchpads are floating — not part of workspace tiling.
-fn toggleScratchpad(self: *Server, index: u8) void {
+pub fn toggleScratchpad(self: *Server, index: u8) void {
     if (index >= 9) return;
 
     // Create on first use
@@ -2027,9 +2027,15 @@ pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
 
 /// Update focused_terminal to match the LayoutEngine's active node.
 /// Also updates visual focus indicators (border color).
+///
+/// Prefer `ws.active_node` over `getActiveNodeId()`: floating panes are
+/// removed from `node_ids.items` (the tiled list) so `getActiveNodeId`
+/// can't see them. `active_node` is the explicit authoritative focus
+/// target set by `teruwm_focus_window` and friends — it works for both
+/// tiled and floating panes.
 pub fn updateFocusedTerminal(self: *Server) void {
     const ws = self.layout_engine.getActiveWorkspace();
-    const active_id = ws.getActiveNodeId() orelse return;
+    const active_id = ws.active_node orelse ws.getActiveNodeId() orelse return;
 
     var found = false;
     for (self.terminal_panes) |maybe_tp| {
