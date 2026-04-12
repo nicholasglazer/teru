@@ -218,10 +218,11 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     if (!self.pane.grid.dirty) return false;
     self.renderer.renderDirty(&self.pane.grid);
 
-    // 2px focus border
-    const is_focused = (self.server.focused_terminal == self);
-    const border_color: u32 = if (is_focused) 0xFFFF9837 else 0xFF3E4359;
-    self.drawBorder(border_color);
+    if (self.shouldDrawBorder()) {
+        const is_focused = (self.server.focused_terminal == self);
+        const border_color: u32 = if (is_focused) 0xFFFF9837 else 0xFF3E4359;
+        self.drawBorder(border_color);
+    }
 
     // Signal wlroots that buffer content changed
     wlr.wlr_scene_buffer_set_buffer_with_damage(self.scene_buffer, self.pixel_buffer, null);
@@ -286,13 +287,25 @@ pub fn resize(self: *TerminalPane, pixel_w: u32, pixel_h: u32) void {
 pub fn render(self: *TerminalPane) void {
     self.renderer.render(&self.pane.grid);
 
-    // 2px focus border
-    const is_focused = (self.server.focused_terminal == self);
-    const border_color: u32 = if (is_focused) 0xFFFF9837 else 0xFF3E4359;
-    self.drawBorder(border_color);
+    if (self.shouldDrawBorder()) {
+        const is_focused = (self.server.focused_terminal == self);
+        const border_color: u32 = if (is_focused) 0xFFFF9837 else 0xFF3E4359;
+        self.drawBorder(border_color);
+    }
 
     // Signal wlroots that buffer content changed (full damage, NULL region)
     wlr.wlr_scene_buffer_set_buffer_with_damage(self.scene_buffer, self.pixel_buffer, null);
+}
+
+/// Smart borders: suppress the focus border when this pane is the only
+/// window on its workspace. Follows xmonad's smartBorders — a border
+/// around the sole visible window carries no information. Scratchpads
+/// (not in NodeRegistry) always keep their border so focus between a
+/// scratchpad and a lone tiled pane stays visible.
+fn shouldDrawBorder(self: *TerminalPane) bool {
+    const slot = self.server.nodes.findById(self.node_id) orelse return true;
+    const ws = self.server.nodes.workspace[slot];
+    return self.server.nodes.countInWorkspace(ws) > 1;
 }
 
 fn drawBorder(self: *TerminalPane, color: u32) void {

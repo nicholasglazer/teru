@@ -78,6 +78,9 @@ pub fn main(init: std.process.Init) !void {
     // ── Restore session from restart ───────────────────────────
     if (restoring) {
         restoreSession(server, allocator);
+        // Don't re-run autostart on hot-restart: the clients it would
+        // spawn are still connected from the previous compositor.
+        server.autostart_fired = true;
     }
 
     // ── Start MCP server for compositor control ────────────────

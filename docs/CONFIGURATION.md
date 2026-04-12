@@ -469,7 +469,7 @@ These keys are set above any section header.
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `gap` | integer | `4` | Uniform gap in pixels. Same value applied between panes and between panes and screen edges / bars |
-| `border_width` | integer | `2` | Border width in pixels around focused and unfocused windows |
+| `border_width` | integer | `2` | Border width in pixels around focused and unfocused windows. Suppressed ("smart borders") when a pane is the only window on its workspace — a focus indicator on the sole visible window carries no information |
 | `bg_color` (or `bg`) | hex color | `0xFF1a1d24` | Compositor background color, visible through gaps. Accepts `#rrggbb`, `0xrrggbb`, `rrggbb` (alpha defaulted to `0xFF`), or full ARGB `0xaarrggbb` |
 
 ### `[bar.top]` and `[bar.bottom]`
@@ -568,6 +568,29 @@ Steam = 7
 
 Key is matched exactly against the window's class / app_id. Value is a 1-based workspace number (internally stored 0-based).
 
+### `[autostart]` — Run Programs on Startup
+
+Commands launched once, right after the first output is ready. Skipped
+on hot-restart (`--restore`) since the previous compositor's children
+are still connected. Children inherit `WAYLAND_DISPLAY` and `DISPLAY`
+(for Xwayland), so GUI clients come up on teruwm automatically. Use
+`[rules]` to steer each client to its workspace — `[autostart]` only
+launches, `[rules]` places.
+
+```conf
+[autostart]
+1 = chromium
+2 = emacs
+3 = dunst
+4 = nm-applet
+5 = /usr/lib/polkit-kde-authentication-agent-1
+```
+
+Keys are arbitrary (used only to disambiguate lines — any unique label
+works: `1`, `2`, `web`, `panel`, …). Values are full shell commands
+(passed to `/bin/sh -c`, so pipes, args, and quoting work). Max 16
+entries. Command max 255 bytes.
+
 ### `[names]` — Human-Readable Window Names
 
 Map a window class or `app_id` to a short display name used by the bar's `{title}` widget and any compositor MCP output. Max 32 name rules. Class max 64 bytes, name max 32 bytes.
@@ -611,6 +634,13 @@ cputemp_warning  = 70
 cputemp_critical = 90
 battery_warning  = 50
 battery_critical = 15
+
+# ── Autostart ──────────────────────────────────
+[autostart]
+1 = chromium
+2 = emacs
+3 = dunst
+4 = nm-applet
 
 # ── Workspace assignments ──────────────────────
 [rules]

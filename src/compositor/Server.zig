@@ -103,6 +103,11 @@ launcher: Launcher = .{},
 // teruwm-specific config (~/.config/teruwm/config)
 wm_config: WmConfig = .{},
 
+// Autostart fires once on first output. True if we've already run it,
+// OR if we're restoring from --restore (autostart is a cold-start feature;
+// hot-restart must not re-spawn clients that are still connected).
+autostart_fired: bool = false,
+
 // MCP server for compositor control
 wm_mcp: ?*WmMcpServer = null,
 
@@ -488,7 +493,25 @@ fn handleNewOutput(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) v
         std.debug.print("teruwm: failed to create output\n", .{});
         return;
     };
-    if (server.primary_output == null) server.primary_output = wlr_output;
+    const first = (server.primary_output == null);
+    if (first) server.primary_output = wlr_output;
+
+    if (first and !server.autostart_fired) {
+        server.autostart_fired = true;
+        server.runAutostart();
+    }
+}
+
+/// Run each command in `wm_config.autostart` via /bin/sh, inheriting env
+/// so children see WAYLAND_DISPLAY. Window placement is handled by the
+/// `[rules]` table on WM_CLASS match — autostart just launches.
+fn runAutostart(self: *Server) void {
+    if (self.wm_config.autostart_count == 0) return;
+    for (self.wm_config.autostart[0..self.wm_config.autostart_count]) |*entry| {
+        const cmd = entry.getCmd();
+        std.debug.print("teruwm: autostart → {s}\n", .{cmd});
+        self.spawnShell(cmd);
+    }
 }
 
 fn handleNewInput(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
@@ -1456,6 +1479,10 @@ pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
                         if (tp.node_id == nid) {
                             tp.resize(rw, rh);
                             tp.setPosition(rx, ry);
+                            // Force repaint so smart-border state (count changed,
+                            // solo → shared or vice versa) gets reflected even
+                            // when the rect didn't change.
+                            tp.pane.grid.dirty = true;
                             break;
                         }
                     }
@@ -2059,7 +2086,9 @@ pub fn updateFocusedTerminal(self: *Server) void {
 // ── Process spawning ───────────────────────────────────────────
 
 /// Spawn a shell command detached from the compositor (double-fork to avoid zombies).
-/// Uses /bin/sh -c to handle commands with arguments and pipes.
+/// Uses /bin/sh -c to handle commands with arguments and pipes. Inherits the
+/// compositor's environment so children see WAYLAND_DISPLAY, DISPLAY (Xwayland),
+/// HOME, etc.
 pub fn spawnProcess(_: *Server, cmd: [*:0]const u8) void {
     const pid = std.os.linux.fork();
     if (pid == 0) {
@@ -2067,8 +2096,8 @@ pub fn spawnProcess(_: *Server, cmd: [*:0]const u8) void {
         if (pid2 == 0) {
             // Grandchild: exec via shell to handle args/pipes
             const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", cmd, null };
-            const envp = [_:null]?[*:0]const u8{null};
-            _ = std.os.linux.execve("/bin/sh", &argv, &envp);
+            const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
+            _ = std.posix.system.execve("/bin/sh", &argv, @ptrCast(envp));
             std.os.linux.exit(1);
         }
         std.os.linux.exit(0);
@@ -2076,6 +2105,17 @@ pub fn spawnProcess(_: *Server, cmd: [*:0]const u8) void {
     if (pid > 0) {
         _ = std.c.waitpid(@intCast(pid), null, 0);
     }
+}
+
+/// Same as `spawnProcess` but takes a non-nul-terminated slice. Copies into
+/// a stack buffer and nul-terminates. Commands longer than 511 bytes are
+/// truncated (matches the config parser's bound).
+pub fn spawnShell(self: *Server, cmd: []const u8) void {
+    var buf: [512:0]u8 = undefined;
+    const n = @min(cmd.len, buf.len);
+    @memcpy(buf[0..n], cmd[0..n]);
+    buf[n] = 0;
+    self.spawnProcess(@ptrCast(&buf));
 }
 
 /// Take a screenshot of the entire output and save as PNG.

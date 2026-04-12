@@ -48,6 +48,17 @@ pub const Rule = struct {
     }
 };
 
+pub const max_autostart = 16;
+
+pub const AutostartEntry = struct {
+    cmd: [256]u8 = undefined,
+    cmd_len: u16 = 0,
+
+    pub fn getCmd(self: *const AutostartEntry) []const u8 {
+        return self.cmd[0..self.cmd_len];
+    }
+};
+
 pub const max_name_rules = 32;
 
 pub const NameRule = struct {
@@ -103,6 +114,15 @@ rule_count: u8 = 0,
 
 name_rules: [max_name_rules]NameRule = undefined,
 name_rule_count: u8 = 0,
+
+// ── Autostart (commands to run when the compositor comes up) ───
+
+/// Commands spawned once, after the first output is ready. Skipped on
+/// hot-restart (existing clients are still connected). Window placement
+/// is handled by `[rules]` on WM_CLASS match, so an autostart entry just
+/// runs the program — the rule puts it on the right workspace.
+autostart: [max_autostart]AutostartEntry = undefined,
+autostart_count: u8 = 0,
 
 // ── String storage (static buffers, no allocator needed) ────────
 
@@ -195,6 +215,7 @@ fn parse(self: *WmConfig, content: []const u8) void {
             .bar_thresholds => self.applyThreshold(key, value),
             .rules => self.applyRule(key, value),
             .names => self.applyNameRule(key, value),
+            .autostart => self.applyAutostart(key, value),
         }
     }
 }
@@ -206,6 +227,7 @@ const Section = enum {
     bar_thresholds,
     rules,
     names,
+    autostart,
 };
 
 fn parseSection(name: []const u8) Section {
@@ -214,6 +236,7 @@ fn parseSection(name: []const u8) Section {
     if (std.mem.eql(u8, name, "bar.bottom")) return .bar_bottom;
     if (std.mem.eql(u8, name, "bar.thresholds")) return .bar_thresholds;
     if (std.mem.eql(u8, name, "rules")) return .rules;
+    if (std.mem.eql(u8, name, "autostart")) return .autostart;
     return .global;
 }
 
@@ -322,6 +345,20 @@ fn applyNameRule(self: *WmConfig, key: []const u8, value: []const u8) void {
 
     self.name_rules[self.name_rule_count] = rule;
     self.name_rule_count += 1;
+}
+
+fn applyAutostart(self: *WmConfig, key: []const u8, value: []const u8) void {
+    _ = key; // keys are ignored — they just disambiguate lines in the INI parser
+    if (self.autostart_count >= max_autostart) return;
+    if (value.len == 0) return;
+
+    var entry = AutostartEntry{};
+    const len = @min(value.len, entry.cmd.len);
+    @memcpy(entry.cmd[0..len], value[0..len]);
+    entry.cmd_len = @intCast(len);
+
+    self.autostart[self.autostart_count] = entry;
+    self.autostart_count += 1;
 }
 
 // ── Rule lookup ─────────────────────────────────────────────────
