@@ -525,10 +525,16 @@ fn toolGetConfig(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
 
     const top_enabled = if (srv.bar) |b| b.top.enabled else false;
     const bot_enabled = if (srv.bar) |b| b.bottom.enabled else false;
+    // Font cell dimensions and bar height — derived at runtime from the
+    // loaded font atlas. Useful for external tools computing grid layouts,
+    // measuring gaps, or debugging. cell_h=16 default, bar_h = cell_h+4.
+    const cell_w: u32 = if (srv.font_atlas) |fa| fa.cell_width else 8;
+    const cell_h: u32 = if (srv.font_atlas) |fa| fa.cell_height else 16;
+    const bar_h: u32 = if (srv.bar) |b| b.bar_height else 0;
 
     return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"gap\":{d},\"border_width\":{d},\"bg_color\":\"0x{x:0>8}\",\"output_width\":{d},\"output_height\":{d},\"terminal_count\":{d},\"active_workspace\":{d},\"top_bar\":{any},\"bottom_bar\":{any}}}"}}]}},"id":{s}}}
-    , .{ cfg.gap, cfg.border_width, cfg.bg_color, out_w, out_h, srv.terminal_count, srv.layout_engine.active_workspace, top_enabled, bot_enabled, id_str }) catch
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"gap\":{d},\"border_width\":{d},\"bg_color\":\"0x{x:0>8}\",\"output_width\":{d},\"output_height\":{d},\"cell_width\":{d},\"cell_height\":{d},\"bar_height\":{d},\"terminal_count\":{d},\"active_workspace\":{d},\"top_bar\":{any},\"bottom_bar\":{any}}}"}}]}},"id":{s}}}
+    , .{ cfg.gap, cfg.border_width, cfg.bg_color, out_w, out_h, cell_w, cell_h, bar_h, srv.terminal_count, srv.layout_engine.active_workspace, top_enabled, bot_enabled, id_str }) catch
         jsonRpcError(buf, id, -32603, "Internal error");
 }
 
