@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""
+teru-query — call an MCP tool from inside a teru pane, without a socket.
+
+Writes an OSC 9999 query to /dev/tty (which teru's VT parser consumes)
+and reads the DCS 9999 reply back from /dev/tty. Prints the JSON body.
+
+Usage:
+    teru-query TOOL [KEY=VAL]...
+
+Examples:
+    teru-query teru_list_panes
+    teru-query teru_read_output pane_id=1 lines=30
+    teru-query teru_broadcast workspace=0 text='hello agents'
+
+Exit codes:
+    0 — JSON response printed to stdout
+    1 — not running inside teru (or timeout waiting for reply)
+    2 — bad arguments
+"""
+import os
+import re
+import sys
+import time
+
+TIMEOUT_S = 2.0
+
+
+def usage():
+    sys.stderr.write(__doc__)
+    sys.exit(2)
+
+
+def main():
+    if len(sys.argv) < 2:
+        usage()
+    tool = sys.argv[1]
+    args = []
+    for a in sys.argv[2:]:
+        if "=" not in a:
+            sys.stderr.write(f"teru-query: bad arg (missing '='): {a}\n")
+            sys.exit(2)
+        k, v = a.split("=", 1)
+        if ";" in v or ";" in k:
+            sys.stderr.write("teru-query: ';' not allowed in keys/values\n")
+            sys.exit(2)
+        args.append((k, v))
+
+    # Request id: millisecond timestamp; the DCS reply echoes it back so
+    # we can ignore stray DCS frames that aren't ours.
+    qid = str(int(time.time() * 1000) & 0xFFFFFFFF)
+
+    payload = f"query;id={qid};tool={tool}"
+    for k, v in args:
+        payload += f";{k}={v}"
+    osc = f"\x1b]9999;{payload}\x07"
+
+    try:
+        tty = open("/dev/tty", "rb+", buffering=0)
+    except OSError as e:
+        sys.stderr.write(f"teru-query: cannot open /dev/tty: {e}\n")
+        sys.exit(1)
+
+    tty.write(osc.encode())
+    tty.flush()
+
+    # Read raw bytes until we see ESC \\ (DCS string terminator).
+    # Filter out anything that isn't our DCS 9999 ; id=<qid> ; ... ESC\\
+    import select
+
+    buf = bytearray()
+    deadline = time.time() + TIMEOUT_S
+    needle = b"\x1b\\"
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            sys.stderr.write("teru-query: timeout waiting for reply\n")
+            sys.exit(1)
+        r, _, _ = select.select([tty.fileno()], [], [], remaining)
+        if not r:
+            continue
+        chunk = os.read(tty.fileno(), 4096)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if needle in buf:
+            break
+
+    text = bytes(buf)
+    pattern = re.compile(rb"\x1bP9999;id=" + qid.encode() + rb";(.*?)\x1b\\", re.DOTALL)
+    m = pattern.search(text)
+    if not m:
+        sys.stderr.write("teru-query: no matching DCS reply (pattern mismatch)\n")
+        sys.exit(1)
+    sys.stdout.buffer.write(m.group(1))
+    sys.stdout.buffer.write(b"\n")
+
+
+if __name__ == "__main__":
+    main()

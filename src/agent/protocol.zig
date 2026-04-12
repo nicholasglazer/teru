@@ -19,6 +19,10 @@ pub const AgentCommand = enum {
     task,
     group,
     meta,
+    /// In-band MCP tool call from an agent running inside a pane.
+    /// Reply is written back on the PTY as a DCS 9999 sequence so the
+    /// agent reads it on its own stdin. See src/agent/in_band.zig.
+    query,
 };
 
 pub const AgentEvent = struct {
@@ -31,6 +35,31 @@ pub const AgentEvent = struct {
     task_desc: ?[]const u8 = null,
     exit_status: ?[]const u8 = null,
     summary: ?[]const u8 = null,
+
+    /// Query fields — only populated when command == .query.
+    query_id: ?[]const u8 = null,
+    query_tool: ?[]const u8 = null,
+    /// Raw pairs of argument key/value exactly as they appeared in the
+    /// OSC payload (after `tool=`). These alias into the original input
+    /// buffer — valid only for the lifetime of that buffer. Handled by
+    /// in_band.zig which rebuilds them into a synthetic JSON-RPC body.
+    query_args: QueryArgs = .{},
+};
+
+pub const max_query_args = 8;
+
+pub const QueryArg = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+pub const QueryArgs = struct {
+    items: [max_query_args]QueryArg = undefined,
+    count: u8 = 0,
+
+    pub fn slice(self: *const QueryArgs) []const QueryArg {
+        return self.items[0..self.count];
+    }
 };
 
 /// OSC sequence state machine states.
@@ -166,6 +195,8 @@ pub fn parsePayload(payload: []const u8) ?AgentEvent {
             event.command = .group;
         } else if (std.mem.eql(u8, cmd_str, "agent:meta")) {
             event.command = .meta;
+        } else if (std.mem.eql(u8, cmd_str, "query")) {
+            event.command = .query;
         } else {
             return null; // Unknown command
         }
@@ -173,7 +204,8 @@ pub fn parsePayload(payload: []const u8) ?AgentEvent {
         return null;
     }
 
-    // Remaining fields are key=value pairs
+    // Remaining fields are key=value pairs. For .query, any field that
+    // isn't `id` or `tool` is collected into query_args.
     while (iter.next()) |field| {
         if (std.mem.indexOfScalar(u8, field, '=')) |eq_pos| {
             const key = field[0..eq_pos];
@@ -195,6 +227,13 @@ pub fn parsePayload(payload: []const u8) ?AgentEvent {
                 event.exit_status = value;
             } else if (std.mem.eql(u8, key, "summary")) {
                 event.summary = value;
+            } else if (event.command == .query and std.mem.eql(u8, key, "id")) {
+                event.query_id = value;
+            } else if (event.command == .query and std.mem.eql(u8, key, "tool")) {
+                event.query_tool = value;
+            } else if (event.command == .query and event.query_args.count < max_query_args) {
+                event.query_args.items[event.query_args.count] = .{ .key = key, .value = value };
+                event.query_args.count += 1;
             }
         }
     }
@@ -394,4 +433,26 @@ test "invalid progress value parsed as null" {
     const payload = "agent:status;progress=abc";
     const event = parsePayload(payload).?;
     try std.testing.expect(event.progress == null);
+}
+
+test "parse query with id and tool, no args" {
+    const payload = "query;id=7;tool=teru_list_panes";
+    const event = parsePayload(payload).?;
+    try std.testing.expectEqual(AgentCommand.query, event.command);
+    try std.testing.expectEqualStrings("7", event.query_id.?);
+    try std.testing.expectEqualStrings("teru_list_panes", event.query_tool.?);
+    try std.testing.expectEqual(@as(u8, 0), event.query_args.count);
+}
+
+test "parse query with typed args collected in order" {
+    const payload = "query;id=12;tool=teru_read_output;pane_id=3;lines=50";
+    const event = parsePayload(payload).?;
+    try std.testing.expectEqual(AgentCommand.query, event.command);
+    try std.testing.expectEqualStrings("12", event.query_id.?);
+    try std.testing.expectEqualStrings("teru_read_output", event.query_tool.?);
+    try std.testing.expectEqual(@as(u8, 2), event.query_args.count);
+    try std.testing.expectEqualStrings("pane_id", event.query_args.items[0].key);
+    try std.testing.expectEqualStrings("3", event.query_args.items[0].value);
+    try std.testing.expectEqualStrings("lines", event.query_args.items[1].key);
+    try std.testing.expectEqualStrings("50", event.query_args.items[1].value);
 }
