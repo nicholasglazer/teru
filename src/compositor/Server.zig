@@ -1862,12 +1862,11 @@ pub fn toggleScratchpad(self: *Server, index: u8) void {
         const tp = TerminalPane.createFloating(self, rows, cols) orelse return;
         self.scratchpads[index] = tp;
 
-        // Position it
+        // Position it (goes through setPosition so tp.pos_x/y stay in sync
+        // — the screenshot compositor reads them directly).
         const pos_x: i32 = @intFromFloat(positions[index][0] * @as(f32, @floatFromInt(out_w)));
         const pos_y: i32 = @intFromFloat(positions[index][1] * @as(f32, @floatFromInt(out_h)));
-        if (wlr.miozu_scene_buffer_node(tp.scene_buffer)) |node| {
-            wlr.wlr_scene_node_set_position(node, pos_x, pos_y);
-        }
+        tp.setPosition(pos_x, pos_y);
 
         self.scratchpad_visible[index] = true;
         self.focused_terminal = tp;
@@ -2107,18 +2106,38 @@ pub fn takeScreenshotToPath(self: *Server, path: []const u8) bool {
     // Clear to configured background color (what the user actually sees in gaps)
     @memset(pixels, self.wm_config.bg_color);
 
-    // Composite visible terminal panes
+    // Composite visible terminal panes — two passes so floating windows
+    // land on top of tiled ones, matching wlroots' scene-graph z-order.
+    // Without this, the screenshot tool disagrees with what the real
+    // compositor draws, and float/drag E2E snapshots become misleading.
     const ws = self.layout_engine.active_workspace;
-    for (self.terminal_panes) |maybe_tp| {
+    for ([_]bool{ false, true }) |want_floating| {
+        for (self.terminal_panes) |maybe_tp| {
+            if (maybe_tp) |tp| {
+                const slot = self.nodes.findById(tp.node_id) orelse continue;
+                if (self.nodes.workspace[slot] != ws) continue;
+                if (self.nodes.floating[slot] != want_floating) continue;
+                tp.render();
+                blitRect(
+                    pixels, out_w, out_h,
+                    tp.renderer.framebuffer, tp.renderer.width, tp.renderer.height,
+                    self.nodes.pos_x[slot], self.nodes.pos_y[slot],
+                );
+            }
+        }
+    }
+
+    // Also composite scratchpads (always floating, always on top when visible).
+    // Scratchpads aren't in the NodeRegistry; read position from the pane
+    // itself (kept current by setPosition).
+    for (&self.scratchpads, 0..) |maybe_tp, i| {
+        if (!self.scratchpad_visible[i]) continue;
         if (maybe_tp) |tp| {
-            const slot = self.nodes.findById(tp.node_id) orelse continue;
-            if (self.nodes.workspace[slot] != ws) continue;
-            // Ensure pane is rendered
             tp.render();
             blitRect(
                 pixels, out_w, out_h,
                 tp.renderer.framebuffer, tp.renderer.width, tp.renderer.height,
-                self.nodes.pos_x[slot], self.nodes.pos_y[slot],
+                tp.pos_x, tp.pos_y,
             );
         }
     }
