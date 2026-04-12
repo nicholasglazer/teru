@@ -47,9 +47,25 @@ pub const Rule = struct {
     }
 };
 
+pub const max_name_rules = 32;
+
+pub const NameRule = struct {
+    class: [64]u8 = undefined,
+    class_len: u8 = 0,
+    name: [32]u8 = undefined,
+    name_len: u8 = 0,
+
+    pub fn getClass(self: *const NameRule) []const u8 {
+        return self.class[0..self.class_len];
+    }
+    pub fn getName(self: *const NameRule) []const u8 {
+        return self.name[0..self.name_len];
+    }
+};
+
 // ── Window layout ────────────────────────────────────────────────
 
-/// Gap in pixels between tiled windows (half applied on each side).
+/// Uniform gap in pixels — same between panes and between panes and screen edges/bars.
 gap: u16 = 4,
 
 /// Border width in pixels around focused/unfocused windows.
@@ -71,6 +87,11 @@ bar_bottom_right: ?[]const u8 = null,
 rules: [max_rules]Rule = undefined,
 rule_count: u8 = 0,
 
+// ── Name rules (class/app_id → human-readable name) ────────────
+
+name_rules: [max_name_rules]NameRule = undefined,
+name_rule_count: u8 = 0,
+
 // ── String storage (static buffers, no allocator needed) ────────
 
 bar_top_left_buf: [max_bar_str]u8 = undefined,
@@ -81,6 +102,26 @@ bar_bottom_center_buf: [max_bar_str]u8 = undefined,
 bar_bottom_right_buf: [max_bar_str]u8 = undefined,
 
 // ── Loading ─────────────────────────────────────────────────────
+
+/// Load config using libc (for hot-reload, no Io needed).
+pub fn loadWithLibc() WmConfig {
+    var config = WmConfig{};
+    const home = teru.compat.getenv("HOME") orelse return config;
+
+    var path_buf: [512:0]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/.config/teruwm/config", .{home}) catch return config;
+    path_buf[path.len] = 0;
+
+    const file = std.c.fopen(@ptrCast(path_buf[0..path.len :0]), "rb") orelse return config;
+    defer _ = std.c.fclose(file);
+
+    var content: [64 * 1024]u8 = undefined;
+    const n = std.c.fread(&content, 1, content.len, file);
+    if (n == 0) return config;
+
+    config.parse(content[0..n]);
+    return config;
+}
 
 /// Load teruwm config from ~/.config/teruwm/config.
 /// Returns defaults if the file does not exist or cannot be parsed.
@@ -140,6 +181,7 @@ fn parse(self: *WmConfig, content: []const u8) void {
             .bar_top => self.applyBarTop(key, value),
             .bar_bottom => self.applyBarBottom(key, value),
             .rules => self.applyRule(key, value),
+            .names => self.applyNameRule(key, value),
         }
     }
 }
@@ -149,9 +191,11 @@ const Section = enum {
     bar_top,
     bar_bottom,
     rules,
+    names,
 };
 
 fn parseSection(name: []const u8) Section {
+    if (std.mem.eql(u8, name, "names")) return .names;
     if (std.mem.eql(u8, name, "bar.top")) return .bar_top;
     if (std.mem.eql(u8, name, "bar.bottom")) return .bar_bottom;
     if (std.mem.eql(u8, name, "rules")) return .rules;
@@ -209,6 +253,22 @@ fn applyRule(self: *WmConfig, key: []const u8, value: []const u8) void {
     self.rule_count += 1;
 }
 
+fn applyNameRule(self: *WmConfig, key: []const u8, value: []const u8) void {
+    if (self.name_rule_count >= max_name_rules) return;
+
+    var rule = NameRule{};
+    const class_len = @min(key.len, rule.class.len);
+    @memcpy(rule.class[0..class_len], key[0..class_len]);
+    rule.class_len = @intCast(class_len);
+
+    const name_len = @min(value.len, rule.name.len - 1);
+    @memcpy(rule.name[0..name_len], value[0..name_len]);
+    rule.name_len = @intCast(name_len);
+
+    self.name_rules[self.name_rule_count] = rule;
+    self.name_rule_count += 1;
+}
+
 // ── Rule lookup ─────────────────────────────────────────────────
 
 /// Look up a window class/app_id in the rules table.
@@ -217,6 +277,17 @@ pub fn matchRule(self: *const WmConfig, class_or_app_id: []const u8) ?u8 {
     for (self.rules[0..self.rule_count]) |*rule| {
         if (std.mem.eql(u8, rule.getClass(), class_or_app_id)) {
             return rule.workspace;
+        }
+    }
+    return null;
+}
+
+/// Look up a window class/app_id in the name rules table.
+/// Returns the human-readable name if a rule matches, null otherwise.
+pub fn matchName(self: *const WmConfig, class_or_app_id: []const u8) ?[]const u8 {
+    for (self.name_rules[0..self.name_rule_count]) |*rule| {
+        if (std.mem.eql(u8, rule.getClass(), class_or_app_id)) {
+            return rule.getName();
         }
     }
     return null;

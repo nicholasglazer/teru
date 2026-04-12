@@ -117,6 +117,7 @@ pub extern "wlroots-0.18" fn wlr_scene_attach_output_layout(scene: *wlr_scene, l
 pub extern "wlroots-0.18" fn wlr_output_layout_create(display: *wl_display) callconv(.c) ?*wlr_output_layout;
 pub extern "wlroots-0.18" fn wlr_output_layout_add_auto(layout: *wlr_output_layout, output: *wlr_output) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_output_init_render(output: *wlr_output, allocator: *wlr_allocator, renderer: *wlr_renderer) callconv(.c) bool;
+pub extern "wlroots-0.18" fn wlr_output_schedule_frame(output: *wlr_output) callconv(.c) void;
 
 // ── wlroots xdg-shell ─────────────────────────────────────────
 
@@ -334,6 +335,15 @@ pub extern "c" fn miozu_pointer_motion_abs_time(event: *wlr_pointer_motion_absol
 pub extern "c" fn miozu_pointer_button_button(event: *wlr_pointer_button_event) callconv(.c) u32;
 pub extern "c" fn miozu_pointer_button_state(event: *wlr_pointer_button_event) callconv(.c) u32;
 pub extern "c" fn miozu_pointer_button_time(event: *wlr_pointer_button_event) callconv(.c) u32;
+
+// Axis (scroll wheel) event accessors (in glue)
+pub const wlr_pointer_axis_event = opaque {};
+pub extern "c" fn miozu_pointer_axis_delta(event: *wlr_pointer_axis_event) callconv(.c) f64;
+pub extern "c" fn miozu_pointer_axis_orientation(event: *wlr_pointer_axis_event) callconv(.c) u32;
+pub extern "c" fn miozu_pointer_axis_source(event: *wlr_pointer_axis_event) callconv(.c) u32;
+pub extern "c" fn miozu_pointer_axis_time(event: *wlr_pointer_axis_event) callconv(.c) u32;
+pub extern "c" fn miozu_pointer_axis_delta_discrete(event: *wlr_pointer_axis_event) callconv(.c) i32;
+pub extern "c" fn wlr_seat_pointer_notify_axis(seat: *wlr_seat, time: u32, orientation: u32, delta: f64, delta_discrete: i32, source: u32, relative_direction: u32) callconv(.c) void;
 
 // Keyboard event accessor (in glue)
 pub extern "c" fn miozu_keyboard_key_keycode(event: *anyopaque) callconv(.c) u32;

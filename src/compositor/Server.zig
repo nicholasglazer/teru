@@ -10,6 +10,7 @@ const XwaylandView = @import("XwaylandView.zig");
 const Launcher = @import("Launcher.zig");
 const Bar = @import("Bar.zig");
 const WmConfig = @import("WmConfig.zig");
+const WmMcpServer = @import("WmMcpServer.zig");
 const NodeRegistry = @import("Node.zig");
 const teru = @import("teru");
 const LayoutEngine = teru.LayoutEngine;
@@ -56,6 +57,7 @@ focused_terminal: ?*TerminalPane = null,
 terminal_panes: [NodeRegistry.max_nodes]?*TerminalPane = [_]?*TerminalPane{null} ** NodeRegistry.max_nodes,
 terminal_count: u16 = 0,
 bar: ?*Bar = null,
+primary_output: ?*wlr.wlr_output = null,
 workspace_trees: [10]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** 10,
 
 // Fullscreen state: tracks which node is fullscreen (null = none)
@@ -85,6 +87,9 @@ launcher: Launcher = .{},
 // teruwm-specific config (~/.config/teruwm/config)
 wm_config: WmConfig = .{},
 
+// MCP server for compositor control
+wm_mcp: ?*WmMcpServer = null,
+
 // ── Listeners ──────────────────────────────────────────────────
 
 new_output: wlr.wl_listener = makeListener(handleNewOutput),
@@ -93,6 +98,7 @@ new_xdg_toplevel: wlr.wl_listener = makeListener(handleNewXdgToplevel),
 cursor_motion: wlr.wl_listener = makeListener(handleCursorMotion),
 cursor_motion_absolute: wlr.wl_listener = makeListener(handleCursorMotionAbsolute),
 cursor_button: wlr.wl_listener = makeListener(handleCursorButton),
+cursor_axis: wlr.wl_listener = makeListener(handleCursorAxis),
 cursor_frame: wlr.wl_listener = makeListener(handleCursorFrame),
 request_set_cursor: wlr.wl_listener = makeListener(handleRequestSetCursor),
 new_xwayland_surface: wlr.wl_listener = makeListener(handleNewXwaylandSurface),
@@ -199,6 +205,7 @@ fn registerListeners(self: *Server) void {
     wlr.wl_signal_add(wlr.miozu_cursor_motion(self.cursor), &self.cursor_motion);
     wlr.wl_signal_add(wlr.miozu_cursor_motion_absolute(self.cursor), &self.cursor_motion_absolute);
     wlr.wl_signal_add(wlr.miozu_cursor_button(self.cursor), &self.cursor_button);
+    wlr.wl_signal_add(wlr.miozu_cursor_axis(self.cursor), &self.cursor_axis);
     wlr.wl_signal_add(wlr.miozu_cursor_frame(self.cursor), &self.cursor_frame);
     wlr.wl_signal_add(wlr.miozu_seat_request_set_cursor(self.seat), &self.request_set_cursor);
 
@@ -279,7 +286,118 @@ pub fn applyWmBar(self: *Server) void {
     }
 }
 
+pub fn startMcp(self: *Server) void {
+    self.wm_mcp = WmMcpServer.init(self);
+}
+
+/// Reload compositor config from disk and re-apply live.
+/// Called by Mod+Shift+R keybind or teruwm_reload_config MCP tool.
+pub fn reloadWmConfig(self: *Server) void {
+    // Re-read config file (requires io — use a dummy Io for file access)
+    // Use libc fopen/fread to reload config (no Io needed)
+    self.wm_config = WmConfig.loadWithLibc();
+
+    // Re-apply bar configuration
+    if (self.bar) |b| {
+        b.configure(
+            self.wm_config.bar_top_left,
+            self.wm_config.bar_top_center,
+            self.wm_config.bar_top_right,
+            self.wm_config.bar_bottom_left,
+            self.wm_config.bar_bottom_center,
+            self.wm_config.bar_bottom_right,
+        );
+        b.render(self);
+    }
+
+    // Re-arrange all workspaces with new gap
+    for (0..10) |wi| {
+        const ws = &self.layout_engine.workspaces[wi];
+        if (ws.node_ids.items.len > 0) {
+            self.arrangeworkspace(@intCast(wi));
+        }
+    }
+
+    std.debug.print("teruwm: config reloaded (gap={d}, border={d})\n", .{ self.wm_config.gap, self.wm_config.border_width });
+}
+
+/// Restart the compositor: serialize state, exec new binary.
+/// PTY fds survive exec() — shells keep running, zero downtime.
+pub fn execRestart(self: *Server) void {
+    const restart_path = "/tmp/teruwm-restart.bin";
+
+    // Serialize: for each terminal pane, write {workspace, pty_fd, rows, cols, pid}
+    var buf: [4096]u8 = undefined;
+    var pos: usize = 0;
+
+    // Header: pane count
+    var pane_count: u16 = 0;
+    for (self.terminal_panes) |maybe_tp| {
+        if (maybe_tp != null) pane_count += 1;
+    }
+    if (pos + 2 <= buf.len) { std.mem.writeInt(u16, buf[pos..][0..2], pane_count, .little); pos += 2; }
+
+    // Active workspace
+    if (pos + 1 <= buf.len) { buf[pos] = self.layout_engine.active_workspace; pos += 1; }
+
+    // Per-workspace layouts (10 workspaces)
+    for (0..10) |wi| {
+        if (pos + 1 <= buf.len) { buf[pos] = @intFromEnum(self.layout_engine.workspaces[wi].layout); pos += 1; }
+    }
+
+    // Per-pane data
+    for (self.terminal_panes) |maybe_tp| {
+        if (maybe_tp) |tp| {
+            const ws = if (self.nodes.findById(tp.node_id)) |slot| self.nodes.workspace[slot] else 0;
+            const pty_fd: i32 = switch (tp.pane.backend) {
+                .local => |p| p.master,
+                .remote => -1,
+            };
+            const pid: i32 = switch (tp.pane.backend) {
+                .local => |p| if (p.child_pid) |cp| @intCast(cp) else -1,
+                .remote => -1,
+            };
+            if (pos + 13 <= buf.len) {
+                buf[pos] = ws; pos += 1;
+                std.mem.writeInt(i32, buf[pos..][0..4], pty_fd, .little); pos += 4;
+                std.mem.writeInt(u16, buf[pos..][0..2], tp.pane.grid.rows, .little); pos += 2;
+                std.mem.writeInt(u16, buf[pos..][0..2], tp.pane.grid.cols, .little); pos += 2;
+                std.mem.writeInt(i32, buf[pos..][0..4], pid, .little); pos += 4;
+            }
+
+            // Clear FD_CLOEXEC on pty master so it survives exec
+            if (pty_fd >= 0) {
+                const flags = std.c.fcntl(pty_fd, std.posix.F.GETFD);
+                if (flags >= 0) {
+                    _ = std.c.fcntl(pty_fd, std.posix.F.SETFD, flags & ~@as(c_int, 1)); // clear FD_CLOEXEC
+                }
+            }
+        }
+    }
+
+    // Write state file
+    const file = std.c.fopen(restart_path, "wb");
+    if (file) |f| {
+        _ = std.c.fwrite(buf[0..pos].ptr, 1, pos, f);
+        _ = std.c.fclose(f);
+    } else {
+        std.debug.print("teruwm: failed to write restart state\n", .{});
+        return;
+    }
+
+    std.debug.print("teruwm: restarting ({d} panes saved)\n", .{pane_count});
+
+    // exec the new binary
+    const self_exe = "/proc/self/exe";
+    var argv_buf: [3:null]?[*:0]const u8 = .{ @ptrCast(self_exe), @ptrCast("--restore"), null };
+    _ = std.posix.system.execve(@ptrCast(self_exe), @ptrCast(&argv_buf), std.c.environ);
+
+    // If exec fails, we're still running
+    std.debug.print("teruwm: exec failed, continuing\n", .{});
+}
+
 pub fn deinit(self: *Server) void {
+    if (self.wm_mcp) |mcp| mcp.deinit(self.zig_allocator);
     wlr.xkb_context_unref(self.xkb_ctx);
 }
 
@@ -293,6 +411,7 @@ fn handleNewOutput(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) v
         std.debug.print("teruwm: failed to create output\n", .{});
         return;
     };
+    if (server.primary_output == null) server.primary_output = wlr_output;
 }
 
 fn handleNewInput(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
@@ -467,6 +586,52 @@ fn handleCursorButton(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c
     }
 
     _ = wlr.wlr_seat_pointer_notify_button(server.seat, wlr.miozu_pointer_button_time(event), button, state);
+}
+
+fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const server = wlr.listenerParent(Server, "cursor_axis", listener);
+    const event: *wlr.wlr_pointer_axis_event = @ptrCast(@alignCast(data orelse return));
+
+    const orientation = wlr.miozu_pointer_axis_orientation(event);
+    const delta = wlr.miozu_pointer_axis_delta(event);
+
+    // Vertical scroll on focused terminal pane
+    if (orientation == 0 and server.focused_terminal != null) { // 0 = vertical
+        const tp = server.focused_terminal.?;
+        const max_offset: u32 = @intCast(tp.pane.scrollback.total_lines);
+        if (max_offset > 0) {
+            const cell_h: u32 = if (server.font_atlas) |fa| fa.cell_height else 16;
+            const scroll_lines: i32 = if (delta > 0) 3 else -3;
+            const pixel_delta: i32 = scroll_lines * @as(i32, @intCast(cell_h));
+
+            var new_pixel = tp.pane.scroll_pixel + pixel_delta;
+            var new_offset: i32 = @intCast(tp.pane.scroll_offset);
+            const ch: i32 = @intCast(cell_h);
+
+            while (new_pixel >= ch) { new_pixel -= ch; new_offset += 1; }
+            while (new_pixel < 0) { new_pixel += ch; new_offset -= 1; }
+
+            if (new_offset < 0) { new_offset = 0; new_pixel = 0; }
+            if (new_offset > @as(i32, @intCast(max_offset))) { new_offset = @intCast(max_offset); new_pixel = 0; }
+
+            tp.pane.scroll_offset = @intCast(new_offset);
+            tp.pane.scroll_pixel = new_pixel;
+            tp.pane.grid.dirty = true;
+            tp.render();
+            return;
+        }
+    }
+
+    // Forward to Wayland clients if not consumed
+    wlr.wlr_seat_pointer_notify_axis(
+        server.seat,
+        wlr.miozu_pointer_axis_time(event),
+        orientation,
+        delta,
+        wlr.miozu_pointer_axis_delta_discrete(event),
+        wlr.miozu_pointer_axis_source(event),
+        0, // relative_direction: default
+    );
 }
 
 fn handleCursorFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
@@ -799,6 +964,14 @@ fn executeAction(self: *Server, action: KBAction) bool {
             wlr.wl_display_terminate(self.display);
             return true;
         },
+        .compositor_restart => {
+            self.execRestart();
+            return true;
+        },
+        .config_reload => {
+            self.reloadWmConfig();
+            return true;
+        },
         .layout_cycle => {
             self.layout_engine.getActiveWorkspace().cycleLayout();
             self.arrangeworkspace(self.layout_engine.active_workspace);
@@ -868,6 +1041,20 @@ fn executeAction(self: *Server, action: KBAction) bool {
             self.takeScreenshot();
             return true;
         },
+        .screenshot_pane => {
+            if (self.focused_terminal) |tp| {
+                tp.render();
+                var path_buf: [256:0]u8 = undefined;
+                const ts = teru.compat.monotonicNow();
+                const name = if (self.nodes.findById(tp.node_id)) |s| self.nodes.getName(s) else "pane";
+                const path = std.fmt.bufPrint(&path_buf, "/tmp/teruwm-pane-{s}-{d}.png", .{ name, ts }) catch return true;
+                path_buf[path.len] = 0;
+                const png = teru.png;
+                png.write(self.zig_allocator, @ptrCast(path_buf[0..path.len :0]), tp.renderer.framebuffer, tp.renderer.width, tp.renderer.height) catch return true;
+                std.debug.print("teruwm: pane screenshot → {s}\n", .{path});
+            }
+            return true;
+        },
         .bar_toggle_top => {
             if (self.bar) |b| {
                 b.top.enabled = !b.top.enabled;
@@ -916,6 +1103,48 @@ fn executeAction(self: *Server, action: KBAction) bool {
             self.spawnProcess("playerctl previous");
             return true;
         },
+        .scroll_up_1, .scroll_up_half => {
+            if (self.focused_terminal) |tp| {
+                const lines: u32 = if (action == .scroll_up_half) tp.pane.grid.rows / 2 else 1;
+                const max_offset: u32 = @intCast(tp.pane.scrollback.total_lines);
+                if (max_offset > 0) {
+                    tp.pane.scroll_offset = @min(tp.pane.scroll_offset + lines, max_offset);
+                    tp.pane.scroll_pixel = 0;
+                    tp.pane.grid.dirty = true;
+                    tp.render();
+                }
+            }
+            return true;
+        },
+        .scroll_down_1, .scroll_down_half => {
+            if (self.focused_terminal) |tp| {
+                const lines: u32 = if (action == .scroll_down_half) tp.pane.grid.rows / 2 else 1;
+                tp.pane.scroll_offset -|= lines;
+                tp.pane.scroll_pixel = 0;
+                tp.pane.grid.dirty = true;
+                tp.render();
+            }
+            return true;
+        },
+        .scroll_top => {
+            if (self.focused_terminal) |tp| {
+                const max_offset: u32 = @intCast(tp.pane.scrollback.total_lines);
+                tp.pane.scroll_offset = max_offset;
+                tp.pane.scroll_pixel = 0;
+                tp.pane.grid.dirty = true;
+                tp.render();
+            }
+            return true;
+        },
+        .scroll_bottom => {
+            if (self.focused_terminal) |tp| {
+                tp.pane.scroll_offset = 0;
+                tp.pane.scroll_pixel = 0;
+                tp.pane.grid.dirty = true;
+                tp.render();
+            }
+            return true;
+        },
         else => return false,
     }
 }
@@ -931,13 +1160,16 @@ pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
     const bar_y_offset: i32 = if (self.bar) |b| @intCast(b.tilingOffsetY()) else 0;
     const h: u16 = @intCast(@max(1, full_h - bar_h));
 
-    // Layout gets the full tiling area — no pre-inset.
-    // Gaps are applied uniformly to each rect AFTER layout calculation.
+    // Pre-inset screen by half-gap so edge gaps equal inter-pane gaps.
+    // Layout divides the inset area; post-processing adds another hg per side.
+    // Result: edges = hg + hg = gap, between panes = hg + hg = gap.
+    const g: i32 = @intCast(self.wm_config.gap);
+    const hg: i32 = @divTrunc(g, 2);
     const screen = LayoutEngine.Rect{
-        .x = 0,
-        .y = @intCast(bar_y_offset),
-        .width = w,
-        .height = h,
+        .x = @intCast(@as(i32, 0) + hg),
+        .y = @intCast(bar_y_offset + hg),
+        .width = if (w > @as(u16, @intCast(g))) w - @as(u16, @intCast(g)) else w,
+        .height = if (h > @as(u16, @intCast(g))) h - @as(u16, @intCast(g)) else h,
     };
 
     const rects = self.layout_engine.calculate(ws_index, screen) catch return;
@@ -945,17 +1177,17 @@ pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
 
     const ws = &self.layout_engine.workspaces[ws_index];
     const node_ids = ws.node_ids.items;
-    const g: i32 = @intCast(self.wm_config.gap);
-    const hg: i32 = @divTrunc(g, 2);
 
     for (node_ids, 0..) |nid, i| {
         if (i >= rects.len) break;
         if (self.nodes.findById(nid)) |slot| {
-            // Uniform gap: hg inset on each side of every rect
+            // Each pane inset by hg on all sides — combined with pre-inset,
+            // this gives uniform gap at edges and between panes.
             const rx = rects[i].x + hg;
             const ry = rects[i].y + hg;
-            const rw: u16 = if (rects[i].width > @as(u16, @intCast(g))) rects[i].width - @as(u16, @intCast(g)) else rects[i].width;
-            const rh: u16 = if (rects[i].height > @as(u16, @intCast(g))) rects[i].height - @as(u16, @intCast(g)) else rects[i].height;
+            const gu16: u16 = @intCast(g);
+            const rw: u16 = if (rects[i].width > gu16) rects[i].width - gu16 else rects[i].width;
+            const rh: u16 = if (rects[i].height > gu16) rects[i].height - gu16 else rects[i].height;
             self.nodes.applyRect(slot, rx, ry, rw, rh);
 
             // Resize terminal panes to match their assigned rect
@@ -983,11 +1215,13 @@ pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
     const bar_y_offset: i32 = if (self.bar) |b| @intCast(b.tilingOffsetY()) else 0;
     const h: u16 = @intCast(@max(1, full_h - bar_h));
 
+    const g: i32 = @intCast(self.wm_config.gap);
+    const hg: i32 = @divTrunc(g, 2);
     const screen = LayoutEngine.Rect{
-        .x = 0,
-        .y = @intCast(bar_y_offset),
-        .width = w,
-        .height = h,
+        .x = @intCast(@as(i32, 0) + hg),
+        .y = @intCast(bar_y_offset + hg),
+        .width = if (w > @as(u16, @intCast(g))) w - @as(u16, @intCast(g)) else w,
+        .height = if (h > @as(u16, @intCast(g))) h - @as(u16, @intCast(g)) else h,
     };
 
     const rects = self.layout_engine.calculate(ws_index, screen) catch return;
@@ -995,15 +1229,14 @@ pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
 
     const ws = &self.layout_engine.workspaces[ws_index];
     const node_ids = ws.node_ids.items;
-    const g: i32 = @intCast(self.wm_config.gap);
-    const hg: i32 = @divTrunc(g, 2);
 
     for (node_ids, 0..) |nid, i| {
         if (i >= rects.len) break;
         const rx = rects[i].x + hg;
         const ry = rects[i].y + hg;
-        const rw: u16 = if (rects[i].width > @as(u16, @intCast(g))) rects[i].width - @as(u16, @intCast(g)) else rects[i].width;
-        const rh: u16 = if (rects[i].height > @as(u16, @intCast(g))) rects[i].height - @as(u16, @intCast(g)) else rects[i].height;
+        const gu16: u16 = @intCast(g);
+        const rw: u16 = if (rects[i].width > gu16) rects[i].width - gu16 else rects[i].width;
+        const rh: u16 = if (rects[i].height > gu16) rects[i].height - gu16 else rects[i].height;
 
         // Only reposition + scale — don't resize grid/PTY
         for (self.terminal_panes) |maybe_tp| {
@@ -1179,7 +1412,7 @@ fn renderLauncherBar(self: *Server) void {
 // ── Workspace visibility ──────────────────────────────────────
 
 /// Show or hide all nodes in a workspace.
-fn setWorkspaceVisibility(self: *Server, ws: u8, visible: bool) void {
+pub fn setWorkspaceVisibility(self: *Server, ws: u8, visible: bool) void {
     const ws_nodes = self.layout_engine.workspaces[ws].node_ids.items;
     for (ws_nodes) |nid| {
         // Terminal panes
@@ -1458,7 +1691,7 @@ pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
 
 /// Update focused_terminal to match the LayoutEngine's active node.
 /// Also updates visual focus indicators (border color).
-fn updateFocusedTerminal(self: *Server) void {
+pub fn updateFocusedTerminal(self: *Server) void {
     const ws = self.layout_engine.getActiveWorkspace();
     const active_id = ws.getActiveNodeId() orelse return;
 
@@ -1505,27 +1738,86 @@ pub fn spawnProcess(_: *Server, cmd: [*:0]const u8) void {
 }
 
 /// Take a screenshot of the entire output and save as PNG.
+/// Composites all visible terminal pane framebuffers + bars into a single image.
 fn takeScreenshot(self: *Server) void {
-    // Get output dimensions
-    const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
-    const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
-
-    // Build path: ~/Pictures/screenshot_TIMESTAMP.png
-    var path_buf: [256]u8 = undefined;
+    var path_buf: [256:0]u8 = undefined;
     const home = teru.compat.getenv("HOME") orelse "/tmp";
     const timestamp = teru.compat.monotonicNow();
     const path = std.fmt.bufPrint(&path_buf, "{s}/Pictures/screenshot_{d}.png", .{ home, timestamp }) catch return;
+    path_buf[path.len] = 0;
 
-    // TODO: grab the composed framebuffer from wlroots and encode via png.zig
-    // For now, spawn grim (standard Wayland screenshot tool)
-    var cmd_buf: [512]u8 = undefined;
-    const cmd = std.fmt.bufPrint(&cmd_buf, "grim {s}", .{path}) catch return;
-    cmd_buf[@min(cmd.len, cmd_buf.len - 1)] = 0;
-    self.spawnProcess(@ptrCast(cmd.ptr));
+    if (self.takeScreenshotToPath(path)) {
+        std.debug.print("teruwm: screenshot → {s}\n", .{path});
+    }
+}
 
-    std.debug.print("teruwm: screenshot → {s}\n", .{path});
-    _ = out_w;
-    _ = out_h;
+/// Take a screenshot to a specific path. Returns true on success.
+pub fn takeScreenshotToPath(self: *Server, path: []const u8) bool {
+    const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
+    const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
+    const total = @as(usize, out_w) * @as(usize, out_h);
+    if (total == 0) return false;
+
+    // Allocate compositing buffer
+    const pixels = self.zig_allocator.alloc(u32, total) catch return false;
+    defer self.zig_allocator.free(pixels);
+
+    // Clear to background
+    @memset(pixels, 0xFF232733);
+
+    // Composite visible terminal panes
+    const ws = self.layout_engine.active_workspace;
+    for (self.terminal_panes) |maybe_tp| {
+        if (maybe_tp) |tp| {
+            const slot = self.nodes.findById(tp.node_id) orelse continue;
+            if (self.nodes.workspace[slot] != ws) continue;
+            // Ensure pane is rendered
+            tp.render();
+            blitRect(
+                pixels, out_w, out_h,
+                tp.renderer.framebuffer, tp.renderer.width, tp.renderer.height,
+                self.nodes.pos_x[slot], self.nodes.pos_y[slot],
+            );
+        }
+    }
+
+    // Composite top bar
+    if (self.bar) |b| {
+        if (b.top.enabled) {
+            blitRect(pixels, out_w, out_h, b.top.renderer.framebuffer, b.output_width, b.bar_height, 0, 0);
+        }
+        if (b.bottom.enabled) {
+            blitRect(pixels, out_w, out_h, b.bottom.renderer.framebuffer, b.output_width, b.bar_height, 0, @intCast(out_h - b.bar_height));
+        }
+    }
+
+    // Encode
+    var path_z: [512:0]u8 = undefined;
+    if (path.len >= path_z.len) return false;
+    @memcpy(path_z[0..path.len], path);
+    path_z[path.len] = 0;
+
+    const png = teru.png;
+    png.write(self.zig_allocator, @ptrCast(path_z[0..path.len :0]), pixels, out_w, out_h) catch return false;
+    return true;
+}
+
+/// Blit a source framebuffer into a destination at the given offset.
+fn blitRect(dst: []u32, dst_w: u32, dst_h: u32, src: []const u32, src_w: u32, src_h: u32, off_x: i32, off_y: i32) void {
+    if (off_x < 0 or off_y < 0) return;
+    const ox: u32 = @intCast(off_x);
+    const oy: u32 = @intCast(off_y);
+
+    const rows = @min(src_h, dst_h -| oy);
+    const cols = @min(src_w, dst_w -| ox);
+    if (rows == 0 or cols == 0) return;
+
+    for (0..rows) |y| {
+        const dst_start = (@as(usize, oy) + y) * @as(usize, dst_w) + @as(usize, ox);
+        const src_start = y * @as(usize, src_w);
+        if (dst_start + cols > dst.len or src_start + cols > src.len) continue;
+        @memcpy(dst[dst_start..][0..cols], src[src_start..][0..cols]);
+    }
 }
 
 // ── Helper ─────────────────────────────────────────────────────

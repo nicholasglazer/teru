@@ -75,7 +75,21 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         server.layout_engine.active_workspace;
 
     // Register in the node registry on the target workspace
-    _ = server.nodes.addSurface(view.node_id, ws, view.toplevel, view.scene_tree);
+    const slot = server.nodes.addSurface(view.node_id, ws, view.toplevel, view.scene_tree);
+
+    // Store app_id and assign name
+    if (slot) |s| {
+        const aid_str = if (app_id) |aid| std.mem.sliceTo(aid, 0) else "";
+        if (aid_str.len > 0) {
+            server.nodes.setAppId(s, aid_str);
+            // Check [names] config rules, fall back to app_id as name
+            if (server.wm_config.matchName(aid_str)) |custom_name| {
+                server.nodes.setName(s, custom_name);
+            } else {
+                server.nodes.setName(s, aid_str);
+            }
+        }
+    }
 
     // Add to tiling engine workspace
     server.layout_engine.workspaces[ws].addNode(server.zig_allocator, view.node_id) catch return;

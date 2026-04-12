@@ -80,8 +80,10 @@ pub fn create(server: *Server) ?*Bar {
     bar.top.right.widgets = BarWidget.parse(BarWidget.default_top_right);
     bar.top.enabled = true;
 
-    // Bottom bar disabled by default (user enables via config)
-    bar.bottom.enabled = false;
+    // Bottom bar enabled by default with system info widgets
+    bar.bottom.left.widgets = BarWidget.parse(BarWidget.default_bottom_left);
+    bar.bottom.right.widgets = BarWidget.parse(BarWidget.default_bottom_right);
+    bar.bottom.enabled = true;
 
     return bar;
 }

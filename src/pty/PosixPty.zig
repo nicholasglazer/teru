@@ -21,6 +21,16 @@ pub const SpawnOptions = struct {
     exec_argv: ?[*:null]const ?[*:0]const u8 = null,
 };
 
+/// Attach to an existing PTY master fd (e.g., inherited across exec for compositor restart).
+/// The shell is already running on the other end — no fork, no spawn.
+pub fn attach(master_fd: posix.fd_t, child_pid: ?posix.pid_t) Pty {
+    return .{
+        .master = master_fd,
+        .slave = 0,
+        .child_pid = child_pid,
+    };
+}
+
 pub fn spawn(opts: SpawnOptions) !Pty {
     const shell = opts.shell orelse getDefaultShell();
 

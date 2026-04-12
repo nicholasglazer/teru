@@ -80,6 +80,33 @@ pub fn init(allocator: Allocator, rows: u16, cols: u16, id: u64, spawn_config: S
     };
 }
 
+/// Create a pane by attaching to an existing PTY fd (for compositor restart).
+/// The shell is already running — no fork, no spawn.
+pub fn initWithPty(allocator: Allocator, rows: u16, cols: u16, id: u64, spawn_config: SpawnConfig, pty: Pty) !Pane {
+    var grid = try Grid.init(allocator, rows, cols);
+    var sb = Scrollback.init(allocator, .{
+        .keyframe_interval = 100,
+        .max_lines = spawn_config.scrollback_lines,
+    });
+    grid.scrollback = &sb;
+
+    // Set PTY master to non-blocking
+    if (builtin.os.tag != .windows) {
+        const flags = std.c.fcntl(pty.master, posix.F.GETFL);
+        if (flags >= 0) {
+            _ = std.c.fcntl(pty.master, posix.F.SETFL, flags | compat.O_NONBLOCK);
+        }
+    }
+
+    return .{
+        .backend = .{ .local = pty },
+        .grid = grid,
+        .vt = VtParser.initEmpty(),
+        .id = id,
+        .scrollback = sb,
+    };
+}
+
 /// Create a pane backed by a daemon IPC stream (no local PTY).
 pub fn initRemote(allocator: Allocator, rows: u16, cols: u16, id: u64, ipc_fd: posix.fd_t, spawn_config: SpawnConfig) !Pane {
     var grid = try Grid.init(allocator, rows, cols);

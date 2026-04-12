@@ -73,9 +73,14 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
 
 fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const output: *Output = @fieldParentPtr("frame", listener);
-    const scene_output = wlr.wlr_scene_get_scene_output(output.server.scene, output.wlr_output) orelse return;
+    const server = output.server;
 
-    // Commit the scene graph to this output (renders all visible surfaces)
+    // Render dirty terminal panes before compositing (coalesces PTY reads to vsync)
+    for (server.terminal_panes) |maybe_tp| {
+        if (maybe_tp) |tp| _ = tp.renderIfDirty();
+    }
+
+    const scene_output = wlr.wlr_scene_get_scene_output(server.scene, output.wlr_output) orelse return;
     _ = wlr.wlr_scene_output_commit(scene_output, null);
 }
 

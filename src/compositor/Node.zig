@@ -43,6 +43,13 @@ floating: [max_nodes]bool = [_]bool{false} ** max_nodes,
 scene_tree: [max_nodes]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** max_nodes,
 xdg_toplevel: [max_nodes]?*wlr.wlr_xdg_toplevel = [_]?*wlr.wlr_xdg_toplevel{null} ** max_nodes,
 
+// Identity: touched on MCP queries, name lookups, config rule matching
+name: [max_nodes][32]u8 = [_][32]u8{[_]u8{0} ** 32} ** max_nodes,
+name_len: [max_nodes]u8 = [_]u8{0} ** max_nodes,
+group_id: [max_nodes]u8 = [_]u8{0} ** max_nodes, // 0=none, 1-255=group index
+app_id: [max_nodes][64]u8 = [_][64]u8{[_]u8{0} ** 64} ** max_nodes,
+app_id_len: [max_nodes]u8 = [_]u8{0} ** max_nodes,
+
 // Bookkeeping
 count: u16 = 0,
 
@@ -61,6 +68,9 @@ pub fn addSurface(self: *Node, id: u64, ws: u8, toplevel: ?*wlr.wlr_xdg_toplevel
     self.width[slot] = 0;
     self.height[slot] = 0;
     self.floating[slot] = false;
+    self.name_len[slot] = 0;
+    self.group_id[slot] = 0;
+    self.app_id_len[slot] = 0;
     self.count += 1;
     return slot;
 }
@@ -78,6 +88,9 @@ pub fn addTerminal(self: *Node, id: u64, ws: u8) ?u16 {
     self.width[slot] = 0;
     self.height[slot] = 0;
     self.floating[slot] = false;
+    self.name_len[slot] = 0;
+    self.group_id[slot] = 0;
+    self.app_id_len[slot] = 0;
     self.count += 1;
     return slot;
 }
@@ -91,6 +104,9 @@ pub fn remove(self: *Node, id: u64) bool {
             self.scene_tree[i] = null;
             self.xdg_toplevel[i] = null;
             self.floating[i] = false;
+            self.name_len[i] = 0;
+            self.group_id[i] = 0;
+            self.app_id_len[i] = 0;
             self.count -= 1;
             return true;
         }
@@ -149,6 +165,47 @@ pub fn countInWorkspace(self: *const Node, ws: u8) u16 {
         if (self.kind[i] != .empty and self.workspace[i] == ws) n += 1;
     }
     return n;
+}
+
+// ── Name & Identity ───────────────────────────────────────────
+
+/// Assign a human-readable name to a node (max 31 chars).
+pub fn setName(self: *Node, slot: u16, n: []const u8) void {
+    const len = @min(n.len, 31);
+    @memcpy(self.name[slot][0..len], n[0..len]);
+    self.name[slot][len] = 0;
+    self.name_len[slot] = @intCast(len);
+}
+
+/// Get a node's name (empty slice if unnamed).
+pub fn getName(self: *const Node, slot: u16) []const u8 {
+    return self.name[slot][0..self.name_len[slot]];
+}
+
+/// Store a Wayland app_id for a node.
+pub fn setAppId(self: *Node, slot: u16, aid: []const u8) void {
+    const len = @min(aid.len, 63);
+    @memcpy(self.app_id[slot][0..len], aid[0..len]);
+    self.app_id[slot][len] = 0;
+    self.app_id_len[slot] = @intCast(len);
+}
+
+/// Get a node's app_id (empty slice if none).
+pub fn getAppId(self: *const Node, slot: u16) []const u8 {
+    return self.app_id[slot][0..self.app_id_len[slot]];
+}
+
+/// Find a node by name. If workspace is non-null, only search that workspace.
+pub fn findByName(self: *const Node, n: []const u8, ws: ?u8) ?u16 {
+    if (n.len == 0) return null;
+    for (0..max_nodes) |i| {
+        if (self.kind[i] == .empty) continue;
+        if (ws) |w| { if (self.workspace[i] != w) continue; }
+        if (self.name_len[i] == n.len and std.mem.eql(u8, self.name[i][0..self.name_len[i]], n)) {
+            return @intCast(i);
+        }
+    }
+    return null;
 }
 
 // ── Internal ───────────────────────────────────────────────────
@@ -214,6 +271,34 @@ test "countInWorkspace" {
     try std.testing.expectEqual(@as(u16, 2), reg.countInWorkspace(0));
     try std.testing.expectEqual(@as(u16, 1), reg.countInWorkspace(1));
     try std.testing.expectEqual(@as(u16, 0), reg.countInWorkspace(5));
+}
+
+test "setName and findByName" {
+    var reg = Node{};
+    const s1 = reg.addTerminal(1, 0).?;
+    const s2 = reg.addTerminal(2, 0).?;
+    const s3 = reg.addTerminal(3, 1).?;
+
+    reg.setName(s1, "editor");
+    reg.setName(s2, "terminal");
+    reg.setName(s3, "browser");
+
+    try std.testing.expect(std.mem.eql(u8, "editor", reg.getName(s1)));
+    try std.testing.expect(std.mem.eql(u8, "terminal", reg.getName(s2)));
+    try std.testing.expect(std.mem.eql(u8, "browser", reg.getName(s3)));
+
+    // Find by name (any workspace)
+    try std.testing.expectEqual(@as(?u16, s1), reg.findByName("editor", null));
+    try std.testing.expectEqual(@as(?u16, s3), reg.findByName("browser", null));
+    try std.testing.expectEqual(@as(?u16, null), reg.findByName("nonexistent", null));
+
+    // Find by name (specific workspace)
+    try std.testing.expectEqual(@as(?u16, s1), reg.findByName("editor", 0));
+    try std.testing.expectEqual(@as(?u16, null), reg.findByName("browser", 0)); // browser is on ws 1
+    try std.testing.expectEqual(@as(?u16, s3), reg.findByName("browser", 1));
+
+    // Empty name
+    try std.testing.expectEqual(@as(?u16, null), reg.findByName("", null));
 }
 
 test "max capacity" {
