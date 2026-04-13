@@ -105,6 +105,40 @@ the MCP SDK's stdio convention), run `teru --mcp-server` as a subprocess.
 It proxies stdin/stdout line-JSON to a running teru's socket. The legacy
 flag `--mcp-bridge` is kept as an alias for older `.mcp.json` files.
 
+### Cross-MCP forwarding (v0.4.19)
+
+Since v0.4.19, **teru's MCP transparently forwards `teruwm_*` tools**
+to the running teruwm compositor's socket. Agents see one unified
+45-tool surface regardless of which binary they're connected to:
+
+```
+agent ──→ teru-mcp-$PID.sock
+           │
+           ├── teru_list_panes     (local dispatch)
+           ├── teru_send_input     (local)
+           │     …
+           └── teruwm_list_windows ──forward──→ teru-wmmcp-*.sock
+                                                 │
+                                                 └── compositor handles
+```
+
+The forwarding is transparent at every transport: the line-JSON
+socket, the `--mcp-server` stdio proxy, and the in-band OSC 9999
+path (below) all get the same unified surface. Set
+`TERU_WMMCP_SOCKET=/path/to/sock` to pin a specific teruwm instance
+when multiple run on the same host.
+
+`tools/list` today returns only teru's 19 tools — the forwarded
+tools aren't merged into the listing. Clients that want the full
+surface should also query teruwm's socket directly for its
+`tools/list`, or rely on documentation (this file). Unified
+`tools/list` across servers is a future enhancement.
+
+If no teruwm is running, a `teruwm_*` call returns error code
+`-32002` with message "teruwm not running or socket unreachable" —
+callers can treat that as "WM not present, skip." Local `teru_*`
+calls are unaffected.
+
 ### Alternative transport: in-band OSC 9999 (inside a teru pane)
 
 An agent running *inside* a teru pane can call tools through the PTY it's
