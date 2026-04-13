@@ -158,6 +158,11 @@ pub extern "c" fn miozu_xdg_toplevel_from_surface(s: *wlr_surface) callconv(.c) 
 /// and wlr_seat_pointer_notify_enter asserts on a freed resource.
 pub extern "c" fn miozu_surface_is_live(s: *wlr_surface) callconv(.c) c_int;
 
+/// True iff the scene node is a `WLR_SCENE_NODE_BUFFER`.
+/// `wlr_scene_buffer_from_node` *asserts* on any other node type — must
+/// pre-filter since `wlr_scene_node_at` returns rects / trees too.
+pub extern "c" fn miozu_scene_node_is_buffer(n: *wlr_scene_node) callconv(.c) c_int;
+
 // ── wlroots cursor ────────────────────────────────────────────
 
 pub extern "wlroots-0.18" fn wlr_cursor_create() callconv(.c) ?*wlr_cursor;

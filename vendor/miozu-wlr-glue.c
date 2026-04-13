@@ -477,3 +477,11 @@ struct wlr_xdg_toplevel *miozu_xdg_toplevel_from_surface(struct wlr_surface *s) 
 int miozu_surface_is_live(struct wlr_surface *s) {
     return s && s->resource && s->mapped;
 }
+
+/* wlr_scene_buffer_from_node asserts node->type == WLR_SCENE_NODE_BUFFER
+ * — passing a TREE or RECT node crashes the compositor. scene_node_at
+ * happily returns any visible node type (e.g. the bg_rect we create at
+ * output init), so callers must pre-filter. */
+int miozu_scene_node_is_buffer(struct wlr_scene_node *n) {
+    return n && n->type == WLR_SCENE_NODE_BUFFER;
+}
