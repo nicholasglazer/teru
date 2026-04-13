@@ -29,7 +29,7 @@ zig build run -- --raw                # run debug teru (TTY mode)
 - `src/config/` — Config parser, `Keybinds.zig` (configurable), `ConfigWatcher.zig` (inotify/kqueue/poll), `themes.zig`
 - `src/render/` — `software.zig` (SIMD renderer), `FontAtlas.zig` (stb_truetype), `BarRenderer.zig` (shared), `BarWidget.zig`, `PushWidget.zig`
 - `src/platform/` — X11 (XCB) + Wayland (xdg-shell) + AppKit + Win32; keyboard translation per OS
-- `src/compositor/` — **teruwm only.** `main.zig`, `Server.zig`, `Bar.zig`, `TerminalPane.zig`, `XdgView.zig`, `XwaylandView.zig`, `WmMcpServer.zig` (24 tools), `WmConfig.zig`, `Node.zig`, wlroots `wlr.zig` bindings, `miozu-wlr-glue.c`
+- `src/compositor/` — **teruwm only.** `main.zig`, `Server.zig`, `Bar.zig`, `TerminalPane.zig`, `XdgView.zig`, `XwaylandView.zig`, `WmMcpServer.zig` (26 tools), `WmConfig.zig`, `Node.zig`, wlroots `wlr.zig` bindings, `miozu-wlr-glue.c`
 - `src/compat.zig` — `monotonicNow`, `sleepNs`, `getPid`, `getUid`, `posixFork`, `forkExec`, `MemWriter/MemReader`
 - `tools/bench.zig` — vtebench payload throughput harness (zig build bench)
 
@@ -37,10 +37,10 @@ Map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## MCP
 
-Two servers. 43 tools total.
+Two servers. 45 tools total.
 
 - **teru agent** (`src/agent/McpServer.zig`) — 19 tools, socket `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock`
-- **teruwm compositor** (`src/compositor/WmMcpServer.zig`) — 24 tools, socket `$XDG_RUNTIME_DIR/teru-wmmcp-$PID.sock`
+- **teruwm compositor** (`src/compositor/WmMcpServer.zig`) — 26 tools + event push channel, sockets `$XDG_RUNTIME_DIR/teru-wmmcp-$PID.sock` (requests) and `teru-wmmcp-events-$PID.sock` (events)
 
 Reference: [docs/MCP-API.md](docs/MCP-API.md).
 
@@ -82,7 +82,7 @@ series.
 - [docs/INSTALLING.md](docs/INSTALLING.md) — per-platform install + teruwm TTY caveat
 - [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md) — every default keybind for both binaries
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — teru.conf, teruwm/config, widgets, thresholds, rules
-- [docs/MCP-API.md](docs/MCP-API.md) — all 43 tools with schemas + examples
+- [docs/MCP-API.md](docs/MCP-API.md) — all 45 tools with schemas + examples
 - [docs/AI-INTEGRATION.md](docs/AI-INTEGRATION.md) — CustomPaneBackend, push widgets, OSC 9999, .tsess templates
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module map, rendering pipeline, hot-restart, gap arithmetic
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — methodology + numbers, explicitly-not-measured items

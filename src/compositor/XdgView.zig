@@ -94,6 +94,12 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     // Add to tiling engine workspace
     server.layout_engine.workspaces[ws].addNode(server.zig_allocator, view.node_id) catch return;
 
+    server.emitMcpEventKind(
+        "window_mapped",
+        ",\"node_id\":{d},\"workspace\":{d}",
+        .{ view.node_id, ws },
+    );
+
     std.debug.print("teruwm: surface mapped app_id='{s}' node={d} ws={d}\n", .{
         app_id orelse "none",
         view.node_id,

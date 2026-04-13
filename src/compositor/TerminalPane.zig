@@ -26,12 +26,6 @@ scene_buffer: *wlr.wlr_scene_buffer,
 node_id: u64,
 event_source: ?*wlr.wl_event_source = null,
 read_buf: [8192]u8 = undefined,
-/// Current on-screen position. Authoritative for screenshot compositing;
-/// the scene graph also holds this but isn't queryable from the Server
-/// screenshot path without ABI-specific glue. Kept in sync by
-/// setPosition().
-pos_x: i32 = 0,
-pos_y: i32 = 0,
 
 // ── Construction ───────────────────────────────────────────────
 
@@ -342,8 +336,6 @@ pub fn setVisible(self: *TerminalPane, visible: bool) void {
 }
 
 pub fn setPosition(self: *TerminalPane, x: i32, y: i32) void {
-    self.pos_x = x;
-    self.pos_y = y;
     if (wlr.miozu_scene_buffer_node(self.scene_buffer)) |node| {
         wlr.wlr_scene_node_set_position(node, x, y);
     }

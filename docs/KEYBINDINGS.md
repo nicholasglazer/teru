@@ -66,17 +66,33 @@ layouts: `master-stack`, `grid`, `monocle`, `dishes`, `spiral`, `three-col`,
 
 ## Scratchpads (teruwm)
 
-Nine floating terminal panes, independent of any workspace. Useful for
-always-available scratch shells — the pane holds its state when
-toggled off.
+Named floating panes with stable identity, modeled after xmonad's
+`NamedScratchpad`. A scratchpad parks on a hidden-workspace sentinel
+when toggled off and moves onto the focused workspace when toggled
+on. Since v0.4.18 scratchpads live in the node registry — they're
+visible to `teruwm_list_windows`, composited at the correct z-order
+by screenshots, and survive hot-restart.
 
 | Key | Action |
 |-----|--------|
-| `Alt+RAlt+1` … `Alt+RAlt+9` | Toggle scratchpad 1–9 (create on first call; show/hide thereafter) |
+| `Alt+RAlt+1` … `Alt+RAlt+9` | Toggle numbered scratchpad 1–9. Compat shim — delegates to named `pad1`..`pad9`. |
 
-The chord is explicitly Alt + Right-Alt + digit: both Alt keys must be
-held. This avoids collision with the single-Alt or single-Super
-workspace shortcuts.
+**MCP:** `teruwm_scratchpad { name }` — toggle a scratchpad by name.
+First call spawns a floating terminal tagged with `name`; subsequent
+calls flip visibility or migrate between workspaces (xmonad follow-me).
+
+```sh
+# Two independent scratchpads kept warm across a session:
+grim /tmp/before.png
+teruwm_scratchpad name=term      # spawn + show
+teruwm_scratchpad name=notes     # spawn + show a second one
+teruwm_scratchpad name=term      # hide 'term'; 'notes' stays
+teruwm_scratchpad name=term      # show 'term' again
+```
+
+The `Alt+RAlt+N` chord is explicitly Alt + Right-Alt + digit: both
+Alt keys must be held. This avoids collision with the single-Alt or
+single-Super workspace shortcuts.
 
 ## UI / compositor (teruwm)
 

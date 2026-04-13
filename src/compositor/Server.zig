@@ -81,10 +81,6 @@ fullscreen_node: ?u64 = null,
 fullscreen_prev_bar_top: bool = true,
 fullscreen_prev_bar_bottom: bool = false,
 
-// Scratchpads: 9 floating terminal panes (Alt+RAlt+1-9)
-scratchpads: [9]?*TerminalPane = [_]?*TerminalPane{null} ** 9,
-scratchpad_visible: [9]bool = [_]bool{false} ** 9,
-
 // Mouse move/resize state for floating windows
 cursor_mode: CursorMode = .normal,
 grab_node_id: ?u64 = null,
@@ -626,7 +622,10 @@ fn handleXdgActivation(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.
     }
 
     if (server.nodes.markUrgent(slot)) {
-        std.debug.print("teruwm: urgent node={d} ws={d}\n", .{ server.nodes.node_id[slot], server.nodes.workspace[slot] });
+        const nid = server.nodes.node_id[slot];
+        const ws = server.nodes.workspace[slot];
+        std.debug.print("teruwm: urgent node={d} ws={d}\n", .{ nid, ws });
+        server.emitMcpEventKind("urgent", ",\"node_id\":{d},\"workspace\":{d}", .{ nid, ws });
         if (server.bar) |b| b.render(server);
         if (server.primary_output) |out| wlr.wlr_output_schedule_frame(out);
     }
@@ -1308,6 +1307,7 @@ pub fn executeAction(self: *Server, action: KBAction) bool {
         self.arrangeworkspace(ws);
         self.updateFocusedTerminal();
         self.maybeFireWorkspaceStartup(ws);
+        self.emitMcpEventKind("workspace_switched", ",\"from\":{d},\"to\":{d}", .{ old_ws, ws });
         if (self.bar) |b| b.render(self);
         return true;
     }
@@ -1780,9 +1780,10 @@ pub fn focusView(self: *Server, view: *XdgView) void {
     self.focused_view = view;
     self.focused_terminal = null;
 
-    // Clear urgency on focus gain
+    // Clear urgency on focus gain + emit focus_changed
     if (self.nodes.findByToplevel(view.toplevel)) |slot| {
         _ = self.nodes.clearUrgent(slot);
+        self.emitMcpEventKind("focus_changed", ",\"node_id\":{d}", .{self.nodes.node_id[slot]});
     }
 
     // Send keyboard focus to the surface
@@ -2088,60 +2089,167 @@ fn toggleFullscreen(self: *Server) void {
     std.debug.print("teruwm: fullscreen on node={d}\n", .{tp.node_id});
 }
 
-// ── Scratchpads ───────────────────────────────────────────────
+// ── Scratchpads (xmonad NamedScratchpad model) ────────────────
+//
+// A scratchpad is a regular pane with a stable string identity and
+// floating placement. Its NodeRegistry slot's workspace toggles
+// between NodeRegistry.HIDDEN_WS (parked, not rendered) and the
+// currently-focused workspace (visible, floating on top). Zero
+// parallel data structures — lookup is findByScratchpad(name).
+//
+// xmonad equivalent: NamedScratchpad with (name, spawn, query, hook).
+//   name   → node's scratchpad_name
+//   spawn  → a default shell today; future: WmConfig.scratchpads[name] cmd
+//   query  → findByScratchpad(name) replaces class/title matching
+//   hook   → per-scratchpad rect from WmConfig (future) or default 35×40% center
 
-/// Toggle a numbered scratchpad (0-8, mapped from keys 1-9).
-/// Creates the terminal pane on first toggle. Subsequent toggles show/hide.
-/// Scratchpads are floating — not part of workspace tiling.
-pub fn toggleScratchpad(self: *Server, index: u8) void {
-    if (index >= 9) return;
+/// Toggle a named scratchpad. Semantics match xmonad's namedScratchpadAction:
+///   (a) no such scratchpad     → spawn a floating terminal, tag it, show it
+///   (b) hidden (HIDDEN_WS)      → promote to active workspace
+///   (c) on active workspace    → demote to HIDDEN_WS
+///   (d) on another workspace   → migrate to active workspace (follow-me)
+///
+/// `default_cmd` is reserved for future per-scratchpad spawn commands
+/// (chromium, firefox, etc.); ignored for now — scratchpads spawn the
+/// user's shell. See docs/AI-INTEGRATION.md for the MCP surface.
+pub fn toggleScratchpadByName(self: *Server, name: []const u8, default_cmd: ?[]const u8) void {
+    _ = default_cmd; // reserved — see doc above
+    if (name.len == 0 or name.len >= NodeRegistry.max_scratchpad_name) return;
+    const active_ws = self.layout_engine.active_workspace;
 
-    // Create on first use
-    if (self.scratchpads[index] == null) {
-        // 3x3 grid positions (same as XMonad config)
-        const positions = [9][2]f32{
-            .{ 0.1, 0.1 }, .{ 0.3, 0.1 }, .{ 0.5, 0.1 },
-            .{ 0.1, 0.3 }, .{ 0.3, 0.3 }, .{ 0.5, 0.3 },
-            .{ 0.1, 0.5 }, .{ 0.3, 0.5 }, .{ 0.5, 0.5 },
-        };
-        const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
-        const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
-        const sp_w: u32 = out_w * 35 / 100; // 35% width
-        const sp_h: u32 = out_h * 40 / 100; // 40% height
-        const cell_w: u32 = if (self.font_atlas) |fa| fa.cell_width else 8;
-        const cell_h: u32 = if (self.font_atlas) |fa| fa.cell_height else 16;
-        const cols: u16 = @intCast(@max(1, sp_w / cell_w));
-        const rows: u16 = @intCast(@max(1, sp_h / cell_h));
-
-        // Create scratchpad terminal (not added to any workspace's tiling)
-        const tp = TerminalPane.createFloating(self, rows, cols) orelse return;
-        self.scratchpads[index] = tp;
-
-        // Position it (goes through setPosition so tp.pos_x/y stay in sync
-        // — the screenshot compositor reads them directly).
-        const pos_x: i32 = @intFromFloat(positions[index][0] * @as(f32, @floatFromInt(out_w)));
-        const pos_y: i32 = @intFromFloat(positions[index][1] * @as(f32, @floatFromInt(out_h)));
-        tp.setPosition(pos_x, pos_y);
-
-        self.scratchpad_visible[index] = true;
-        self.focused_terminal = tp;
-        self.focused_view = null;
-        std.debug.print("teruwm: scratchpad {d} created\n", .{index + 1});
+    if (self.nodes.findByScratchpad(name)) |slot| {
+        const on_ws = self.nodes.workspace[slot];
+        if (on_ws == NodeRegistry.HIDDEN_WS) {
+            self.showScratchpad(slot, active_ws);
+        } else if (on_ws == active_ws) {
+            self.hideScratchpad(slot);
+        } else {
+            // Follow-me: migrate across workspaces.
+            self.nodes.workspace[slot] = active_ws;
+            self.showScratchpad(slot, active_ws);
+        }
         return;
     }
 
-    // Toggle visibility
-    self.scratchpad_visible[index] = !self.scratchpad_visible[index];
-    if (self.scratchpads[index]) |tp| {
-        if (wlr.miozu_scene_buffer_node(tp.scene_buffer)) |node| {
-            wlr.wlr_scene_node_set_enabled(node, self.scratchpad_visible[index]);
-        }
-        if (self.scratchpad_visible[index]) {
-            self.focused_terminal = tp;
-            self.focused_view = null;
-            tp.render(); // re-render in case content changed while hidden
+    // Spawn + register + show
+    _ = self.spawnScratchpadTerminal(name, active_ws);
+}
+
+/// Parked scratchpad slot → make it visible on workspace `ws` and focus.
+fn showScratchpad(self: *Server, slot: u16, ws: u8) void {
+    self.nodes.workspace[slot] = ws;
+    // Position: centered 35×40% rect on the primary output. Scratchpad
+    // users expect consistent placement across shows.
+    const rect = self.defaultScratchpadRect();
+    self.nodes.applyRect(slot, rect.x, rect.y, rect.w, rect.h);
+
+    if (self.nodes.kind[slot] == .terminal) {
+        const nid = self.nodes.node_id[slot];
+        for (self.terminal_panes) |maybe_tp| {
+            if (maybe_tp) |tp| {
+                if (tp.node_id == nid) {
+                    tp.setVisible(true);
+                    tp.resize(rect.w, rect.h);
+                    tp.setPosition(rect.x, rect.y);
+                    self.focused_terminal = tp;
+                    self.focused_view = null;
+                    tp.render();
+                    break;
+                }
+            }
         }
     }
+}
+
+fn hideScratchpad(self: *Server, slot: u16) void {
+    self.nodes.workspace[slot] = NodeRegistry.HIDDEN_WS;
+    if (self.nodes.kind[slot] == .terminal) {
+        const nid = self.nodes.node_id[slot];
+        for (self.terminal_panes) |maybe_tp| {
+            if (maybe_tp) |tp| {
+                if (tp.node_id == nid) {
+                    tp.setVisible(false);
+                    if (self.focused_terminal == tp) self.focused_terminal = null;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Spawn a fresh scratchpad terminal tagged `name`, registered as
+/// floating on `ws`, and focus it. Returns the slot, or null on
+/// allocation failure (the pane is torn down cleanly in that case).
+fn spawnScratchpadTerminal(self: *Server, name: []const u8, ws: u8) ?u16 {
+    const rect = self.defaultScratchpadRect();
+    const cell_w: u32 = if (self.font_atlas) |fa| fa.cell_width else 8;
+    const cell_h: u32 = if (self.font_atlas) |fa| fa.cell_height else 16;
+    const cols: u16 = @intCast(@max(1, rect.w / cell_w));
+    const rows: u16 = @intCast(@max(1, rect.h / cell_h));
+
+    const tp = TerminalPane.createFloating(self, rows, cols) orelse return null;
+
+    // Register in NodeRegistry — unlike the pre-0.4.18 path that used
+    // Server.scratchpads[] as a side channel. Being in the registry
+    // means list_windows sees it, screenshot paths handle it via the
+    // normal floating walk, and hot-restart can serialize it.
+    const slot = self.nodes.addTerminal(tp.node_id, ws) orelse {
+        tp.deinit(self.zig_allocator);
+        self.zig_allocator.destroy(tp);
+        return null;
+    };
+    self.nodes.floating[slot] = true;
+    self.nodes.setScratchpad(slot, name);
+    var auto_name_buf: [max_auto_name_len]u8 = undefined;
+    const auto_name = std.fmt.bufPrint(&auto_name_buf, "scratch-{s}", .{name}) catch "scratch";
+    self.nodes.setName(slot, auto_name);
+
+    tp.setPosition(rect.x, rect.y);
+    self.nodes.applyRect(slot, rect.x, rect.y, rect.w, rect.h);
+
+    // Add to terminal_panes so the PTY reader iterates it.
+    for (&self.terminal_panes) |*p_slot| {
+        if (p_slot.* == null) {
+            p_slot.* = tp;
+            self.terminal_count += 1;
+            break;
+        }
+    }
+
+    self.focused_terminal = tp;
+    self.focused_view = null;
+    std.debug.print("teruwm: scratchpad '{s}' spawned on ws={d}\n", .{ name, ws });
+    return slot;
+}
+
+const max_auto_name_len = 32;
+const ScratchRect = struct { x: i32, y: i32, w: u32, h: u32 };
+
+/// Default floating rect for a newly-toggled scratchpad: 35% wide,
+/// 40% tall, centered on the primary output. Future: per-name
+/// overrides from `[scratchpads]` config.
+fn defaultScratchpadRect(self: *const Server) ScratchRect {
+    const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
+    const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
+    const w: u32 = out_w * 35 / 100;
+    const h: u32 = out_h * 40 / 100;
+    return .{
+        .x = @intCast((out_w - w) / 2),
+        .y = @intCast((out_h - h) / 2),
+        .w = w,
+        .h = h,
+    };
+}
+
+/// Compatibility shim: pre-0.4.18 numbered scratchpads (`Alt+RAlt+N`)
+/// map to named scratchpads `pad1`..`pad9`. The old 3×3-grid layout
+/// isn't preserved — users who want consistent placement should use
+/// named scratchpads directly via `teruwm_scratchpad`.
+pub fn toggleScratchpad(self: *Server, index: u8) void {
+    if (index >= 9) return;
+    var name_buf: [8]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "pad{d}", .{index + 1}) catch return;
+    self.toggleScratchpadByName(name, null);
 }
 
 // ── Terminal lifecycle ─────────────────────────────────────────
@@ -2248,25 +2356,14 @@ pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
         wlr.wlr_scene_node_set_enabled(node, false);
     }
 
-    // Remove from terminal_panes array
-    var found_in_tiled = false;
+    // Remove from terminal_panes array. Scratchpads since v0.4.18 live
+    // here too (they're regular panes with a scratchpad_name tag) —
+    // single loop covers both cases.
     for (&self.terminal_panes) |*slot| {
         if (slot.* == tp) {
             slot.* = null;
             self.terminal_count -= 1;
-            found_in_tiled = true;
             break;
-        }
-    }
-
-    // Also check scratchpads
-    if (!found_in_tiled) {
-        for (&self.scratchpads, 0..) |*slot, i| {
-            if (slot.* == tp) {
-                slot.* = null;
-                self.scratchpad_visible[i] = false;
-                break;
-            }
         }
     }
 
@@ -2312,6 +2409,7 @@ pub fn updateFocusedTerminal(self: *Server) void {
     if (self.nodes.findById(active_id)) |slot| {
         _ = self.nodes.clearUrgent(slot);
     }
+    self.emitMcpEventKind("focus_changed", ",\"node_id\":{d}", .{active_id});
 
     self.applyFocusOpacity();
 
@@ -2320,6 +2418,17 @@ pub fn updateFocusedTerminal(self: *Server) void {
         if (maybe_tp) |tp| tp.render();
     }
     if (self.bar) |b| b.render(self);
+}
+
+// ── MCP event emission (v0.4.18) ─────────────────────────────
+//
+// Thin convenience forwarder — every call site uses the same pattern
+// (has an event subscriber? push one JSON line). Keeping the shape
+// centralized here means future events get one place to edit, not a
+// dozen inlined writes.
+
+pub fn emitMcpEventKind(self: *Server, kind: []const u8, comptime fmt: []const u8, args: anytype) void {
+    if (self.wm_mcp) |mcp| mcp.emitEventKind(kind, fmt, args);
 }
 
 /// DynamicProjects (v0.4.17). If the workspace we're switching into
@@ -2452,20 +2561,9 @@ pub fn takeScreenshotToPath(self: *Server, path: []const u8) bool {
         }
     }
 
-    // Also composite scratchpads (always floating, always on top when visible).
-    // Scratchpads aren't in the NodeRegistry; read position from the pane
-    // itself (kept current by setPosition).
-    for (&self.scratchpads, 0..) |maybe_tp, i| {
-        if (!self.scratchpad_visible[i]) continue;
-        if (maybe_tp) |tp| {
-            tp.render();
-            blitRect(
-                pixels, out_w, out_h,
-                tp.renderer.framebuffer, tp.renderer.width, tp.renderer.height,
-                tp.pos_x, tp.pos_y,
-            );
-        }
-    }
+    // Scratchpads are now in the NodeRegistry with floating=true (v0.4.18),
+    // so the two-pass walk above already composited them at the correct
+    // z-order. No dedicated third pass needed.
 
     // Composite top bar
     if (self.bar) |b| {
