@@ -35,6 +35,40 @@ pub fn findTeruwmSocket() ?[]const u8 {
     return scanRuntimeDir();
 }
 
+/// Look up the teruwm event-subscriber socket (paired with the MCP
+/// request socket; pushes newline-delimited JSON). Agents that want a
+/// unified event stream subscribe to both teru's events socket and
+/// this one. Returns null when teruwm isn't running.
+var discovered_events_path: [256]u8 = undefined;
+pub fn findTeruwmEventsSocket() ?[]const u8 {
+    if (std.c.getenv("TERU_WMMCP_EVENTS_SOCKET")) |env| {
+        return std.mem.sliceTo(env, 0);
+    }
+    if (builtin.os.tag == .windows) return null;
+
+    const uid = std.c.getuid();
+    var dir_buf: [128]u8 = undefined;
+    const dir_path: []const u8 = if (std.c.getenv("XDG_RUNTIME_DIR")) |env|
+        std.mem.sliceTo(env, 0)
+    else
+        std.fmt.bufPrint(&dir_buf, "/run/user/{d}", .{uid}) catch return null;
+
+    var z_buf: [128]u8 = undefined;
+    const dir_z = std.fmt.bufPrintZ(&z_buf, "{s}", .{dir_path}) catch return null;
+    const dir = std.c.opendir(dir_z.ptr) orelse return null;
+    defer _ = std.c.closedir(dir);
+
+    while (std.c.readdir(dir)) |ent| {
+        const name_ptr: [*:0]const u8 = @ptrCast(&ent.*.name);
+        const name = std.mem.sliceTo(name_ptr, 0);
+        if (!std.mem.startsWith(u8, name, "teru-wmmcp-events-")) continue;
+        if (!std.mem.endsWith(u8, name, ".sock")) continue;
+        const full = std.fmt.bufPrint(&discovered_events_path, "{s}/{s}", .{ dir_path, name }) catch continue;
+        return full;
+    }
+    return null;
+}
+
 fn scanRuntimeDir() ?[]const u8 {
     if (builtin.os.tag == .windows) return null;
 

@@ -105,6 +105,56 @@ the MCP SDK's stdio convention), run `teru --mcp-server` as a subprocess.
 It proxies stdin/stdout line-JSON to a running teru's socket. The legacy
 flag `--mcp-bridge` is kept as an alias for older `.mcp.json` files.
 
+### Unified event subscription (v0.4.21)
+
+Both servers push newline-delimited JSON events on companion sockets.
+`teru_subscribe_events` (on the teru side) returns a single
+`{teru, teruwm}` object with both paths — agents connect once and
+read from both. `teruwm_subscribe_events` (on the teruwm side)
+returns just teruwm's path.
+
+```sh
+$ teru-query teru_subscribe_events
+{"teru":"/run/user/1000/teru-mcp-events-12345.sock",
+ "teruwm":"/run/user/1000/teru-wmmcp-events-67890.sock"}
+```
+
+Minimum consumer:
+
+```python
+import json, os, select, socket
+
+paths = call_mcp("teru_subscribe_events")
+sockets = []
+for key in ("teru", "teruwm"):
+    path = paths.get(key)
+    if not path: continue
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(path)
+    s.setblocking(False)
+    sockets.append((key, s))
+
+# Multiplex both channels.
+bufs = {s.fileno(): b"" for _, s in sockets}
+fdmap = {s.fileno(): (label, s) for label, s in sockets}
+while True:
+    ready, _, _ = select.select(list(fdmap), [], [])
+    for fd in ready:
+        label, s = fdmap[fd]
+        data = s.recv(65536)
+        if not data:
+            del fdmap[fd]; continue
+        bufs[fd] += data
+        while b"\n" in bufs[fd]:
+            line, _, bufs[fd] = bufs[fd].partition(b"\n")
+            ev = json.loads(line)
+            ev["_source"] = label
+            handle(ev)
+```
+
+Override discovery with `TERU_WMMCP_EVENTS_SOCKET`. Events are
+best-effort (O_NONBLOCK on the server side); slow consumers drop.
+
 ### Cross-MCP forwarding (v0.4.19)
 
 Since v0.4.19, **teru's MCP transparently forwards `teruwm_*` tools**
