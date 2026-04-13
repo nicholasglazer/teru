@@ -127,6 +127,16 @@ pub fn removeNode(self: *Workspace, id: u64) void {
     } else if (self.active_index >= self.node_ids.items.len) {
         self.active_index = self.node_ids.items.len - 1;
     }
+    // Clear active_node if it pointed at the removed id. Otherwise callers
+    // like Server.updateFocusedTerminal read a stale id and look up a
+    // heap-freed pane pointer — the exact pattern that crashed teruwm
+    // when closing the last pane (coredump 288163).
+    if (self.active_node) |nid| if (nid == id) {
+        self.active_node = null;
+    };
+    if (self.master_id) |mid| if (mid == id) {
+        self.master_id = null;
+    };
     // Auto-select layout only when no per-workspace layout list is configured
     if (self.layout_count == 0) {
         self.layout = autoSelectLayout(self.node_ids.items.len);

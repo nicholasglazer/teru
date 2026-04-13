@@ -21,6 +21,7 @@ pub const McpServer = @import("agent/McpServer.zig");
 pub const McpDispatch = @import("agent/McpDispatch.zig");
 pub const McpBridge = @import("agent/McpBridge.zig");
 pub const in_band = @import("agent/in_band.zig");
+pub const forward = @import("agent/forward.zig");
 pub const PaneBackend = @import("agent/PaneBackend.zig");
 pub const HookListener = @import("agent/HookListener.zig");
 pub const Terminal = @import("core/Terminal.zig");
@@ -63,6 +64,7 @@ test {
     _ = McpDispatch;
     _ = McpBridge;
     _ = in_band;
+    _ = forward;
     _ = PaneBackend;
     _ = HookListener;
     _ = Terminal;

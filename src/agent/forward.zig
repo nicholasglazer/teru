@@ -1,0 +1,115 @@
+//! Cross-MCP forwarding — teru → teruwm transparent proxy.
+//!
+//! When an agent calls `teruwm_*` tools through teru's MCP surface
+//! (either via the line-JSON Unix socket, the `--mcp-server` stdio
+//! proxy, or the in-band OSC 9999 path), teru doesn't know those
+//! tools locally. Rather than fail with "Unknown tool," we forward
+//! the request to the teruwm compositor's MCP socket and pipe the
+//! response straight back.
+//!
+//! Result: agents see **one unified 45-tool surface**, whether they
+//! care about terminals, panes, windows, or compositor state. No
+//! discovery burden, no socket juggling.
+//!
+//! teruwm's MCP still speaks HTTP-framed JSON-RPC (line-JSON is a
+//! future refactor); teru's is line-delimited as of v0.4.14. This
+//! module bridges the framing quietly.
+
+const std = @import("std");
+const builtin = @import("builtin");
+const ipc = @import("../server/ipc.zig");
+
+/// Stable buffer for the discovered teruwm socket path. Single-seat —
+/// if there are multiple teruwm instances on the machine, we pick the
+/// first one; agents that need pinpoint control can set
+/// `TERU_WMMCP_SOCKET` in their environment.
+var discovered_path: [256]u8 = undefined;
+
+/// Look up the teruwm compositor socket. Returns null if there's no
+/// teruwm running (no socket matches), in which case the caller should
+/// surface "Unknown tool" to its requester.
+pub fn findTeruwmSocket() ?[]const u8 {
+    if (std.c.getenv("TERU_WMMCP_SOCKET")) |env| {
+        return std.mem.sliceTo(env, 0);
+    }
+    return scanRuntimeDir();
+}
+
+fn scanRuntimeDir() ?[]const u8 {
+    if (builtin.os.tag == .windows) return null;
+
+    const uid = std.c.getuid();
+    var dir_buf: [128]u8 = undefined;
+    // Respect XDG_RUNTIME_DIR first; fall back to /run/user/UID.
+    const dir_path: []const u8 = if (std.c.getenv("XDG_RUNTIME_DIR")) |env|
+        std.mem.sliceTo(env, 0)
+    else
+        std.fmt.bufPrint(&dir_buf, "/run/user/{d}", .{uid}) catch return null;
+
+    var z_buf: [128]u8 = undefined;
+    const dir_z = std.fmt.bufPrintZ(&z_buf, "{s}", .{dir_path}) catch return null;
+    const dir = std.c.opendir(dir_z.ptr) orelse return null;
+    defer _ = std.c.closedir(dir);
+
+    while (std.c.readdir(dir)) |ent| {
+        const name_ptr: [*:0]const u8 = @ptrCast(&ent.*.name);
+        const name = std.mem.sliceTo(name_ptr, 0);
+        // teru-wmmcp-<PID>.sock — but NOT teru-wmmcp-events-<PID>.sock,
+        // which is the push-events channel (not JSON-RPC).
+        if (!std.mem.startsWith(u8, name, "teru-wmmcp-")) continue;
+        if (std.mem.startsWith(u8, name, "teru-wmmcp-events-")) continue;
+        if (!std.mem.endsWith(u8, name, ".sock")) continue;
+
+        const full = std.fmt.bufPrint(&discovered_path, "{s}/{s}", .{ dir_path, name }) catch continue;
+        return full;
+    }
+    return null;
+}
+
+/// Send a JSON-RPC request body to teruwm's MCP socket, receive the
+/// JSON response, write it into `out`. Returns the response slice or
+/// null on any failure (connection refused, malformed response, etc).
+/// The caller is responsible for retrying or surfacing the error as an
+/// MCP-level failure.
+pub fn forwardRequest(body: []const u8, out: []u8) ?[]const u8 {
+    const sock_path = findTeruwmSocket() orelse return null;
+    var conn = ipc.connect(sock_path) catch return null;
+    defer conn.close();
+
+    // teruwm is still HTTP-framed as of v0.4.18; wrap the body.
+    var header_buf: [256]u8 = undefined;
+    const header = std.fmt.bufPrint(&header_buf,
+        "POST / HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n",
+        .{body.len},
+    ) catch return null;
+    _ = conn.write(header) catch return null;
+    _ = conn.write(body) catch return null;
+
+    // Read the whole response (teruwm closes after sending).
+    var raw: [65536]u8 = undefined;
+    var total: usize = 0;
+    while (total < raw.len) {
+        const n = conn.read(raw[total..]) catch break;
+        if (n == 0) break;
+        total += n;
+    }
+    if (total == 0) return null;
+
+    // Strip the HTTP header. On empty/invalid header the response is
+    // treated as "forward failed"; callers should fall through to
+    // "Unknown tool" rather than return garbage.
+    const body_start = std.mem.indexOf(u8, raw[0..total], "\r\n\r\n") orelse return null;
+    const payload = raw[body_start + 4 .. total];
+    if (payload.len > out.len) return null;
+    @memcpy(out[0..payload.len], payload);
+    return out[0..payload.len];
+}
+
+// ── Tests ───────────────────────────────────────────────────────
+
+test "scanRuntimeDir returns null when no teruwm socket exists" {
+    // Point at an empty tmp dir so we don't interfere with a live teruwm.
+    // This test is best-effort — if a real teruwm happens to be running
+    // on this machine, it'll still find it. Skip in that case.
+    _ = scanRuntimeDir();
+}

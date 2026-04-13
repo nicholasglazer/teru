@@ -244,9 +244,20 @@ printf '\e]9999;query;id=1;tool=teru_list_panes\x07' > /dev/tty
 
 ### Current scope
 
-Tools exposed: all 19 teru-agent tools (`teru_*`). The teruwm compositor
-tools (`teruwm_*`) still require the socket path — forwarding them over
-the OSC channel is planned for a later release.
+Tools exposed: all 45 tools. As of v0.4.19, teru's MCP transparently
+forwards `teruwm_*` tool calls to the running teruwm socket. Agents
+running inside a teru pane under teruwm can use the same `teru-query`
+helper for compositor control:
+
+```sh
+teru-query teru_list_panes              # local to this teru
+teru-query teruwm_list_windows          # forwarded to teruwm
+teru-query teruwm_focus_window node_id=5
+teru-query teruwm_scratchpad name=notes
+```
+
+If no teruwm is running, `teruwm_*` calls come back with JSON-RPC
+error code `-32002`. Local `teru_*` calls work regardless.
 
 ## Session persistence — `.tsess` templates
 

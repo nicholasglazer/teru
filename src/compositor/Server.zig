@@ -1152,6 +1152,13 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
     // Handle floating window move/resize
     if (self.cursor_mode == .move) {
         if (self.grab_node_id) |id| {
+            // Defensive: if the grabbed node vanished (pane exit, client
+            // crash, etc), drop the grab rather than chase a stale id.
+            if (self.nodes.findById(id) == null) {
+                self.grab_node_id = null;
+                self.cursor_mode = .normal;
+                return;
+            }
             if (self.nodes.findById(id)) |slot| {
                 const new_x: i32 = @intFromFloat(cx - self.grab_x);
                 const new_y: i32 = @intFromFloat(cy - self.grab_y);
@@ -1182,6 +1189,11 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
 
     if (self.cursor_mode == .resize) {
         if (self.grab_node_id) |id| {
+            if (self.nodes.findById(id) == null) {
+                self.grab_node_id = null;
+                self.cursor_mode = .normal;
+                return;
+            }
             if (self.nodes.findById(id)) |slot| {
                 const dx = cx - self.grab_x;
                 const dy = cy - self.grab_y;
@@ -2295,6 +2307,16 @@ pub fn closeNode(self: *Server, node_id: u64) bool {
                 self.layout_engine.workspaces[ws].removeNode(node_id);
                 if (self.nodes.findById(node_id)) |_| _ = self.nodes.remove(node_id);
 
+                // Null any Server pointers into this pane BEFORE freeing.
+                // Otherwise a reentrant render (or any code that dereferences
+                // focused_terminal) touches a freed TerminalPane. Fixes the
+                // SIGSEGV seen in coredump 283923 via Bar.buildBarData.
+                if (self.focused_terminal == tp) self.focused_terminal = null;
+                if (self.grab_node_id) |id| if (id == node_id) {
+                    self.grab_node_id = null;
+                    self.cursor_mode = .normal;
+                };
+
                 tp.deinit(self.zig_allocator);
                 self.zig_allocator.destroy(tp);
                 slot.* = null;
@@ -2334,6 +2356,15 @@ pub fn closeFocused(self: *Server) void {
 
 pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
     std.debug.print("teruwm: terminal exited node={d}\n", .{tp.node_id});
+
+    // Defensive: null Server pointers into this pane before removal, same
+    // rationale as closeNode — a render callback firing during teardown
+    // must not dereference a soon-to-be-freed TerminalPane.
+    if (self.focused_terminal == tp) self.focused_terminal = null;
+    if (self.grab_node_id) |id| if (id == tp.node_id) {
+        self.grab_node_id = null;
+        self.cursor_mode = .normal;
+    };
 
     // Remove from node registry and tiling engine
     _ = self.nodes.remove(tp.node_id);

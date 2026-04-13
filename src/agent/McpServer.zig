@@ -21,6 +21,7 @@ const tier = @import("../render/tier.zig");
 
 const tools = @import("McpTools.zig");
 const mcp_dispatch = @import("McpDispatch.zig");
+const forward = @import("forward.zig");
 const build_options = @import("build_options");
 const McpServer = @This();
 
@@ -245,9 +246,22 @@ fn handleToolsCall(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u
     const tool_name = tools.extractJsonString(params_body, "name") orelse
         return tools.jsonRpcError(buf, id, -32602, "Missing params.name");
 
-    const idx = mcp_dispatch.tool_index.get(tool_name) orelse
-        return tools.jsonRpcError(buf, id, -32602, "Unknown tool");
-    return dispatch_table[idx](self, params_body, buf, id);
+    if (mcp_dispatch.tool_index.get(tool_name)) |idx| {
+        return dispatch_table[idx](self, params_body, buf, id);
+    }
+
+    // Cross-MCP forwarding (v0.4.19): `teruwm_*` tools aren't local —
+    // proxy them to the running teruwm's socket. Agents get a unified
+    // 45-tool surface regardless of which binary they're connected to.
+    if (std.mem.startsWith(u8, tool_name, "teruwm_")) {
+        // `body` is the full JSON-RPC request — the compositor handles
+        // it natively. Only the transport differs (teruwm still HTTP-
+        // framed internally); forward.forwardRequest bridges framings.
+        if (forward.forwardRequest(body, buf)) |resp| return resp;
+        return tools.jsonRpcError(buf, id, -32002, "teruwm not running or socket unreachable");
+    }
+
+    return tools.jsonRpcError(buf, id, -32602, "Unknown tool");
 }
 
 // ── Dispatch table ─────────────────────────────────────────────
