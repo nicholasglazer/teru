@@ -6,7 +6,7 @@ Both speak JSON-RPC 2.0 over a Unix socket (or Windows named pipe).
 | Server | Socket | Tools | Purpose |
 |---|---|---:|---|
 | **teru agent** | `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock` | 19 | Control any running teru instance — panes, workspaces, scrollback, sessions, broadcast, config live-edit |
-| **teruwm compositor** | `$XDG_RUNTIME_DIR/teru-wmmcp-$PID.sock` | 24 | Control the Wayland compositor — windows (terminal + XDG), workspaces, layouts, bars, push widgets, hot-restart, E2E test hooks |
+| **teruwm compositor** | `$XDG_RUNTIME_DIR/teru-wmmcp-$PID.sock` | 26 | Control the Wayland compositor — windows (terminal + XDG), workspaces, layouts, bars, push widgets, named scratchpads (v0.4.18), event push stream, hot-restart, E2E test hooks |
 
 If you write a daemon that needs to push data to the bar, you want the
 compositor server. If you want an AI agent to read another pane's output
@@ -184,7 +184,7 @@ Layouts: `master-stack`, `grid`, `monocle`, `dishes`, `spiral`, `three-col`,
 |---|---|---|
 | `teru_screenshot` | `path` (string, default `/tmp/teru-screenshot.png`) | Capture current framebuffer as PNG. X11/Wayland only. |
 
-## teruwm (compositor) MCP — 24 tools
+## teruwm (compositor) MCP — 26 tools
 
 Socket: `$XDG_RUNTIME_DIR/teru-wmmcp-$PID.sock`. Implementation: `src/compositor/WmMcpServer.zig`.
 
@@ -244,6 +244,44 @@ Socket: `$XDG_RUNTIME_DIR/teru-wmmcp-$PID.sock`. Implementation: `src/compositor
 |---|---|---|
 | `teruwm_screenshot` | `path` (string, default `/tmp/teruwm-screenshot.png`) | Capture full compositor output as PNG. |
 | `teruwm_screenshot_pane` | `name` (string) OR `node_id` (int); `path` (default `/tmp/teruwm-pane-<name>.png`) | Capture one pane's framebuffer as PNG. Terminal panes only. |
+
+### Scratchpads (v0.4.18)
+
+| Tool | Params | Description |
+|---|---|---|
+| `teruwm_scratchpad` | `name` (string, max 15 chars), `cmd` (string, reserved) | Toggle a named scratchpad using xmonad's NamedScratchpad semantics. First call spawns a floating terminal tagged with `name`; subsequent calls flip visibility. If called while the pad is on a non-active workspace, migrates to the focused one (follow-me). |
+| `teruwm_toggle_scratchpad` | `index` (int 0..8) | **Compat shim** — delegates to `teruwm_scratchpad` with name=`pad<N+1>`. Prefer the named form. |
+
+### Event push stream (v0.4.18)
+
+| Tool | Params | Description |
+|---|---|---|
+| `teruwm_subscribe_events` | — | Returns the Unix-socket path of the event push channel. Connect raw to that path to receive newline-delimited JSON events. One subscriber at a time (last-connect wins). |
+
+Emitted events (non-exhaustive):
+
+```json
+{"event":"urgent",            "node_id":42, "workspace":3}
+{"event":"focus_changed",     "node_id":42}
+{"event":"workspace_switched","from":0, "to":3}
+{"event":"window_mapped",     "node_id":42, "workspace":3}
+```
+
+Shape: every event is a single JSON object terminated by `\n`.
+Callers parse line-by-line. Slow subscribers drop events silently
+(the channel is O_NONBLOCK on the server side). Typical use:
+
+```python
+import json, os, socket
+
+path = json.loads(call_mcp("teruwm_subscribe_events"))["socket"]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(path)
+f = s.makefile("rb")
+for line in f:
+    ev = json.loads(line)
+    if ev["event"] == "urgent":
+        os.system(f"notify-send 'window {ev[\"node_id\"]} wants attention'")
+```
 
 ### E2E test hooks (normally not used)
 

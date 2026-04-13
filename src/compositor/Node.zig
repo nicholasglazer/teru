@@ -16,6 +16,16 @@ const Node = @This();
 
 pub const max_nodes = 256;
 
+/// Sentinel workspace index marking a node as "hidden / scratchpad
+/// bucket." Nodes with this workspace never appear in any tiling
+/// layout and never render — they're parked until a
+/// teruwm_scratchpad toggle moves them onto a real workspace.
+/// xmonad calls this the `NSP` workspace.
+pub const HIDDEN_WS: u8 = 0xFF;
+
+/// Maximum scratchpad-name length (null-terminated; 15 printable chars).
+pub const max_scratchpad_name = 16;
+
 pub const Kind = enum(u8) {
     empty, // slot is unused
     terminal, // backed by a libteru Pane (software-rendered)
@@ -55,6 +65,13 @@ app_id_len: [max_nodes]u8 = [_]u8{0} ** max_nodes,
 // on workspaces containing any urgent node.
 urgent: [max_nodes]bool = [_]bool{false} ** max_nodes,
 
+// Scratchpad name — non-empty iff this node is a scratchpad managed
+// by the xmonad NamedScratchpad pattern. Toggling a scratchpad flips
+// its `workspace` between HIDDEN_WS and the currently-focused real
+// workspace. Same name used on repeat toggles to find the same node.
+scratchpad_name: [max_nodes][max_scratchpad_name]u8 = [_][max_scratchpad_name]u8{[_]u8{0} ** max_scratchpad_name} ** max_nodes,
+scratchpad_name_len: [max_nodes]u8 = [_]u8{0} ** max_nodes,
+
 // Bookkeeping
 count: u16 = 0,
 
@@ -77,6 +94,7 @@ pub fn addSurface(self: *Node, id: u64, ws: u8, toplevel: ?*wlr.wlr_xdg_toplevel
     self.group_id[slot] = 0;
     self.app_id_len[slot] = 0;
     self.urgent[slot] = false;
+    self.scratchpad_name_len[slot] = 0;
     self.count += 1;
     return slot;
 }
@@ -98,6 +116,7 @@ pub fn addTerminal(self: *Node, id: u64, ws: u8) ?u16 {
     self.group_id[slot] = 0;
     self.app_id_len[slot] = 0;
     self.urgent[slot] = false;
+    self.scratchpad_name_len[slot] = 0;
     self.count += 1;
     return slot;
 }
@@ -115,6 +134,7 @@ pub fn remove(self: *Node, id: u64) bool {
             self.group_id[i] = 0;
             self.app_id_len[i] = 0;
             self.urgent[i] = false;
+            self.scratchpad_name_len[i] = 0;
             self.count -= 1;
             return true;
         }
@@ -147,6 +167,40 @@ pub fn anyUrgentOnWorkspace(self: *const Node, ws: u8) bool {
         if (self.kind[i] != .empty and self.workspace[i] == ws and self.urgent[i]) return true;
     }
     return false;
+}
+
+// ── Scratchpad identity (xmonad NamedScratchpad model) ─────────
+
+/// Tag a slot as a named scratchpad. Empty name clears. Max 15 chars
+/// (truncated silently).
+pub fn setScratchpad(self: *Node, slot: u16, name: []const u8) void {
+    if (slot >= max_nodes) return;
+    const len = @min(name.len, max_scratchpad_name - 1);
+    @memcpy(self.scratchpad_name[slot][0..len], name[0..len]);
+    self.scratchpad_name[slot][len] = 0;
+    self.scratchpad_name_len[slot] = @intCast(len);
+}
+
+pub fn getScratchpad(self: *const Node, slot: u16) []const u8 {
+    if (slot >= max_nodes) return &[_]u8{};
+    return self.scratchpad_name[slot][0..self.scratchpad_name_len[slot]];
+}
+
+/// Find the slot tagged with this scratchpad name, if any.
+pub fn findByScratchpad(self: *const Node, name: []const u8) ?u16 {
+    for (0..max_nodes) |i| {
+        if (self.kind[i] == .empty) continue;
+        const n = self.scratchpad_name_len[i];
+        if (n == 0 or n != name.len) continue;
+        if (std.mem.eql(u8, self.scratchpad_name[i][0..n], name)) return @intCast(i);
+    }
+    return null;
+}
+
+/// A node is "hidden" when parked in the scratchpad bucket.
+pub fn isHidden(self: *const Node, slot: u16) bool {
+    if (slot >= max_nodes) return false;
+    return self.workspace[slot] == HIDDEN_WS;
 }
 
 /// Find a node's slot index by its ID.
@@ -343,4 +397,38 @@ test "max capacity" {
     }
     try std.testing.expectEqual(@as(u16, max_nodes), reg.count);
     try std.testing.expectEqual(@as(?u16, null), reg.addTerminal(999, 0));
+}
+
+test "scratchpad — setScratchpad / findByScratchpad / isHidden" {
+    var reg = Node{};
+    const s1 = reg.addTerminal(1, 0).?;
+    const s2 = reg.addTerminal(2, 0).?;
+    _ = s2;
+
+    // Untagged slot — not findable as a scratchpad.
+    try std.testing.expect(reg.findByScratchpad("term") == null);
+
+    reg.setScratchpad(s1, "term");
+    try std.testing.expectEqualStrings("term", reg.getScratchpad(s1));
+    try std.testing.expectEqual(@as(?u16, s1), reg.findByScratchpad("term"));
+
+    // Hidden sentinel parks without confusing lookup.
+    try std.testing.expect(!reg.isHidden(s1));
+    reg.workspace[s1] = HIDDEN_WS;
+    try std.testing.expect(reg.isHidden(s1));
+    try std.testing.expectEqual(@as(?u16, s1), reg.findByScratchpad("term"));
+
+    // Remove clears the scratchpad tag.
+    _ = reg.remove(1);
+    try std.testing.expect(reg.findByScratchpad("term") == null);
+}
+
+test "scratchpad — truncates long names" {
+    var reg = Node{};
+    const s = reg.addTerminal(1, 0).?;
+    const too_long = "abcdefghijklmnopqrstuvwxyz";
+    reg.setScratchpad(s, too_long);
+    // 15-char truncation (16 bytes w/ null).
+    try std.testing.expectEqual(@as(u8, max_scratchpad_name - 1), reg.scratchpad_name_len[s]);
+    try std.testing.expect(reg.findByScratchpad(too_long[0 .. max_scratchpad_name - 1]) != null);
 }

@@ -32,6 +32,20 @@ socket_fd: posix.fd_t,
 server: *Server,
 event_source: ?*wlr.wl_event_source = null,
 
+// ── Event subscriber channel (v0.4.18) ────────────────────────
+// Separate socket for pushed JSON events (`urgent`, `focus_changed`,
+// `workspace_switched`, `window_mapped`). Protocol: one connected
+// subscriber at a time; each emitEvent writes `<json>\n` to the fd.
+// On write failure the subscriber is dropped. Clients obtain the
+// path via the `teruwm_subscribe_events` MCP tool, then connect
+// with a plain Unix-socket client — no HTTP, no JSON-RPC handshake.
+// A new subscriber replaces the previous one (socket is single-seat).
+event_socket_path: [socket_path_max]u8 = undefined,
+event_socket_path_len: usize = 0,
+event_socket_fd: posix.fd_t = -1,
+event_subscriber_fd: posix.fd_t = -1,
+event_source_evt: ?*wlr.wl_event_source = null,
+
 // ── Lifecycle ──────────────────────────────────────────────────
 
 pub fn init(server: *Server) ?*WmMcpServer {
@@ -65,6 +79,26 @@ pub fn init(server: *Server) ?*WmMcpServer {
             onSocketReadable,
             @ptrCast(self),
         );
+
+        // Companion events socket — best-effort push channel.
+        var evt_path_buf: [256]u8 = undefined;
+        if (ipc.buildPath(&evt_path_buf, "wmmcp-events", pid_str)) |evt_path| {
+            if (ipc.listen(evt_path)) |evt_ipc| {
+                const evt_sock = evt_ipc.rawFd();
+                self.event_socket_fd = evt_sock;
+                const n = @min(evt_path.len, self.event_socket_path.len);
+                @memcpy(self.event_socket_path[0..n], evt_path[0..n]);
+                self.event_socket_path_len = n;
+                self.event_source_evt = wlr.wl_event_loop_add_fd(
+                    event_loop,
+                    evt_sock,
+                    wlr.WL_EVENT_READABLE,
+                    onEventSocketReadable,
+                    @ptrCast(self),
+                );
+                std.debug.print("teruwm: MCP event socket on {s}\n", .{evt_path});
+            } else |_| {}
+        }
     }
 
     std.debug.print("teruwm: MCP server on {s}\n", .{path});
@@ -73,12 +107,21 @@ pub fn init(server: *Server) ?*WmMcpServer {
 
 pub fn deinit(self: *WmMcpServer, allocator: Allocator) void {
     if (self.event_source) |es| _ = wlr.wl_event_source_remove(es);
+    if (self.event_source_evt) |es| _ = wlr.wl_event_source_remove(es);
     _ = posix.system.close(self.socket_fd);
+    if (self.event_subscriber_fd != -1) _ = posix.system.close(self.event_subscriber_fd);
+    if (self.event_socket_fd != -1) _ = posix.system.close(self.event_socket_fd);
 
     var unlink_buf: [socket_path_max + 1]u8 = undefined;
     @memcpy(unlink_buf[0..self.socket_path_len], self.socket_path[0..self.socket_path_len]);
     unlink_buf[self.socket_path_len] = 0;
     _ = std.c.unlink(@ptrCast(&unlink_buf));
+
+    if (self.event_socket_path_len > 0) {
+        @memcpy(unlink_buf[0..self.event_socket_path_len], self.event_socket_path[0..self.event_socket_path_len]);
+        unlink_buf[self.event_socket_path_len] = 0;
+        _ = std.c.unlink(@ptrCast(&unlink_buf));
+    }
 
     allocator.destroy(self);
 }
@@ -95,6 +138,72 @@ fn poll(self: *WmMcpServer) void {
     const client = ipc.accept(ipc.IpcHandle.fromRaw(self.socket_fd)) orelse return;
     self.handleRequest(client.rawFd());
     client.close();
+}
+
+// ── Event subscriber (v0.4.18) ────────────────────────────────
+
+fn onEventSocketReadable(_: c_int, _: u32, data: ?*anyopaque) callconv(.c) c_int {
+    const self: *WmMcpServer = @ptrCast(@alignCast(data orelse return 0));
+    self.acceptEventSubscriber();
+    return 0;
+}
+
+/// Accept a new event subscriber, replacing any previous one. Only one
+/// subscriber at a time (the last to connect wins). We set O_NONBLOCK
+/// so emitEvent never blocks the compositor event loop if the subscriber
+/// is slow — slow subscribers just drop events (best-effort telemetry).
+fn acceptEventSubscriber(self: *WmMcpServer) void {
+    const client = ipc.accept(ipc.IpcHandle.fromRaw(self.event_socket_fd)) orelse return;
+    const fd = client.rawFd();
+
+    // O_NONBLOCK so we never stall.
+    const F_GETFL: c_int = 3;
+    const F_SETFL: c_int = 4;
+    const O_NONBLOCK: c_int = 0o4000;
+    const flags = std.c.fcntl(fd, F_GETFL);
+    if (flags >= 0) {
+        _ = std.c.fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+
+    // Replace previous subscriber.
+    if (self.event_subscriber_fd != -1) _ = posix.system.close(self.event_subscriber_fd);
+    self.event_subscriber_fd = fd;
+    std.debug.print("teruwm: MCP events subscriber connected (fd={d})\n", .{fd});
+}
+
+/// Emit one JSON event line to the current subscriber. No subscriber,
+/// no cost — single fd check. On write failure (subscriber gone) we
+/// drop them. Callers pass a bare JSON object *without* the trailing
+/// newline; we append it here.
+pub fn emitEvent(self: *WmMcpServer, json_line: []const u8) void {
+    if (self.event_subscriber_fd == -1) return;
+    // Two writes are fine (subscriber reads until \n), but keep it one
+    // syscall for efficiency.
+    var buf: [4096]u8 = undefined;
+    const line_len = @min(json_line.len, buf.len - 1);
+    @memcpy(buf[0..line_len], json_line[0..line_len]);
+    buf[line_len] = '\n';
+    const total = line_len + 1;
+    const n = std.c.write(self.event_subscriber_fd, &buf, total);
+    if (n <= 0) {
+        _ = posix.system.close(self.event_subscriber_fd);
+        self.event_subscriber_fd = -1;
+    }
+}
+
+/// Convenience for the common shape: `{"event":"<kind>", ...}` built
+/// by a caller-supplied body printer. `body_fn` writes the JSON
+/// field(s) after `"event":"<kind>"`. Returns iff emitted.
+pub fn emitEventKind(self: *WmMcpServer, kind: []const u8, comptime fmt: []const u8, args: anytype) void {
+    if (self.event_subscriber_fd == -1) return;
+    var buf: [2048]u8 = undefined;
+    const prefix = std.fmt.bufPrint(&buf, "{{\"event\":\"{s}\"", .{kind}) catch return;
+    const rest = std.fmt.bufPrint(buf[prefix.len..], fmt, args) catch return;
+    const end = prefix.len + rest.len;
+    if (end + 2 > buf.len) return;
+    buf[end] = '}';
+    buf[end + 1] = 0;
+    self.emitEvent(buf[0 .. end + 1]);
 }
 
 // ── HTTP / JSON-RPC handling ──────────────────────────────────
@@ -191,7 +300,9 @@ fn handleToolsList(_: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teruwm_test_drag","description":"TEST ONLY: synthesize a pointer drag from (from_x,from_y) to (to_x,to_y). Optional super=true simulates Mod-held drag (tiling → floating). Used by E2E suites; not normally invoked by users.","inputSchema":{{"type":"object","properties":{{"from_x":{{"type":"integer"}},"from_y":{{"type":"integer"}},"to_x":{{"type":"integer"}},"to_y":{{"type":"integer"}},"super":{{"type":"boolean"}},"button":{{"type":"integer","description":"linux input-event code; 272=left (default), 274=right"}}}},"required":["from_x","from_y","to_x","to_y"]}}}},
         \\{{"name":"teruwm_test_key","description":"TEST ONLY: dispatch a keybind action by name, bypassing xkb. Use for E2E tests of keybind-triggered compositor actions.","inputSchema":{{"type":"object","properties":{{"action":{{"type":"string","description":"action name e.g. 'layout_cycle', 'bar_toggle_top'"}}}},"required":["action"]}}}},
         \\{{"name":"teruwm_test_move","description":"TEST ONLY: warp the cursor to (x, y) and fire a motion event, no button. Useful for tests that verify hover focus, scroll mode, etc.","inputSchema":{{"type":"object","properties":{{"x":{{"type":"integer"}},"y":{{"type":"integer"}}}},"required":["x","y"]}}}},
-        \\{{"name":"teruwm_toggle_scratchpad","description":"Toggle scratchpad N (0..8). Creates on first call; shows/hides thereafter. Equivalent to the Alt+RAlt+(N+1) keybind.","inputSchema":{{"type":"object","properties":{{"index":{{"type":"integer","description":"scratchpad index 0..8"}}}},"required":["index"]}}}}
+        \\{{"name":"teruwm_toggle_scratchpad","description":"Toggle numbered scratchpad N (0..8). Compat shim since v0.4.18 — delegates to teruwm_scratchpad name=padN+1. Prefer teruwm_scratchpad for new code.","inputSchema":{{"type":"object","properties":{{"index":{{"type":"integer","description":"scratchpad index 0..8"}}}},"required":["index"]}}}},
+        \\{{"name":"teruwm_scratchpad","description":"Toggle a named scratchpad (xmonad NamedScratchpad model). First call spawns a floating terminal tagged with the given name; subsequent calls toggle its visibility on the focused workspace. Scratchpads live in the node registry with a hidden-workspace sentinel when parked — visible via teruwm_list_windows.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"scratchpad identifier (e.g. 'term', 'music'). Max 15 chars."}},"cmd":{{"type":"string","description":"Reserved for future per-scratchpad spawn commands; ignored today — scratchpads spawn the user shell."}}}},"required":["name"]}}}},
+        \\{{"name":"teruwm_subscribe_events","description":"Get the Unix-socket path for the event push channel. Connect a raw client to that path to read newline-delimited JSON events: urgent, focus_changed, workspace_switched, window_mapped. One subscriber at a time (last-connect wins); best-effort (slow subscribers drop events).","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}}
         \\]}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
@@ -318,9 +429,26 @@ fn handleToolsCall(self: *WmMcpServer, body: []const u8, buf: []u8, id: ?[]const
         if (idx < 0 or idx > 8)
             return jsonRpcError(buf, id, -32602, "index must be 0..8");
         return self.toolToggleScratchpad(@intCast(idx), buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_scratchpad")) {
+        const name = extractNestedJsonString(params_body, "name") orelse
+            return jsonRpcError(buf, id, -32602, "Missing name");
+        const cmd = extractNestedJsonString(params_body, "cmd");
+        return self.toolScratchpad(name, cmd, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_subscribe_events")) {
+        return self.toolSubscribeEvents(buf, id);
     } else {
         return jsonRpcError(buf, id, -32602, "Unknown tool");
     }
+}
+
+fn toolSubscribeEvents(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+    const path = self.event_socket_path[0..self.event_socket_path_len];
+    // Path contains `/` and maybe other chars; safe as a JSON string (no
+    // need to escape — socket paths don't have quote/backslash/control).
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"socket\":\"{s}\"}}"}}]}},"id":{s}}}
+    , .{ path, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 // ── Name resolution ───────────────────────────────────────────
@@ -881,13 +1009,32 @@ fn toolTestMove(self: *WmMcpServer, x: i32, y: i32, buf: []u8, id: ?[]const u8) 
 }
 
 fn toolToggleScratchpad(self: *WmMcpServer, index: u8, buf: []u8, id: ?[]const u8) []const u8 {
-    self.server.toggleScratchpad(index);
+    // Compat shim: numbered index delegates to named pad<N+1>. Report
+    // the toggle result by reading the new state from the NodeRegistry.
+    var name_buf: [8]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "pad{d}", .{index + 1}) catch return jsonRpcError(buf, id, -32603, "bad index");
+    self.server.toggleScratchpadByName(name, null);
+
     const id_str = id orelse "null";
-    const visible = self.server.scratchpad_visible[index];
-    const created = self.server.scratchpads[index] != null;
+    const slot = self.server.nodes.findByScratchpad(name);
+    const created = slot != null;
+    const visible = if (slot) |s| !self.server.nodes.isHidden(s) else false;
     return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"scratchpad {d} visible={any} created={any}"}}]}},"id":{s}}}
-    , .{ index, visible, created, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"scratchpad {d} name={s} visible={any} created={any}"}}]}},"id":{s}}}
+    , .{ index, name, visible, created, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolScratchpad(self: *WmMcpServer, name: []const u8, cmd: ?[]const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    if (name.len == 0) return jsonRpcError(buf, id, -32602, "scratchpad name required");
+    self.server.toggleScratchpadByName(name, cmd);
+
+    const id_str = id orelse "null";
+    const slot = self.server.nodes.findByScratchpad(name);
+    const created = slot != null;
+    const visible = if (slot) |s| !self.server.nodes.isHidden(s) else false;
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"scratchpad name={s} visible={any} created={any}"}}]}},"id":{s}}}
+    , .{ name, visible, created, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolTestKey(self: *WmMcpServer, action_name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
