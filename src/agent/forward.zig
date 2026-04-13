@@ -44,37 +44,24 @@ pub fn findTeruwmEventsSocket() ?[]const u8 {
     if (std.c.getenv("TERU_WMMCP_EVENTS_SOCKET")) |env| {
         return std.mem.sliceTo(env, 0);
     }
-    if (builtin.os.tag == .windows) return null;
-
-    const uid = std.c.getuid();
-    var dir_buf: [128]u8 = undefined;
-    const dir_path: []const u8 = if (std.c.getenv("XDG_RUNTIME_DIR")) |env|
-        std.mem.sliceTo(env, 0)
-    else
-        std.fmt.bufPrint(&dir_buf, "/run/user/{d}", .{uid}) catch return null;
-
-    var z_buf: [128]u8 = undefined;
-    const dir_z = std.fmt.bufPrintZ(&z_buf, "{s}", .{dir_path}) catch return null;
-    const dir = std.c.opendir(dir_z.ptr) orelse return null;
-    defer _ = std.c.closedir(dir);
-
-    while (std.c.readdir(dir)) |ent| {
-        const name_ptr: [*:0]const u8 = @ptrCast(&ent.*.name);
-        const name = std.mem.sliceTo(name_ptr, 0);
-        if (!std.mem.startsWith(u8, name, "teru-wmmcp-events-")) continue;
-        if (!std.mem.endsWith(u8, name, ".sock")) continue;
-        const full = std.fmt.bufPrint(&discovered_events_path, "{s}/{s}", .{ dir_path, name }) catch continue;
-        return full;
-    }
-    return null;
+    return scanFor(&discovered_events_path, "teru-wmmcp-events-", null);
 }
 
 fn scanRuntimeDir() ?[]const u8 {
+    // Request socket: teru-wmmcp-<PID>.sock — NOT the -events- variant.
+    return scanFor(&discovered_path, "teru-wmmcp-", "teru-wmmcp-events-");
+}
+
+/// Shared runtime-directory scanner for socket discovery. Writes the
+/// first matching entry's full path into `out` and returns a slice.
+/// `prefix` is required; `exclude_prefix` (if non-null) filters out
+/// matches that start with that stricter prefix (e.g. the separate
+/// teru-wmmcp-events-* socket pair). All matches must end in `.sock`.
+fn scanFor(out: *[256]u8, prefix: []const u8, exclude_prefix: ?[]const u8) ?[]const u8 {
     if (builtin.os.tag == .windows) return null;
 
     const uid = std.c.getuid();
     var dir_buf: [128]u8 = undefined;
-    // Respect XDG_RUNTIME_DIR first; fall back to /run/user/UID.
     const dir_path: []const u8 = if (std.c.getenv("XDG_RUNTIME_DIR")) |env|
         std.mem.sliceTo(env, 0)
     else
@@ -88,13 +75,13 @@ fn scanRuntimeDir() ?[]const u8 {
     while (std.c.readdir(dir)) |ent| {
         const name_ptr: [*:0]const u8 = @ptrCast(&ent.*.name);
         const name = std.mem.sliceTo(name_ptr, 0);
-        // teru-wmmcp-<PID>.sock — but NOT teru-wmmcp-events-<PID>.sock,
-        // which is the push-events channel (not JSON-RPC).
-        if (!std.mem.startsWith(u8, name, "teru-wmmcp-")) continue;
-        if (std.mem.startsWith(u8, name, "teru-wmmcp-events-")) continue;
+        if (!std.mem.startsWith(u8, name, prefix)) continue;
+        if (exclude_prefix) |ex| {
+            if (std.mem.startsWith(u8, name, ex)) continue;
+        }
         if (!std.mem.endsWith(u8, name, ".sock")) continue;
 
-        const full = std.fmt.bufPrint(&discovered_path, "{s}/{s}", .{ dir_path, name }) catch continue;
+        const full = std.fmt.bufPrint(out, "{s}/{s}", .{ dir_path, name }) catch continue;
         return full;
     }
     return null;
