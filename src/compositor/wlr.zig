@@ -365,6 +365,7 @@ pub extern "c" fn miozu_output_layout_first_height(layout: *wlr_output_layout) c
 pub extern "c" fn miozu_set_cursor_event_surface(event: *anyopaque) callconv(.c) ?*wlr_surface;
 pub extern "c" fn miozu_set_cursor_event_hotspot_x(event: *anyopaque) callconv(.c) i32;
 pub extern "c" fn miozu_set_cursor_event_hotspot_y(event: *anyopaque) callconv(.c) i32;
+pub extern "c" fn miozu_set_cursor_event_from_focused(event: *anyopaque, seat: *wlr_seat) callconv(.c) c_int;
 
 // Pointer motion event accessors (in glue)
 pub extern "c" fn miozu_pointer_motion_dx(event: *wlr_pointer_motion_event) callconv(.c) f64;
