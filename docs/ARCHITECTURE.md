@@ -100,6 +100,33 @@ owns the keyboard, cursor, and display. Hosts native terminal panes
 (libteru `Pane`s rendered into scene buffers) and arbitrary
 Wayland/XWayland clients side by side.
 
+### Multi-output — the three-rule model (v0.4.20)
+
+Workspace/output relationships follow three rules that eliminate
+entire classes of multi-monitor bugs:
+
+1. **Rule 1 — `Node.workspace` is *identity*.** Every node has a home
+   workspace (`0..9` or `HIDDEN_WS` for parked scratchpads). The only
+   function that mutates it is `moveNodeToWorkspace`.
+2. **Rule 2 — `Output.workspace` is a *viewport*.** Each connected
+   output declares which workspace it's currently showing. The only
+   function that mutates it is `focusWorkspace`, which implements
+   xmonad's pull-swap: if another output is showing the target, that
+   output takes the focused output's previous workspace.
+3. **Rule 3 — visibility is *derived*, never toggled.** A node
+   renders iff some output shows its workspace. `recomputeVisibility`
+   walks the registry after any R1 or R2 mutation.
+
+All four workspace-switch cases — equal-return, no-collision,
+collision-pull, first-show — live in one 15-line function. The old
+`setWorkspaceVisibility(ws, bool)` toggle is gone; single-output
+behavior is the degenerate case of the multi-output loop.
+
+New actions: `focus_output_next` (Mod+O), `move_to_output_next`
+(Mod+Shift+O). Workspace actions (`workspace_1..0`,
+`pane_move_to_1..0`) are unchanged — they always target the focused
+output, so single-monitor muscle memory is preserved.
+
 ```
          TTY / libinput / DRM
                 │

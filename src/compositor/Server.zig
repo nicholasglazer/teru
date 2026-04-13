@@ -61,7 +61,22 @@ focused_terminal: ?*TerminalPane = null,
 terminal_panes: [NodeRegistry.max_nodes]?*TerminalPane = [_]?*TerminalPane{null} ** NodeRegistry.max_nodes,
 terminal_count: u16 = 0,
 bar: ?*Bar = null,
+/// Legacy single-output pointer — kept alive because many helpers read
+/// from it (cursor warping, screencopy, screenshot). In the multi-
+/// output model, `focused_output.wlr_output` is the authoritative
+/// choice; primary_output mirrors it for back-compat until we finish
+/// the audit.
 primary_output: ?*wlr.wlr_output = null,
+
+// ── Multi-output tracking (v0.4.20) ───────────────────────────
+//
+// outputs is appended-to by Output.create and compacted by
+// Output.handleDestroy. The order is connection order; focus cycling
+// walks this list. `focused_output` tracks the output that workspace-
+// switch / keyboard-focus actions target.
+
+outputs: std.ArrayListUnmanaged(*Output) = .empty,
+focused_output: ?*Output = null,
 workspace_trees: [10]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** 10,
 
 // Active XKB layout name (for the {keymap} bar widget).
@@ -1308,30 +1323,16 @@ pub fn handleKey(self: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) boo
 /// Execute a keybind action. Shared by both compositor keybinds and
 /// terminal pane keybinds (same Action enum, same execution logic).
 pub fn executeAction(self: *Server, action: KBAction) bool {
-    // Workspace switching
+    // Workspace switching → single chokepoint with xmonad pull-swap.
     if (action.workspaceIndex()) |ws| {
-        const old_ws = self.layout_engine.active_workspace;
-        if (ws == old_ws) return true; // no-op
-        self.prev_workspace = old_ws;
-        self.layout_engine.switchWorkspace(ws);
-        self.setWorkspaceVisibility(old_ws, false);
-        self.setWorkspaceVisibility(ws, true);
-        self.arrangeworkspace(ws);
-        self.updateFocusedTerminal();
-        self.maybeFireWorkspaceStartup(ws);
-        self.emitMcpEventKind("workspace_switched", ",\"from\":{d},\"to\":{d}", .{ old_ws, ws });
-        if (self.bar) |b| b.render(self);
+        self.focusWorkspace(ws);
         return true;
     }
 
-    // Move node to workspace
+    // Move focused node to workspace — orthogonal to viewport changes.
     if (action.moveToIndex()) |ws| {
         const active_ws = self.layout_engine.getActiveWorkspace();
-        if (active_ws.getActiveNodeId()) |nid| {
-            self.layout_engine.moveNodeToWorkspace(nid, ws) catch {};
-            self.arrangeworkspace(self.layout_engine.active_workspace);
-            self.arrangeworkspace(ws);
-        }
+        if (active_ws.getActiveNodeId()) |nid| self.moveNodeToWorkspace(nid, ws);
         return true;
     }
 
@@ -1429,36 +1430,30 @@ pub fn executeAction(self: *Server, action: KBAction) bool {
             return true;
         },
         .workspace_toggle_last => {
-            if (self.prev_workspace) |prev| {
-                const old_ws = self.layout_engine.active_workspace;
-                if (prev != old_ws) {
-                    self.prev_workspace = old_ws;
-                    self.layout_engine.switchWorkspace(prev);
-                    self.setWorkspaceVisibility(old_ws, false);
-                    self.setWorkspaceVisibility(prev, true);
-                    self.arrangeworkspace(prev);
-                    self.updateFocusedTerminal();
-                    if (self.bar) |b| b.render(self);
-                }
-            }
+            // Prefer per-output prev; fall back to legacy single-prev
+            // for the headless-init window before any output attaches.
+            const prev = if (self.focused_output) |out| out.prev_workspace else self.prev_workspace;
+            if (prev) |p| self.focusWorkspace(p);
             return true;
         },
         .workspace_next_nonempty => {
-            const start: u8 = self.layout_engine.active_workspace;
+            const start: u8 = self.activeWorkspace();
             var step: u8 = 1;
             while (step < 10) : (step += 1) {
                 const cand: u8 = (start + step) % 10;
                 if (self.nodes.countInWorkspace(cand) > 0) {
-                    self.prev_workspace = start;
-                    self.layout_engine.switchWorkspace(cand);
-                    self.setWorkspaceVisibility(start, false);
-                    self.setWorkspaceVisibility(cand, true);
-                    self.arrangeworkspace(cand);
-                    self.updateFocusedTerminal();
-                    if (self.bar) |b| b.render(self);
+                    self.focusWorkspace(cand);
                     break;
                 }
             }
+            return true;
+        },
+        .focus_output_next => {
+            self.focusNextOutput();
+            return true;
+        },
+        .move_to_output_next => {
+            self.moveFocusedToNextOutput();
             return true;
         },
         .resize_shrink_w => {
@@ -2449,6 +2444,180 @@ pub fn updateFocusedTerminal(self: *Server) void {
         if (maybe_tp) |tp| tp.render();
     }
     if (self.bar) |b| b.render(self);
+}
+
+// ── Multi-output: the 3-rule architecture (v0.4.20) ──────────
+//
+// R1: Node.workspace is identity (already in NodeRegistry).
+// R2: Output.workspace is a viewport (stored per-Output).
+// R3: Visibility is derived via recomputeVisibility().
+//
+// All workspace-level mutations go through focusWorkspace (viewport)
+// or moveNodeToWorkspace (identity). Call recomputeVisibility after
+// each mutation — it's O(max_nodes), sub-microsecond, no allocation.
+
+/// Which workspace the focused output currently shows. Shim for
+/// legacy call sites that read `layout_engine.active_workspace`.
+pub fn activeWorkspace(self: *const Server) u8 {
+    if (self.focused_output) |out| return out.workspace;
+    return self.layout_engine.active_workspace;
+}
+
+/// Return the output currently showing `ws`, if any. Null means the
+/// workspace is orphaned (nodes on it stay hidden until some output
+/// takes it). Multi-output invariant: at most one output per ws.
+pub fn outputShowing(self: *const Server, ws: u8) ?*Output {
+    for (self.outputs.items) |out| {
+        if (out.workspace == ws) return out;
+    }
+    return null;
+}
+
+/// **The only mutation path for Output.workspace.** Handles xmonad
+/// pull-swap: if `target` is already visible on another output, that
+/// output takes the focused output's previous workspace. All four
+/// cases (identity, collision, no-op, first-show) live in one path.
+pub fn focusWorkspace(self: *Server, target: u8) void {
+    if (target >= 10) return;
+    const focused = self.focused_output orelse {
+        // No outputs yet — fall back to pre-v0.4.20 path.
+        const old = self.layout_engine.active_workspace;
+        if (target == old) return;
+        self.prev_workspace = old;
+        self.layout_engine.switchWorkspace(target);
+        self.setWorkspaceVisibility(old, false);
+        self.setWorkspaceVisibility(target, true);
+        self.arrangeworkspace(target);
+        self.updateFocusedTerminal();
+        self.maybeFireWorkspaceStartup(target);
+        self.emitMcpEventKind("workspace_switched", ",\"from\":{d},\"to\":{d}", .{ old, target });
+        if (self.bar) |b| b.render(self);
+        return;
+    };
+
+    const prev = focused.workspace;
+    if (target == prev) return;
+
+    // Pull-swap: another output showing `target` takes our prev.
+    if (self.outputShowing(target)) |other| {
+        if (other != focused) {
+            other.prev_workspace = other.workspace;
+            other.workspace = prev;
+            self.arrangeworkspace(prev);
+        }
+    }
+
+    focused.prev_workspace = prev;
+    focused.workspace = target;
+    // Keep legacy active_workspace in sync for code that hasn't been
+    // migrated yet (screenshot, bar, etc.).
+    self.layout_engine.active_workspace = target;
+
+    self.arrangeworkspace(target);
+    self.recomputeVisibility();
+    self.updateFocusedTerminal();
+    self.maybeFireWorkspaceStartup(target);
+    self.prev_workspace = prev; // legacy single-prev shim still works
+    self.emitMcpEventKind("workspace_switched", ",\"from\":{d},\"to\":{d}", .{ prev, target });
+    if (self.bar) |b| b.render(self);
+}
+
+/// Move a node (pane or Wayland client) to a different workspace.
+/// Orthogonal to Output.workspace: just flips Node.workspace, then
+/// recomputes visibility and re-arranges affected outputs.
+pub fn moveNodeToWorkspace(self: *Server, nid: u64, target: u8) void {
+    if (target >= 10) return;
+    const slot = self.nodes.findById(nid) orelse return;
+    const from = self.nodes.workspace[slot];
+    if (from == target) return;
+
+    // Update node identity. Workspace list bookkeeping: remove from old
+    // node_ids (if it was tiled there), add to new.
+    self.nodes.workspace[slot] = target;
+    self.layout_engine.workspaces[from].removeNode(nid);
+    if (!self.nodes.floating[slot]) {
+        self.layout_engine.workspaces[target].addNode(self.zig_allocator, nid) catch {};
+    }
+
+    // Re-arrange every output showing either ws (cheap: N ≤ 4).
+    for (self.outputs.items) |out| {
+        if (out.workspace == from or out.workspace == target) {
+            self.arrangeworkspace(out.workspace);
+        }
+    }
+    self.recomputeVisibility();
+}
+
+/// Rule 3: a node renders iff some output currently shows its
+/// workspace. Called after any R1 or R2 mutation. Single-output
+/// case: identical to the legacy setWorkspaceVisibility toggle.
+pub fn recomputeVisibility(self: *Server) void {
+    for (0..NodeRegistry.max_nodes) |i| {
+        if (self.nodes.kind[i] == .empty) continue;
+        const ws = self.nodes.workspace[i];
+        if (ws == NodeRegistry.HIDDEN_WS) {
+            self.setSlotVisible(@intCast(i), false);
+            continue;
+        }
+        const visible = self.outputShowing(ws) != null;
+        self.setSlotVisible(@intCast(i), visible);
+    }
+}
+
+fn setSlotVisible(self: *Server, slot: u16, visible: bool) void {
+    // Terminal panes: iterate terminal_panes array by node_id match.
+    if (self.nodes.kind[slot] == .terminal) {
+        const nid = self.nodes.node_id[slot];
+        for (self.terminal_panes) |maybe_tp| {
+            if (maybe_tp) |tp| {
+                if (tp.node_id == nid) {
+                    tp.setVisible(visible);
+                    return;
+                }
+            }
+        }
+    }
+    if (self.nodes.kind[slot] == .wayland_surface) {
+        if (self.nodes.scene_tree[slot]) |tree| {
+            if (wlr.miozu_scene_tree_node(tree)) |node| {
+                wlr.wlr_scene_node_set_enabled(node, visible);
+            }
+        }
+    }
+}
+
+/// Cycle focus to the next connected output (keybind action).
+pub fn focusNextOutput(self: *Server) void {
+    if (self.outputs.items.len < 2) return;
+    const cur = self.focused_output orelse return;
+    var next_idx: usize = 0;
+    for (self.outputs.items, 0..) |o, i| {
+        if (o == cur) {
+            next_idx = (i + 1) % self.outputs.items.len;
+            break;
+        }
+    }
+    self.focused_output = self.outputs.items[next_idx];
+    // Active workspace follows focus — legacy helpers read this.
+    self.layout_engine.active_workspace = self.focused_output.?.workspace;
+    self.updateFocusedTerminal();
+    if (self.bar) |b| b.render(self);
+}
+
+/// Move the focused node to the next output's current workspace.
+pub fn moveFocusedToNextOutput(self: *Server) void {
+    if (self.outputs.items.len < 2) return;
+    const cur = self.focused_output orelse return;
+    var next_idx: usize = 0;
+    for (self.outputs.items, 0..) |o, i| {
+        if (o == cur) {
+            next_idx = (i + 1) % self.outputs.items.len;
+            break;
+        }
+    }
+    const target_ws = self.outputs.items[next_idx].workspace;
+    const ws = self.layout_engine.getActiveWorkspace();
+    if (ws.getActiveNodeId()) |nid| self.moveNodeToWorkspace(nid, target_ws);
 }
 
 // ── MCP event emission (v0.4.18) ─────────────────────────────
