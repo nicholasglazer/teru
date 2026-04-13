@@ -63,6 +63,8 @@ layouts: `master-stack`, `grid`, `monocle`, `dishes`, `spiral`, `three-col`,
 | `$mod+Shift+1` … `$mod+Shift+0` | Move focused window to workspace N |
 | `$mod+Escape` | Toggle **last visited** workspace (xmonad `toggleWS`) |
 | `$mod+Ctrl+`` ` | Jump to next **non-empty** workspace (skips empties) |
+| `$mod+O` | Cycle focus to the next **output** (multi-monitor) |
+| `$mod+Shift+O` | Move focused window across outputs |
 
 ## Scratchpads (teruwm)
 

@@ -148,6 +148,10 @@ pub const Action = enum(u8) {
     workspace_toggle_last,
     workspace_next_nonempty,
 
+    // Multi-output (v0.4.20)
+    focus_output_next,
+    move_to_output_next,
+
     // Zoom
     zoom_in,
     zoom_out,
@@ -247,6 +251,8 @@ pub const Action = enum(u8) {
             .{ "layout:reset", Action.layout_reset },
             .{ "workspace:toggle_last", Action.workspace_toggle_last },
             .{ "workspace:next_nonempty", Action.workspace_next_nonempty },
+            .{ "output:focus_next", Action.focus_output_next },
+            .{ "output:move_to_next", Action.move_to_output_next },
             .{ "pane:close", Action.pane_close },
             .{ "split:vertical", Action.split_vertical },
             .{ "split:horizontal", Action.split_horizontal },
@@ -625,6 +631,10 @@ pub const Keybinds = struct {
         // Workspace navigation (v0.4.15)
         _ = self.add(n, M, 0xFF1B, .workspace_toggle_last); // Mod+Escape
         _ = self.add(n, MC, '`', .workspace_next_nonempty); // Mod+Ctrl+grave
+
+        // Multi-output (v0.4.20)
+        _ = self.add(n, M, 'o', .focus_output_next); // Mod+O — cycle focused output
+        _ = self.add(n, MS, 'o', .move_to_output_next); // Mod+Shift+O — move focused window across outputs
 
         // Layout (v0.4.15)
         _ = self.add(n, MS, ' ', .layout_reset);

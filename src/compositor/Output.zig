@@ -21,6 +21,23 @@ frame: wlr.wl_listener,
 request_state: wlr.wl_listener,
 destroy: wlr.wl_listener,
 
+// ── Multi-output state (v0.4.20) ──────────────────────────────
+//
+// The three-rule architecture (see docs/ARCHITECTURE.md):
+//   R1  Node.workspace is identity (which workspace a window belongs to).
+//   R2  Output.workspace is a viewport (which workspace is visible here).
+//   R3  A node renders iff some output is currently showing its workspace.
+//
+// `workspace` and `prev_workspace` implement R2. `prev_workspace`
+// powers Mod+Escape per-output toggle-last. Other outputs reference
+// the same global `layout_engine.workspaces[]` set — workspaces don't
+// belong to outputs, they just get shown on them.
+
+/// Currently visible workspace on this output.
+workspace: u8 = 0,
+/// Previous visible workspace (for Mod+Escape toggle-last).
+prev_workspace: ?u8 = null,
+
 /// Create an Output, register listeners, enable the output.
 pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.Allocator) !*Output {
     const output = try allocator.create(Output);
@@ -30,6 +47,11 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
         .frame = .{ .link = .{ .prev = null, .next = null }, .notify = handleFrame },
         .request_state = .{ .link = .{ .prev = null, .next = null }, .notify = handleRequestState },
         .destroy = .{ .link = .{ .prev = null, .next = null }, .notify = handleDestroy },
+        // New outputs take the server's active workspace as their initial
+        // viewport. If the workspace is already shown on another output
+        // the user can Mod+N to pick a different one — we don't pull-swap
+        // on connect.
+        .workspace = server.layout_engine.active_workspace,
     };
 
     // Init render pipeline for this output
@@ -48,6 +70,14 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
 
     // Create scene output for compositing
     _ = wlr.wlr_scene_output_create(server.scene, wlr_output);
+
+    // Track in Server.outputs — pointer identity survives disconnect.
+    // Failure here is non-fatal (legacy code paths still work with just
+    // primary_output); we just can't cycle focus to a non-tracked output.
+    server.outputs.append(server.zig_allocator, output) catch {
+        std.debug.print("teruwm: WARN: outputs list append failed\n", .{});
+    };
+    if (server.focused_output == null) server.focused_output = output;
 
     const name = wlr.miozu_output_name(wlr_output) orelse "unknown";
     const w = wlr.miozu_output_width(wlr_output);
@@ -146,6 +176,7 @@ fn handleRequestState(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c
 
 fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const output: *Output = @fieldParentPtr("destroy", listener);
+    const server = output.server;
     const name = wlr.miozu_output_name(output.wlr_output) orelse "unknown";
     std.debug.print("teruwm: output '{s}' disconnected\n", .{name});
 
@@ -154,6 +185,23 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     wlr.wl_list_remove(&output.request_state.link);
     wlr.wl_list_remove(&output.destroy.link);
 
-    // Note: we leak the Output allocation here. In production, track outputs
-    // in a list on Server and free properly. Fine for now.
+    // Drop from Server.outputs and fix up focused_output. Nodes whose
+    // workspace was only shown on this output become invisible — the
+    // user can Mod+N to see them again. xmonad calls this "screen gone,
+    // workspace orphaned" and handles it the same way.
+    for (server.outputs.items, 0..) |o, i| {
+        if (o == output) {
+            _ = server.outputs.orderedRemove(i);
+            break;
+        }
+    }
+    if (server.focused_output == output) {
+        server.focused_output = if (server.outputs.items.len > 0) server.outputs.items[0] else null;
+    }
+    if (server.primary_output == output.wlr_output) {
+        server.primary_output = if (server.focused_output) |fo| fo.wlr_output else null;
+    }
+    server.recomputeVisibility();
+
+    server.zig_allocator.destroy(output);
 }
