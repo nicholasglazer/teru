@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.5.0 (2026-04-13)
+
+The xmonad-parity milestone. 25 patches since 0.4.1 landed a tiling Wayland
+compositor (`teruwm`), a 48-tool two-server MCP surface, multi-output support,
+session save/restore, and a defensive crash-hardening pass driven by live
+chromium/tty testing.
+
+### Features — teruwm (wlroots Wayland compositor)
+- **xmonad master workflow** — `$mod+M` focus-master, `$mod+Shift+M` swap-master, `$mod+,/.` adjust master count, `$mod+Ctrl+J/K` rotate slaves.
+- **Named scratchpads** — xmonad `NamedScratchpad` model with `HIDDEN_WS` sentinel; toggles park/unpark a tagged pane on any workspace.
+- **DynamicProjects** — per-workspace startup hooks via `[workspace.N]` config.
+- **Multi-output (3-rule architecture)** — Node.workspace is identity, Output.workspace is a viewport, visibility derives. `$mod+O` cycle output, `$mod+Shift+O` move across outputs.
+- **Float toggle + sink all** — `$mod+S` toggles floating; `$mod+Ctrl+S` sinks every floater back into tiling.
+- **Zoom / fullscreen** — `$mod+Z` monocle on focused pane, `$mod+F` true fullscreen (bars hidden).
+- **Session save/restore** — `.tsess` snapshots; hot-restart preserves PTY fds across `exec`.
+- **Screen capture** — `wlr-screencopy` native compositor screenshots, area select, fade-unfocused, record presets.
+- **Smart borders** — drawn only when there are peers; sole pane renders borderless.
+- **`[autostart]` section** — compositor launches user programs on ready.
+- **xdg_activation_v1 urgency** — hidden clients flash an urgency pill in the bar.
+- **XWayland lazy-start** — spawned on first X11 client connect; absent at runtime without penalty.
+- **Spawn chords** — 32 user-defined `spawn_0..31` keybind slots.
+- **Default close chord: `$mod+Shift+C`** — matches xmonad `mod-shift-c`; `$mod+X` is no longer bound.
+
+### Features — MCP surface
+- **Two-server architecture** — 20-tool agent MCP (`teru-mcp-*.sock`) + 28-tool compositor MCP (`teru-wmmcp-*.sock`); 48 tools total.
+- **Cross-server forwarding** — `teruwm_*` calls on the agent socket transparently forward to the compositor socket.
+- **Event push channel** — `teru-*mcp-events-*.sock` with `subscribe_events` tool, JSON-line stream (`window_mapped`, `focus_changed`, `workspace_switched`, `urgent`, `window_closed`).
+- **In-band MCP** — OSC 9999 query + DCS 9999 reply lets headless agents drive teru without a socket.
+- **Line-JSON dispatch** — comptime tool table, no per-call allocation.
+
+### Features — teru (terminal)
+- **DECLRMM left/right scroll margins** — IL/DL/ICH/DCH margin-aware.
+- **Native PNG screenshots**, Braille + geometric glyphs (352 new), DECTCEM cursor visibility.
+
+### Fixes — defensive crash-hardening (v0.4.19..v0.4.27)
+Six coredump-grade bugs triaged during live chromium/tty testing; all shared one root shape — wlroots scene/seat invariants violated by a stale or foreign surface.
+- **Surface liveness guard** — `miozu_surface_is_live` checks `resource && mapped` before any seat-notify or cursor-surface call.
+- **Cursor-request filter** — `request_set_cursor` rejected from any client other than the focused pointer client (matches sway/river).
+- **Scene node type check** — `wlr_scene_node_at` returns rect/tree/buffer; pre-filter buffer nodes before `wlr_scene_buffer_from_node`.
+- **Grab-on-close invariant** — every close path nulls `focused_terminal`, `focused_view`, and `grab_node_id` before freeing the backing pane/view.
+- **Workspace.removeNode** clears `active_node` and `master_id` when they equal the removed id.
+- **DCS parser isolation** — `ESC` inside a DCS body routes through a dedicated sub-state, never the general `.escape` state.
+- **XDG click-to-focus** — sets `server.focused_view` via `focusView()`; prior to this, `$mod+Shift+C` / `$mod+S` on a Wayland client no-op'd or targeted the wrong window.
+- **XDG view unmap/destroy UAF** — clears focused_view and grab state before surface destruction.
+
+### Build / CI
+- Version single source of truth: `build.zig` line 10; propagated via `build_options.version`.
+- 488 inline tests.
+
+### Documentation
+- Full rewrite of `docs/ARCHITECTURE.md`, `docs/MCP-API.md` (48 tools), `docs/KEYBINDINGS.md`, `docs/INSTALLING.md`, `docs/BENCHMARKS.md`.
+- `CLAUDE.md` crash catalogue with symptom → trigger → root cause → fix mapping.
+
 ## 0.4.1 (2026-04-10)
 
 ### Features

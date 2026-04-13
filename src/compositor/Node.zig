@@ -52,6 +52,11 @@ floating: [max_nodes]bool = [_]bool{false} ** max_nodes,
 // Cold path: touched only on render or surface interaction
 scene_tree: [max_nodes]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** max_nodes,
 xdg_toplevel: [max_nodes]?*wlr.wlr_xdg_toplevel = [_]?*wlr.wlr_xdg_toplevel{null} ** max_nodes,
+// Back-pointer to the XdgView owning this slot. Stored as *anyopaque
+// to avoid a Node↔XdgView import cycle (XdgView imports Server imports
+// Node). Click-to-focus + Win+X need this to resolve the node_id under
+// the cursor to the XdgView* that focusView/closeFocused operate on.
+xdg_view: [max_nodes]?*anyopaque = [_]?*anyopaque{null} ** max_nodes,
 
 // Identity: touched on MCP queries, name lookups, config rule matching
 name: [max_nodes][32]u8 = [_][32]u8{[_]u8{0} ** 32} ** max_nodes,
@@ -78,13 +83,15 @@ count: u16 = 0,
 // ── Public API ─────────────────────────────────────────────────
 
 /// Register a new Wayland surface node. Returns the slot index.
-pub fn addSurface(self: *Node, id: u64, ws: u8, toplevel: ?*wlr.wlr_xdg_toplevel, tree: *wlr.wlr_scene_tree) ?u16 {
+/// `view` is the opaque XdgView back-pointer (see `xdg_view` field).
+pub fn addSurface(self: *Node, id: u64, ws: u8, toplevel: ?*wlr.wlr_xdg_toplevel, tree: *wlr.wlr_scene_tree, view: ?*anyopaque) ?u16 {
     const slot = self.findEmptySlot() orelse return null;
     self.kind[slot] = .wayland_surface;
     self.node_id[slot] = id;
     self.workspace[slot] = ws;
     self.xdg_toplevel[slot] = toplevel;
     self.scene_tree[slot] = tree;
+    self.xdg_view[slot] = view;
     self.pos_x[slot] = 0;
     self.pos_y[slot] = 0;
     self.width[slot] = 0;
@@ -129,6 +136,7 @@ pub fn remove(self: *Node, id: u64) bool {
             self.node_id[i] = 0;
             self.scene_tree[i] = null;
             self.xdg_toplevel[i] = null;
+            self.xdg_view[i] = null;
             self.floating[i] = false;
             self.name_len[i] = 0;
             self.group_id[i] = 0;
