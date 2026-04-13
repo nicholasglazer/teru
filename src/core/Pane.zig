@@ -23,6 +23,10 @@ pub const SpawnConfig = struct {
     cursor_shape: Grid.CursorShape = .block,
     /// Pre-built argv for -e exec (first pane only, then cleared).
     exec_argv: ?[*:null]const ?[*:0]const u8 = null,
+    /// Working directory for the spawned child. Null = inherit parent cwd.
+    /// Used by session restore and `[workspace.N] cwd = …` to resume each
+    /// pane where it left off.
+    cwd: ?[]const u8 = null,
 };
 
 /// PTY backend: local process or daemon IPC stream.
@@ -57,6 +61,7 @@ pub fn init(allocator: Allocator, rows: u16, cols: u16, id: u64, spawn_config: S
         .shell = spawn_config.shell,
         .term = spawn_config.term,
         .exec_argv = spawn_config.exec_argv,
+        .cwd = spawn_config.cwd,
     });
     errdefer pty.deinit();
 
