@@ -138,3 +138,39 @@ it requires DRM + libinput access. Nested execution isn't supported.
 Config goes in `~/.config/teruwm/config`. See
 [CONFIGURATION.md](CONFIGURATION.md#teruwm-compositor-config) and
 [KEYBINDINGS.md](KEYBINDINGS.md).
+
+## Troubleshooting crashes
+
+If `teruwm` aborts, systemd-coredump captures the process image. To
+inspect and file a useful report:
+
+```sh
+coredumpctl list                       # find the PID
+coredumpctl info <pid>                 # backtrace + threads
+coredumpctl debug <pid>                # drop into gdb on the core
+```
+
+The backtrace is usually enough — the top non-libc frame is a `Server.*`
+or wlroots function. If you're reporting, include:
+
+1. The full `coredumpctl info` stack.
+2. The exact action that triggered it (e.g. "pressed Shift+Alt after
+   opening chromium").
+3. `git log -1 --oneline` from your teru checkout — so we know which
+   commit you're on.
+
+### Known defensive guards (v0.4.19..v0.4.25)
+
+Six coredump-grade crashes were triaged in the 0.4.x polish pass:
+
+| Symptom | Trigger | Root cause | Fix tag |
+|---|---|---|---|
+| `Bar.buildBarData` SIGSEGV | Close last pane (`$mod+X`) | `focused_terminal` pointed at freed TerminalPane during `bar.render` | v0.4.19 |
+| `wl_resource_post_event` assert | Close an external window (chromium) via MCP | `focused_view` + grab state dangled past unmap → destroy | v0.4.19 / v0.4.22 |
+| `update_node_update_outputs` assert (scene) | Any motion on an XDG client during unmap race | Scene buffer out-lives its surface briefly | v0.4.24 |
+| `update_node_update_outputs` assert (scene) | Defocused client set_cursor after modifier (Shift+Alt on chromium) | Cursor-set accepted from any client, not just focused | v0.4.25 |
+| DCS → CSI state leak | `ESC[` inside a DCS body | `dcs_passthrough` reused the general `.escape` state | v0.4.22 |
+| `Workspace.removeNode` stale `active_node` | Close last pane on a workspace | `active_node` not cleared on node remove | v0.4.22 |
+
+If you see a crash that doesn't match one of these signatures with a
+recent enough build, it's new — please file it.

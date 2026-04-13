@@ -76,6 +76,36 @@ rotate_slaves, spawn chords, sink_all), 0.4.16 AI-Surface (xdg_activation
 (wlr-screencopy + area shot + fade + record). See `git tag` for the full
 series.
 
+## Known crash patterns + invariants (post-v0.4.25 defensive set)
+
+All six coredump-level bugs triaged during the v0.4.19..v0.4.25
+hardening pass shared one root shape: **wlroots scene / seat
+invariants violated by a stale or foreign surface**. Guards now in
+place:
+
+- **Surface liveness**: `vendor/miozu-wlr-glue.c::miozu_surface_is_live`
+  checks `surface->resource && surface->mapped` before *any* seat
+  notify or cursor-surface call. Scene buffers out-live surfaces
+  briefly during unmap→destroy; this guard drops the window.
+- **Request-set-cursor filter**: `miozu_set_cursor_event_from_focused`
+  — compare `event->seat_client` to `seat->pointer_state.focused_client`
+  and reject from anyone else. Matches sway/river. Without this a
+  defocused chromium pushing set_cursor after a modifier event (e.g.
+  Shift+Alt) left a scene-cursor node with `active_outputs &&
+  !primary_output`, crashing the next motion update.
+- **Grab-on-close**: every close path (`closeNode` / `closeFocused`
+  for terminal + XDG, plus XdgView.handleUnmap + handleDestroy) must
+  null `focused_terminal` + `focused_view` + `grab_node_id` BEFORE
+  freeing the underlying pane/view. Otherwise `wlr_xdg_toplevel_send_close`
+  or `wlr_cursor_set_*` dereferences a dead `wl_resource`.
+- **Workspace.removeNode** clears `active_node` and `master_id` when
+  they equal the removed id — otherwise `updateFocusedTerminal` looks
+  up a heap-freed pane pointer next frame.
+- **DCS parser isolation**: an `ESC` inside a DCS body routes through
+  the dedicated `.dcs_st_esc` state, never the general `.escape` state.
+  Before v0.4.22 an embedded `ESC[` inside a DCS payload leaked into
+  the CSI parameter accumulator.
+
 ## User-facing surface
 
 - [README.md](README.md) — what teru and teruwm are; link tree
