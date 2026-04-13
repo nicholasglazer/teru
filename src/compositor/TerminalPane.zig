@@ -352,7 +352,15 @@ fn ptyReadable(_: c_int, mask: u32, data: ?*anyopaque) callconv(.c) c_int {
     if (tp.poll()) {
         // Grid is dirty — tell wlroots we need a new frame so handleFrame
         // renders the updated content on the next vsync.
-        if (tp.server.primary_output) |output| {
+        // Multi-output: schedule on every output, since a pane on
+        // workspace K is only ever visible on the output showing K.
+        // N ≤ 4 in practice, trivial cost. Fall back to primary_output
+        // during the init window where outputs[] hasn't populated yet.
+        if (tp.server.outputs.items.len > 0) {
+            for (tp.server.outputs.items) |o| {
+                wlr.wlr_output_schedule_frame(o.wlr_output);
+            }
+        } else if (tp.server.primary_output) |output| {
             wlr.wlr_output_schedule_frame(output);
         }
     }
