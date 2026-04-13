@@ -575,13 +575,25 @@ fn sigwinchHandler(_: posix.SIG) callconv(.c) void {
 /// TUI multiplexer mode: full pane/workspace/layout rendered as ANSI to a terminal.
 /// Connects to a daemon over Unix socket. Works over SSH. Session persists.
 fn runTuiDaemonMode(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
+    // TUI daemon mode is POSIX-only — it talks to a daemon over a Unix
+    // socket and toggles termios for raw keystroke input. Windows never
+    // reaches this path (Daemon.connectToSession only exists on POSIX),
+    // but the function must still type-check on Windows because
+    // posix.fd_t is *anyopaque and stdin fd `0` is a comptime_int.
+    if (builtin.os.tag == .windows) return error.Unsupported;
+
     defer _ = posix.system.close(sock);
 
     out("[teru] TUI mode \xe2\x80\x94 attached to session\r\n");
 
     // Enter raw terminal mode
     var orig_termios: posix.termios = undefined;
-    _ = std.c.tcgetattr(0, &orig_termios);
+    // stdin/stdout fds — on POSIX these are the literals 0 / 1. On
+    // Windows posix.fd_t is *anyopaque (HANDLE), so use `undefined`
+    // to keep the module compilable. The early-return above ensures
+    // these are never actually read on Windows.
+    const stdin_fd: posix.fd_t = if (builtin.os.tag == .windows) undefined else 0;
+    _ = std.c.tcgetattr(stdin_fd, &orig_termios);
     var raw = orig_termios;
     raw.iflag.ICRNL = false;
     raw.iflag.IXON = false;
