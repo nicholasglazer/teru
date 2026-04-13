@@ -34,6 +34,15 @@ const max_request: usize = 65536;
 const max_response: usize = 65536;
 const socket_path_max: usize = 108; // Unix domain socket sun_path limit
 
+/// Invalid-fd sentinel. `posix.fd_t` is `c_int` on POSIX (−1 is the
+/// conventional invalid value) and `*anyopaque` on Windows (HANDLE).
+/// This module only runs on POSIX at runtime — Windows never reaches
+/// the daemon path — but the field declarations must still type-check.
+const invalid_fd: posix.fd_t = if (builtin.os.tag == .windows)
+    @ptrFromInt(std.math.maxInt(usize))
+else
+    -1;
+
 socket_path: [socket_path_max]u8,
 socket_path_len: usize,
 socket_fd: posix.fd_t,
@@ -50,8 +59,8 @@ running: bool,
 // can connect to teru + teruwm events with one handshake.
 event_socket_path: [socket_path_max]u8 = undefined,
 event_socket_path_len: usize = 0,
-event_socket_fd: posix.fd_t = -1,
-event_subscriber_fd: posix.fd_t = -1,
+event_socket_fd: posix.fd_t = invalid_fd,
+event_subscriber_fd: posix.fd_t = invalid_fd,
 // Screen dimensions for PTY resize after pane creation
 screen_width: u32 = 0,
 screen_height: u32 = 0,
@@ -108,8 +117,8 @@ pub fn getSocketPath(self: *const McpServer) []const u8 {
 
 pub fn deinit(self: *McpServer) void {
     _ = posix.system.close(self.socket_fd);
-    if (self.event_subscriber_fd != -1) _ = posix.system.close(self.event_subscriber_fd);
-    if (self.event_socket_fd != -1) _ = posix.system.close(self.event_socket_fd);
+    if (self.event_subscriber_fd != invalid_fd) _ = posix.system.close(self.event_subscriber_fd);
+    if (self.event_socket_fd != invalid_fd) _ = posix.system.close(self.event_socket_fd);
 
     // Unlink socket files
     var unlink_buf: [socket_path_max + 1]u8 = undefined;
@@ -134,7 +143,9 @@ pub fn poll(self: *McpServer) void {
 
     // Accept on the events socket first — unlike the request socket,
     // this fd stays open (pushed JSON events flow here).
-    if (self.event_socket_fd != -1) {
+    // POSIX-only: fcntl is not in Windows libc; the daemon path never
+    // runs on Windows anyway.
+    if (builtin.os.tag != .windows and self.event_socket_fd != invalid_fd) {
         if (ipc.accept(ipc.IpcHandle.fromRaw(self.event_socket_fd))) |evt_client| {
             const fd = evt_client.rawFd();
             const F_GETFL: c_int = 3;
@@ -143,7 +154,7 @@ pub fn poll(self: *McpServer) void {
             const flags = std.c.fcntl(fd, F_GETFL);
             if (flags >= 0) _ = std.c.fcntl(fd, F_SETFL, flags | O_NONBLOCK);
             // Replace any prior subscriber.
-            if (self.event_subscriber_fd != -1) _ = posix.system.close(self.event_subscriber_fd);
+            if (self.event_subscriber_fd != invalid_fd) _ = posix.system.close(self.event_subscriber_fd);
             self.event_subscriber_fd = fd;
         }
     }
@@ -159,7 +170,7 @@ pub fn poll(self: *McpServer) void {
 /// object; we append `\n` ourselves. O_NONBLOCK on the fd means slow
 /// consumers drop events, never stall us.
 pub fn emitEvent(self: *McpServer, json_line: []const u8) void {
-    if (self.event_subscriber_fd == -1) return;
+    if (self.event_subscriber_fd == invalid_fd) return;
     var buf: [4096]u8 = undefined;
     const n = @min(json_line.len, buf.len - 1);
     @memcpy(buf[0..n], json_line[0..n]);
@@ -168,13 +179,13 @@ pub fn emitEvent(self: *McpServer, json_line: []const u8) void {
     const w = std.c.write(self.event_subscriber_fd, &buf, total);
     if (w <= 0) {
         _ = posix.system.close(self.event_subscriber_fd);
-        self.event_subscriber_fd = -1;
+        self.event_subscriber_fd = invalid_fd;
     }
 }
 
 /// Helper: emit `{"event":"<kind>", ...rest...}` using format.
 pub fn emitEventKind(self: *McpServer, kind: []const u8, comptime fmt: []const u8, args: anytype) void {
-    if (self.event_subscriber_fd == -1) return;
+    if (self.event_subscriber_fd == invalid_fd) return;
     var buf: [2048]u8 = undefined;
     const prefix = std.fmt.bufPrint(&buf, "{{\"event\":\"{s}\"", .{kind}) catch return;
     const rest = std.fmt.bufPrint(buf[prefix.len..], fmt, args) catch return;
