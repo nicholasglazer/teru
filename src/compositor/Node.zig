@@ -172,10 +172,19 @@ pub fn anyUrgentOnWorkspace(self: *const Node, ws: u8) bool {
 // ── Scratchpad identity (xmonad NamedScratchpad model) ─────────
 
 /// Tag a slot as a named scratchpad. Empty name clears. Max 15 chars
-/// (truncated silently).
+/// (truncated silently). If another slot already holds this name
+/// (shouldn't happen under normal flow, but could via MCP misuse or
+/// a race during scratchpad spawn), that prior tag is cleared to keep
+/// `findByScratchpad` single-valued — the toggle semantics break
+/// otherwise (two slots oscillating). The pane itself is untouched.
 pub fn setScratchpad(self: *Node, slot: u16, name: []const u8) void {
     if (slot >= max_nodes) return;
     const len = @min(name.len, max_scratchpad_name - 1);
+    if (len > 0) {
+        if (self.findByScratchpad(name[0..len])) |existing| {
+            if (existing != slot) self.scratchpad_name_len[existing] = 0;
+        }
+    }
     @memcpy(self.scratchpad_name[slot][0..len], name[0..len]);
     self.scratchpad_name[slot][len] = 0;
     self.scratchpad_name_len[slot] = @intCast(len);

@@ -241,7 +241,11 @@ fn handleRequest(self: *WmMcpServer, conn_fd: posix.fd_t) void {
     _ = std.c.write(conn_fd, json_response.ptr, json_response.len);
 }
 
-fn dispatch(self: *WmMcpServer, body: []const u8, resp_buf: []u8) []const u8 {
+/// Route a JSON-RPC body through the method/tool dispatch. Public for
+/// symmetry with McpServer.dispatch (teru side) — any transport
+/// (HTTP socket, future line-JSON, future in-band forwarding) can
+/// share this one path without re-implementing framing + routing.
+pub fn dispatch(self: *WmMcpServer, body: []const u8, resp_buf: []u8) []const u8 {
     const method = extractJsonString(body, "method") orelse
         return jsonRpcError(resp_buf, null, -32600, "Invalid Request");
     const id = extractJsonId(body);

@@ -125,41 +125,55 @@ fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const server = output.server;
     const frame_start = compat.monotonicNow();
 
-    // Apply deferred layout from border drag (once per vsync, not per mouse motion)
-    if (server.layout_dirty) {
-        server.arrangeWorkspaceSmooth(server.layout_engine.active_workspace);
-        server.layout_dirty = false;
-    }
+    // Global, cross-output side effects run on the focused output's
+    // frame callback only — otherwise on N monitors at 60 Hz each we'd
+    // re-arrange / re-resize / restart N times per vsync.
+    // Single-monitor setups: focused_output == this output == harmless.
+    const is_canonical = if (server.focused_output) |fo| fo == output else true;
 
-    // Apply deferred terminal resize from floating drag
-    if (server.resize_pending_id) |rid| {
-        for (server.terminal_panes) |maybe_tp| {
-            if (maybe_tp) |tp| {
-                if (tp.node_id == rid) {
-                    tp.resize(server.resize_pending_w, server.resize_pending_h);
-                    break;
+    if (is_canonical) {
+        // Apply deferred layout from border drag (once per vsync).
+        if (server.layout_dirty) {
+            server.arrangeWorkspaceSmooth(server.layout_engine.active_workspace);
+            server.layout_dirty = false;
+        }
+
+        // Apply deferred terminal resize from floating drag.
+        if (server.resize_pending_id) |rid| {
+            for (server.terminal_panes) |maybe_tp| {
+                if (maybe_tp) |tp| {
+                    if (tp.node_id == rid) {
+                        tp.resize(server.resize_pending_w, server.resize_pending_h);
+                        break;
+                    }
                 }
             }
+            server.resize_pending_id = null;
         }
-        server.resize_pending_id = null;
-    }
 
-    // Render dirty terminal panes before compositing (coalesces PTY reads to vsync)
-    for (server.terminal_panes) |maybe_tp| {
-        if (maybe_tp) |tp| _ = tp.renderIfDirty();
+        // Render dirty terminal panes before compositing. Terminals are
+        // software-rendered into a shared scene graph, so rendering once
+        // per vsync on the canonical output is enough — every other
+        // output that shows the same workspace reads the same buffer.
+        for (server.terminal_panes) |maybe_tp| {
+            if (maybe_tp) |tp| _ = tp.renderIfDirty();
+        }
     }
 
     const scene_output = wlr.wlr_scene_get_scene_output(server.scene, output.wlr_output) orelse return;
     _ = wlr.wlr_scene_output_commit(scene_output, null);
 
-    // MCP-triggered restart (deferred to after response is sent)
-    if (server.restart_pending) {
-        server.restart_pending = false;
-        server.execRestart();
-        // If we get here, exec() failed
+    if (is_canonical) {
+        // MCP-triggered restart — ordered after commit so the response
+        // reaches the client before we exec().
+        if (server.restart_pending) {
+            server.restart_pending = false;
+            server.execRestart();
+            // If we get here, exec() failed — the event loop resumes.
+        }
     }
 
-    // Record frame timing
+    // Frame timing is per-output (measures THIS output's path).
     const elapsed_ns = compat.monotonicNow() - frame_start;
     const elapsed_us: u64 = @intCast(@max(0, @divTrunc(elapsed_ns, 1000)));
     server.perf.recordFrame(elapsed_us);

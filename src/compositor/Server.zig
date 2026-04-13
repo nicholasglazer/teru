@@ -2324,9 +2324,17 @@ pub fn closeNode(self: *Server, node_id: u64) bool {
         }
     }
 
-    // XDG view: find the view with matching node_id and send close request
+    // XDG view: find the view with matching node_id and send close request.
+    // Parallels the terminal-pane close path — clear grab state if this
+    // view was being dragged so a subsequent motion doesn't chase a
+    // stale id. The actual unmap fires asynchronously via the client's
+    // ack; Server.focused_view is cleared in the unmap handler.
     if (self.focused_view) |view| {
         if (view.node_id == node_id) {
+            if (self.grab_node_id) |id| if (id == node_id) {
+                self.grab_node_id = null;
+                self.cursor_mode = .normal;
+            };
             wlr.wlr_xdg_toplevel_send_close(view.toplevel);
             return true;
         }
@@ -2341,6 +2349,10 @@ pub fn closeNode(self: *Server, node_id: u64) bool {
 /// Bound to Win+X. No-op if nothing focused.
 pub fn closeFocused(self: *Server) void {
     if (self.focused_view) |view| {
+        if (self.grab_node_id) |id| if (id == view.node_id) {
+            self.grab_node_id = null;
+            self.cursor_mode = .normal;
+        };
         wlr.wlr_xdg_toplevel_send_close(view.toplevel);
         return;
     }
@@ -2531,6 +2543,14 @@ pub fn moveNodeToWorkspace(self: *Server, nid: u64, target: u8) void {
     const from = self.nodes.workspace[slot];
     if (from == target) return;
 
+    // If the node we're moving was the focused terminal and the target
+    // workspace isn't visible anywhere, the pane becomes invisible —
+    // we must drop focus so subsequent keystrokes don't silently feed
+    // an off-screen PTY. updateFocusedTerminal (called below) picks a
+    // new focus target on the now-visible workspace.
+    const was_focused_nid = if (self.focused_terminal) |tp| tp.node_id else 0;
+    const was_focused = (was_focused_nid == nid);
+
     // Update node identity. Workspace list bookkeeping: remove from old
     // node_ids (if it was tiled there), add to new.
     self.nodes.workspace[slot] = target;
@@ -2546,6 +2566,17 @@ pub fn moveNodeToWorkspace(self: *Server, nid: u64, target: u8) void {
         }
     }
     self.recomputeVisibility();
+
+    if (was_focused) {
+        // Focused pane moved. If target workspace isn't shown anywhere,
+        // the pane is now invisible; refresh focus to whatever's on the
+        // current workspace instead (or null if empty).
+        if (self.outputShowing(target) == null) {
+            self.focused_terminal = null;
+            self.updateFocusedTerminal();
+        }
+    }
+    self.emitMcpEventKind("node_moved", ",\"node_id\":{d},\"from\":{d},\"to\":{d}", .{ nid, from, target });
 }
 
 /// Rule 3: a node renders iff some output currently shows its
@@ -2597,10 +2628,14 @@ pub fn focusNextOutput(self: *Server) void {
             break;
         }
     }
-    self.focused_output = self.outputs.items[next_idx];
+    const next = self.outputs.items[next_idx];
+    const from_ws = cur.workspace;
+    const to_ws = next.workspace;
+    self.focused_output = next;
     // Active workspace follows focus — legacy helpers read this.
-    self.layout_engine.active_workspace = self.focused_output.?.workspace;
+    self.layout_engine.active_workspace = to_ws;
     self.updateFocusedTerminal();
+    self.emitMcpEventKind("output_focused", ",\"from_ws\":{d},\"to_ws\":{d}", .{ from_ws, to_ws });
     if (self.bar) |b| b.render(self);
 }
 

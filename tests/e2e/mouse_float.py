@@ -224,37 +224,59 @@ def run():
                 (before_s["x"], before_s["y"]) != (after_s["x"], after_s["y"]),
                 f"{before_s['x'],before_s['y']} -> {after_s['x'],after_s['y']}")
 
-    # ── D. Scratchpads ─────────────────────────────────────────────
-    # First call creates; second hides; third shows again.
-    r1, _ = mcp(sock, "teruwm_toggle_scratchpad", {"index": 0})
-    r.check("D1 scratchpad 0 first toggle (create)",
+    # ── D. Named scratchpads (since v0.4.18) ───────────────────────
+    # First call creates a floating terminal tagged with `name`; second
+    # hides (parks on HIDDEN_WS); third re-shows.
+    r1, _ = mcp(sock, "teruwm_scratchpad", {"name": "term"})
+    r.check("D1 named scratchpad 'term' create",
             r1 is not None and "created=true" in r1 and "visible=true" in r1,
             str(r1))
     time.sleep(0.3)
-    snap(sock, "06-scratchpad-0-visible")
-    r2, _ = mcp(sock, "teruwm_toggle_scratchpad", {"index": 0})
-    r.check("D2 scratchpad 0 second toggle (hide)",
+    snap(sock, "06-named-term-visible")
+    r2, _ = mcp(sock, "teruwm_scratchpad", {"name": "term"})
+    r.check("D2 named scratchpad 'term' hide",
             r2 is not None and "visible=false" in r2, str(r2))
     time.sleep(0.3)
-    snap(sock, "07-scratchpad-0-hidden")
-    r3, _ = mcp(sock, "teruwm_toggle_scratchpad", {"index": 0})
-    r.check("D3 scratchpad 0 third toggle (show again)",
+    snap(sock, "07-named-term-hidden")
+    r3, _ = mcp(sock, "teruwm_scratchpad", {"name": "term"})
+    r.check("D3 named scratchpad 'term' re-show",
             r3 is not None and "visible=true" in r3, str(r3))
     time.sleep(0.3)
-    snap(sock, "08-scratchpad-0-reshown")
-    # A second scratchpad is independent.
-    r4, _ = mcp(sock, "teruwm_toggle_scratchpad", {"index": 2})
-    r.check("D4 scratchpad 2 create", r4 is not None and "created=true" in r4)
+    snap(sock, "08-named-term-reshown")
+    # Differently-named scratchpad is an independent pane.
+    r4, _ = mcp(sock, "teruwm_scratchpad", {"name": "music"})
+    r.check("D4 named scratchpad 'music' create (independent)",
+            r4 is not None and "created=true" in r4)
     time.sleep(0.3)
-    snap(sock, "09-two-scratchpads-visible")
-    # Bounds check
-    _, err = mcp(sock, "teruwm_toggle_scratchpad", {"index": 9})
-    r.check("D5 scratchpad index 9 rejected", err is not None)
+    snap(sock, "09-two-named-scratchpads")
 
-    # ── E. Take a screenshot as artifact for the session ───────────
+    # Scratchpads live in NodeRegistry now — list_windows sees them.
+    wins_after_sp, _ = mcp(sock, "teruwm_list_windows")
+    sp_count = 0
+    if isinstance(wins_after_sp, list):
+        sp_count = sum(1 for w in wins_after_sp
+                       if isinstance(w.get("name"), str)
+                       and w["name"].startswith("scratch-"))
+    r.check("D5 scratchpads appear in list_windows",
+            sp_count >= 2, f"found {sp_count} scratchpads (expected ≥2)")
+
+    # Compat shim: pre-v0.4.18 numbered API delegates to pad<N>.
+    r6, _ = mcp(sock, "teruwm_toggle_scratchpad", {"index": 0})
+    r.check("D6 compat shim teruwm_toggle_scratchpad",
+            r6 is not None and "name=pad1" in r6, str(r6))
+    _, err = mcp(sock, "teruwm_toggle_scratchpad", {"index": 9})
+    r.check("D7 compat shim index 9 rejected", err is not None)
+
+    # ── E. Event subscription (since v0.4.21) ─────────────────────
+    ev, _ = mcp(sock, "teruwm_subscribe_events")
+    r.check("E1 teruwm_subscribe_events returns a socket path",
+            ev is not None and isinstance(ev.get("socket"), str) and ev["socket"].endswith(".sock"),
+            str(ev))
+
+    # ── F. Take a screenshot as artifact for the session ──────────
     out = "/tmp/teruwm-mouse-float-e2e.png"
     _, err = mcp(sock, "teruwm_screenshot", {"path": out})
-    r.check("E1 screenshot", err is None and os.path.exists(out) and os.path.getsize(out) > 1e5,
+    r.check("F1 screenshot", err is None and os.path.exists(out) and os.path.getsize(out) > 1e5,
             f"{out} ({os.path.getsize(out) if os.path.exists(out) else '-'} bytes)")
 
     # ── cleanup ────────────────────────────────────────────────────

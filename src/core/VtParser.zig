@@ -30,6 +30,7 @@ pub const State = enum {
     csi_intermediate, // saw intermediate byte (0x20-0x2F)
     osc_string, // saw ESC], collecting until BEL/ST
     dcs_passthrough, // saw ESC P, ignore until ST (ESC \)
+    dcs_st_esc, // saw ESC inside DCS body — only ESC \\ terminates, anything else resumes DCS passthrough
     charset_g0, // saw ESC(, waiting for charset designator
     charset_g1, // saw ESC), waiting for charset designator
 };
@@ -234,15 +235,28 @@ fn processByte(self: *VtParser, byte: u8) void {
         .csi_intermediate => self.handleCsiIntermediate(byte),
         .osc_string => self.handleOscString(byte),
         .dcs_passthrough => {
-            // DCS: silently consume until ST (ESC \) or BEL
+            // DCS: silently consume until ST (ESC \) or BEL. An embedded
+            // ESC inside a DCS body must NOT leak into the .escape
+            // state — doing so would let a malformed DCS `ESC [ ...`
+            // drop into CSI parameter collection and corrupt grid
+            // state. Enter a DCS-specific escape substate that only
+            // recognizes `\\` as ST; any other following byte resumes
+            // DCS passthrough.
             if (byte == 0x1B) {
-                // Could be ESC \ (ST) — peek at escape handler
-                self.state = .escape;
+                self.state = .dcs_st_esc;
             } else if (byte == 0x07) {
                 // BEL also terminates DCS
                 self.state = .ground;
             }
             // All other bytes: silently consumed (no output)
+        },
+        .dcs_st_esc => {
+            if (byte == '\\') {
+                self.state = .ground;
+            } else {
+                // Not an ST — treat as part of DCS body.
+                self.state = .dcs_passthrough;
+            }
         },
         .charset_g0 => self.handleCharsetG0(byte),
         .charset_g1 => self.handleCharsetG1(byte),
@@ -646,12 +660,15 @@ fn finishOsc(self: *VtParser) void {
                 self.handleOsc133(payload);
             },
             9999 => {
-                // Agent protocol — store payload for external consumption
-                if (payload.len <= self.agent_event_buf.len) {
-                    @memcpy(self.agent_event_buf[0..payload.len], payload);
-                    self.agent_event_len = payload.len;
-                    self.has_agent_event = true;
-                }
+                // Agent protocol — store payload for external consumption.
+                // Oversize payloads truncate (match OSC 0/1/2 behavior),
+                // never drop — otherwise an agent sending a large query
+                // times out with no hint it was too big. The agent sees
+                // a parse error on the truncated payload and can retry.
+                const take = @min(payload.len, self.agent_event_buf.len);
+                @memcpy(self.agent_event_buf[0..take], payload[0..take]);
+                self.agent_event_len = take;
+                self.has_agent_event = true;
             },
             else => {},
         }
