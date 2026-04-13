@@ -29,8 +29,7 @@ There are three keyboard modes:
 |-----|--------|
 | `$mod+Enter` | Spawn new terminal pane |
 | `$mod+C` | Spawn new pane (vertical split) |
-| `$mod+X` | **Close focused pane or window** |
-| `$mod+Shift+C` | Close focused window (alias) |
+| `$mod+Shift+C` | **Close focused pane or window** (xmonad `mod-shift-c`) |
 | `$mod+J` / `$mod+K` | Focus next / previous pane |
 | `$mod+Tab` / `$mod+Shift+Tab` | Focus next / previous (XMonad-style) |
 | `$mod+Shift+J` / `$mod+Shift+K` | Swap focused pane with next / previous |

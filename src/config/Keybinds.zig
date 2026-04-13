@@ -650,7 +650,9 @@ pub const Keybinds = struct {
         // Pane management
         _ = self.add(n, M, 'c', .split_vertical);
         _ = self.add(n, MS, 'c', .window_close);
-        _ = self.add(n, M, 'x', .pane_close);
+        // NOTE: no longer bind Mod+X to pane_close — Mod+Shift+C is now
+        // the single close-pane chord (matches xmonad `mod-shift-c`).
+        // Prefix-mode `x` still kills a pane, tmux-style.
         _ = self.add(n, M, '\r', .spawn_terminal);
 
         // Layout + window

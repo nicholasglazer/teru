@@ -807,6 +807,13 @@ pub fn processCursorButton(server: *Server, button: u32, state: u32, time: u32, 
                     for (server.terminal_panes) |maybe_tp| {
                         if (maybe_tp) |tp| {
                             if (tp.node_id == nid) {
+                                // Deactivate any prior XDG focus so
+                                // chromium/firefox stop drawing the
+                                // "activated" chrome when focus moves
+                                // onto a terminal pane.
+                                if (server.focused_view) |prev_view| {
+                                    _ = wlr.wlr_xdg_toplevel_set_activated(prev_view.toplevel, false);
+                                }
                                 server.focused_terminal = tp;
                                 server.focused_view = null;
                                 const ws = server.layout_engine.getActiveWorkspace();
@@ -825,27 +832,28 @@ pub fn processCursorButton(server: *Server, button: u32, state: u32, time: u32, 
                         }
                     }
                 } else if (server.nodes.kind[slot] == .wayland_surface) {
-                    // Wayland client: activate the toplevel AND set
-                    // keyboard focus. Without the keyboard_notify_enter,
-                    // chromium/firefox swallow the click but every
-                    // subsequent keystroke disappears. Parallels focusView
-                    // but uses the toplevel pointer from NodeRegistry
-                    // (we don't keep a central XdgView* index by node_id).
-                    if (server.nodes.xdg_toplevel[slot]) |tl| {
-                        if (server.focused_view) |prev| {
-                            _ = wlr.wlr_xdg_toplevel_set_activated(prev.toplevel, false);
-                        }
-                        _ = wlr.wlr_xdg_toplevel_set_activated(tl, true);
-                        server.focused_terminal = null;
-                        _ = server.nodes.clearUrgent(slot);
-                        if (wlr.miozu_xdg_toplevel_base(tl)) |xdg_surface| {
-                            if (wlr.miozu_xdg_surface_surface(xdg_surface)) |surface| {
-                                if (wlr.miozu_surface_is_live(surface) != 0) {
-                                    wlr.wlr_seat_keyboard_notify_enter(server.seat, surface, null, 0, null);
-                                }
+                    // Wayland client: route through focusView so
+                    // server.focused_view gets set. Prior to v0.4.27
+                    // this branch activated the toplevel and forwarded
+                    // keyboard focus directly, but left focused_view
+                    // null — so Win+X (closeFocused) and Win+S
+                    // (toggleFloat) read stale state and no-op'd or
+                    // acted on the wrong window. The XdgView pointer
+                    // comes from the node registry back-pointer
+                    // populated in XdgView.handleMap.
+                    if (server.nodes.xdg_view[slot]) |opaque_view| {
+                        const view: *XdgView = @ptrCast(@alignCast(opaque_view));
+                        server.focusView(view);
+                        // Also sync tiling engine's active_index so
+                        // subsequent focus_next / swap operations start
+                        // from this window, matching terminal behavior.
+                        const ws = server.layout_engine.getActiveWorkspace();
+                        for (ws.node_ids.items, 0..) |id2, idx| {
+                            if (id2 == nid) {
+                                ws.active_index = @intCast(idx);
+                                break;
                             }
                         }
-                        if (server.bar) |b| b.render(server);
                     }
                 }
             }
@@ -2496,6 +2504,9 @@ pub fn updateFocusedTerminal(self: *Server) void {
     for (self.terminal_panes) |maybe_tp| {
         if (maybe_tp) |tp| {
             if (tp.node_id == active_id) {
+                if (self.focused_view) |prev_view| {
+                    _ = wlr.wlr_xdg_toplevel_set_activated(prev_view.toplevel, false);
+                }
                 self.focused_terminal = tp;
                 self.focused_view = null;
                 found = true;
@@ -2503,7 +2514,23 @@ pub fn updateFocusedTerminal(self: *Server) void {
             }
         }
     }
-    if (!found) self.focused_terminal = null;
+    if (!found) {
+        // Active node is an XDG view — route through focusView so the
+        // Wayland client gets keyboard focus + activated state, and
+        // server.focused_view is kept consistent for Win+X / Win+S.
+        self.focused_terminal = null;
+        if (self.nodes.findById(active_id)) |slot| {
+            if (self.nodes.xdg_view[slot]) |opaque_view| {
+                const view: *XdgView = @ptrCast(@alignCast(opaque_view));
+                self.focusView(view);
+                // focusView already emits focus_changed + renders bar.
+                for (self.terminal_panes) |maybe_tp| {
+                    if (maybe_tp) |tp| tp.render();
+                }
+                return;
+            }
+        }
+    }
 
     // Clear urgency for the newly-focused node, if any.
     if (self.nodes.findById(active_id)) |slot| {
