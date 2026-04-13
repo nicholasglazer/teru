@@ -2325,12 +2325,13 @@ pub fn closeNode(self: *Server, node_id: u64) bool {
     }
 
     // XDG view: find the view with matching node_id and send close request.
-    // Parallels the terminal-pane close path — clear grab state if this
-    // view was being dragged so a subsequent motion doesn't chase a
-    // stale id. The actual unmap fires asynchronously via the client's
-    // ack; Server.focused_view is cleared in the unmap handler.
+    // Defensive: the view may already be gone (the client crashed /
+    // unmapped between the MCP caller's list_windows and this call);
+    // dereferencing view.toplevel then feeds a dead wl_resource to
+    // wl_resource_post_event, which aborts. Cross-check NodeRegistry
+    // before touching the toplevel.
     if (self.focused_view) |view| {
-        if (view.node_id == node_id) {
+        if (view.node_id == node_id and self.nodes.findById(node_id) != null) {
             if (self.grab_node_id) |id| if (id == node_id) {
                 self.grab_node_id = null;
                 self.cursor_mode = .normal;
