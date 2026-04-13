@@ -1278,27 +1278,32 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
     const node_under = wlr.wlr_scene_node_at(root_node, cx, cy, &sx, &sy);
 
     if (node_under) |scene_node| {
-        // Resolve scene node → wlr_scene_buffer → wlr_scene_surface → wlr_surface.
-        // The motion→enter→notify chain asserts inside wlroots if the
-        // surface resource has been freed (client unmapped between our
-        // scene_node_at call and the notify). Scene buffers can out-live
-        // their surface briefly during the unmap→destroy window. Guard
-        // with miozu_surface_is_live which checks both `resource != NULL`
-        // and the surface's `mapped` flag.
-        if (wlr.wlr_scene_buffer_from_node(scene_node)) |buffer| {
-            if (wlr.wlr_scene_surface_try_from_buffer(buffer)) |scene_surface| {
-                if (wlr.miozu_scene_surface_get_surface(scene_surface)) |surface| {
-                    if (wlr.miozu_surface_is_live(surface) != 0) {
-                        wlr.wlr_seat_pointer_notify_enter(self.seat, surface, sx, sy);
-                        wlr.wlr_seat_pointer_notify_motion(self.seat, time, sx, sy);
-                        return;
+        // scene_node_at returns ANY visible node — buffer, rect, tree.
+        // wlr_scene_buffer_from_node asserts on non-buffer nodes (the
+        // `node->type == WLR_SCENE_NODE_BUFFER` check at wlr_scene.c:38),
+        // so pre-filter via miozu_scene_node_is_buffer. RECT nodes show
+        // up when the cursor is over our bg_rect backdrop, and TREE
+        // nodes appear during float-toggle transitions.
+        if (wlr.miozu_scene_node_is_buffer(scene_node) != 0) {
+            // The motion→enter→notify chain asserts inside wlroots if
+            // the surface resource has been freed (unmap race). Scene
+            // buffers can out-live their surface briefly — guard with
+            // miozu_surface_is_live (resource + mapped check).
+            if (wlr.wlr_scene_buffer_from_node(scene_node)) |buffer| {
+                if (wlr.wlr_scene_surface_try_from_buffer(buffer)) |scene_surface| {
+                    if (wlr.miozu_scene_surface_get_surface(scene_surface)) |surface| {
+                        if (wlr.miozu_surface_is_live(surface) != 0) {
+                            wlr.wlr_seat_pointer_notify_enter(self.seat, surface, sx, sy);
+                            wlr.wlr_seat_pointer_notify_motion(self.seat, time, sx, sy);
+                            return;
+                        }
                     }
                 }
             }
         }
-        // Scene node exists but isn't a live client surface — show
-        // default cursor and drop focus so the next notify_motion
-        // doesn't fire on a stale focused_client.
+        // Scene node isn't a live client surface (background rect,
+        // tree container, freed surface) — show default cursor and
+        // drop focus so the next motion doesn't chase stale state.
         wlr.wlr_cursor_set_xcursor(self.cursor, self.cursor_mgr, "default");
         wlr.wlr_seat_pointer_clear_focus(self.seat);
     } else {
