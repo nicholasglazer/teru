@@ -791,37 +791,61 @@ pub fn processCursorButton(server: *Server, button: u32, state: u32, time: u32, 
         }
     }
 
-    // Click-to-focus: find which terminal pane is under the cursor
+    // Click-to-focus: route the press to whatever node is under the
+    // cursor — terminal pane OR XDG view (chromium, foot, firefox, …).
+    // Before v0.4.24 this loop only checked terminal_panes, so clicks
+    // on a Wayland client got no focus_view assignment and therefore
+    // no keyboard focus — chromium swallowed the click but keystrokes
+    // were dropped. nodeAtPoint is the single hit-test that honors
+    // scene z-order (floating over tiled, scratchpad over everything).
     if (state == 1) { // press
-        const cx = wlr.miozu_cursor_x(server.cursor);
-        const cy = wlr.miozu_cursor_y(server.cursor);
-        // Check each terminal pane's rect
-        for (server.terminal_panes) |maybe_tp| {
-            if (maybe_tp) |tp| {
-                if (server.nodes.findById(tp.node_id)) |slot| {
-                    const px = server.nodes.pos_x[slot];
-                    const py = server.nodes.pos_y[slot];
-                    const pw: i32 = @intCast(server.nodes.width[slot]);
-                    const ph: i32 = @intCast(server.nodes.height[slot]);
-                    if (@as(i32, @intFromFloat(cx)) >= px and @as(i32, @intFromFloat(cx)) < px + pw and
-                        @as(i32, @intFromFloat(cy)) >= py and @as(i32, @intFromFloat(cy)) < py + ph)
-                    {
-                        server.focused_terminal = tp;
-                        server.focused_view = null;
-                        // Update layout engine focus
-                        const ws = server.layout_engine.getActiveWorkspace();
-                        for (ws.node_ids.items, 0..) |nid, idx| {
-                            if (nid == tp.node_id) {
-                                ws.active_index = @intCast(idx);
+        if (server.nodeAtPoint(wlr.miozu_cursor_x(server.cursor), wlr.miozu_cursor_y(server.cursor))) |nid| {
+            // Find the node's kind and dispatch.
+            if (server.nodes.findById(nid)) |slot| {
+                if (server.nodes.kind[slot] == .terminal) {
+                    // Terminal: focus the pane, update layout engine.
+                    for (server.terminal_panes) |maybe_tp| {
+                        if (maybe_tp) |tp| {
+                            if (tp.node_id == nid) {
+                                server.focused_terminal = tp;
+                                server.focused_view = null;
+                                const ws = server.layout_engine.getActiveWorkspace();
+                                for (ws.node_ids.items, 0..) |id2, idx| {
+                                    if (id2 == nid) {
+                                        ws.active_index = @intCast(idx);
+                                        break;
+                                    }
+                                }
+                                for (server.terminal_panes) |mtp| {
+                                    if (mtp) |t| t.render();
+                                }
+                                if (server.bar) |b| b.render(server);
                                 break;
                             }
                         }
-                        // Re-render borders + bar
-                        for (server.terminal_panes) |mtp| {
-                            if (mtp) |t| t.render();
+                    }
+                } else if (server.nodes.kind[slot] == .wayland_surface) {
+                    // Wayland client: activate the toplevel AND set
+                    // keyboard focus. Without the keyboard_notify_enter,
+                    // chromium/firefox swallow the click but every
+                    // subsequent keystroke disappears. Parallels focusView
+                    // but uses the toplevel pointer from NodeRegistry
+                    // (we don't keep a central XdgView* index by node_id).
+                    if (server.nodes.xdg_toplevel[slot]) |tl| {
+                        if (server.focused_view) |prev| {
+                            _ = wlr.wlr_xdg_toplevel_set_activated(prev.toplevel, false);
+                        }
+                        _ = wlr.wlr_xdg_toplevel_set_activated(tl, true);
+                        server.focused_terminal = null;
+                        _ = server.nodes.clearUrgent(slot);
+                        if (wlr.miozu_xdg_toplevel_base(tl)) |xdg_surface| {
+                            if (wlr.miozu_xdg_surface_surface(xdg_surface)) |surface| {
+                                if (wlr.miozu_surface_is_live(surface) != 0) {
+                                    wlr.wlr_seat_keyboard_notify_enter(server.seat, surface, null, 0, null);
+                                }
+                            }
                         }
                         if (server.bar) |b| b.render(server);
-                        break;
                     }
                 }
             }
@@ -1245,17 +1269,27 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
     const node_under = wlr.wlr_scene_node_at(root_node, cx, cy, &sx, &sy);
 
     if (node_under) |scene_node| {
-        // Resolve scene node → wlr_scene_buffer → wlr_scene_surface → wlr_surface
+        // Resolve scene node → wlr_scene_buffer → wlr_scene_surface → wlr_surface.
+        // The motion→enter→notify chain asserts inside wlroots if the
+        // surface resource has been freed (client unmapped between our
+        // scene_node_at call and the notify). Scene buffers can out-live
+        // their surface briefly during the unmap→destroy window. Guard
+        // with miozu_surface_is_live which checks both `resource != NULL`
+        // and the surface's `mapped` flag.
         if (wlr.wlr_scene_buffer_from_node(scene_node)) |buffer| {
             if (wlr.wlr_scene_surface_try_from_buffer(buffer)) |scene_surface| {
                 if (wlr.miozu_scene_surface_get_surface(scene_surface)) |surface| {
-                    wlr.wlr_seat_pointer_notify_enter(self.seat, surface, sx, sy);
-                    wlr.wlr_seat_pointer_notify_motion(self.seat, time, sx, sy);
-                    return;
+                    if (wlr.miozu_surface_is_live(surface) != 0) {
+                        wlr.wlr_seat_pointer_notify_enter(self.seat, surface, sx, sy);
+                        wlr.wlr_seat_pointer_notify_motion(self.seat, time, sx, sy);
+                        return;
+                    }
                 }
             }
         }
-        // Scene node exists but isn't a client surface — show default cursor
+        // Scene node exists but isn't a live client surface — show
+        // default cursor and drop focus so the next notify_motion
+        // doesn't fire on a stale focused_client.
         wlr.wlr_cursor_set_xcursor(self.cursor, self.cursor_mgr, "default");
         wlr.wlr_seat_pointer_clear_focus(self.seat);
     } else {

@@ -152,6 +152,12 @@ pub extern "c" fn miozu_xdg_activation_request_activate(a: *wlr_xdg_activation_v
 pub extern "c" fn miozu_xdg_activation_event_surface(e: *wlr_xdg_activation_v1_request_activate_event) callconv(.c) ?*wlr_surface;
 pub extern "c" fn miozu_xdg_toplevel_from_surface(s: *wlr_surface) callconv(.c) ?*wlr_xdg_toplevel;
 
+/// True iff the surface resource is still live AND the surface is
+/// currently mapped. Guards the pointer-motion path — scene nodes can
+/// out-live their underlying surface briefly during unmap→destroy,
+/// and wlr_seat_pointer_notify_enter asserts on a freed resource.
+pub extern "c" fn miozu_surface_is_live(s: *wlr_surface) callconv(.c) c_int;
+
 // ── wlroots cursor ────────────────────────────────────────────
 
 pub extern "wlroots-0.18" fn wlr_cursor_create() callconv(.c) ?*wlr_cursor;

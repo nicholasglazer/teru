@@ -455,3 +455,12 @@ struct wlr_surface *miozu_xdg_activation_event_surface(
 struct wlr_xdg_toplevel *miozu_xdg_toplevel_from_surface(struct wlr_surface *s) {
     return wlr_xdg_toplevel_try_from_wlr_surface(s);
 }
+
+/* Surface-lifetime guard for the pointer-motion path. wlr_seat_pointer_
+ * notify_enter calls wl_resource_get_client(surface->resource), which
+ * asserts when the resource is freed. Scene nodes can out-live their
+ * underlying surface during the unmap→destroy window — we check the
+ * mapped bit explicitly before routing pointer focus. */
+int miozu_surface_is_live(struct wlr_surface *s) {
+    return s && s->resource && s->mapped;
+}
