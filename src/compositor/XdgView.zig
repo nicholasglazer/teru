@@ -115,10 +115,24 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
 
 fn handleUnmap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const view: *XdgView = @fieldParentPtr("unmap", listener);
+    const server = view.server;
+
+    // Clear Server pointers into this view BEFORE the registry row
+    // goes away — otherwise any subsequent code path that checks
+    // focused_view / grab_node_id dereferences a dangling wlr_surface
+    // and wl_resource_post_event aborts. Matches the invariant we
+    // enforce in Server.closeNode / handleTerminalExit.
+    if (server.focused_view) |fv| {
+        if (fv == view) server.focused_view = null;
+    }
+    if (server.grab_node_id) |id| if (id == view.node_id) {
+        server.grab_node_id = null;
+        server.cursor_mode = .normal;
+    };
 
     // Remove from node registry and tiling engine
-    _ = view.server.nodes.remove(view.node_id);
-    for (&view.server.layout_engine.workspaces) |*ws| {
+    _ = server.nodes.remove(view.node_id);
+    for (&server.layout_engine.workspaces) |*ws| {
         ws.removeNode(view.node_id);
     }
 
@@ -127,10 +141,21 @@ fn handleUnmap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
 
 fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const view: *XdgView = @fieldParentPtr("destroy", listener);
+    const server = view.server;
+
+    // Mirror handleUnmap — the client may have gone away without
+    // unmap (race on crash), so guard the same Server pointers here.
+    if (server.focused_view) |fv| {
+        if (fv == view) server.focused_view = null;
+    }
+    if (server.grab_node_id) |id| if (id == view.node_id) {
+        server.grab_node_id = null;
+        server.cursor_mode = .normal;
+    };
 
     // Clean up node registry
-    _ = view.server.nodes.remove(view.node_id);
-    for (&view.server.layout_engine.workspaces) |*ws| {
+    _ = server.nodes.remove(view.node_id);
+    for (&server.layout_engine.workspaces) |*ws| {
         ws.removeNode(view.node_id);
     }
 
@@ -143,7 +168,7 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     std.debug.print("teruwm: surface destroyed node={d}\n", .{view.node_id});
 
     // Free the view
-    view.server.zig_allocator.destroy(view);
+    server.zig_allocator.destroy(view);
 }
 
 fn handleCommit(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
