@@ -915,11 +915,20 @@ fn handleNewXwaylandSurface(listener: *wlr.wl_listener, data: ?*anyopaque) callc
 fn handleRequestSetCursor(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const server = wlr.listenerParent(Server, "request_set_cursor", listener);
     const event_ptr = data orelse return;
-    // Allow the focused client to set the cursor image
+
+    // Only the client that currently owns pointer focus may set the
+    // cursor image. Before v0.4.25, we accepted from ANY client — a
+    // defocused chromium could push a stale wlr_surface and wlroots
+    // built a scene-cursor node whose invariant (`active_outputs
+    // implies primary_output`) then blew up during the next cursor-
+    // motion scene update (coredump 429591, Shift+Alt trigger).
+    if (wlr.miozu_set_cursor_event_from_focused(event_ptr, server.seat) == 0) return;
+
     const surface = wlr.miozu_set_cursor_event_surface(event_ptr);
     const hx = wlr.miozu_set_cursor_event_hotspot_x(event_ptr);
     const hy = wlr.miozu_set_cursor_event_hotspot_y(event_ptr);
     if (surface) |s| {
+        if (wlr.miozu_surface_is_live(s) == 0) return; // stale surface guard
         wlr.wlr_cursor_set_surface(server.cursor, s, hx, hy);
     } else {
         wlr.wlr_cursor_set_surface(server.cursor, null, 0, 0);

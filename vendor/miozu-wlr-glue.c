@@ -281,6 +281,19 @@ int32_t miozu_set_cursor_event_hotspot_y(
     return e->hotspot_y;
 }
 
+/* Compare the event's originating seat client against the seat's current
+ * pointer focus. Only the focused pointer client should be allowed to
+ * set the cursor image — otherwise a background / defocused / stale
+ * client can poke cursor state and trigger scene invariants like
+ * `active_outputs && !primary_output` during updates.
+ * Returns 1 iff the event's client matches the focused pointer client. */
+int miozu_set_cursor_event_from_focused(
+    struct wlr_seat_pointer_request_set_cursor_event *e,
+    struct wlr_seat *seat) {
+    return (e && seat && e->seat_client &&
+            e->seat_client == seat->pointer_state.focused_client) ? 1 : 0;
+}
+
 /* ── Custom pixel buffer for terminal pane rendering ──────────── */
 /* Implements wlr_buffer backed by a raw ARGB8888 pixel array.    */
 /* Zero-copy: SoftwareRenderer writes directly into this buffer,  */
