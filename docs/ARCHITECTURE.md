@@ -286,6 +286,9 @@ Mechanically, via tests and assertions:
 - **Widget storage**: fixed-size arrays (`PushWidget.max_widgets = 32`, 128-byte text). No heap.
 - **Color**: every pixel comes from `ColorScheme` or an ANSI palette entry. Theme swaps take effect on next render.
 - **I/O threading**: any function that does file/network/timer I/O takes `io: std.Io`. Threaded top-down from `main(init)`.
+- **wlroots surface lifetime** *(since v0.4.24)*: any `wlr_surface*` passed to `wlr_seat_pointer_notify_enter`, `wlr_seat_keyboard_notify_enter`, or `wlr_cursor_set_surface` must pass `miozu_surface_is_live` first — checks `resource != NULL && mapped`. Scene nodes can out-live their surface briefly during unmap → destroy; without the guard, `wl_resource_get_client` aborts the compositor.
+- **Seat-focused cursor** *(since v0.4.25)*: `request_set_cursor` is ignored unless the event's `seat_client` matches the seat's current pointer focus. Prevents defocused clients from poking cursor state (the trigger for coredumps after a modifier like `Shift+Alt`) and closes a minor hostile-client attack surface.
+- **Grab clearing on close**: every path that frees a pane or view (`closeNode`, `closeFocused`, `handleTerminalExit`, `XdgView.handleUnmap/handleDestroy`) nulls `focused_terminal`, `focused_view`, and `grab_node_id` *before* the free. Otherwise cursor-grab state chases a freed heap object.
 
 ## Binary size, at a glance
 
