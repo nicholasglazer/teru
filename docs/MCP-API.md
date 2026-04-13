@@ -268,7 +268,7 @@ Layouts: `master-stack`, `grid`, `monocle`, `dishes`, `spiral`, `three-col`,
 |---|---|---|
 | `teru_screenshot` | `path` (string, default `/tmp/teru-screenshot.png`) | Capture current framebuffer as PNG. X11/Wayland only. |
 
-## teruwm (compositor) MCP — 26 tools
+## teruwm (compositor) MCP — 28 tools
 
 Socket: `$XDG_RUNTIME_DIR/teru-wmmcp-$PID.sock`. Implementation: `src/compositor/WmMcpServer.zig`.
 

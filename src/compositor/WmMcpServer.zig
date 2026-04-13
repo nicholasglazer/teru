@@ -318,7 +318,9 @@ fn handleToolsList(_: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teruwm_test_move","description":"TEST ONLY: warp the cursor to (x, y) and fire a motion event, no button. Useful for tests that verify hover focus, scroll mode, etc.","inputSchema":{{"type":"object","properties":{{"x":{{"type":"integer"}},"y":{{"type":"integer"}}}},"required":["x","y"]}}}},
         \\{{"name":"teruwm_toggle_scratchpad","description":"Toggle numbered scratchpad N (0..8). Compat shim since v0.4.18 — delegates to teruwm_scratchpad name=padN+1. Prefer teruwm_scratchpad for new code.","inputSchema":{{"type":"object","properties":{{"index":{{"type":"integer","description":"scratchpad index 0..8"}}}},"required":["index"]}}}},
         \\{{"name":"teruwm_scratchpad","description":"Toggle a named scratchpad (xmonad NamedScratchpad model). First call spawns a floating terminal tagged with the given name; subsequent calls toggle its visibility on the focused workspace. Scratchpads live in the node registry with a hidden-workspace sentinel when parked — visible via teruwm_list_windows.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"scratchpad identifier (e.g. 'term', 'music'). Max 15 chars."}},"cmd":{{"type":"string","description":"Reserved for future per-scratchpad spawn commands; ignored today — scratchpads spawn the user shell."}}}},"required":["name"]}}}},
-        \\{{"name":"teruwm_subscribe_events","description":"Get the Unix-socket path for the event push channel. Connect a raw client to that path to read newline-delimited JSON events: urgent, focus_changed, workspace_switched, window_mapped. One subscriber at a time (last-connect wins); best-effort (slow subscribers drop events).","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}}
+        \\{{"name":"teruwm_subscribe_events","description":"Get the Unix-socket path for the event push channel. Connect a raw client to that path to read newline-delimited JSON events: urgent, focus_changed, workspace_switched, window_mapped. One subscriber at a time (last-connect wins); best-effort (slow subscribers drop events).","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
+        \\{{"name":"teruwm_session_save","description":"Snapshot the compositor's live state to ~/.config/teru/sessions/<name>.tsess. Captures workspace layouts, master ratios, pane roles, and per-pane cwd + running cmd (from /proc). Scope: tiled terminal panes only — no XDG clients, no floats, no scratchpads, no scrollback.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"session name (default: 'default')"}}}},"required":[]}}}},
+        \\{{"name":"teruwm_session_restore","description":"Restore a .tsess file into the compositor. Idempotent by role: panes whose role matches an existing pane are not duplicated. Each spawned pane resumes in its saved cwd running its saved cmd. Layouts and master_ratio are restored.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"session name (default: 'default')"}}}},"required":[]}}}}
         \\]}},"id":{s}}}
     , .{id_str}) catch
         jsonRpcError(buf, id, -32603, "Internal error");
@@ -452,9 +454,41 @@ fn handleToolsCall(self: *WmMcpServer, body: []const u8, buf: []u8, id: ?[]const
         return self.toolScratchpad(name, cmd, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teruwm_subscribe_events")) {
         return self.toolSubscribeEvents(buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_session_save")) {
+        const name = extractNestedJsonString(params_body, "name") orelse "default";
+        return self.toolSessionSave(name, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_session_restore")) {
+        const name = extractNestedJsonString(params_body, "name") orelse "default";
+        return self.toolSessionRestore(name, buf, id);
     } else {
         return jsonRpcError(buf, id, -32602, "Unknown tool");
     }
+}
+
+fn toolSessionSave(self: *WmMcpServer, name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+    const Session = @import("Session.zig");
+    Session.save(self.server, name) catch |err| {
+        var msg_buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "session save failed: {}", .{err}) catch "session save failed";
+        return jsonRpcError(buf, id, -32603, msg);
+    };
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"saved session '{s}'"}}]}},"id":{s}}}
+    , .{ name, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolSessionRestore(self: *WmMcpServer, name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+    const Session = @import("Session.zig");
+    Session.restore(self.server, name) catch |err| {
+        var msg_buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "session restore failed: {}", .{err}) catch "session restore failed";
+        return jsonRpcError(buf, id, -32603, msg);
+    };
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"restored session '{s}'"}}]}},"id":{s}}}
+    , .{ name, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolSubscribeEvents(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {

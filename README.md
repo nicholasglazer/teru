@@ -146,7 +146,7 @@ Everything user-facing lives in `docs/`. Concept-by-concept:
 | teru terminal, Windows (Win32 + ConPTY) | all subsystems wired; needs hardware testing |
 | teruwm compositor, Linux (wlroots) | usable; XDG + XWayland verified with Chromium / Emacs / Figma |
 | Session persistence (`-n NAME`) | production |
-| MCP (46 tools) | production; E2E suite covers every tool |
+| MCP (48 tools) | production; E2E suite covers every tool |
 | Hot restart | production; shells survive exec |
 | Push widgets | production |
 | Keypress-to-photon latency numbers | waiting on phototransistor rig — deliberately not published until measured in hardware |

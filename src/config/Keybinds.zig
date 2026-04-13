@@ -173,6 +173,8 @@ pub const Action = enum(u8) {
 
     // Session
     session_detach,
+    session_save,
+    session_restore,
 
     // UI
     toggle_status_bar,
@@ -275,6 +277,8 @@ pub const Action = enum(u8) {
             .{ "mode:search", Action.mode_search },
             .{ "mode:locked", Action.mode_locked },
             .{ "session:detach", Action.session_detach },
+            .{ "session:save", Action.session_save },
+            .{ "session:restore", Action.session_restore },
             .{ "ui:toggle_status_bar", Action.toggle_status_bar },
             .{ "copy:selection", Action.copy_selection },
             .{ "paste:clipboard", Action.paste_clipboard },
@@ -703,6 +707,8 @@ pub const Keybinds = struct {
         _ = self.add(p, N, '/', .mode_search);
         _ = self.add(p, N, 'v', .mode_scroll);
         _ = self.add(p, N, 'd', .session_detach);
+        _ = self.add(p, N, 's', .session_save); // tmux-resurrect: prefix + s
+        _ = self.add(p, N, 'r', .session_restore); // tmux-resurrect: prefix + r
         _ = self.add(p, N, 0x1b, .mode_normal); // Esc
 
         for (0..9) |i| {

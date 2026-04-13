@@ -6,6 +6,7 @@ const wlr = @import("wlr.zig");
 const Output = @import("Output.zig");
 const XdgView = @import("XdgView.zig");
 const TerminalPane = @import("TerminalPane.zig");
+const Session = @import("Session.zig");
 const XwaylandView = @import("XwaylandView.zig");
 const Launcher = @import("Launcher.zig");
 const Bar = @import("Bar.zig");
@@ -1427,6 +1428,18 @@ pub fn executeAction(self: *Server, action: KBAction) bool {
             ws.master_count = 1;
             self.arrangeworkspace(self.layout_engine.active_workspace);
             if (self.bar) |b| b.render(self);
+            return true;
+        },
+        .session_save => {
+            Session.save(self, "default") catch |err| {
+                std.debug.print("teruwm: session save failed: {}\n", .{err});
+            };
+            return true;
+        },
+        .session_restore => {
+            Session.restore(self, "default") catch |err| {
+                std.debug.print("teruwm: session restore failed: {}\n", .{err});
+            };
             return true;
         },
         .workspace_toggle_last => {

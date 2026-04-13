@@ -142,6 +142,8 @@ single-Super workspace shortcuts.
 | `/` | Search |
 | `v` | Vi / copy mode |
 | `d` | Detach session (teru only) |
+| `s` | Save teruwm session → `~/.config/teru/sessions/default.tsess` |
+| `r` | Restore teruwm session from `default.tsess` |
 | `Esc` | Leave prefix mode |
 
 ## Scroll mode (`$mod+V`)

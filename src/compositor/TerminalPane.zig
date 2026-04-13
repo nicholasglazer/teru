@@ -32,6 +32,12 @@ read_buf: [8192]u8 = undefined,
 /// Common init: creates Pane + SoftwareRenderer + wlr_scene_buffer.
 /// Does NOT register with workspace or node registry — callers do that.
 fn init(server: *Server, rows: u16, cols: u16) ?*TerminalPane {
+    return initWithSpawn(server, rows, cols, .{});
+}
+
+/// Same as init() but with an explicit SpawnConfig — used by session
+/// restore to spawn each pane in its saved cwd running its saved cmd.
+fn initWithSpawn(server: *Server, rows: u16, cols: u16, spawn_config: Pane.SpawnConfig) ?*TerminalPane {
     const allocator = server.zig_allocator;
     const cell_w: u32 = if (server.font_atlas) |fa| fa.cell_width else 8;
     const cell_h: u32 = if (server.font_atlas) |fa| fa.cell_height else 16;
@@ -42,7 +48,6 @@ fn init(server: *Server, rows: u16, cols: u16) ?*TerminalPane {
     const scene_tree_root = wlr.miozu_scene_tree(server.scene) orelse return null;
     const scene_buffer = wlr.wlr_scene_buffer_create(scene_tree_root, pixel_buffer) orelse return null;
 
-    const spawn_config = Pane.SpawnConfig{};
     var pane = Pane.init(allocator, rows, cols, server.next_node_id, spawn_config) catch return null;
 
     var renderer = SoftwareRenderer.init(allocator, pixel_w, pixel_h, cell_w, cell_h) catch {
@@ -95,7 +100,13 @@ fn init(server: *Server, rows: u16, cols: u16) ?*TerminalPane {
 /// BEFORE calling arrangeworkspace(), otherwise the pane can't be
 /// found for resize/positioning.
 pub fn create(server: *Server, ws: u8, rows: u16, cols: u16) ?*TerminalPane {
-    const tp = init(server, rows, cols) orelse return null;
+    return createWithSpawn(server, ws, rows, cols, .{});
+}
+
+/// Create a tiled pane with an explicit SpawnConfig (shell, cwd). Used
+/// by session restore so each pane re-spawns in its saved cwd.
+pub fn createWithSpawn(server: *Server, ws: u8, rows: u16, cols: u16, spawn_config: Pane.SpawnConfig) ?*TerminalPane {
+    const tp = initWithSpawn(server, rows, cols, spawn_config) orelse return null;
 
     const slot = server.nodes.addTerminal(tp.node_id, ws);
     server.layout_engine.workspaces[ws].addNode(server.zig_allocator, tp.node_id) catch return null;
