@@ -41,6 +41,17 @@ multiplexer: *Multiplexer,
 graph: *ProcessGraph,
 allocator: Allocator,
 running: bool,
+
+// ── Event subscriber channel (v0.4.21) ────────────────────────
+// Separate socket pushing newline-delimited JSON events for things
+// that change *without* an explicit tool call — pane spawn/exit,
+// agent lifecycle, command exec. Same shape as teruwm's event
+// channel; `teru_subscribe_events` returns both paths so an agent
+// can connect to teru + teruwm events with one handshake.
+event_socket_path: [socket_path_max]u8 = undefined,
+event_socket_path_len: usize = 0,
+event_socket_fd: posix.fd_t = -1,
+event_subscriber_fd: posix.fd_t = -1,
 // Screen dimensions for PTY resize after pane creation
 screen_width: u32 = 0,
 screen_height: u32 = 0,
@@ -76,6 +87,18 @@ pub fn init(allocator: Allocator, mux: *Multiplexer, graph: *ProcessGraph) !McpS
     };
     @memcpy(server.socket_path[0..path_len], path);
 
+    // Companion events socket — best-effort push channel.
+    var evt_path_buf: [256]u8 = undefined;
+    if (ipc.buildPath(&evt_path_buf, "mcp-events", pid_str)) |evt_path| {
+        if (ipc.listen(evt_path)) |evt_ipc| {
+            const evt_sock = evt_ipc.rawFd();
+            server.event_socket_fd = evt_sock;
+            const n = @min(evt_path.len, server.event_socket_path.len);
+            @memcpy(server.event_socket_path[0..n], evt_path[0..n]);
+            server.event_socket_path_len = n;
+        } else |_| {}
+    }
+
     return server;
 }
 
@@ -85,12 +108,20 @@ pub fn getSocketPath(self: *const McpServer) []const u8 {
 
 pub fn deinit(self: *McpServer) void {
     _ = posix.system.close(self.socket_fd);
+    if (self.event_subscriber_fd != -1) _ = posix.system.close(self.event_subscriber_fd);
+    if (self.event_socket_fd != -1) _ = posix.system.close(self.event_socket_fd);
 
-    // Unlink socket file
+    // Unlink socket files
     var unlink_buf: [socket_path_max + 1]u8 = undefined;
     @memcpy(unlink_buf[0..self.socket_path_len], self.socket_path[0..self.socket_path_len]);
     unlink_buf[self.socket_path_len] = 0;
     _ = std.c.unlink(@ptrCast(&unlink_buf));
+
+    if (self.event_socket_path_len > 0) {
+        @memcpy(unlink_buf[0..self.event_socket_path_len], self.event_socket_path[0..self.event_socket_path_len]);
+        unlink_buf[self.event_socket_path_len] = 0;
+        _ = std.c.unlink(@ptrCast(&unlink_buf));
+    }
 
     self.running = false;
 }
@@ -101,11 +132,56 @@ pub fn deinit(self: *McpServer) void {
 pub fn poll(self: *McpServer) void {
     if (!self.running) return;
 
-    // Non-blocking accept
-    const client = ipc.accept(ipc.IpcHandle.fromRaw(self.socket_fd)) orelse return;
+    // Accept on the events socket first — unlike the request socket,
+    // this fd stays open (pushed JSON events flow here).
+    if (self.event_socket_fd != -1) {
+        if (ipc.accept(ipc.IpcHandle.fromRaw(self.event_socket_fd))) |evt_client| {
+            const fd = evt_client.rawFd();
+            const F_GETFL: c_int = 3;
+            const F_SETFL: c_int = 4;
+            const O_NONBLOCK: c_int = 0o4000;
+            const flags = std.c.fcntl(fd, F_GETFL);
+            if (flags >= 0) _ = std.c.fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+            // Replace any prior subscriber.
+            if (self.event_subscriber_fd != -1) _ = posix.system.close(self.event_subscriber_fd);
+            self.event_subscriber_fd = fd;
+        }
+    }
 
+    // Non-blocking accept on the main request socket
+    const client = ipc.accept(ipc.IpcHandle.fromRaw(self.socket_fd)) orelse return;
     self.handleRequest(client.rawFd());
     client.close();
+}
+
+/// Push one JSON event to the current subscriber (if any). On write
+/// failure the subscriber is dropped. Caller supplies a bare JSON
+/// object; we append `\n` ourselves. O_NONBLOCK on the fd means slow
+/// consumers drop events, never stall us.
+pub fn emitEvent(self: *McpServer, json_line: []const u8) void {
+    if (self.event_subscriber_fd == -1) return;
+    var buf: [4096]u8 = undefined;
+    const n = @min(json_line.len, buf.len - 1);
+    @memcpy(buf[0..n], json_line[0..n]);
+    buf[n] = '\n';
+    const total = n + 1;
+    const w = std.c.write(self.event_subscriber_fd, &buf, total);
+    if (w <= 0) {
+        _ = posix.system.close(self.event_subscriber_fd);
+        self.event_subscriber_fd = -1;
+    }
+}
+
+/// Helper: emit `{"event":"<kind>", ...rest...}` using format.
+pub fn emitEventKind(self: *McpServer, kind: []const u8, comptime fmt: []const u8, args: anytype) void {
+    if (self.event_subscriber_fd == -1) return;
+    var buf: [2048]u8 = undefined;
+    const prefix = std.fmt.bufPrint(&buf, "{{\"event\":\"{s}\"", .{kind}) catch return;
+    const rest = std.fmt.bufPrint(buf[prefix.len..], fmt, args) catch return;
+    const end = prefix.len + rest.len;
+    if (end + 2 > buf.len) return;
+    buf[end] = '}';
+    self.emitEvent(buf[0 .. end + 1]);
 }
 
 // ── Line-JSON / JSON-RPC handling ──────────────────────────────
@@ -291,6 +367,7 @@ const dispatch_table: [mcp_dispatch.tools.len]Handler = .{
     callSessionSave,
     callSessionRestore,
     callScreenshot,
+    callSubscribeEvents,
 };
 
 fn callListPanes(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -399,6 +476,28 @@ fn callSessionRestore(self: *McpServer, params: []const u8, buf: []u8, id: ?[]co
 fn callScreenshot(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const path = tools.extractNestedJsonString(params, "path") orelse "/tmp/teru-screenshot.png";
     return self.toolScreenshot(path, buf, id);
+}
+
+fn callSubscribeEvents(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    _ = params;
+    const id_str = id orelse "null";
+    const teru_path = self.event_socket_path[0..self.event_socket_path_len];
+
+    // Best-effort discovery of the teruwm event socket — agents asking
+    // for events usually want both. Returning null when teruwm isn't
+    // running is more honest than silently omitting the key.
+    const teruwm_path: []const u8 = forward.findTeruwmEventsSocket() orelse "";
+
+    // Response is MCP-wrapped: result.content[0].text contains the
+    // double-JSON-encoded object (same pattern as every other tool).
+    if (teruwm_path.len > 0) {
+        return std.fmt.bufPrint(buf,
+            \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"teru\":\"{s}\",\"teruwm\":\"{s}\"}}"}}]}},"id":{s}}}
+        , .{ teru_path, teruwm_path, id_str }) catch tools.jsonRpcError(buf, id, -32603, "Internal error");
+    }
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"teru\":\"{s}\",\"teruwm\":null}}"}}]}},"id":{s}}}
+    , .{ teru_path, id_str }) catch tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 // ── Tool implementations ───────────────────────────────────────

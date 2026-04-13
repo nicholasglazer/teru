@@ -37,9 +37,9 @@ Map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## MCP
 
-Two servers. 45 tools total.
+Two servers. 46 tools total.
 
-- **teru agent** (`src/agent/McpServer.zig`) — 19 tools, socket `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock`
+- **teru agent** (`src/agent/McpServer.zig`) — 20 tools + event push channel, sockets `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock` (requests) and `teru-mcp-events-$PID.sock` (events). Since v0.4.19 transparently forwards `teruwm_*` tools to the compositor socket.
 - **teruwm compositor** (`src/compositor/WmMcpServer.zig`) — 26 tools + event push channel, sockets `$XDG_RUNTIME_DIR/teru-wmmcp-$PID.sock` (requests) and `teru-wmmcp-events-$PID.sock` (events)
 
 Reference: [docs/MCP-API.md](docs/MCP-API.md).
@@ -82,7 +82,7 @@ series.
 - [docs/INSTALLING.md](docs/INSTALLING.md) — per-platform install + teruwm TTY caveat
 - [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md) — every default keybind for both binaries
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — teru.conf, teruwm/config, widgets, thresholds, rules
-- [docs/MCP-API.md](docs/MCP-API.md) — all 45 tools with schemas + examples
+- [docs/MCP-API.md](docs/MCP-API.md) — all 46 tools with schemas + examples
 - [docs/AI-INTEGRATION.md](docs/AI-INTEGRATION.md) — CustomPaneBackend, push widgets, OSC 9999, .tsess templates
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module map, rendering pipeline, hot-restart, gap arithmetic
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — methodology + numbers, explicitly-not-measured items

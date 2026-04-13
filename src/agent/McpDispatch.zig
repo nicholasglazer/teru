@@ -141,6 +141,12 @@ pub const tools = [_]Tool{
         \\"description":"Capture the terminal framebuffer as a PNG image file. Returns the file path and dimensions. Only works in windowed mode (X11/Wayland).","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Output file path (default: /tmp/teru-screenshot.png)"}},"required":[]}
         ,
     },
+    .{
+        .name = "teru_subscribe_events",
+        .schema_json =
+        \\"description":"Returns the Unix-socket paths for newline-delimited JSON event streams. `teru` is always present (pane spawn/exit, command exec). `teruwm` is present iff the compositor is running — subscribe to both to observe terminal and window-manager events from a single agent.","inputSchema":{"type":"object","properties":{},"required":[]}
+        ,
+    },
 };
 
 /// The complete `tools/list` JSON array body (everything between the `[`
