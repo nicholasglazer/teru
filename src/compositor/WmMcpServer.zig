@@ -185,7 +185,19 @@ pub fn emitEvent(self: *WmMcpServer, json_line: []const u8) void {
     buf[line_len] = '\n';
     const total = line_len + 1;
     const n = std.c.write(self.event_subscriber_fd, &buf, total);
-    if (n <= 0) {
+    // EAGAIN on a non-blocking socket means the kernel buffer is full;
+    // drop this event but keep the subscriber. Only close on real
+    // terminal errors (EPIPE, EBADF, etc). Before v0.4.22 this branch
+    // treated EAGAIN as "subscriber gone" and silently closed it, so
+    // the first event went through and the rest were black-holed.
+    const EAGAIN: i32 = 11;
+    if (n < 0) {
+        const errno = std.c._errno().*;
+        if (errno == EAGAIN) return; // keep subscriber, drop event
+        _ = posix.system.close(self.event_subscriber_fd);
+        self.event_subscriber_fd = -1;
+    } else if (n == 0) {
+        // 0 isn't normal for stream sockets — treat as closed.
         _ = posix.system.close(self.event_subscriber_fd);
         self.event_subscriber_fd = -1;
     }
@@ -582,25 +594,23 @@ fn toolFocusWindow(self: *WmMcpServer, node_id: u64, buf: []u8, id: ?[]const u8)
 
 fn toolMoveToWorkspace(self: *WmMcpServer, node_id: u64, ws: u8, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
-    const srv = self.server;
-
     if (ws >= 10) return jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
 
-    if (srv.nodes.findById(node_id)) |_| {
-        const old_ws = srv.layout_engine.active_workspace;
-        srv.layout_engine.moveNodeToWorkspace(node_id, ws) catch
-            return jsonRpcError(buf, id, -32603, "Failed to move node");
+    if (self.server.nodes.findById(node_id) == null)
+        return jsonRpcError(buf, id, -32602, "Window not found");
 
-        srv.arrangeworkspace(old_ws);
-        srv.arrangeworkspace(ws);
-        if (srv.bar) |b| b.render(srv);
+    // Route through the single node-identity mutation chokepoint — it
+    // handles floating vs tiled, re-arranges affected outputs, calls
+    // recomputeVisibility, re-derives focus if the moved node was
+    // focused and the target workspace is invisible, and emits
+    // `node_moved`. Pre-v0.4.22 this called layout_engine directly
+    // and never emitted the event.
+    self.server.moveNodeToWorkspace(node_id, ws);
+    if (self.server.bar) |b| b.render(self.server);
 
-        return std.fmt.bufPrint(buf,
-            \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"moved window {d} to workspace {d}"}}]}},"id":{s}}}
-        , .{ node_id, ws, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
-    }
-
-    return jsonRpcError(buf, id, -32602, "Window not found");
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"moved window {d} to workspace {d}"}}]}},"id":{s}}}
+    , .{ node_id, ws, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolListWorkspaces(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
@@ -646,16 +656,15 @@ fn toolListWorkspaces(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8
 
 fn toolSwitchWorkspace(self: *WmMcpServer, ws: u8, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
-    const srv = self.server;
     if (ws >= 10) return jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
 
-    const old_ws = srv.layout_engine.active_workspace;
-    srv.layout_engine.switchWorkspace(ws);
-    srv.setWorkspaceVisibility(old_ws, false);
-    srv.setWorkspaceVisibility(ws, true);
-    srv.arrangeworkspace(ws);
-    srv.updateFocusedTerminal();
-    if (srv.bar) |b| b.render(srv);
+    // Route through the single workspace-mutation chokepoint so the
+    // xmonad pull-swap semantics, recomputeVisibility, and event
+    // emission (workspace_switched) all happen. Pre-v0.4.22 this path
+    // drove layout_engine directly, bypassing focusWorkspace — which
+    // silently swallowed workspace_switched events for every MCP-
+    // triggered switch.
+    self.server.focusWorkspace(ws);
 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"switched to workspace {d}"}}]}},"id":{s}}}
