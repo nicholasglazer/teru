@@ -2077,6 +2077,13 @@ pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
 }
 
 /// Focus a view — activate its toplevel and send keyboard focus.
+///
+/// Keyboard-focus-enter must include the current modifier state, else
+/// clients that care about modifiers (terminals, editors, anything with
+/// keybindings of their own) receive subsequent key events with the
+/// *wrong* modifier mask. Before v0.5.1 we passed null for modifiers and
+/// Chrome would swallow every keystroke while thinking Shift/Ctrl were
+/// never held — visible as "can't interact with chrome after click".
 pub fn focusView(self: *Server, view: *XdgView) void {
     // Deactivate previous
     if (self.focused_view) |prev| {
@@ -2094,11 +2101,15 @@ pub fn focusView(self: *Server, view: *XdgView) void {
         self.emitMcpEventKind("focus_changed", ",\"node_id\":{d}", .{self.nodes.node_id[slot]});
     }
 
-    // Send keyboard focus to the surface
+    // Send keyboard focus to the surface with live modifier state.
     const surface = wlr.miozu_xdg_surface_surface(
         wlr.miozu_xdg_toplevel_base(view.toplevel) orelse return,
     ) orelse return;
-    wlr.wlr_seat_keyboard_notify_enter(self.seat, surface, null, 0, null);
+    const modifiers: ?*anyopaque = if (wlr.miozu_seat_get_keyboard(self.seat)) |kb|
+        wlr.miozu_keyboard_modifiers_ptr(kb)
+    else
+        null;
+    wlr.wlr_seat_keyboard_notify_enter(self.seat, surface, null, 0, modifiers);
 
     if (self.bar) |b| b.render(self);
 }
@@ -2313,9 +2324,11 @@ fn toggleFloat(self: *Server) void {
 
 // ── Fullscreen ───────────────────────────────────────────────
 
-/// Toggle the focused terminal pane to fill the entire output.
-/// When entering fullscreen: hide bars, hide other panes, expand focused pane.
-/// When leaving fullscreen: restore bars, re-arrange workspace.
+/// Toggle the focused node (terminal OR Wayland client) to fill the
+/// entire output. Before v0.5.1 this bailed early for xdg views because
+/// it only read `focused_terminal` — so Mod+F did nothing on Chrome /
+/// Firefox / any native-Wayland client. Now resolves the target via
+/// focused_terminal OR focused_view and expands either one.
 fn toggleFullscreen(self: *Server) void {
     if (self.fullscreen_node != null) {
         // ── Exit fullscreen ──
@@ -2350,9 +2363,16 @@ fn toggleFullscreen(self: *Server) void {
     }
 
     // ── Enter fullscreen ──
-    const tp = self.focused_terminal orelse return;
+    // Target = focused terminal OR focused xdg view. Either way we
+    // expand its node to the full output.
+    const target_id: u64 = if (self.focused_terminal) |tp|
+        tp.node_id
+    else if (self.focused_view) |v|
+        v.node_id
+    else
+        return;
 
-    self.fullscreen_node = tp.node_id;
+    self.fullscreen_node = target_id;
 
     // Save and hide bars
     if (self.bar) |b| {
@@ -2370,7 +2390,7 @@ fn toggleFullscreen(self: *Server) void {
     const ws = self.layout_engine.active_workspace;
     const ws_nodes = self.layout_engine.workspaces[ws].node_ids.items;
     for (ws_nodes) |nid| {
-        if (nid == tp.node_id) continue;
+        if (nid == target_id) continue;
         for (self.terminal_panes) |maybe_tp| {
             if (maybe_tp) |other_tp| {
                 if (other_tp.node_id == nid) other_tp.setVisible(false);
@@ -2388,13 +2408,20 @@ fn toggleFullscreen(self: *Server) void {
         }
     }
 
-    // Expand focused pane to fill entire output (no bar, no gaps)
+    // Expand focused pane to fill entire output (no bar, no gaps).
+    // For terminals we also resize the SW renderer framebuffer so the
+    // cell grid expands to match; for xdg clients, applyRect sends the
+    // xdg_toplevel_set_size configure.
     const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
     const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
-    tp.resize(out_w, out_h);
-    tp.setPosition(0, 0);
+    if (self.focused_terminal) |tp| {
+        tp.resize(out_w, out_h);
+        tp.setPosition(0, 0);
+    } else if (self.nodes.findById(target_id)) |slot| {
+        self.nodes.applyRect(slot, 0, 0, out_w, out_h);
+    }
 
-    std.debug.print("teruwm: fullscreen on node={d}\n", .{tp.node_id});
+    std.debug.print("teruwm: fullscreen on node={d}\n", .{target_id});
 }
 
 // ── Scratchpads (xmonad NamedScratchpad model) ────────────────
@@ -2655,12 +2682,25 @@ pub fn closeFocused(self: *Server) void {
             self.grab_node_id = null;
             self.cursor_mode = .normal;
         };
+        std.debug.print("teruwm: closeFocused → xdg view node={d}\n", .{view.node_id});
         wlr.wlr_xdg_toplevel_send_close(view.toplevel);
         return;
     }
     if (self.focused_terminal) |tp| {
+        std.debug.print("teruwm: closeFocused → terminal node={d}\n", .{tp.node_id});
         _ = self.closeNode(tp.node_id);
+        return;
     }
+    // Neither focused_terminal nor focused_view — telemetry for the
+    // "can't close last pane" symptom. Either focus is stale (action
+    // dispatched before updateFocusedTerminal ran after the previous
+    // close) or the workspace is legitimately empty. Print the state
+    // so we can see which one it is in live logs.
+    const ws = self.layout_engine.getActiveWorkspace();
+    std.debug.print(
+        "teruwm: closeFocused with no focus — ws={d} tiled_count={d} terminal_count={d}\n",
+        .{ self.layout_engine.active_workspace, ws.node_ids.items.len, self.terminal_count },
+    );
 }
 
 pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
