@@ -314,6 +314,10 @@ fn handleToolsList(_: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teruwm_delete_widget","description":"Remove a push widget by name.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string"}}}},"required":["name"]}}}},
         \\{{"name":"teruwm_list_widgets","description":"List registered push widgets with their current text, class, and last update timestamp.","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
         \\{{"name":"teruwm_test_drag","description":"TEST ONLY: synthesize a pointer drag from (from_x,from_y) to (to_x,to_y). Optional super=true simulates Mod-held drag (tiling → floating). Used by E2E suites; not normally invoked by users.","inputSchema":{{"type":"object","properties":{{"from_x":{{"type":"integer"}},"from_y":{{"type":"integer"}},"to_x":{{"type":"integer"}},"to_y":{{"type":"integer"}},"super":{{"type":"boolean"}},"button":{{"type":"integer","description":"linux input-event code; 272=left (default), 274=right"}}}},"required":["from_x","from_y","to_x","to_y"]}}}},
+        \\{{"name":"teruwm_click","description":"AI-first physical click. Warps the cursor to (x, y) and synthesizes a real left-click at the compositor seat (same wlroots path as a touchpad click). Use this to drive any Wayland client (Chromium, Firefox, GIMP, …) from an agent. Output: {{cx,cy,hit:node_id|null,kind:'wayland'|'terminal'|'none'}}.","inputSchema":{{"type":"object","properties":{{"x":{{"type":"integer"}},"y":{{"type":"integer"}},"button":{{"type":"string","enum":["left","right","middle"],"description":"default left"}}}},"required":["x","y"]}}}},
+        \\{{"name":"teruwm_type","description":"AI-first physical typing. Sends key press+release events for each character of the text through the compositor seat (same wlroots path as a real keyboard). ASCII-only today (US QWERTY); maps each char to evdev keycode + Shift modifier as needed. Use after teruwm_click on a focusable element to type into it.","inputSchema":{{"type":"object","properties":{{"text":{{"type":"string","description":"text to type — ASCII printable + space; non-ASCII is silently dropped"}}}},"required":["text"]}}}},
+        \\{{"name":"teruwm_press","description":"AI-first single key press. Useful for special keys like Enter, Tab, Escape, Backspace, ArrowDown that teruwm_type doesn't cover. Mods supported: ctrl, shift, alt, super.","inputSchema":{{"type":"object","properties":{{"key":{{"type":"string","description":"key name: 'Return', 'Tab', 'Escape', 'BackSpace', 'Up', 'Down', 'Left', 'Right', 'Home', 'End', 'PageUp', 'PageDown', or single ASCII char"}},"ctrl":{{"type":"boolean"}},"shift":{{"type":"boolean"}},"alt":{{"type":"boolean"}},"super":{{"type":"boolean"}}}},"required":["key"]}}}},
+        \\{{"name":"teruwm_scroll","description":"AI-first scroll wheel. Synthesizes a vertical scroll axis event at (x, y) on the focused surface (or whatever's under the cursor at that point).","inputSchema":{{"type":"object","properties":{{"x":{{"type":"integer"}},"y":{{"type":"integer"}},"dy":{{"type":"number","description":"positive scrolls down, negative scrolls up; magnitude in libinput axis units (15 ≈ one detent)"}}}},"required":["x","y","dy"]}}}},
         \\{{"name":"teruwm_test_key","description":"TEST ONLY: dispatch a keybind action by name, bypassing xkb. Use for E2E tests of keybind-triggered compositor actions.","inputSchema":{{"type":"object","properties":{{"action":{{"type":"string","description":"action name e.g. 'layout_cycle', 'bar_toggle_top'"}}}},"required":["action"]}}}},
         \\{{"name":"teruwm_test_move","description":"TEST ONLY: warp the cursor to (x, y) and fire a motion event, no button. Useful for tests that verify hover focus, scroll mode, etc.","inputSchema":{{"type":"object","properties":{{"x":{{"type":"integer"}},"y":{{"type":"integer"}}}},"required":["x","y"]}}}},
         \\{{"name":"teruwm_toggle_scratchpad","description":"Toggle numbered scratchpad N (0..8). Compat shim since v0.4.18 — delegates to teruwm_scratchpad name=padN+1. Prefer teruwm_scratchpad for new code.","inputSchema":{{"type":"object","properties":{{"index":{{"type":"integer","description":"scratchpad index 0..8"}}}},"required":["index"]}}}},
@@ -441,6 +445,37 @@ fn handleToolsCall(self: *WmMcpServer, body: []const u8, buf: []u8, id: ?[]const
         const y = extractNestedJsonInt(params_body, "y") orelse
             return jsonRpcError(buf, id, -32602, "Missing y");
         return self.toolTestMove(@intCast(x), @intCast(y), buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_click")) {
+        const x = extractNestedJsonInt(params_body, "x") orelse
+            return jsonRpcError(buf, id, -32602, "Missing x");
+        const y = extractNestedJsonInt(params_body, "y") orelse
+            return jsonRpcError(buf, id, -32602, "Missing y");
+        const args_obj = extractJsonObject(params_body, "arguments") orelse params_body;
+        const button_str = extractJsonString(args_obj, "button") orelse "left";
+        const button: u32 = if (std.mem.eql(u8, button_str, "right")) 274
+            else if (std.mem.eql(u8, button_str, "middle")) 273
+            else 272; // left default
+        return self.toolClick(@intCast(x), @intCast(y), button, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_type")) {
+        const text = extractNestedJsonString(params_body, "text") orelse
+            return jsonRpcError(buf, id, -32602, "Missing text");
+        return self.toolType(text, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_press")) {
+        const key = extractNestedJsonString(params_body, "key") orelse
+            return jsonRpcError(buf, id, -32602, "Missing key");
+        const args_obj = extractJsonObject(params_body, "arguments") orelse params_body;
+        const ctrl = std.mem.indexOf(u8, args_obj, "\"ctrl\":true") != null;
+        const shift = std.mem.indexOf(u8, args_obj, "\"shift\":true") != null;
+        const alt = std.mem.indexOf(u8, args_obj, "\"alt\":true") != null;
+        const sup = std.mem.indexOf(u8, args_obj, "\"super\":true") != null;
+        return self.toolPress(key, ctrl, shift, alt, sup, buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_scroll")) {
+        const x = extractNestedJsonInt(params_body, "x") orelse
+            return jsonRpcError(buf, id, -32602, "Missing x");
+        const y = extractNestedJsonInt(params_body, "y") orelse
+            return jsonRpcError(buf, id, -32602, "Missing y");
+        const dy = extractNestedJsonInt(params_body, "dy") orelse 15;
+        return self.toolScroll(@intCast(x), @intCast(y), @intCast(dy), buf, id);
     } else if (std.mem.eql(u8, tool_name, "teruwm_toggle_scratchpad")) {
         const idx = extractNestedJsonInt(params_body, "index") orelse
             return jsonRpcError(buf, id, -32602, "Missing index");
@@ -1221,4 +1256,266 @@ fn parseContentLength(data: []const u8) ?usize {
     const start = (std.mem.indexOf(u8, data, needle) orelse return null) + needle.len;
     const end = std.mem.indexOfPos(u8, data, start, "\r\n") orelse return null;
     return std.fmt.parseInt(usize, data[start..end], 10) catch null;
+}
+
+// ── AI-first physical input MCP tools ──────────────────────────
+//
+// teruwm is an AI-first WM. These tools let an agent drive the same
+// pointer/keyboard pipeline a real touchpad/keyboard would, through
+// the wlroots seat — clients (Chromium, Firefox, GIMP, …) cannot
+// distinguish synthetic events from physical ones.
+
+fn toolClick(self: *WmMcpServer, x: i32, y: i32, button: u32, buf: []u8, id: ?[]const u8) []const u8 {
+    const srv = self.server;
+    const ms_now = monotonicMs();
+
+    // Warp cursor + motion (sets pointer focus on the surface under
+    // the new cursor position).
+    wlr.wlr_cursor_warp_closest(srv.cursor, null, @floatFromInt(x), @floatFromInt(y));
+    srv.processCursorMotion(ms_now);
+
+    // Identify what we landed on for the response (so the agent can
+    // verify the click went where it intended).
+    const hit_id = srv.nodeAtPoint(@floatFromInt(x), @floatFromInt(y));
+    var kind_str: []const u8 = "none";
+    if (hit_id) |h| {
+        if (srv.nodes.findById(h)) |slot| {
+            kind_str = switch (srv.nodes.kind[slot]) {
+                .terminal => "terminal",
+                .wayland_surface => "wayland",
+                .empty => "none",
+            };
+        }
+    }
+
+    // Press, brief delta, release. Real touchpads have ~10-30ms hold;
+    // we use 15ms which Chromium / GTK treat as a click.
+    srv.processCursorButton(button, 1, ms_now, false);
+    srv.processCursorButton(button, 0, ms_now + 15, false);
+
+    const id_str = id orelse "null";
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"cx\":{d},\"cy\":{d},\"hit\":{?d},\"kind\":\"{s}\"}}"}}]}},"id":{s}}}
+    , .{ x, y, hit_id, kind_str, id_str }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolType(self: *WmMcpServer, text: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const srv = self.server;
+    var ms = monotonicMs();
+    var sent: u32 = 0;
+    var dropped: u32 = 0;
+
+    for (text) |c| {
+        const map = asciiToKeycode(c) orelse {
+            dropped += 1;
+            continue;
+        };
+        if (map.shift) {
+            sendKey(srv, KEY_LEFTSHIFT, true, ms);
+            ms += 1;
+        }
+        sendKey(srv, map.keycode, true, ms);
+        ms += 5;
+        sendKey(srv, map.keycode, false, ms);
+        ms += 1;
+        if (map.shift) {
+            sendKey(srv, KEY_LEFTSHIFT, false, ms);
+            ms += 1;
+        }
+        sent += 1;
+    }
+
+    const id_str = id orelse "null";
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"sent\":{d},\"dropped\":{d}}}"}}]}},"id":{s}}}
+    , .{ sent, dropped, id_str }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolPress(self: *WmMcpServer, key: []const u8, ctrl: bool, shift: bool, alt: bool, sup: bool, buf: []u8, id: ?[]const u8) []const u8 {
+    const srv = self.server;
+    var ms = monotonicMs();
+
+    const keycode = nameToKeycode(key) orelse return jsonRpcError(buf, id, -32602, "Unknown key name");
+
+    // Modifier presses
+    if (ctrl) { sendKey(srv, KEY_LEFTCTRL, true, ms); ms += 1; }
+    if (shift) { sendKey(srv, KEY_LEFTSHIFT, true, ms); ms += 1; }
+    if (alt) { sendKey(srv, KEY_LEFTALT, true, ms); ms += 1; }
+    if (sup) { sendKey(srv, KEY_LEFTMETA, true, ms); ms += 1; }
+
+    sendKey(srv, keycode, true, ms);
+    ms += 10;
+    sendKey(srv, keycode, false, ms);
+    ms += 1;
+
+    if (sup) { sendKey(srv, KEY_LEFTMETA, false, ms); ms += 1; }
+    if (alt) { sendKey(srv, KEY_LEFTALT, false, ms); ms += 1; }
+    if (shift) { sendKey(srv, KEY_LEFTSHIFT, false, ms); ms += 1; }
+    if (ctrl) { sendKey(srv, KEY_LEFTCTRL, false, ms); ms += 1; }
+
+    const id_str = id orelse "null";
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"key\":\"{s}\",\"keycode\":{d}}}"}}]}},"id":{s}}}
+    , .{ key, keycode, id_str }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolScroll(self: *WmMcpServer, x: i32, y: i32, dy: i32, buf: []u8, id: ?[]const u8) []const u8 {
+    const srv = self.server;
+    const ms_now = monotonicMs();
+
+    // Position cursor + sync pointer focus
+    wlr.wlr_cursor_warp_closest(srv.cursor, null, @floatFromInt(x), @floatFromInt(y));
+    srv.processCursorMotion(ms_now);
+
+    // Send axis event. wlroots: orientation 0 = vertical, source 0 = wheel.
+    wlr.wlr_seat_pointer_notify_axis(
+        srv.seat,
+        ms_now,
+        0, // WL_POINTER_AXIS_VERTICAL_SCROLL
+        @floatFromInt(dy),
+        if (dy > 0) 1 else -1,
+        0, // WL_POINTER_AXIS_SOURCE_WHEEL
+        0, // WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL
+    );
+    wlr.wlr_seat_pointer_notify_frame(srv.seat);
+
+    const id_str = id orelse "null";
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"x\":{d},\"y\":{d},\"dy\":{d}}}"}}]}},"id":{s}}}
+    , .{ x, y, dy, id_str }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+// ── Keyboard helpers ──────────────────────────────────────────
+
+/// evdev keycodes (from include/uapi/linux/input-event-codes.h). These
+/// are what wlr_seat_keyboard_notify_key takes. xkb adds 8 internally.
+const KEY_ESC: u32 = 1;
+const KEY_BACKSPACE: u32 = 14;
+const KEY_TAB: u32 = 15;
+const KEY_ENTER: u32 = 28;
+const KEY_LEFTCTRL: u32 = 29;
+const KEY_LEFTSHIFT: u32 = 42;
+const KEY_LEFTALT: u32 = 56;
+const KEY_LEFTMETA: u32 = 125;
+const KEY_SPACE: u32 = 57;
+const KEY_UP: u32 = 103;
+const KEY_LEFT: u32 = 105;
+const KEY_RIGHT: u32 = 106;
+const KEY_DOWN: u32 = 108;
+const KEY_HOME: u32 = 102;
+const KEY_END: u32 = 107;
+const KEY_PAGEUP: u32 = 104;
+const KEY_PAGEDOWN: u32 = 109;
+
+const AsciiMap = struct { keycode: u32, shift: bool };
+
+/// US QWERTY ASCII → evdev keycode + shift. Not locale-aware; assumes
+/// the user / agent target a US layout. Non-US users will see swapped
+/// punctuation. Future: read xkb_keymap and reverse-look up properly.
+fn asciiToKeycode(c: u8) ?AsciiMap {
+    return switch (c) {
+        ' ' => .{ .keycode = KEY_SPACE, .shift = false },
+        'a' => .{ .keycode = 30, .shift = false },
+        'b' => .{ .keycode = 48, .shift = false },
+        'c' => .{ .keycode = 46, .shift = false },
+        'd' => .{ .keycode = 32, .shift = false },
+        'e' => .{ .keycode = 18, .shift = false },
+        'f' => .{ .keycode = 33, .shift = false },
+        'g' => .{ .keycode = 34, .shift = false },
+        'h' => .{ .keycode = 35, .shift = false },
+        'i' => .{ .keycode = 23, .shift = false },
+        'j' => .{ .keycode = 36, .shift = false },
+        'k' => .{ .keycode = 37, .shift = false },
+        'l' => .{ .keycode = 38, .shift = false },
+        'm' => .{ .keycode = 50, .shift = false },
+        'n' => .{ .keycode = 49, .shift = false },
+        'o' => .{ .keycode = 24, .shift = false },
+        'p' => .{ .keycode = 25, .shift = false },
+        'q' => .{ .keycode = 16, .shift = false },
+        'r' => .{ .keycode = 19, .shift = false },
+        's' => .{ .keycode = 31, .shift = false },
+        't' => .{ .keycode = 20, .shift = false },
+        'u' => .{ .keycode = 22, .shift = false },
+        'v' => .{ .keycode = 47, .shift = false },
+        'w' => .{ .keycode = 17, .shift = false },
+        'x' => .{ .keycode = 45, .shift = false },
+        'y' => .{ .keycode = 21, .shift = false },
+        'z' => .{ .keycode = 44, .shift = false },
+        'A'...'Z' => |u| .{ .keycode = (asciiToKeycode(u + 32) orelse return null).keycode, .shift = true },
+        '0' => .{ .keycode = 11, .shift = false },
+        '1'...'9' => |d| .{ .keycode = @as(u32, d - '1' + 2), .shift = false },
+        '!' => .{ .keycode = 2, .shift = true },
+        '@' => .{ .keycode = 3, .shift = true },
+        '#' => .{ .keycode = 4, .shift = true },
+        '$' => .{ .keycode = 5, .shift = true },
+        '%' => .{ .keycode = 6, .shift = true },
+        '^' => .{ .keycode = 7, .shift = true },
+        '&' => .{ .keycode = 8, .shift = true },
+        '*' => .{ .keycode = 9, .shift = true },
+        '(' => .{ .keycode = 10, .shift = true },
+        ')' => .{ .keycode = 11, .shift = true },
+        '-' => .{ .keycode = 12, .shift = false },
+        '_' => .{ .keycode = 12, .shift = true },
+        '=' => .{ .keycode = 13, .shift = false },
+        '+' => .{ .keycode = 13, .shift = true },
+        '[' => .{ .keycode = 26, .shift = false },
+        '{' => .{ .keycode = 26, .shift = true },
+        ']' => .{ .keycode = 27, .shift = false },
+        '}' => .{ .keycode = 27, .shift = true },
+        '\\' => .{ .keycode = 43, .shift = false },
+        '|' => .{ .keycode = 43, .shift = true },
+        ';' => .{ .keycode = 39, .shift = false },
+        ':' => .{ .keycode = 39, .shift = true },
+        '\'' => .{ .keycode = 40, .shift = false },
+        '"' => .{ .keycode = 40, .shift = true },
+        ',' => .{ .keycode = 51, .shift = false },
+        '<' => .{ .keycode = 51, .shift = true },
+        '.' => .{ .keycode = 52, .shift = false },
+        '>' => .{ .keycode = 52, .shift = true },
+        '/' => .{ .keycode = 53, .shift = false },
+        '?' => .{ .keycode = 53, .shift = true },
+        '`' => .{ .keycode = 41, .shift = false },
+        '~' => .{ .keycode = 41, .shift = true },
+        '\n' => .{ .keycode = KEY_ENTER, .shift = false },
+        '\t' => .{ .keycode = KEY_TAB, .shift = false },
+        else => null,
+    };
+}
+
+fn nameToKeycode(name: []const u8) ?u32 {
+    if (std.mem.eql(u8, name, "Return")) return KEY_ENTER;
+    if (std.mem.eql(u8, name, "Enter")) return KEY_ENTER;
+    if (std.mem.eql(u8, name, "Tab")) return KEY_TAB;
+    if (std.mem.eql(u8, name, "Escape")) return KEY_ESC;
+    if (std.mem.eql(u8, name, "Esc")) return KEY_ESC;
+    if (std.mem.eql(u8, name, "BackSpace")) return KEY_BACKSPACE;
+    if (std.mem.eql(u8, name, "Backspace")) return KEY_BACKSPACE;
+    if (std.mem.eql(u8, name, "Up")) return KEY_UP;
+    if (std.mem.eql(u8, name, "Down")) return KEY_DOWN;
+    if (std.mem.eql(u8, name, "Left")) return KEY_LEFT;
+    if (std.mem.eql(u8, name, "Right")) return KEY_RIGHT;
+    if (std.mem.eql(u8, name, "Home")) return KEY_HOME;
+    if (std.mem.eql(u8, name, "End")) return KEY_END;
+    if (std.mem.eql(u8, name, "PageUp")) return KEY_PAGEUP;
+    if (std.mem.eql(u8, name, "PageDown")) return KEY_PAGEDOWN;
+    if (std.mem.eql(u8, name, "Space")) return KEY_SPACE;
+    if (name.len == 1) {
+        if (asciiToKeycode(name[0])) |m| return m.keycode;
+    }
+    return null;
+}
+
+fn sendKey(srv: *Server, evdev_keycode: u32, pressed: bool, time_ms: u32) void {
+    const state: u32 = if (pressed) 1 else 0;
+    wlr.wlr_seat_keyboard_notify_key(srv.seat, time_ms, evdev_keycode, state);
+}
+
+fn monotonicMs() u32 {
+    const ns_per_ms: i128 = 1_000_000;
+    const t_ns: i128 = teru.compat.monotonicNow();
+    return @intCast(@mod(@divTrunc(t_ns, ns_per_ms), 0xFFFFFFFF));
 }

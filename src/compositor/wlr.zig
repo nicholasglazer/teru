@@ -73,6 +73,7 @@ pub extern "wayland-server" fn wl_display_create() callconv(.c) ?*wl_display;
 pub extern "wayland-server" fn wl_display_destroy(display: *wl_display) callconv(.c) void;
 pub extern "wayland-server" fn wl_display_run(display: *wl_display) callconv(.c) void;
 pub extern "wayland-server" fn wl_display_terminate(display: *wl_display) callconv(.c) void;
+pub extern "wayland-server" fn wl_display_flush_clients(display: *wl_display) callconv(.c) void;
 pub extern "wayland-server" fn wl_display_get_event_loop(display: *wl_display) callconv(.c) ?*wl_event_loop;
 pub extern "wayland-server" fn wl_display_add_socket_auto(display: *wl_display) callconv(.c) ?[*:0]const u8;
 

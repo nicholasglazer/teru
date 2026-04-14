@@ -2190,6 +2190,15 @@ pub fn focusView(self: *Server, view: *XdgView) void {
         .{ @intFromPtr(target), @intFromPtr(root_surface), if (self.last_pointer_surface) |l| @intFromPtr(l) else null },
     );
 
+    // Flush the activation configure + keyboard.enter to the client
+    // *before* any subsequent button event reaches it. Chromium's Ozone
+    // gates input-element focus on the activated configure being acked
+    // (per their wayland_window state machine); without an explicit
+    // flush wlroots queues both events, sends them in order, but the
+    // button can land before chromium has processed the activation —
+    // looking like "click event reached chrome but input never focused".
+    wlr.wl_display_flush_clients(self.display);
+
     if (self.bar) |b| b.render(self);
 }
 
