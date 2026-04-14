@@ -1522,17 +1522,69 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
                 }
             }
         }
-        // Scene node isn't a live client surface (background rect,
-        // tree container, freed surface) — show default cursor and
-        // drop focus so the next motion doesn't chase stale state.
+        // Scene node isn't a live client surface (bg_rect, tree
+        // container, freed surface). BEFORE giving up: see if the
+        // cursor is inside an XDG view's nominal tile rect — that
+        // happens routinely while a client is mid-resize, its actual
+        // wl_buffer covers only the top-left of the tile, and our
+        // hit-test returns bg_rect instead of the client. Forward the
+        // pointer to the view's root surface at clamped coords so
+        // clicks register where the user expects.
+        if (self.fallbackPointerToTiledView(cx, cy, time)) return;
+
         std.debug.print("teruwm: motion miss — non-buffer scene node at ({d:.0},{d:.0})\n", .{ cx, cy });
         wlr.wlr_cursor_set_xcursor(self.cursor, self.cursor_mgr, "default");
         wlr.wlr_seat_pointer_clear_focus(self.seat);
     } else {
+        if (self.fallbackPointerToTiledView(cx, cy, time)) return;
         std.debug.print("teruwm: motion miss — no node at ({d:.0},{d:.0})\n", .{ cx, cy });
         wlr.wlr_cursor_set_xcursor(self.cursor, self.cursor_mgr, "default");
         wlr.wlr_seat_pointer_clear_focus(self.seat);
     }
+}
+
+/// On a motion hit-test miss, check whether (cx, cy) is inside any
+/// mapped XDG view's tile rect. If so, deliver pointer enter/motion
+/// to that view's root surface at clamped coords. This is the fix
+/// for "can't click client area while it's still resizing to fill
+/// the tile" — see /tmp/teruwm-bug-log.md.
+fn fallbackPointerToTiledView(self: *Server, cx: f64, cy: f64, time: u32) bool {
+    const ix: i32 = @intFromFloat(cx);
+    const iy: i32 = @intFromFloat(cy);
+    var i: u16 = 0;
+    while (i < NodeRegistry.max_nodes) : (i += 1) {
+        if (self.nodes.kind[i] != .wayland_surface) continue;
+        if (self.nodes.workspace[i] != self.layout_engine.active_workspace) continue;
+        const px = self.nodes.pos_x[i];
+        const py = self.nodes.pos_y[i];
+        const pw: i32 = @intCast(self.nodes.width[i]);
+        const ph: i32 = @intCast(self.nodes.height[i]);
+        if (ix < px or ix >= px + pw) continue;
+        if (iy < py or iy >= py + ph) continue;
+
+        const opaque_view = self.nodes.xdg_view[i] orelse continue;
+        const view: *XdgView = @ptrCast(@alignCast(opaque_view));
+        const surface = wlr.miozu_xdg_surface_surface(
+            wlr.miozu_xdg_toplevel_base(view.toplevel) orelse continue,
+        ) orelse continue;
+        if (wlr.miozu_surface_is_live(surface) == 0) continue;
+
+        // Clamp surface-local coords to (0, 0) — the surface's actual
+        // buffer doesn't extend to (cx, cy), but the protocol still
+        // requires we deliver coords. (0, 0) is harmless and lets
+        // chromium's mousedown handler fire on its content area.
+        const sx_local: f64 = @max(0, cx - @as(f64, @floatFromInt(px)));
+        const sy_local: f64 = @max(0, cy - @as(f64, @floatFromInt(py)));
+        if (self.last_pointer_surface != surface) {
+            std.debug.print("teruwm: motion FALLBACK→view node={d} at ({d:.0},{d:.0})\n", .{ self.nodes.node_id[i], cx, cy });
+        }
+        self.last_pointer_surface = surface;
+        wlr.wlr_seat_pointer_notify_enter(self.seat, surface, sx_local, sy_local);
+        wlr.wlr_seat_pointer_notify_motion(self.seat, time, sx_local, sy_local);
+        wlr.wlr_seat_pointer_notify_frame(self.seat);
+        return true;
+    }
+    return false;
 }
 
 // ── Keyboard handling ──────────────────────────────────────────
@@ -1617,6 +1669,7 @@ pub fn executeAction(self: *Server, action: KBAction) bool {
             return true;
         },
         .compositor_quit => {
+            std.debug.print("teruwm: compositor_quit (Mod+Shift+Q or MCP)\n", .{});
             wlr.wl_display_terminate(self.display);
             return true;
         },
