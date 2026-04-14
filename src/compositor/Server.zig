@@ -1700,6 +1700,64 @@ pub fn executeAction(self: *Server, action: KBAction) bool {
             self.arrangeworkspace(self.layout_engine.active_workspace);
             return true;
         },
+        // Vertical resize: adjust master_count. In master-stack that
+        // controls how many slots the master row holds; in accordion
+        // it controls how many panes share the "focused" band. Either
+        // way the visual effect is a vertical redistribution.
+        .resize_shrink_h => {
+            self.layout_engine.getActiveWorkspace().adjustMasterCount(-1);
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
+        },
+        .resize_grow_h => {
+            self.layout_engine.getActiveWorkspace().adjustMasterCount(1);
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
+        },
+        // Zoom: at the WM level these are aliases for master-ratio
+        // changes + xmonad-style W.zoom (promote focused to master).
+        // Previously unimplemented and falling through to the spawn-
+        // slot branch, where they returned false — caught by the e2e
+        // suite as "no visible change" regressions.
+        .zoom_toggle => {
+            self.layout_engine.getActiveWorkspace().swapWithMaster();
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
+        },
+        .zoom_in => {
+            const ws = self.layout_engine.getActiveWorkspace();
+            ws.master_ratio = @min(0.9, ws.master_ratio + 0.05);
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
+        },
+        .zoom_out => {
+            const ws = self.layout_engine.getActiveWorkspace();
+            ws.master_ratio = @max(0.1, ws.master_ratio - 0.05);
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
+        },
+        .zoom_reset => {
+            const ws = self.layout_engine.getActiveWorkspace();
+            ws.master_ratio = 0.6; // matches Workspace.zig default
+            self.arrangeworkspace(self.layout_engine.active_workspace);
+            return true;
+        },
+        // Legacy alias — toggles BOTH bars together. The per-bar
+        // actions (bar_toggle_top / bar_toggle_bottom) remain the
+        // preferred API; this keeps old configs working.
+        .toggle_status_bar => {
+            if (self.bar) |b| {
+                const new_enabled = !(b.top.enabled or b.bottom.enabled);
+                b.top.enabled = new_enabled;
+                b.bottom.enabled = new_enabled;
+                b.updateVisibility();
+                if (new_enabled) b.render(self);
+                for (0..self.layout_engine.workspaces.len) |ws| {
+                    self.arrangeworkspace(@intCast(ws));
+                }
+            }
+            return true;
+        },
         .split_vertical => {
             self.spawnTerminal(self.layout_engine.active_workspace);
             return true;
@@ -1866,9 +1924,20 @@ pub fn executeAction(self: *Server, action: KBAction) bool {
 
 /// Un-float the focused node if it's currently floating. Reversed by
 /// another float_toggle. Mirrors xmonad's W.sink on one window.
+///
+/// The focused node may be floating, and the layout engine's
+/// `getActiveNodeId` only iterates *tiled* nodes — so we resolve the
+/// target via `focused_terminal`/`focused_view` instead, which track
+/// whichever node the user is actually looking at regardless of tile
+/// state. Before v0.5.1 this used `active_ws.getActiveNodeId()` and
+/// silently no-op'd on the very case the action exists to handle.
 pub fn sinkFocused(self: *Server) void {
-    const active_ws = self.layout_engine.getActiveWorkspace();
-    const nid = active_ws.getActiveNodeId() orelse return;
+    const nid: u64 = if (self.focused_terminal) |tp|
+        tp.node_id
+    else if (self.focused_view) |v|
+        v.node_id
+    else
+        return;
     const slot = self.nodes.findById(nid) orelse return;
     if (!self.nodes.floating[slot]) return;
     self.nodes.floating[slot] = false;
