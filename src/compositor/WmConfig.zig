@@ -38,6 +38,10 @@ pub const max_rules = 32;
 /// Fixed buffers for bar format strings so we don't need an allocator.
 const max_bar_str = 256;
 
+/// Max bytes per [keyboard] field (xkb_layout, xkb_variant, xkb_options,
+/// xkb_model, xkb_rules). Headroom for comma-separated multi-layout lists.
+const kb_field_max = 128;
+
 pub const Rule = struct {
     class: [64]u8 = undefined,
     class_len: u8 = 0,
@@ -179,6 +183,40 @@ workspace_cwd_len: [10]u16 = [_]u16{0} ** 10,
 /// empty again (so revisit re-runs the hook).
 workspace_startup_fired: [10]bool = [_]bool{false} ** 10,
 
+// ── Keyboard (xkb_rule_names — libxkbcommon) ───────────────────
+//
+// Compositor config is the source of truth for xkb settings, mirroring
+// Sway's `input ... xkb_layout` pattern. Each field is either set in
+// the config file or left empty — an empty field passes NULL to
+// xkb_keymap_new_from_names, which then consults `XKB_DEFAULT_*` env
+// vars and libxkbcommon's built-in defaults. This gives three layers:
+//
+//   1. teruwm [keyboard] section     (this)
+//   2. XKB_DEFAULT_* env vars        (environment.d, shell)
+//   3. libxkbcommon compiled-in default (us QWERTY)
+//
+// Config syntax (Sway-compatible naming):
+//   [keyboard]
+//   xkb_layout = us,ua
+//   xkb_variant = dvorak,
+//   xkb_options = grp:alt_shift_toggle,caps:escape
+//   xkb_model = pc105
+//   xkb_rules = evdev
+//
+// Storage is fixed-size nul-terminated buffers so getters can hand a
+// `[*:0]const u8` straight to the C struct with no allocator or copy.
+
+xkb_layout_buf: [kb_field_max:0]u8 = undefined,
+xkb_layout_len: u8 = 0,
+xkb_variant_buf: [kb_field_max:0]u8 = undefined,
+xkb_variant_len: u8 = 0,
+xkb_options_buf: [kb_field_max:0]u8 = undefined,
+xkb_options_len: u8 = 0,
+xkb_model_buf: [kb_field_max:0]u8 = undefined,
+xkb_model_len: u8 = 0,
+xkb_rules_buf: [kb_field_max:0]u8 = undefined,
+xkb_rules_len: u8 = 0,
+
 // ── String storage (static buffers, no allocator needed) ────────
 
 bar_top_left_buf: [max_bar_str]u8 = undefined,
@@ -291,6 +329,7 @@ fn parse(self: *WmConfig, content: []const u8) void {
             .names => self.applyNameRule(key, value),
             .autostart => self.applyAutostart(key, value),
             .keybind => self.applyKeybind(key, value),
+            .keyboard => self.applyKeyboard(key, value),
             .workspace => if (current_ws_idx) |idx| self.applyWorkspace(idx, key, value),
         }
     }
@@ -305,6 +344,7 @@ const Section = enum {
     names,
     autostart,
     keybind,
+    keyboard,
     workspace,
 };
 
@@ -316,6 +356,7 @@ fn parseSection(name: []const u8) Section {
     if (std.mem.eql(u8, name, "rules")) return .rules;
     if (std.mem.eql(u8, name, "autostart")) return .autostart;
     if (std.mem.eql(u8, name, "keybind")) return .keybind;
+    if (std.mem.eql(u8, name, "keyboard")) return .keyboard;
     return .global;
 }
 
@@ -466,6 +507,67 @@ fn applyKeybind(self: *WmConfig, key: []const u8, value: []const u8) void {
     self.spawn_chord_count += 1;
 }
 
+/// Parse `[keyboard]` entries — xkb_rule_names fields. Empty or unset
+/// fields leave the buffer at length 0, which getXkbLayout() etc. below
+/// translate to null, which xkb_keymap_new_from_names treats as "consult
+/// XKB_DEFAULT_* env vars / defaults". Sway-compatible naming.
+fn applyKeyboard(self: *WmConfig, key: []const u8, value: []const u8) void {
+    const targets: [5]struct {
+        names: []const []const u8,
+        buf: *[kb_field_max:0]u8,
+        len: *u8,
+    } = .{
+        .{ .names = &.{ "xkb_layout", "layout", "kb_layout" }, .buf = &self.xkb_layout_buf, .len = &self.xkb_layout_len },
+        .{ .names = &.{ "xkb_variant", "variant", "kb_variant" }, .buf = &self.xkb_variant_buf, .len = &self.xkb_variant_len },
+        .{ .names = &.{ "xkb_options", "options", "kb_options" }, .buf = &self.xkb_options_buf, .len = &self.xkb_options_len },
+        .{ .names = &.{ "xkb_model", "model", "kb_model" }, .buf = &self.xkb_model_buf, .len = &self.xkb_model_len },
+        .{ .names = &.{ "xkb_rules", "rules", "kb_rules" }, .buf = &self.xkb_rules_buf, .len = &self.xkb_rules_len },
+    };
+
+    for (targets) |t| {
+        for (t.names) |name| {
+            if (std.mem.eql(u8, key, name)) {
+                const n = @min(value.len, t.buf.len);
+                @memcpy(t.buf[0..n], value[0..n]);
+                t.buf[n] = 0;
+                t.len.* = @intCast(n);
+                return;
+            }
+        }
+    }
+}
+
+/// Return the xkb_layout value as a nul-terminated C string, or null
+/// if unset. Null signals "fall back to XKB_DEFAULT_* env vars / defaults"
+/// when passed through to xkb_keymap_new_from_names.
+pub fn getXkbLayout(self: *const WmConfig) ?[*:0]const u8 {
+    return if (self.xkb_layout_len == 0) null else self.xkb_layout_buf[0..self.xkb_layout_len :0];
+}
+
+pub fn getXkbVariant(self: *const WmConfig) ?[*:0]const u8 {
+    return if (self.xkb_variant_len == 0) null else self.xkb_variant_buf[0..self.xkb_variant_len :0];
+}
+
+pub fn getXkbOptions(self: *const WmConfig) ?[*:0]const u8 {
+    return if (self.xkb_options_len == 0) null else self.xkb_options_buf[0..self.xkb_options_len :0];
+}
+
+pub fn getXkbModel(self: *const WmConfig) ?[*:0]const u8 {
+    return if (self.xkb_model_len == 0) null else self.xkb_model_buf[0..self.xkb_model_len :0];
+}
+
+pub fn getXkbRules(self: *const WmConfig) ?[*:0]const u8 {
+    return if (self.xkb_rules_len == 0) null else self.xkb_rules_buf[0..self.xkb_rules_len :0];
+}
+
+/// True if any `[keyboard]` field is set. If false, the compositor passes
+/// NULL to xkb_keymap_new_from_names (full env-var / default fallback).
+pub fn hasXkbOverrides(self: *const WmConfig) bool {
+    return self.xkb_layout_len != 0 or self.xkb_variant_len != 0 or
+        self.xkb_options_len != 0 or self.xkb_model_len != 0 or
+        self.xkb_rules_len != 0;
+}
+
 /// Populate `[workspace.N]` fields (cwd, startup). Ignores `name`,
 /// `layout`, `master_ratio` etc. — those are handled by the shared
 /// teru Config and applied to the layout engine separately.
@@ -506,4 +608,45 @@ pub fn matchName(self: *const WmConfig, class_or_app_id: []const u8) ?[]const u8
         }
     }
     return null;
+}
+
+test "keyboard section parses sway-compatible xkb_ fields" {
+    var cfg = WmConfig{};
+    cfg.parse(
+        \\[keyboard]
+        \\xkb_layout = us,ua
+        \\xkb_variant = dvorak,
+        \\xkb_options = grp:alt_shift_toggle,caps:escape
+        \\
+    );
+    try std.testing.expect(cfg.hasXkbOverrides());
+    const layout = cfg.getXkbLayout() orelse return error.NullLayout;
+    const variant = cfg.getXkbVariant() orelse return error.NullVariant;
+    const options = cfg.getXkbOptions() orelse return error.NullOptions;
+    try std.testing.expectEqualStrings("us,ua", std.mem.span(layout));
+    try std.testing.expectEqualStrings("dvorak,", std.mem.span(variant));
+    try std.testing.expectEqualStrings("grp:alt_shift_toggle,caps:escape", std.mem.span(options));
+    try std.testing.expect(cfg.getXkbModel() == null);
+    try std.testing.expect(cfg.getXkbRules() == null);
+}
+
+test "keyboard section accepts hyprland-style kb_ and bare names" {
+    var cfg = WmConfig{};
+    cfg.parse(
+        \\[keyboard]
+        \\kb_layout = us
+        \\variant = colemak
+        \\
+    );
+    try std.testing.expectEqualStrings("us", std.mem.span(cfg.getXkbLayout().?));
+    try std.testing.expectEqualStrings("colemak", std.mem.span(cfg.getXkbVariant().?));
+}
+
+test "empty keyboard section leaves all xkb fields null" {
+    var cfg = WmConfig{};
+    cfg.parse("gap = 8\n");
+    try std.testing.expect(!cfg.hasXkbOverrides());
+    try std.testing.expect(cfg.getXkbLayout() == null);
+    try std.testing.expect(cfg.getXkbVariant() == null);
+    try std.testing.expect(cfg.getXkbOptions() == null);
 }
