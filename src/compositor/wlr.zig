@@ -158,6 +158,11 @@ pub extern "c" fn miozu_xdg_toplevel_from_surface(s: *wlr_surface) callconv(.c) 
 /// and wlr_seat_pointer_notify_enter asserts on a freed resource.
 pub extern "c" fn miozu_surface_is_live(s: *wlr_surface) callconv(.c) c_int;
 
+/// True iff both surfaces are alive and belong to the same wl_client.
+/// Used by focusView to decide whether the pointer-entered leaf is
+/// a safe target for keyboard_notify_enter (vs. stale / cross-client).
+pub extern "c" fn miozu_surfaces_same_client(a: *wlr_surface, b: *wlr_surface) callconv(.c) c_int;
+
 /// True iff the scene node is a `WLR_SCENE_NODE_BUFFER`.
 /// `wlr_scene_buffer_from_node` *asserts* on any other node type — must
 /// pre-filter since `wlr_scene_node_at` returns rects / trees too.

@@ -103,16 +103,22 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
             }
         }
 
-        // Bar must exist before spawnTerminal so arrangeworkspace accounts for bar height
+        // Bar must exist before anything is tiled so arrangeworkspace
+        // accounts for bar height.
         server.bar = Bar.create(server);
         server.applyWmBar(); // apply teruwm config bar format strings
 
-        // Start on workspace 1 (key 1, index 0) with a terminal
+        // Start on workspace 1 (key 1, index 0). Do NOT auto-spawn a
+        // terminal — tiling compositors (sway, river, hyprland, xmonad,
+        // dwm) all start empty and let the user (or autostart config)
+        // decide what to launch. Auto-spawn also made the "close all"
+        // UX confusing: the last-closed pane would vanish, then the
+        // auto-spawn ran only on first output so it didn't come back,
+        // leaving users unsure whether close worked.
         server.layout_engine.switchWorkspace(0);
-        server.spawnTerminal(0);
 
         if (server.bar) |b| b.render(server);
-        std.debug.print("teruwm: terminal spawned on workspace 1\n", .{});
+        std.debug.print("teruwm: output attached, workspace 1 active (empty)\n", .{});
     }
 
     return output;

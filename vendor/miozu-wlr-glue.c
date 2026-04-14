@@ -403,6 +403,21 @@ struct wlr_scene_node *miozu_scene_rect_node(struct wlr_scene_rect *rect) {
     return &rect->node;
 }
 
+/* ── Surface client equality ─────────────────────────────────── */
+
+/* Returns 1 iff a and b are both valid surfaces owned by the same
+ * wl_client. Used when deciding whether to pass the pointer-entered
+ * leaf surface or the xdg_toplevel root to wlr_seat_keyboard_notify_enter
+ * — chromium uses subsurfaces for its content, and keyboard focus must
+ * target the same leaf the pointer entered for document.activeElement
+ * updates to propagate. Fall back to the xdg root if the cached leaf
+ * belongs to a different client (stale, or the pointer wandered onto
+ * another window between motion and click). */
+int miozu_surfaces_same_client(struct wlr_surface *a, struct wlr_surface *b) {
+    if (!a || !b || !a->resource || !b->resource) return 0;
+    return wl_resource_get_client(a->resource) == wl_resource_get_client(b->resource) ? 1 : 0;
+}
+
 /* ── xdg-decoration-v1 ───────────────────────────────────────── */
 
 #include <wlr/types/wlr_xdg_decoration_v1.h>

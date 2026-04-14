@@ -98,6 +98,7 @@ keyboards: std.ArrayListUnmanaged(*Keyboard) = .empty,
 // called with, so motion logging can print only on transitions instead
 // of every motion event. Not authoritative.
 last_pointer_surface: ?*wlr.wlr_surface = null,
+motion_log_counter: u32 = 0,
 
 /// Push widgets registered via MCP. Referenced by bar format strings
 /// with `{widget:name}`. Fixed-size array; slot 0..N with `.used=false`
@@ -1494,13 +1495,16 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
                 if (wlr.wlr_scene_surface_try_from_buffer(buffer)) |scene_surface| {
                     if (wlr.miozu_scene_surface_get_surface(scene_surface)) |surface| {
                         if (wlr.miozu_surface_is_live(surface) != 0) {
-                            // One-shot diagnostic: print when pointer focus
-                            // transitions to a different surface. Too noisy
-                            // at every motion event, so we filter via a
-                            // per-frame latch on Server.
                             if (self.last_pointer_surface != surface) {
                                 std.debug.print("teruwm: motion→pointer-enter surface={x}\n", .{@intFromPtr(surface)});
                                 self.last_pointer_surface = surface;
+                            }
+                            // Throttled sx/sy log for debugging click-focus:
+                            // only print every ~100 motions or on surface
+                            // change so we can see what local coord clicks land at.
+                            self.motion_log_counter +%= 1;
+                            if (self.motion_log_counter % 40 == 0) {
+                                std.debug.print("teruwm: motion sx={d:.1} sy={d:.1} (cx={d:.0},cy={d:.0})\n", .{ sx, sy, cx, cy });
                             }
                             wlr.wlr_seat_pointer_notify_enter(self.seat, surface, sx, sy);
                             wlr.wlr_seat_pointer_notify_motion(self.seat, time, sx, sy);
@@ -2121,23 +2125,39 @@ pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
 
 /// Focus a view — activate its toplevel and send keyboard focus.
 ///
-/// Keyboard-focus-enter must include the current modifier state, else
-/// clients that care about modifiers (terminals, editors, anything with
-/// keybindings of their own) receive subsequent key events with the
-/// *wrong* modifier mask. Before v0.5.1 we passed null for modifiers and
-/// Chrome would swallow every keystroke while thinking Shift/Ctrl were
-/// never held — visible as "can't interact with chrome after click".
+/// The keyboard-enter target surface matters more than you'd think:
+/// Chromium (and all GTK/Qt toolkits that use subsurfaces for content)
+/// only propagates keyboard focus to DOM / widget input elements when
+/// the wl_keyboard.enter surface matches the surface the *pointer*
+/// last entered. If we pass the xdg_toplevel's *root* surface, Chromium
+/// dispatches the JS click event (so Doodle navigation works), but
+/// `document.activeElement` stays on <body> — typing has nowhere to go.
+/// That was the user-visible "can't interact with chrome" bug.
+///
+/// Fix: prefer the last pointer-entered leaf (captured by
+/// processCursorMotion into `last_pointer_surface`). Fall back to the
+/// xdg root only if the cached leaf belongs to a different client
+/// (stale cache, or the pointer wandered onto a different window
+/// between the click and now).
+///
+/// Keyboard-enter must also include live modifier state — else Chrome
+/// sees keys with Shift/Ctrl marked up when they're physically held.
 pub fn focusView(self: *Server, view: *XdgView) void {
-    // Deactivate previous
+    // Deactivate previous different view (not ourselves)
     if (self.focused_view) |prev| {
-        _ = wlr.wlr_xdg_toplevel_set_activated(prev.toplevel, false);
+        if (prev != view) {
+            _ = wlr.wlr_xdg_toplevel_set_activated(prev.toplevel, false);
+        }
     }
 
-    // Activate new — clear terminal focus, external view gets keyboard
+    // Activate (idempotent — wlroots dedups if already activated)
     _ = wlr.wlr_xdg_toplevel_set_activated(view.toplevel, true);
+    const was_focused = (self.focused_view == view and self.focused_terminal == null);
     self.focused_view = view;
     self.focused_terminal = null;
-    std.debug.print("teruwm: focusView ran node={d} focused_terminal->null\n", .{view.node_id});
+    if (!was_focused) {
+        std.debug.print("teruwm: focusView ran node={d} focused_terminal->null\n", .{view.node_id});
+    }
 
     // Clear urgency on focus gain + emit focus_changed
     if (self.nodes.findByToplevel(view.toplevel)) |slot| {
@@ -2145,15 +2165,30 @@ pub fn focusView(self: *Server, view: *XdgView) void {
         self.emitMcpEventKind("focus_changed", ",\"node_id\":{d}", .{self.nodes.node_id[slot]});
     }
 
-    // Send keyboard focus to the surface with live modifier state.
-    const surface = wlr.miozu_xdg_surface_surface(
+    const root_surface = wlr.miozu_xdg_surface_surface(
         wlr.miozu_xdg_toplevel_base(view.toplevel) orelse return,
     ) orelse return;
+
+    // Pick the keyboard-enter target: leaf if it's same client as this
+    // view, otherwise the toplevel root.
+    const target: *wlr.wlr_surface = blk: {
+        if (self.last_pointer_surface) |leaf| {
+            if (wlr.miozu_surfaces_same_client(leaf, root_surface) != 0) {
+                break :blk leaf;
+            }
+        }
+        break :blk root_surface;
+    };
+
     const modifiers: ?*anyopaque = if (wlr.miozu_seat_get_keyboard(self.seat)) |kb|
         wlr.miozu_keyboard_modifiers_ptr(kb)
     else
         null;
-    wlr.wlr_seat_keyboard_notify_enter(self.seat, surface, null, 0, modifiers);
+    wlr.wlr_seat_keyboard_notify_enter(self.seat, target, null, 0, modifiers);
+    std.debug.print(
+        "teruwm: keyboard_notify_enter target={x} (root={x} leaf={?x})\n",
+        .{ @intFromPtr(target), @intFromPtr(root_surface), if (self.last_pointer_surface) |l| @intFromPtr(l) else null },
+    );
 
     if (self.bar) |b| b.render(self);
 }
