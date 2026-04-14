@@ -18,6 +18,17 @@ const TerminalPane = @import("TerminalPane.zig");
 
 const restart_state_path = "/tmp/teruwm-restart.bin";
 
+/// Custom panic handler: print "teruwm: PANIC <msg>" + a stack trace
+/// before aborting. Without this, segfaults look like clean exits in
+/// the log and we waste hours debugging "why did teruwm just vanish?"
+pub const panic = std.debug.FullPanic(panicHandler);
+fn panicHandler(msg: []const u8, first_trace_addr: ?usize) noreturn {
+    std.debug.print("\nteruwm: PANIC {s}\n", .{msg});
+    const addr = first_trace_addr orelse @returnAddress();
+    std.debug.dumpCurrentStackTrace(.{ .first_address = addr });
+    std.process.exit(134);
+}
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.gpa;
