@@ -94,6 +94,11 @@ active_keymap_name: []const u8 = "",
 // destroy listeners + removal is the next step if/when unplug matters.
 keyboards: std.ArrayListUnmanaged(*Keyboard) = .empty,
 
+// Diagnostic only — tracks the last surface pointer notify_enter was
+// called with, so motion logging can print only on transitions instead
+// of every motion event. Not authoritative.
+last_pointer_surface: ?*wlr.wlr_surface = null,
+
 /// Push widgets registered via MCP. Referenced by bar format strings
 /// with `{widget:name}`. Fixed-size array; slot 0..N with `.used=false`
 /// are empty. No heap allocation. Not persisted across hot-restart.
@@ -787,6 +792,14 @@ pub fn processCursorButton(server: *Server, button: u32, state: u32, time: u32, 
             server.grab_node_id = null;
         }
         _ = wlr.wlr_seat_pointer_notify_button(server.seat, time, button, state);
+        // Every button notify must be followed by a frame, or clients
+        // that batch (chromium, GTK) never dispatch the click. libinput
+        // does this automatically via the cursor_frame signal, but
+        // synthetic events from MCP bypass that path, and on touchpads
+        // the frame can arrive after a subsequent motion — dropping the
+        // effective click target into the "next surface" bucket. Always
+        // flushing after button fixes both cases.
+        wlr.wlr_seat_pointer_notify_frame(server.seat);
         return;
     }
 
@@ -898,9 +911,24 @@ pub fn processCursorButton(server: *Server, button: u32, state: u32, time: u32, 
     // were dropped. nodeAtPoint is the single hit-test that honors
     // scene z-order (floating over tiled, scratchpad over everything).
     if (state == 1) { // press
-        if (server.nodeAtPoint(wlr.miozu_cursor_x(server.cursor), wlr.miozu_cursor_y(server.cursor))) |nid| {
+        const _cx = wlr.miozu_cursor_x(server.cursor);
+        const _cy = wlr.miozu_cursor_y(server.cursor);
+        const _nid_opt = server.nodeAtPoint(_cx, _cy);
+        std.debug.print(
+            "teruwm: click@({d:.0},{d:.0}) hit_node={?d} super={}\n",
+            .{ _cx, _cy, _nid_opt, super_held },
+        );
+        if (_nid_opt) |nid| {
             // Find the node's kind and dispatch.
             if (server.nodes.findById(nid)) |slot| {
+                std.debug.print(
+                    "teruwm: click slot kind={s} rect=({d},{d}) {d}x{d}\n",
+                    .{
+                        @tagName(server.nodes.kind[slot]),
+                        server.nodes.pos_x[slot], server.nodes.pos_y[slot],
+                        server.nodes.width[slot], server.nodes.height[slot],
+                    },
+                );
                 if (server.nodes.kind[slot] == .terminal) {
                     // Terminal: focus the pane, update layout engine.
                     for (server.terminal_panes) |maybe_tp| {
@@ -960,6 +988,8 @@ pub fn processCursorButton(server: *Server, button: u32, state: u32, time: u32, 
     }
 
     _ = wlr.wlr_seat_pointer_notify_button(server.seat, time, button, state);
+    // Flush — see note in the state==0 branch above.
+    wlr.wlr_seat_pointer_notify_frame(server.seat);
 }
 
 fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
@@ -1464,8 +1494,21 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
                 if (wlr.wlr_scene_surface_try_from_buffer(buffer)) |scene_surface| {
                     if (wlr.miozu_scene_surface_get_surface(scene_surface)) |surface| {
                         if (wlr.miozu_surface_is_live(surface) != 0) {
+                            // One-shot diagnostic: print when pointer focus
+                            // transitions to a different surface. Too noisy
+                            // at every motion event, so we filter via a
+                            // per-frame latch on Server.
+                            if (self.last_pointer_surface != surface) {
+                                std.debug.print("teruwm: motion→pointer-enter surface={x}\n", .{@intFromPtr(surface)});
+                                self.last_pointer_surface = surface;
+                            }
                             wlr.wlr_seat_pointer_notify_enter(self.seat, surface, sx, sy);
                             wlr.wlr_seat_pointer_notify_motion(self.seat, time, sx, sy);
+                            // Chromium and GTK batch events until frame;
+                            // libinput auto-flushes via cursor_frame, but
+                            // synthetic MCP test_move bypasses that.
+                            // Always flushing here is cheap and correct.
+                            wlr.wlr_seat_pointer_notify_frame(self.seat);
                             return;
                         }
                     }
@@ -2094,6 +2137,7 @@ pub fn focusView(self: *Server, view: *XdgView) void {
     _ = wlr.wlr_xdg_toplevel_set_activated(view.toplevel, true);
     self.focused_view = view;
     self.focused_terminal = null;
+    std.debug.print("teruwm: focusView ran node={d} focused_terminal->null\n", .{view.node_id});
 
     // Clear urgency on focus gain + emit focus_changed
     if (self.nodes.findByToplevel(view.toplevel)) |slot| {
