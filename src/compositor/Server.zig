@@ -86,6 +86,14 @@ workspace_trees: [10]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** 10,
 active_keymap_name_buf: [64]u8 = [_]u8{0} ** 64,
 active_keymap_name: []const u8 = "",
 
+// Every keyboard device seen via setupKeyboard. Append-only while the
+// compositor runs — used to re-apply keymaps to *every* attached device
+// on config reload (laptop + external dock is the common case). We
+// don't remove on unplug today because Keyboard never frees itself;
+// stale entries would dereference a dead `wlr_keyboard`. Wiring device-
+// destroy listeners + removal is the next step if/when unplug matters.
+keyboards: std.ArrayListUnmanaged(*Keyboard) = .empty,
+
 /// Push widgets registered via MCP. Referenced by bar format strings
 /// with `{widget:name}`. Fixed-size array; slot 0..N with `.used=false`
 /// are empty. No heap allocation. Not persisted across hot-restart.
@@ -164,6 +172,17 @@ new_xwayland_surface: wlr.wl_listener = makeListener(handleNewXwaylandSurface),
 xdg_activate: wlr.wl_listener = makeListener(handleXdgActivation),
 xdg_activation: ?*wlr.wlr_xdg_activation_v1 = null,
 
+// xdg-decoration-v1 — for every new toplevel decoration we force the
+// server-side mode (tiling WM: no wasted titlebar). Listener lives here;
+// the manager itself has no long-lived state we need.
+xdg_decoration_mgr: ?*wlr.wlr_xdg_decoration_manager_v1 = null,
+new_xdg_decoration: wlr.wl_listener = makeListener(handleNewXdgDecoration),
+
+// idle-notify-v1 — swayidle/gammastep subscribers get activity pings
+// on every real input event (keyboard, pointer motion/button/axis).
+// Null = feature unavailable (should never happen; we own the global).
+idle_notifier: ?*wlr.wlr_idle_notifier_v1 = null,
+
 // ── Types ─────────────────────────────────────────────────────
 
 pub const PerfStats = struct {
@@ -237,6 +256,20 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     // themselves on their workspace pill in the bar.
     const xdg_act = wlr.wlr_xdg_activation_v1_create(display);
 
+    // primary-selection-v1 — enables middle-click paste between Wayland
+    // apps. wlroots owns the selection state; we only wire the global.
+    _ = wlr.wlr_primary_selection_v1_device_manager_create(display);
+
+    // xdg-decoration-v1 — every GTK/Qt app asks the compositor whether
+    // to draw its own titlebar. We always say server-side (tiling =
+    // no titlebar). Listener is registered in registerListeners once
+    // Server has its heap address.
+    const xdg_deco = wlr.wlr_xdg_decoration_manager_v1_create(display);
+
+    // idle-notify-v1 — swayidle, gammastep, wlsunset, etc. Activity
+    // pings go out from every real input event.
+    const idle_notif = wlr.wlr_idle_notifier_v1_create(display);
+
     // Scene graph
     const scene = wlr.wlr_scene_create() orelse
         return error.SceneCreateFailed;
@@ -295,6 +328,8 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
         .session = session_ptr,
         .wlr_compositor = wlr_comp,
         .xdg_activation = xdg_act,
+        .xdg_decoration_mgr = xdg_deco,
+        .idle_notifier = idle_notif,
     };
 }
 
@@ -309,6 +344,13 @@ fn registerListeners(self: *Server) void {
     // be focused (e.g. chromium background tab opening a new window).
     if (self.xdg_activation) |xa| {
         wlr.wl_signal_add(wlr.miozu_xdg_activation_request_activate(xa), &self.xdg_activate);
+    }
+
+    // xdg-decoration-v1 — new_toplevel_decoration fires once per toplevel
+    // as it's mapped. Handler forces server-side mode and is fire-and-forget;
+    // no per-decoration state to track afterwards.
+    if (self.xdg_decoration_mgr) |m| {
+        wlr.wl_signal_add(wlr.miozu_xdg_decoration_new_toplevel_decoration(m), &self.new_xdg_decoration);
     }
     wlr.wl_signal_add(wlr.miozu_cursor_motion(self.cursor), &self.cursor_motion);
     wlr.wl_signal_add(wlr.miozu_cursor_motion_absolute(self.cursor), &self.cursor_motion_absolute);
@@ -482,6 +524,43 @@ pub fn reloadWmConfig(self: *Server) void {
         }
     }
 
+    // Re-apply keymap to *every* attached keyboard so [keyboard] edits
+    // take effect without reconnecting devices. Laptops typically have
+    // a built-in keyboard plus one external dock keyboard — refreshing
+    // only the seat's active one (which is whichever key was last hit)
+    // leaves the other stuck on the old layout.
+    //
+    // Build the keymap once and hand the same ref to each device. wlroots
+    // retains its own ref in wlr_keyboard_set_keymap, so we unref once
+    // at the end.
+    const new_keymap = blk: {
+        if (self.wm_config.hasXkbOverrides()) {
+            const names = wlr.XkbRuleNames{
+                .rules = self.wm_config.getXkbRules(),
+                .model = self.wm_config.getXkbModel(),
+                .layout = self.wm_config.getXkbLayout(),
+                .variant = self.wm_config.getXkbVariant(),
+                .options = self.wm_config.getXkbOptions(),
+            };
+            if (wlr.xkb_keymap_new_from_names(self.xkb_ctx, &names, 0)) |km| break :blk km;
+            std.debug.print("teruwm: [keyboard] config invalid on reload, keeping previous keymap\n", .{});
+            break :blk null;
+        }
+        break :blk wlr.xkb_keymap_new_from_names(self.xkb_ctx, null, 0);
+    };
+    if (new_keymap) |km| {
+        defer wlr.xkb_keymap_unref(km);
+        for (self.keyboards.items) |kb| {
+            _ = wlr.wlr_keyboard_set_keymap(kb.wlr_keyboard, km);
+        }
+        // Refresh the bar widget from the seat's active keyboard (or any
+        // keyboard if the seat has none yet — the name is identical after
+        // a bulk reapply).
+        const refresh_kb = wlr.miozu_seat_get_keyboard(self.seat) orelse
+            (if (self.keyboards.items.len > 0) self.keyboards.items[0].wlr_keyboard else null);
+        if (refresh_kb) |rkb| self.refreshActiveKeymap(rkb);
+    }
+
     std.debug.print("teruwm: config reloaded (gap={d}, border={d}, bg=0x{x:0>8})\n", .{ self.wm_config.gap, self.wm_config.border_width, self.wm_config.bg_color });
 }
 
@@ -647,10 +726,28 @@ fn handleXdgActivation(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.
     }
 }
 
+/// xdg-decoration-v1 new_toplevel_decoration handler. Tiling WMs always
+/// want server-side decoration (no titlebar). wlroots sends the configure
+/// on the next commit; we don't need to hold per-decoration state. If
+/// the client later sends set_mode asking for client-side we ignore it —
+/// the most recent mode we set stays in effect.
+fn handleNewXdgDecoration(_: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const dec: *wlr.wlr_xdg_toplevel_decoration_v1 = @ptrCast(@alignCast(data orelse return));
+    _ = wlr.wlr_xdg_toplevel_decoration_v1_set_mode(dec, wlr.XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+}
+
+/// Tiny inline: push a "user is active" ping to idle-notify subscribers.
+/// Called from every real input event. One indirect call, one branch —
+/// not measurable in a profile, and removes the need for a periodic poll.
+inline fn notifyActivity(self: *Server) void {
+    if (self.idle_notifier) |n| wlr.wlr_idle_notifier_v1_notify_activity(n, self.seat);
+}
+
 fn handleCursorMotion(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const server = wlr.listenerParent(Server, "cursor_motion", listener);
     const event: *wlr.wlr_pointer_motion_event = @ptrCast(@alignCast(data orelse return));
     wlr.wlr_cursor_move(server.cursor, null, wlr.miozu_pointer_motion_dx(event), wlr.miozu_pointer_motion_dy(event));
+    server.notifyActivity();
     server.processCursorMotion(wlr.miozu_pointer_motion_time(event));
 }
 
@@ -658,12 +755,14 @@ fn handleCursorMotionAbsolute(listener: *wlr.wl_listener, data: ?*anyopaque) cal
     const server = wlr.listenerParent(Server, "cursor_motion_absolute", listener);
     const event: *wlr.wlr_pointer_motion_absolute_event = @ptrCast(@alignCast(data orelse return));
     wlr.wlr_cursor_warp_absolute(server.cursor, null, wlr.miozu_pointer_motion_abs_x(event), wlr.miozu_pointer_motion_abs_y(event));
+    server.notifyActivity();
     server.processCursorMotion(wlr.miozu_pointer_motion_abs_time(event));
 }
 
 fn handleCursorButton(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const server = wlr.listenerParent(Server, "cursor_button", listener);
     const event: *wlr.wlr_pointer_button_event = @ptrCast(@alignCast(data orelse return));
+    server.notifyActivity();
     server.processCursorButton(
         wlr.miozu_pointer_button_button(event),
         wlr.miozu_pointer_button_state(event),
@@ -866,6 +965,7 @@ pub fn processCursorButton(server: *Server, button: u32, state: u32, time: u32, 
 fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const server = wlr.listenerParent(Server, "cursor_axis", listener);
     const event: *wlr.wlr_pointer_axis_event = @ptrCast(@alignCast(data orelse return));
+    server.notifyActivity();
 
     const orientation = wlr.miozu_pointer_axis_orientation(event);
     const delta = wlr.miozu_pointer_axis_delta(event);
@@ -945,13 +1045,16 @@ fn handleRequestSetCursor(listener: *wlr.wl_listener, data: ?*anyopaque) callcon
 
 // ── Keyboard setup ─────────────────────────────────────────────
 
-/// Per-keyboard state — allocated once per keyboard device, freed never
-/// (keyboards rarely disconnect). Embeds listeners for O(1) dispatch.
+/// Per-keyboard state — allocated on device attach, freed on device destroy.
+/// Listeners are embedded so @fieldParentPtr resolves their owning Keyboard
+/// in O(1). Entry in `Server.keyboards` is removed by handleDestroy.
 const Keyboard = struct {
     server: *Server,
+    device: *wlr.wlr_input_device,
     wlr_keyboard: *wlr.wlr_keyboard,
     key_listener: wlr.wl_listener,
     modifiers_listener: wlr.wl_listener,
+    destroy_listener: wlr.wl_listener,
 
     fn handleKey(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
         const kb: *Keyboard = @fieldParentPtr("key_listener", listener);
@@ -961,6 +1064,9 @@ const Keyboard = struct {
         const key_state = wlr.miozu_keyboard_key_state(event_ptr);
         const time = wlr.miozu_keyboard_key_time(event_ptr);
         const xkb_st = wlr.miozu_keyboard_xkb_state(kb.wlr_keyboard) orelse return;
+
+        // Both press and release count as activity for idle purposes.
+        kb.server.notifyActivity();
 
         // Only handle keybinds on key press, not release
         if (key_state == 1) {
@@ -1014,6 +1120,27 @@ const Keyboard = struct {
         // Refresh the layout-name cache so the {keymap} bar widget reflects
         // layout changes (e.g. Ctrl+Shift toggling us ↔ ua).
         kb.server.refreshActiveKeymap(kb.wlr_keyboard);
+    }
+
+    /// Input device went away (unplug, runtime disable). Unhook every
+    /// listener and drop the Keyboard from Server.keyboards so the next
+    /// config reload / iteration doesn't dereference a freed wlr_keyboard.
+    fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
+        const kb: *Keyboard = @fieldParentPtr("destroy_listener", listener);
+        const server = kb.server;
+
+        wlr.wl_list_remove(&kb.key_listener.link);
+        wlr.wl_list_remove(&kb.modifiers_listener.link);
+        wlr.wl_list_remove(&kb.destroy_listener.link);
+
+        for (server.keyboards.items, 0..) |entry, i| {
+            if (entry == kb) {
+                _ = server.keyboards.swapRemove(i);
+                break;
+            }
+        }
+
+        server.zig_allocator.destroy(kb);
     }
 };
 
@@ -1159,8 +1286,29 @@ var keymap_raw_buf: [32]u8 = undefined;
 fn setupKeyboard(self: *Server, device: *wlr.wlr_input_device) void {
     const keyboard = wlr.miozu_input_device_keyboard(device) orelse return;
 
-    // Create keymap from system defaults (respects XKB_DEFAULT_LAYOUT etc.)
-    const keymap = wlr.xkb_keymap_new_from_names(self.xkb_ctx, null, 0) orelse return;
+    // Resolve keymap using three-layer fallback (idiomatic Sway pattern):
+    //   1. teruwm [keyboard] section from WmConfig  (most specific)
+    //   2. XKB_DEFAULT_* env vars (environment.d / shell)
+    //   3. libxkbcommon built-in default (us QWERTY)
+    //
+    // Layer 1 sets struct fields directly; layers 2/3 are consulted by
+    // libxkbcommon for any field we leave null. If no [keyboard] entries
+    // are present we pass NULL for the whole struct, which is identical
+    // to the original behaviour — pure env-var / default resolution.
+    const keymap = blk: {
+        if (self.wm_config.hasXkbOverrides()) {
+            const names = wlr.XkbRuleNames{
+                .rules = self.wm_config.getXkbRules(),
+                .model = self.wm_config.getXkbModel(),
+                .layout = self.wm_config.getXkbLayout(),
+                .variant = self.wm_config.getXkbVariant(),
+                .options = self.wm_config.getXkbOptions(),
+            };
+            if (wlr.xkb_keymap_new_from_names(self.xkb_ctx, &names, 0)) |km| break :blk km;
+            std.debug.print("teruwm: [keyboard] config invalid, falling back to env/defaults\n", .{});
+        }
+        break :blk wlr.xkb_keymap_new_from_names(self.xkb_ctx, null, 0) orelse return;
+    };
     defer wlr.xkb_keymap_unref(keymap);
 
     _ = wlr.wlr_keyboard_set_keymap(keyboard, keymap);
@@ -1170,13 +1318,28 @@ fn setupKeyboard(self: *Server, device: *wlr.wlr_input_device) void {
     const kb = self.zig_allocator.create(Keyboard) catch return;
     kb.* = .{
         .server = self,
+        .device = device,
         .wlr_keyboard = keyboard,
         .key_listener = .{ .link = .{ .prev = null, .next = null }, .notify = Keyboard.handleKey },
         .modifiers_listener = .{ .link = .{ .prev = null, .next = null }, .notify = Keyboard.handleModifiers },
+        .destroy_listener = .{ .link = .{ .prev = null, .next = null }, .notify = Keyboard.handleDestroy },
     };
 
     wlr.wl_signal_add(wlr.miozu_keyboard_key(keyboard), &kb.key_listener);
     wlr.wl_signal_add(wlr.miozu_keyboard_modifiers(keyboard), &kb.modifiers_listener);
+    wlr.wl_signal_add(wlr.miozu_input_device_destroy(device), &kb.destroy_listener);
+
+    // Register for reload-time keymap refresh. On OOM we free the kb
+    // and bail — otherwise a destroy-listener for a struct that isn't
+    // in the list would still try to swapRemove and find nothing, which
+    // is harmless, but leaking the struct on OOM is a real concern.
+    self.keyboards.append(self.zig_allocator, kb) catch {
+        wlr.wl_list_remove(&kb.key_listener.link);
+        wlr.wl_list_remove(&kb.modifiers_listener.link);
+        wlr.wl_list_remove(&kb.destroy_listener.link);
+        self.zig_allocator.destroy(kb);
+        return;
+    };
 
     wlr.wlr_seat_set_keyboard(self.seat, keyboard);
 

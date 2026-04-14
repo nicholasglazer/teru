@@ -174,6 +174,39 @@ pub extern "wlroots-0.18" fn wlr_cursor_attach_input_device(cursor: *wlr_cursor,
 
 pub extern "wlroots-0.18" fn wlr_layer_shell_v1_create(display: *wl_display, version: u32) callconv(.c) ?*wlr_layer_shell_v1;
 
+// ── primary-selection-v1 (middle-click paste) ─────────────────
+// One call wires the global. wlroots tracks selection ownership per-seat
+// and relays paste via wl_data_offer. Zero state on our side.
+
+pub const wlr_primary_selection_v1_device_manager = opaque {};
+pub extern "wlroots-0.18" fn wlr_primary_selection_v1_device_manager_create(display: *wl_display) callconv(.c) ?*wlr_primary_selection_v1_device_manager;
+
+// ── xdg-decoration-v1 (server-side decoration negotiation) ─────
+// For a tiling WM we always prefer server-side — no wasted titlebars.
+// On each new toplevel decoration we call set_mode(SERVER_SIDE) once.
+// Clients that insist on client-side (firefox) keep drawing their chrome
+// because the protocol still allows them to override, but GTK/Qt apps
+// honour the hint and skip the titlebar.
+
+pub const wlr_xdg_decoration_manager_v1 = opaque {};
+pub const wlr_xdg_toplevel_decoration_v1 = opaque {};
+pub const XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE: u32 = 2;
+
+pub extern "wlroots-0.18" fn wlr_xdg_decoration_manager_v1_create(display: *wl_display) callconv(.c) ?*wlr_xdg_decoration_manager_v1;
+pub extern "wlroots-0.18" fn wlr_xdg_toplevel_decoration_v1_set_mode(dec: *wlr_xdg_toplevel_decoration_v1, mode: u32) callconv(.c) u32;
+
+pub extern "c" fn miozu_xdg_decoration_new_toplevel_decoration(mgr: *wlr_xdg_decoration_manager_v1) callconv(.c) *wl_signal;
+
+// ── idle-notify-v1 (laptop sleep, screensaver) ────────────────
+// swayidle and friends subscribe; we just call notify_activity on every
+// real input event. wlroots handles idle-timer bookkeeping and notifies
+// subscribers when their threshold is crossed. Cost per input event:
+// one indirect call, amortised across many events per frame.
+
+pub const wlr_idle_notifier_v1 = opaque {};
+pub extern "wlroots-0.18" fn wlr_idle_notifier_v1_create(display: *wl_display) callconv(.c) ?*wlr_idle_notifier_v1;
+pub extern "wlroots-0.18" fn wlr_idle_notifier_v1_notify_activity(notifier: *wlr_idle_notifier_v1, seat: *wlr_seat) callconv(.c) void;
+
 // ── C stdlib (for setenv) ──────────────────────────────────────
 
 pub extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) callconv(.c) c_int;
@@ -232,6 +265,7 @@ pub extern "c" fn miozu_keyboard_modifiers_ptr(keyboard: *wlr_keyboard) callconv
 // Input device fields
 pub extern "c" fn miozu_input_device_type(device: *wlr_input_device) callconv(.c) c_int;
 pub extern "c" fn miozu_input_device_keyboard(device: *wlr_input_device) callconv(.c) ?*wlr_keyboard;
+pub extern "c" fn miozu_input_device_destroy(device: *wlr_input_device) callconv(.c) *wl_signal;
 
 // Scene graph fields
 pub extern "c" fn miozu_scene_tree(scene: *wlr_scene) callconv(.c) ?*wlr_scene_tree;
@@ -294,9 +328,22 @@ pub extern "wlroots-0.18" fn wlr_scene_node_lower_to_bottom(node: *wlr_scene_nod
 pub extern "c" fn miozu_scene_rect_node(rect: *wlr_scene_rect) callconv(.c) *wlr_scene_node;
 
 // xkbcommon
+/// Mirrors `struct xkb_rule_names` in <xkbcommon/xkbcommon.h>. All fields
+/// are optional nul-terminated C strings; a null field tells libxkbcommon
+/// to consult the corresponding XKB_DEFAULT_* env var, then its built-in
+/// default. Pass a pointer to this to xkb_keymap_new_from_names, or pass
+/// null to get full env/default resolution for every field.
+pub const XkbRuleNames = extern struct {
+    rules: ?[*:0]const u8 = null,
+    model: ?[*:0]const u8 = null,
+    layout: ?[*:0]const u8 = null,
+    variant: ?[*:0]const u8 = null,
+    options: ?[*:0]const u8 = null,
+};
+
 pub extern "xkbcommon" fn xkb_context_new(flags: c_int) callconv(.c) ?*xkb_context;
 pub extern "xkbcommon" fn xkb_context_unref(context: *xkb_context) callconv(.c) void;
-pub extern "xkbcommon" fn xkb_keymap_new_from_names(context: *xkb_context, names: ?*anyopaque, flags: c_int) callconv(.c) ?*xkb_keymap;
+pub extern "xkbcommon" fn xkb_keymap_new_from_names(context: *xkb_context, names: ?*const XkbRuleNames, flags: c_int) callconv(.c) ?*xkb_keymap;
 pub extern "xkbcommon" fn xkb_keymap_unref(keymap: *xkb_keymap) callconv(.c) void;
 pub extern "xkbcommon" fn xkb_state_key_get_one_sym(state: *xkb_state, key: u32) callconv(.c) u32;
 pub extern "xkbcommon" fn xkb_state_mod_name_is_active(state: *xkb_state, name: [*:0]const u8, kind: c_int) callconv(.c) c_int;

@@ -169,6 +169,10 @@ struct wlr_keyboard *miozu_input_device_keyboard(struct wlr_input_device *d) {
     return wlr_keyboard_from_input_device(d);
 }
 
+struct wl_signal *miozu_input_device_destroy(struct wlr_input_device *d) {
+    return &d->events.destroy;
+}
+
 /* ── Scene graph fields ──────────────────────────────────────── */
 
 struct wlr_scene_tree *miozu_scene_tree(struct wlr_scene *s) {
@@ -397,6 +401,15 @@ const char *miozu_xwayland_display_name(struct wlr_xwayland *xwl) {
 
 struct wlr_scene_node *miozu_scene_rect_node(struct wlr_scene_rect *rect) {
     return &rect->node;
+}
+
+/* ── xdg-decoration-v1 ───────────────────────────────────────── */
+
+#include <wlr/types/wlr_xdg_decoration_v1.h>
+
+struct wl_signal *miozu_xdg_decoration_new_toplevel_decoration(
+    struct wlr_xdg_decoration_manager_v1 *mgr) {
+    return &mgr->events.new_toplevel_decoration;
 }
 
 struct wlr_surface *miozu_xwayland_surface_surface(struct wlr_xwayland_surface *s) {
