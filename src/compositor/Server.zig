@@ -1495,13 +1495,16 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
                 if (wlr.wlr_scene_surface_try_from_buffer(buffer)) |scene_surface| {
                     if (wlr.miozu_scene_surface_get_surface(scene_surface)) |surface| {
                         if (wlr.miozu_surface_is_live(surface) != 0) {
+                            // ALWAYS latch last_pointer_surface (was: only on
+                            // change). focusView reads this to target the leaf
+                            // surface for keyboard_enter — must be set by every
+                            // motion that reaches a live surface, not just the
+                            // first one. Without this, click-to-focus right after
+                            // a synthetic warp+motion saw leaf=null.
                             if (self.last_pointer_surface != surface) {
                                 std.debug.print("teruwm: motion→pointer-enter surface={x}\n", .{@intFromPtr(surface)});
-                                self.last_pointer_surface = surface;
                             }
-                            // Throttled sx/sy log for debugging click-focus:
-                            // only print every ~100 motions or on surface
-                            // change so we can see what local coord clicks land at.
+                            self.last_pointer_surface = surface;
                             self.motion_log_counter +%= 1;
                             if (self.motion_log_counter % 40 == 0) {
                                 std.debug.print("teruwm: motion sx={d:.1} sy={d:.1} (cx={d:.0},cy={d:.0})\n", .{ sx, sy, cx, cy });
@@ -1522,10 +1525,11 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
         // Scene node isn't a live client surface (background rect,
         // tree container, freed surface) — show default cursor and
         // drop focus so the next motion doesn't chase stale state.
+        std.debug.print("teruwm: motion miss — non-buffer scene node at ({d:.0},{d:.0})\n", .{ cx, cy });
         wlr.wlr_cursor_set_xcursor(self.cursor, self.cursor_mgr, "default");
         wlr.wlr_seat_pointer_clear_focus(self.seat);
     } else {
-        // No node under cursor — desktop background
+        std.debug.print("teruwm: motion miss — no node at ({d:.0},{d:.0})\n", .{ cx, cy });
         wlr.wlr_cursor_set_xcursor(self.cursor, self.cursor_mgr, "default");
         wlr.wlr_seat_pointer_clear_focus(self.seat);
     }
