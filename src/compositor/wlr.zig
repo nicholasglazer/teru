@@ -220,6 +220,15 @@ pub const wlr_idle_notifier_v1 = opaque {};
 pub extern "wlroots-0.18" fn wlr_idle_notifier_v1_create(display: *wl_display) callconv(.c) ?*wlr_idle_notifier_v1;
 pub extern "wlroots-0.18" fn wlr_idle_notifier_v1_notify_activity(notifier: *wlr_idle_notifier_v1, seat: *wlr_seat) callconv(.c) void;
 
+// ── zxdg_output_manager_v1 ─────────────────────────────────────
+// Advertises output logical geometry (name, description, size, pos)
+// via a dedicated protocol. wlr-screencopy falls back to guessing
+// without it — and "guessing" on headless / nested outputs produces
+// 0×0 buffers that fail png encoding. grim and many compositor-
+// aware tools check for this global.
+pub const wlr_xdg_output_manager_v1 = opaque {};
+pub extern "wlroots-0.18" fn wlr_xdg_output_manager_v1_create(display: *wl_display, layout: *wlr_output_layout) callconv(.c) ?*wlr_xdg_output_manager_v1;
+
 // ── C stdlib (for setenv) ──────────────────────────────────────
 
 pub extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) callconv(.c) c_int;
