@@ -904,13 +904,19 @@ pub fn processCursorButton(server: *Server, button: u32, state: u32, time: u32, 
         }
     }
 
-    // Click-to-focus: route the press to whatever node is under the
-    // cursor — terminal pane OR XDG view (chromium, foot, firefox, …).
-    // Before v0.4.24 this loop only checked terminal_panes, so clicks
-    // on a Wayland client got no focus_view assignment and therefore
-    // no keyboard focus — chromium swallowed the click but keystrokes
-    // were dropped. nodeAtPoint is the single hit-test that honors
-    // scene z-order (floating over tiled, scratchpad over everything).
+    // CRITICAL ORDERING: send the button event FIRST, then update focus.
+    // tinywl does the same. Browsers (chromium, firefox) interpret
+    // events arriving during a focus state transition as suspect — the
+    // mousedown handler runs but the in-page focus-on-mousedown call
+    // may be cancelled by the focus dance happening at the same moment.
+    // By delivering the button THEN swapping focus, the click hits a
+    // stable surface, browser internal focus-on-click works, then
+    // keyboard focus arrives separately as additive state.
+    _ = wlr.wlr_seat_pointer_notify_button(server.seat, time, button, state);
+    wlr.wlr_seat_pointer_notify_frame(server.seat);
+
+    // Click-to-focus: AFTER the button has been delivered, update
+    // keyboard focus to the clicked node.
     if (state == 1) { // press
         const _cx = wlr.miozu_cursor_x(server.cursor);
         const _cy = wlr.miozu_cursor_y(server.cursor);
@@ -988,9 +994,8 @@ pub fn processCursorButton(server: *Server, button: u32, state: u32, time: u32, 
         }
     }
 
-    _ = wlr.wlr_seat_pointer_notify_button(server.seat, time, button, state);
-    // Flush — see note in the state==0 branch above.
-    wlr.wlr_seat_pointer_notify_frame(server.seat);
+    // Note: notify_button + frame already sent above (before focus
+    // dance) — see "CRITICAL ORDERING" comment. Don't re-send here.
 }
 
 fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
@@ -2237,11 +2242,15 @@ pub fn focusView(self: *Server, view: *XdgView) void {
         break :blk root_surface;
     };
 
-    const modifiers: ?*anyopaque = if (wlr.miozu_seat_get_keyboard(self.seat)) |kb|
-        wlr.miozu_keyboard_modifiers_ptr(kb)
-    else
-        null;
-    wlr.wlr_seat_keyboard_notify_enter(self.seat, target, null, 0, modifiers);
+    // Pull live keyboard state — currently-pressed keycodes + modifiers
+    // — and pass them to notify_enter. tinywl does this; without it,
+    // browsers/IMEs treat focus-enter as "no keys held" and any
+    // modifier-held click-action gets dropped.
+    const kb_opt = wlr.miozu_seat_get_keyboard(self.seat);
+    const modifiers: ?*anyopaque = if (kb_opt) |kb| wlr.miozu_keyboard_modifiers_ptr(kb) else null;
+    const keycodes: ?[*]const u32 = if (kb_opt) |kb| wlr.miozu_keyboard_keycodes(kb) else null;
+    const num_keycodes: usize = if (kb_opt) |kb| wlr.miozu_keyboard_num_keycodes(kb) else 0;
+    wlr.wlr_seat_keyboard_notify_enter(self.seat, target, keycodes, num_keycodes, modifiers);
     std.debug.print(
         "teruwm: keyboard_notify_enter target={x} (root={x} leaf={?x})\n",
         .{ @intFromPtr(target), @intFromPtr(root_surface), if (self.last_pointer_surface) |l| @intFromPtr(l) else null },

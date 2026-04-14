@@ -164,6 +164,13 @@ pub extern "c" fn miozu_surface_is_live(s: *wlr_surface) callconv(.c) c_int;
 /// a safe target for keyboard_notify_enter (vs. stale / cross-client).
 pub extern "c" fn miozu_surfaces_same_client(a: *wlr_surface, b: *wlr_surface) callconv(.c) c_int;
 
+/// Currently-pressed keycodes on the seat's active keyboard, used by
+/// focusView to tell the newly-focused client which keys are held.
+/// Without this, browsers and IMEs treat focus-enter as "no keys
+/// pressed" which can swallow click-time modifier-held actions.
+pub extern "c" fn miozu_keyboard_keycodes(k: *wlr_keyboard) callconv(.c) ?[*]const u32;
+pub extern "c" fn miozu_keyboard_num_keycodes(k: *wlr_keyboard) callconv(.c) usize;
+
 /// True iff the scene node is a `WLR_SCENE_NODE_BUFFER`.
 /// `wlr_scene_buffer_from_node` *asserts* on any other node type — must
 /// pre-filter since `wlr_scene_node_at` returns rects / trees too.
