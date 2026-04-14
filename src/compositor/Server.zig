@@ -288,6 +288,13 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
         return error.OutputLayoutCreateFailed;
     _ = wlr.wlr_scene_attach_output_layout(scene, output_layout);
 
+    // zxdg_output_manager_v1 — needs output_layout to exist. Without
+    // this, grim / wlr-screencopy consumers fall back to guessing
+    // output geometry and produce 0×0 PNGs (both on headless + real
+    // DRM). Also a prerequisite for serious multi-output setups with
+    // kanshi, wlr-randr, etc.
+    _ = wlr.wlr_xdg_output_manager_v1_create(display, output_layout);
+
     // XDG shell
     const xdg_shell = wlr.wlr_xdg_shell_create(display, 3) orelse
         return error.XdgShellCreateFailed;
