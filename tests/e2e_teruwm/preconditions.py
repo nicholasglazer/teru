@@ -52,16 +52,26 @@ def _populate_another_ws(wm) -> None:
     time.sleep(0.1)
 
 
-def _set_accordion(wm) -> None:
-    """Switch active workspace to accordion layout so vertical resize applies."""
-    wm.call("teruwm_set_layout", {"layout": "accordion", "workspace": 0})
+def _raise_master_ratio(wm) -> None:
+    """Bump master_ratio off the default so zoom_reset has something to
+    reset back to."""
+    wm.test_key("zoom_in")
+    wm.test_key("zoom_in")
     time.sleep(0.1)
 
 
-def _set_zoom_state(wm) -> None:
-    """Toggle zoom on so subsequent zoom_* actions have state to change."""
-    wm.test_key("zoom_toggle")
-    time.sleep(0.1)
+def _focus_and_raise_master_count(wm) -> None:
+    """Resize_shrink_h lowers master_count; raise it first so the shrink
+    has room. Also focus a non-master pane so h-resize has a visible
+    effect (master-stack re-arranges when master_count changes)."""
+    wm.test_key("master_count_inc")
+    time.sleep(0.05)
+
+
+def _zoom_prereq(wm) -> None:
+    """zoom_toggle = xmonad W.zoom = swapWithMaster. That's a no-op
+    when the focused pane is already master, so focus a slave first."""
+    _focus_non_master(wm)
 
 
 # action_name -> precondition setup function
@@ -87,14 +97,20 @@ PRECONDITIONS: dict[str, Callable] = {
     # there. Visit ws 4 first so workspace_1 actually moves.
     "workspace_1":         _visit_other_ws,
 
-    # Zoom state toggles — prime the state first.
-    "zoom_in":      _set_zoom_state,
-    "zoom_out":     _set_zoom_state,
-    "zoom_reset":   _set_zoom_state,
+    # zoom_in / zoom_out change master_ratio directly — any seed with a
+    # master-stack layout (the seed default) exposes the change.
+    # zoom_reset restores ratio to default; prime with a different ratio
+    # first so reset has something to reset to.
+    "zoom_reset":   _raise_master_ratio,
+    # zoom_toggle = swap focused with master — no-op unless focused is
+    # already a slave.
+    "zoom_toggle":  _zoom_prereq,
 
-    # Vertical resize only has effect in layouts with vertical splits.
-    "resize_shrink_h": _set_accordion,
-    "resize_grow_h":   _set_accordion,
+    # Vertical resize maps to master_count adjustment. Master-stack honors
+    # it; default seed has master_count=1 so shrink would hit the lower
+    # bound. Pre-raise the count so shrink has room.
+    "resize_shrink_h": _focus_and_raise_master_count,
+    # resize_grow_h raises master_count — visible under default seed.
 }
 
 
