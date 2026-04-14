@@ -1024,19 +1024,32 @@ fn toolListWidgets(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
 fn toolTestDrag(self: *WmMcpServer, from_x: i32, from_y: i32, to_x: i32, to_y: i32, super_held: bool, button: u32, buf: []u8, id: ?[]const u8) []const u8 {
     const srv = self.server;
 
+    // Real monotonic timestamps (ms) for each phase — chromium / GTK
+    // compute click-vs-drag by checking the delta between press and
+    // release time. When both are time=0 (epoch), some input pipelines
+    // drop the click as "too old". Use a monotonic source with a small
+    // non-zero offset between phases.
+    const ns_per_ms: i128 = 1_000_000;
+    const t0_ns: i128 = @import("teru").compat.monotonicNow();
+    const t0: u32 = @intCast(@mod(@divTrunc(t0_ns, ns_per_ms), 0xFFFFFFFF));
+
     // Phase 1: warp cursor to start, fire motion so focus follows
     wlr.wlr_cursor_warp_closest(srv.cursor, null, @floatFromInt(from_x), @floatFromInt(from_y));
-    srv.processCursorMotion(0);
+    srv.processCursorMotion(t0);
 
-    // Phase 2: button press at start position — this is where auto-float happens
-    srv.processCursorButton(button, 1, 0, super_held);
+    // Phase 2: button press. Brief sleep so release carries a different
+    // timestamp — many toolkits distinguish "click" vs "drag-without-
+    // motion" by duration, and same-time press+release can be treated
+    // as noise.
+    srv.processCursorButton(button, 1, t0, super_held);
 
     // Phase 3: warp cursor to destination, fire motion so drag tracks
     wlr.wlr_cursor_warp_closest(srv.cursor, null, @floatFromInt(to_x), @floatFromInt(to_y));
-    srv.processCursorMotion(0);
+    srv.processCursorMotion(t0 + 10);
 
-    // Phase 4: button release
-    srv.processCursorButton(button, 0, 0, super_held);
+    // Phase 4: button release at t0 + 20ms — gives chromium's click
+    // dispatcher a realistic down-up interval.
+    srv.processCursorButton(button, 0, t0 + 20, super_held);
 
     const id_str = id orelse "null";
     return std.fmt.bufPrint(buf,
