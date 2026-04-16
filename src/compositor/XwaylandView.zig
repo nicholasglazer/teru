@@ -96,19 +96,12 @@ fn handleUnmap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const server = view.server;
     view.mapped = false;
 
-    // Clear Server pointers into this view BEFORE node registry teardown.
-    // Mirrors XdgView.handleUnmap: an X11 client that crashes between a
-    // motion and a button event leaves a dangling wlr_surface in
-    // last_pointer_surface and a dead node_id in grab_node_id. Next
-    // cursor event dereferences the freed view and crashes the seat.
-    const wlr_surface = wlr.miozu_xwayland_surface_surface(view.surface);
-    if (wlr_surface) |s| {
+    server.clearFocusRefs(view.node_id);
+
+    // Raw *wlr_surface — keyed off the surface itself, not node_id.
+    if (wlr.miozu_xwayland_surface_surface(view.surface)) |s| {
         if (server.last_pointer_surface == s) server.last_pointer_surface = null;
     }
-    if (server.grab_node_id) |id| if (id == view.node_id) {
-        server.grab_node_id = null;
-        server.cursor_mode = .normal;
-    };
 
     if (view.node_id > 0) {
         _ = server.nodes.remove(view.node_id);
@@ -123,16 +116,10 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const view: *XwaylandView = @fieldParentPtr("destroy_listener", listener);
     const server = view.server;
 
-    // Same invariants as handleUnmap — clients can go away without unmap
-    // on a hard crash, so guard the same Server pointers here too.
-    const wlr_surface = wlr.miozu_xwayland_surface_surface(view.surface);
-    if (wlr_surface) |s| {
+    server.clearFocusRefs(view.node_id);
+    if (wlr.miozu_xwayland_surface_surface(view.surface)) |s| {
         if (server.last_pointer_surface == s) server.last_pointer_surface = null;
     }
-    if (server.grab_node_id) |id| if (id == view.node_id) {
-        server.grab_node_id = null;
-        server.cursor_mode = .normal;
-    };
 
     if (view.node_id > 0) {
         _ = server.nodes.remove(view.node_id);
