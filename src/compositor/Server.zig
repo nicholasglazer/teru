@@ -1593,7 +1593,7 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
 
     // Handle tiled border drag — update ratio, defer layout to frame callback
     if (self.cursor_mode == .border_drag) {
-        const out_w: f64 = @floatFromInt(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
+        const out_w: f64 = @floatFromInt(self.activeOutputDims().w);
         const delta = cx - self.grab_x;
         const ratio_delta: f32 = @floatCast(delta / out_w);
         const ws = self.layout_engine.getActiveWorkspace();
@@ -2276,8 +2276,9 @@ pub fn sinkAllOnActiveWorkspace(self: *Server) void {
 /// layout divides the inset area, each pane is post-inset another hg per
 /// side, result is edge = hg+hg = gap, between panes = hg+hg = gap.
 fn computeTilingScreen(self: *Server) struct { rect: LayoutEngine.Rect, hg: i32, g: i32 } {
-    const w: u16 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
-    const full_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
+    const dims = self.activeOutputDims();
+    const w: u16 = @intCast(dims.w);
+    const full_h: u32 = dims.h;
     const bar_h: u32 = if (self.bar) |b| b.totalHeight() else 0;
     const bar_y_offset: i32 = if (self.bar) |b| @intCast(b.tilingOffsetY()) else 0;
     const h: u16 = @intCast(@max(1, full_h - bar_h));
@@ -2635,8 +2636,9 @@ fn toggleFloat(self: *Server) void {
         self.arrangeworkspace(ws);
 
         // Center the floating window at 50% of output size
-        const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
-        const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
+        const dims_c = self.activeOutputDims();
+        const out_w: u32 = dims_c.w;
+        const out_h: u32 = dims_c.h;
         const float_w: u32 = out_w / 2;
         const float_h: u32 = out_h / 2;
         const float_x: i32 = @intCast(out_w / 4);
@@ -2748,8 +2750,9 @@ fn toggleFullscreen(self: *Server) void {
     // For terminals we also resize the SW renderer framebuffer so the
     // cell grid expands to match; for xdg clients, applyRect sends the
     // xdg_toplevel_set_size configure.
-    const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
-    const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
+    const dims_fs = self.activeOutputDims();
+    const out_w: u32 = dims_fs.w;
+    const out_h: u32 = dims_fs.h;
     if (self.focused_terminal) |tp| {
         tp.resize(out_w, out_h);
         tp.setPosition(0, 0);
@@ -2900,8 +2903,9 @@ const ScratchRect = struct { x: i32, y: i32, w: u32, h: u32 };
 /// 40% tall, centered on the primary output. Future: per-name
 /// overrides from `[scratchpads]` config.
 fn defaultScratchpadRect(self: *const Server) ScratchRect {
-    const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
-    const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
+    const dims = self.activeOutputDims();
+    const out_w: u32 = dims.w;
+    const out_h: u32 = dims.h;
     const w: u32 = out_w * self.wm_config.scratchpad_width_pct / 100;
     const h: u32 = out_h * self.wm_config.scratchpad_height_pct / 100;
     return .{
@@ -2954,6 +2958,23 @@ pub fn nodeAtPoint(self: *const Server, x: f64, y: f64) ?u64 {
         }
     }
     return best_floating orelse best_tiled;
+}
+
+/// Dimensions of the currently-focused output (or first connected if
+/// no focus yet). Replaces miozu_output_layout_first_* which always
+/// returned the first output in layout order — wrong under multi-head
+/// for callers that mean "the output the user is looking at".
+pub fn activeOutputDims(self: *const Server) struct { w: u32, h: u32 } {
+    const out: *wlr.wlr_output = if (self.focused_output) |o|
+        o.wlr_output
+    else if (self.outputs.items.len > 0)
+        self.outputs.items[0].wlr_output
+    else
+        return .{ .w = 0, .h = 0 };
+    return .{
+        .w = @intCast(@max(1, wlr.miozu_output_width(out))),
+        .h = @intCast(@max(1, wlr.miozu_output_height(out))),
+    };
 }
 
 /// Find the TerminalPane with the given node_id. Still O(n) over the
@@ -3470,8 +3491,9 @@ fn takeScreenshot(self: *Server) void {
 
 /// Take a screenshot to a specific path. Returns true on success.
 pub fn takeScreenshotToPath(self: *Server, path: []const u8) bool {
-    const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
-    const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
+    const dims_ss = self.activeOutputDims();
+    const out_w: u32 = dims_ss.w;
+    const out_h: u32 = dims_ss.h;
     const total = @as(usize, out_w) * @as(usize, out_h);
     if (total == 0) return false;
 

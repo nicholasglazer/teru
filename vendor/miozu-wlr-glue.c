@@ -253,24 +253,6 @@ struct wlr_surface *miozu_scene_surface_get_surface(struct wlr_scene_surface *ss
     return ss->surface;
 }
 
-/* ── Output layout dimensions (first output) ─────────────────── */
-
-int miozu_output_layout_first_width(struct wlr_output_layout *layout) {
-    struct wl_list *outputs = &layout->outputs;
-    if (wl_list_empty(outputs)) return 1920;
-    struct wlr_output_layout_output *lo;
-    lo = wl_container_of(outputs->next, lo, link);
-    return lo->output->width;
-}
-
-int miozu_output_layout_first_height(struct wlr_output_layout *layout) {
-    struct wl_list *outputs = &layout->outputs;
-    if (wl_list_empty(outputs)) return 1080;
-    struct wlr_output_layout_output *lo;
-    lo = wl_container_of(outputs->next, lo, link);
-    return lo->output->height;
-}
-
 /* ── Request set cursor event accessors ──────────────────────── */
 
 struct wlr_surface *miozu_set_cursor_event_surface(

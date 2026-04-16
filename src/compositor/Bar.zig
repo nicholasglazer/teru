@@ -52,8 +52,9 @@ pub fn create(server: *Server) ?*Bar {
     const allocator = server.zig_allocator;
     const cell_w: u32 = if (server.font_atlas) |fa| fa.cell_width else 8;
     const cell_h: u32 = if (server.font_atlas) |fa| fa.cell_height else 16;
-    const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(server.output_layout)));
-    const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(server.output_layout)));
+    const dims = server.activeOutputDims();
+    const out_w: u32 = dims.w;
+    const out_h: u32 = dims.h;
     const bar_h: u32 = cell_h + 4;
 
     const bar = allocator.create(Bar) catch return null;

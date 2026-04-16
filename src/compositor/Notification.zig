@@ -29,7 +29,7 @@ pub fn create(server: *Server) ?*Notification {
     const allocator = server.zig_allocator;
     const cell_w: u32 = if (server.font_atlas) |fa| fa.cell_width else 8;
     const cell_h: u32 = if (server.font_atlas) |fa| fa.cell_height else 16;
-    const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(server.output_layout)));
+    const out_w: u32 = server.activeOutputDims().w;
     const width: u32 = 300;
     const height: u32 = cell_h + 4;
 
