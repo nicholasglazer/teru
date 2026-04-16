@@ -92,6 +92,9 @@ def mcp_call(
     for attempt in range(retries + 1):
         try:
             raw = _mcp_once(sock, msg, timeout)
+        except FileNotFoundError:
+            # Socket is gone — compositor has exited. Retrying can't help.
+            return None, "compositor-gone"
         except (BrokenPipeError, ConnectionResetError, ConnectionRefusedError) as e:
             last_err = f"transport: {e}"
             time.sleep(0.1 * (attempt + 1))
@@ -165,12 +168,15 @@ class Wm:
 
     def spawn_terminal(self, ws: int = 0, wait: float = 0.15) -> int:
         """Spawn a terminal and return its node_id."""
-        before, _ = self.call("teruwm_list_windows")
+        before, err = self.call("teruwm_list_windows")
+        if err == "compositor-gone":
+            raise McpError("compositor gone before spawn_terminal")
         self.call("teruwm_spawn_terminal", {"workspace": ws})
-        # Wait for the PTY to spawn + surface to map
         deadline = time.time() + 3.0
         while time.time() < deadline:
-            after, _ = self.call("teruwm_list_windows")
+            after, err = self.call("teruwm_list_windows")
+            if err == "compositor-gone":
+                raise McpError("compositor gone during spawn_terminal")
             if after and len(after) > len(before or []):
                 new_ids = {w["id"] for w in after} - {w["id"] for w in (before or [])}
                 return next(iter(new_ids))
