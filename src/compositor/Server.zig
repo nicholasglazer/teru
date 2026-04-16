@@ -2341,69 +2341,7 @@ pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
 /// Keyboard-enter must also include live modifier state — else Chrome
 /// sees keys with Shift/Ctrl marked up when they're physically held.
 pub fn focusView(self: *Server, view: *XdgView) void {
-    // Deactivate previous different view (not ourselves)
-    if (self.focused_view) |prev| {
-        if (prev != view) {
-            _ = wlr.wlr_xdg_toplevel_set_activated(prev.toplevel, false);
-            if (prev.ftl_handle) |h| {
-                wlr.wlr_foreign_toplevel_handle_v1_set_activated(h, false);
-            }
-        }
-    }
-
-    // Activate (idempotent — wlroots dedups if already activated)
-    _ = wlr.wlr_xdg_toplevel_set_activated(view.toplevel, true);
-    if (view.ftl_handle) |h| wlr.wlr_foreign_toplevel_handle_v1_set_activated(h, true);
-    const was_focused = (self.focused_view == view and self.focused_terminal == null);
-    self.focused_view = view;
-    self.focused_terminal = null;
-    if (!was_focused) {
-        std.debug.print("teruwm: focusView ran node={d} focused_terminal->null\n", .{view.node_id});
-    }
-
-    // Clear urgency on focus gain + emit focus_changed
-    if (self.nodes.findByToplevel(view.toplevel)) |slot| {
-        _ = self.nodes.clearUrgent(slot);
-        self.emitMcpEventKind("focus_changed", ",\"node_id\":{d}", .{self.nodes.node_id[slot]});
-    }
-
-    const root_surface = wlr.miozu_xdg_surface_surface(
-        wlr.miozu_xdg_toplevel_base(view.toplevel) orelse return,
-    ) orelse return;
-
-    // Pick the keyboard-enter target: leaf if it's same client as this
-    // view, otherwise the toplevel root.
-    const target: *wlr.wlr_surface = blk: {
-        if (self.last_pointer_surface) |leaf| {
-            if (wlr.miozu_surfaces_same_client(leaf, root_surface) != 0) {
-                break :blk leaf;
-            }
-        }
-        break :blk root_surface;
-    };
-
-    // Pass live keyboard state (pressed keycodes + modifiers) to
-    // notify_enter. Without it, browsers / IMEs treat focus-enter as
-    // "no keys held" and any modifier-held click-action gets dropped.
-    const kb_opt = wlr.miozu_seat_get_keyboard(self.seat);
-    const modifiers: ?*anyopaque = if (kb_opt) |kb| wlr.miozu_keyboard_modifiers_ptr(kb) else null;
-    const keycodes: ?[*]const u32 = if (kb_opt) |kb| wlr.miozu_keyboard_keycodes(kb) else null;
-    const num_keycodes: usize = if (kb_opt) |kb| wlr.miozu_keyboard_num_keycodes(kb) else 0;
-    wlr.wlr_seat_keyboard_notify_enter(self.seat, target, keycodes, num_keycodes, modifiers);
-    std.debug.print(
-        "teruwm: keyboard_notify_enter target={x} (root={x} leaf={?x})\n",
-        .{ @intFromPtr(target), @intFromPtr(root_surface), if (self.last_pointer_surface) |l| @intFromPtr(l) else null },
-    );
-
-    // No explicit wl_display_flush_clients here — the event loop
-    // flushes on its next iteration. An earlier attempt to race the
-    // activation configure ahead of the next button by calling flush
-    // here instead interleaved button + configure + enter in the
-    // same batch; clients ack'd configure first and by the time they
-    // handled the press the release was already in the next batch,
-    // so the click dispatcher dropped it.
-
-    if (self.bar) |b| b.render(self);
+    @import("ServerFocus.zig").focusView(self, view);
 }
 
 // ── Terminal pane management ───────────────────────────────────
@@ -2812,16 +2750,7 @@ pub fn terminalPaneById(self: *const Server, node_id: u64) ?*TerminalPane {
 /// otherwise. `last_pointer_surface` is handled by the View's unmap/
 /// destroy handlers since it's keyed on wlr_surface, not node_id.
 pub fn clearFocusRefs(self: *Server, node_id: u64) void {
-    if (self.focused_terminal) |tp| {
-        if (tp.node_id == node_id) self.focused_terminal = null;
-    }
-    if (self.focused_view) |view| {
-        if (view.node_id == node_id) self.focused_view = null;
-    }
-    if (self.grab_node_id) |id| if (id == node_id) {
-        self.grab_node_id = null;
-        self.cursor_mode = .normal;
-    };
+    @import("ServerFocus.zig").clearFocusRefs(self, node_id);
 }
 
 pub fn closeNode(self: *Server, node_id: u64) bool {
@@ -2952,58 +2881,7 @@ pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
 /// target set by `teruwm_focus_window` and friends — it works for both
 /// tiled and floating panes.
 pub fn updateFocusedTerminal(self: *Server) void {
-    const ws = self.layout_engine.getActiveWorkspace();
-    const active_id = ws.active_node orelse ws.getActiveNodeId() orelse return;
-
-    var found = false;
-    for (self.terminal_panes) |maybe_tp| {
-        if (maybe_tp) |tp| {
-            if (tp.node_id == active_id) {
-                if (self.focused_view) |prev_view| {
-                    _ = wlr.wlr_xdg_toplevel_set_activated(prev_view.toplevel, false);
-                }
-                self.focused_terminal = tp;
-                self.focused_view = null;
-                found = true;
-                break;
-            }
-        }
-    }
-    if (!found) {
-        // Active node is an XDG view — route through focusView so the
-        // Wayland client gets keyboard focus + activated state, and
-        // server.focused_view is kept consistent for Win+X / Win+S.
-        self.focused_terminal = null;
-        if (self.nodes.findById(active_id)) |slot| {
-            if (self.nodes.xdg_view[slot]) |opaque_view| {
-                const view: *XdgView = @ptrCast(@alignCast(opaque_view));
-                self.focusView(view);
-                // focusView already emits focus_changed + renders bar.
-                // Border-only repaint on every pane — cells unchanged,
-                // only the focus-state colour flipped.
-                for (self.terminal_panes) |maybe_tp| {
-                    if (maybe_tp) |tp| tp.repaintBorderOnly();
-                }
-                return;
-            }
-        }
-    }
-
-    // Clear urgency for the newly-focused node, if any.
-    if (self.nodes.findById(active_id)) |slot| {
-        _ = self.nodes.clearUrgent(slot);
-    }
-    self.emitMcpEventKind("focus_changed", ",\"node_id\":{d}", .{active_id});
-
-    self.applyFocusOpacity();
-
-    // Border-colour repaint only — cells haven't changed, just focus
-    // state flipped. Full render() here was ~N×300 µs of pointless
-    // SIMD blit on every workspace switch + Mod+Tab.
-    for (self.terminal_panes) |maybe_tp| {
-        if (maybe_tp) |tp| tp.repaintBorderOnly();
-    }
-    if (self.bar) |b| b.render(self);
+    @import("ServerFocus.zig").updateFocusedTerminal(self);
 }
 
 // ── Multi-output: the 3-rule architecture (v0.4.20) ──────────
@@ -3038,48 +2916,7 @@ pub fn outputShowing(self: *const Server, ws: u8) ?*Output {
 /// output takes the focused output's previous workspace. All four
 /// cases (identity, collision, no-op, first-show) live in one path.
 pub fn focusWorkspace(self: *Server, target: u8) void {
-    if (target >= 10) return;
-    const focused = self.focused_output orelse {
-        // No outputs yet — fall back to pre-v0.4.20 path.
-        const old = self.layout_engine.active_workspace;
-        if (target == old) return;
-        self.prev_workspace = old;
-        self.layout_engine.switchWorkspace(target);
-        self.setWorkspaceVisibility(old, false);
-        self.setWorkspaceVisibility(target, true);
-        self.arrangeworkspace(target);
-        self.updateFocusedTerminal();
-        self.maybeFireWorkspaceStartup(target);
-        self.emitMcpEventKind("workspace_switched", ",\"from\":{d},\"to\":{d}", .{ old, target });
-        if (self.bar) |b| b.render(self);
-        return;
-    };
-
-    const prev = focused.workspace;
-    if (target == prev) return;
-
-    // Pull-swap: another output showing `target` takes our prev.
-    if (self.outputShowing(target)) |other| {
-        if (other != focused) {
-            other.prev_workspace = other.workspace;
-            other.workspace = prev;
-            self.arrangeworkspace(prev);
-        }
-    }
-
-    focused.prev_workspace = prev;
-    focused.workspace = target;
-    // Keep legacy active_workspace in sync for code that hasn't been
-    // migrated yet (screenshot, bar, etc.).
-    self.layout_engine.active_workspace = target;
-
-    self.arrangeworkspace(target);
-    self.recomputeVisibility();
-    self.updateFocusedTerminal();
-    self.maybeFireWorkspaceStartup(target);
-    self.prev_workspace = prev; // legacy single-prev shim still works
-    self.emitMcpEventKind("workspace_switched", ",\"from\":{d},\"to\":{d}", .{ prev, target });
-    if (self.bar) |b| b.render(self);
+    @import("ServerFocus.zig").focusWorkspace(self, target);
 }
 
 /// Move a node (pane or Wayland client) to a different workspace.
@@ -3167,40 +3004,12 @@ fn setSlotVisible(self: *Server, slot: u16, visible: bool) void {
 
 /// Cycle focus to the next connected output (keybind action).
 pub fn focusNextOutput(self: *Server) void {
-    if (self.outputs.items.len < 2) return;
-    const cur = self.focused_output orelse return;
-    var next_idx: usize = 0;
-    for (self.outputs.items, 0..) |o, i| {
-        if (o == cur) {
-            next_idx = (i + 1) % self.outputs.items.len;
-            break;
-        }
-    }
-    const next = self.outputs.items[next_idx];
-    const from_ws = cur.workspace;
-    const to_ws = next.workspace;
-    self.focused_output = next;
-    // Active workspace follows focus — legacy helpers read this.
-    self.layout_engine.active_workspace = to_ws;
-    self.updateFocusedTerminal();
-    self.emitMcpEventKind("output_focused", ",\"from_ws\":{d},\"to_ws\":{d}", .{ from_ws, to_ws });
-    if (self.bar) |b| b.render(self);
+    @import("ServerFocus.zig").focusNextOutput(self);
 }
 
 /// Move the focused node to the next output's current workspace.
 pub fn moveFocusedToNextOutput(self: *Server) void {
-    if (self.outputs.items.len < 2) return;
-    const cur = self.focused_output orelse return;
-    var next_idx: usize = 0;
-    for (self.outputs.items, 0..) |o, i| {
-        if (o == cur) {
-            next_idx = (i + 1) % self.outputs.items.len;
-            break;
-        }
-    }
-    const target_ws = self.outputs.items[next_idx].workspace;
-    const ws = self.layout_engine.getActiveWorkspace();
-    if (ws.getActiveNodeId()) |nid| self.moveNodeToWorkspace(nid, target_ws);
+    @import("ServerFocus.zig").moveFocusedToNextOutput(self);
 }
 
 // ── MCP event emission (v0.4.18) ─────────────────────────────
@@ -3238,26 +3047,10 @@ pub fn resetWorkspaceStartupIfEmpty(self: *Server, ws: u8) void {
     }
 }
 
-/// Apply wm_config.unfocused_opacity to every terminal pane's
-/// scene_buffer: 1.0 for the focused one, wm_config.unfocused_opacity
-/// for the rest. wlroots blends on composite; zero CPU renderer cost.
-/// When opacity == 1.0 (default), this is a noop and skipped.
-fn applyFocusOpacity(self: *Server) void {
-    const op = self.wm_config.unfocused_opacity;
-    if (op >= 0.999) {
-        // Default: force every buffer back to full opacity in case a
-        // prior config change left someone faded.
-        for (self.terminal_panes) |maybe_tp| {
-            if (maybe_tp) |tp| wlr.wlr_scene_buffer_set_opacity(tp.scene_buffer, 1.0);
-        }
-        return;
-    }
-    for (self.terminal_panes) |maybe_tp| {
-        if (maybe_tp) |tp| {
-            const o: f32 = if (tp == self.focused_terminal) 1.0 else op;
-            wlr.wlr_scene_buffer_set_opacity(tp.scene_buffer, o);
-        }
-    }
+/// Apply wm_config.unfocused_opacity to every terminal pane's buffer.
+/// Delegates to ServerFocus.zig.
+pub fn applyFocusOpacity(self: *Server) void {
+    @import("ServerFocus.zig").applyFocusOpacity(self);
 }
 
 // ── Process spawning ───────────────────────────────────────────
