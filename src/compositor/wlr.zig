@@ -284,6 +284,20 @@ pub const wlr_idle_inhibitor_v1 = opaque {};
 pub extern "wlroots-0.18" fn wlr_idle_inhibit_v1_create(display: *wl_display) callconv(.c) ?*wlr_idle_inhibit_manager_v1;
 pub extern "wlroots-0.18" fn wlr_idle_notifier_v1_set_inhibited(notifier: *wlr_idle_notifier_v1, inhibited: bool) callconv(.c) void;
 
+// wlr_output_power_management_v1 — DPMS (display power). Clients like
+// wlopm / swayidle `timeout 600 "wlr-randr --output X --off"` ask to
+// toggle each output's enabled state; we honour it via wlr_output_state
+// + commit. Rate-limit equal-state commits to avoid DRM thrash from
+// well-intentioned repeat senders.
+pub const wlr_output_power_manager_v1 = opaque {};
+pub const wlr_output_power_v1_set_mode_event = opaque {};
+pub extern "wlroots-0.18" fn wlr_output_power_manager_v1_create(display: *wl_display) callconv(.c) ?*wlr_output_power_manager_v1;
+pub extern "c" fn miozu_output_power_mgr_set_mode(mgr: *wlr_output_power_manager_v1) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_output_power_event_output(e: *wlr_output_power_v1_set_mode_event) callconv(.c) *wlr_output;
+pub extern "c" fn miozu_output_power_event_mode_on(e: *wlr_output_power_v1_set_mode_event) callconv(.c) c_int;
+pub extern "c" fn miozu_output_commit_enabled(output: *wlr_output, enabled: c_int) callconv(.c) c_int;
+pub extern "c" fn miozu_output_enabled(output: *wlr_output) callconv(.c) c_int;
+
 // Glue — signal accessors and list_length helper.
 pub extern "c" fn miozu_idle_inhibit_new_inhibitor(mgr: *wlr_idle_inhibit_manager_v1) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_idle_inhibitor_destroy(inhibitor: *wlr_idle_inhibitor_v1) callconv(.c) *wl_signal;
