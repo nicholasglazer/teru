@@ -465,7 +465,12 @@ fn persistSave(self: *Daemon) void {
     compat.ensureDirC(sess_dir);
     var path_buf: [512]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/{s}.bin", .{ sess_dir, self.session_name }) catch return;
-    self.mux.saveSession(self.graph, path, io) catch {};
+    self.mux.saveSession(self.graph, path, io) catch |e| {
+        // Session persist failure is exactly what users need to see — a
+        // silent catch {} swallowed "disk full" / "permission denied"
+        // long enough to lose a session on daemon exit.
+        std.debug.print("teru daemon: saveSession failed: {} (path={s})\n", .{ e, path });
+    };
 }
 
 // ── Session socket utilities ──────────────────────────────────────

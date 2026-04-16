@@ -915,8 +915,14 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
                 25 => self.cursor_visible = true, // show cursor
                 47, 1047, 1049 => { // Alt screen on
                     if (!self.alt_screen) {
-                        self.alt_screen = true;
-                        self.grid.switchToAltScreen(self.allocator) catch {};
+                        // Alloc failure: don't flip alt_screen — otherwise the
+                        // next CSI ?1049l tries to restore from a backup that
+                        // was never taken, corrupting the primary grid.
+                        if (self.grid.switchToAltScreen(self.allocator)) {
+                            self.alt_screen = true;
+                        } else |e| {
+                            std.debug.print("VtParser: switchToAltScreen failed: {} — staying on primary\n", .{e});
+                        }
                     }
                 },
                 1000 => self.mouse_tracking = .normal,
