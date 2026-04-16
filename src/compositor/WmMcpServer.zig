@@ -319,6 +319,7 @@ fn handleToolsList(_: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
         \\{{"name":"teruwm_scroll","description":"AI-first scroll wheel. Synthesizes a vertical scroll axis event at (x, y) on the focused surface (or whatever's under the cursor at that point).","inputSchema":{{"type":"object","properties":{{"x":{{"type":"integer"}},"y":{{"type":"integer"}},"dy":{{"type":"number","description":"positive scrolls down, negative scrolls up; magnitude in libinput axis units (15 ≈ one detent)"}}}},"required":["x","y","dy"]}}}},
         \\{{"name":"teruwm_test_key","description":"TEST ONLY: dispatch a keybind action by name, bypassing xkb. Use for E2E tests of keybind-triggered compositor actions.","inputSchema":{{"type":"object","properties":{{"action":{{"type":"string","description":"action name e.g. 'layout_cycle', 'bar_toggle_top'"}}}},"required":["action"]}}}},
         \\{{"name":"teruwm_test_move","description":"TEST ONLY: warp the cursor to (x, y) and fire a motion event, no button. Useful for tests that verify hover focus, scroll mode, etc.","inputSchema":{{"type":"object","properties":{{"x":{{"type":"integer"}},"y":{{"type":"integer"}}}},"required":["x","y"]}}}},
+        \\{{"name":"teruwm_mouse_path","description":"Move the cursor from (from_x, from_y) to (to_x, to_y) along a smooth humanised path (Bezier + tremor + ease-in-out) over duration_ms milliseconds. Optional button is pressed partway through and released at the end — the synthetic click looks like a real person moved the mouse. Use this instead of teruwm_test_drag when driving client apps that care about bot-like straight-line warps (anti-bot browsing automation, UI smoke tests against protected pages).","inputSchema":{{"type":"object","properties":{{"from_x":{{"type":"integer"}},"from_y":{{"type":"integer"}},"to_x":{{"type":"integer"}},"to_y":{{"type":"integer"}},"duration_ms":{{"type":"integer","description":"wall-clock path duration; default from wm_config.mouse_path_default_ms (250)"}},"humanize":{{"type":"boolean","description":"if false, teleport (skip Bezier/tremor). Default: honour wm_config.mouse_humanize"}},"button":{{"type":"integer","description":"linux input-event code; 272=left, 274=right. Omit for pointer-move only"}},"super":{{"type":"boolean","description":"simulate Mod-held drag (tiling → floating)"}}}},"required":["from_x","from_y","to_x","to_y"]}}}},
         \\{{"name":"teruwm_toggle_scratchpad","description":"Toggle numbered scratchpad N (0..8). Compat shim since v0.4.18 — delegates to teruwm_scratchpad name=padN+1. Prefer teruwm_scratchpad for new code.","inputSchema":{{"type":"object","properties":{{"index":{{"type":"integer","description":"scratchpad index 0..8"}}}},"required":["index"]}}}},
         \\{{"name":"teruwm_scratchpad","description":"Toggle a named scratchpad (xmonad NamedScratchpad model). First call spawns a floating terminal tagged with the given name; subsequent calls toggle its visibility on the focused workspace. Scratchpads live in the node registry with a hidden-workspace sentinel when parked — visible via teruwm_list_windows.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"scratchpad identifier (e.g. 'term', 'music'). Max 15 chars."}},"cmd":{{"type":"string","description":"Reserved for future per-scratchpad spawn commands; ignored today — scratchpads spawn the user shell."}}}},"required":["name"]}}}},
         \\{{"name":"teruwm_subscribe_events","description":"Get the Unix-socket path for the event push channel. Connect a raw client to that path to read newline-delimited JSON events: urgent, focus_changed, workspace_switched, window_mapped. One subscriber at a time (last-connect wins); best-effort (slow subscribers drop events).","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
@@ -444,6 +445,25 @@ fn handleToolsCall(self: *WmMcpServer, body: []const u8, buf: []u8, id: ?[]const
         const y = extractNestedJsonInt(params_body, "y") orelse
             return jsonRpcError(buf, id, -32602, "Missing y");
         return self.toolTestMove(@intCast(x), @intCast(y), buf, id);
+    } else if (std.mem.eql(u8, tool_name, "teruwm_mouse_path")) {
+        const fx = extractNestedJsonInt(params_body, "from_x") orelse
+            return jsonRpcError(buf, id, -32602, "Missing from_x");
+        const fy = extractNestedJsonInt(params_body, "from_y") orelse
+            return jsonRpcError(buf, id, -32602, "Missing from_y");
+        const tx = extractNestedJsonInt(params_body, "to_x") orelse
+            return jsonRpcError(buf, id, -32602, "Missing to_x");
+        const ty = extractNestedJsonInt(params_body, "to_y") orelse
+            return jsonRpcError(buf, id, -32602, "Missing to_y");
+        // Defaults from wm_config; explicit args override
+        const dur_raw = extractNestedJsonInt(params_body, "duration_ms");
+        const dur: u32 = if (dur_raw) |d| @intCast(@max(0, d)) else self.server.wm_config.mouse_path_default_ms;
+        const humanize_true = std.mem.indexOf(u8, params_body, "\"humanize\":true") != null;
+        const humanize_false = std.mem.indexOf(u8, params_body, "\"humanize\":false") != null;
+        const humanize: bool = if (humanize_true) true else if (humanize_false) false else self.server.wm_config.mouse_humanize;
+        const btn_raw = extractNestedJsonInt(params_body, "button");
+        const btn: ?u32 = if (btn_raw) |b| @intCast(@max(0, b)) else null;
+        const super_held = std.mem.indexOf(u8, params_body, "\"super\":true") != null;
+        return self.toolMousePath(@intCast(fx), @intCast(fy), @intCast(tx), @intCast(ty), dur, humanize, btn, super_held, buf, id);
     } else if (std.mem.eql(u8, tool_name, "teruwm_click")) {
         const x = extractNestedJsonInt(params_body, "x") orelse
             return jsonRpcError(buf, id, -32602, "Missing x");
@@ -1102,6 +1122,25 @@ fn toolTestMove(self: *WmMcpServer, x: i32, y: i32, buf: []u8, id: ?[]const u8) 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"cursor at ({d},{d})"}}]}},"id":{s}}}
     , .{ x, y, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolMousePath(
+    self: *WmMcpServer,
+    from_x: i32, from_y: i32, to_x: i32, to_y: i32,
+    duration_ms: u32, humanize: bool, button: ?u32, super_held: bool,
+    buf: []u8, id: ?[]const u8,
+) []const u8 {
+    @import("ServerMouse.zig").pathMove(
+        self.server,
+        from_x, from_y, to_x, to_y,
+        duration_ms, humanize, button, super_held,
+    );
+    const id_str = id orelse "null";
+    const btn_val: i32 = if (button) |b| @intCast(b) else -1;
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"path ({d},{d})->({d},{d}) {d}ms humanize={any} button={d}"}}]}},"id":{s}}}
+    , .{ from_x, from_y, to_x, to_y, duration_ms, humanize, btn_val, id_str }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn toolToggleScratchpad(self: *WmMcpServer, index: u8, buf: []u8, id: ?[]const u8) []const u8 {
