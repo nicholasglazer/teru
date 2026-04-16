@@ -122,18 +122,11 @@ fn handleUnmap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     // focused_view / grab_node_id dereferences a dangling wlr_surface
     // and wl_resource_post_event aborts. Matches the invariant we
     // enforce in Server.closeNode / handleTerminalExit.
-    if (server.focused_view) |fv| {
-        if (fv == view) server.focused_view = null;
-    }
-    if (server.grab_node_id) |id| if (id == view.node_id) {
-        server.grab_node_id = null;
-        server.cursor_mode = .normal;
-    };
+    server.clearFocusRefs(view.node_id);
 
     // Null last_pointer_surface if it points at this view's wlr_surface.
-    // Raw *wlr_surface stored in Server; without this, the next motion
-    // frame's focus check reads freed memory when the client crashes
-    // between a motion and a button event.
+    // Raw *wlr_surface stored in Server; keyed off the surface itself
+    // not node_id, so clearFocusRefs can't handle it.
     if (wlr.miozu_xdg_toplevel_base(view.toplevel)) |xdg_surface| {
         if (wlr.miozu_xdg_surface_surface(xdg_surface)) |s| {
             if (server.last_pointer_surface == s) server.last_pointer_surface = null;
@@ -155,16 +148,10 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
 
     // Mirror handleUnmap — the client may have gone away without
     // unmap (race on crash), so guard the same Server pointers here.
-    if (server.focused_view) |fv| {
-        if (fv == view) server.focused_view = null;
-    }
-    if (server.grab_node_id) |id| if (id == view.node_id) {
-        server.grab_node_id = null;
-        server.cursor_mode = .normal;
-    };
+    server.clearFocusRefs(view.node_id);
 
-    // Same invalidation as handleUnmap — toplevel_destroy can arrive
-    // without a prior surface_unmap on a hard client crash.
+    // Same wlr_surface invalidation as handleUnmap — toplevel_destroy
+    // can arrive without a prior surface_unmap on a hard client crash.
     if (wlr.miozu_xdg_toplevel_base(view.toplevel)) |xdg_surface| {
         if (wlr.miozu_xdg_surface_surface(xdg_surface)) |s| {
             if (server.last_pointer_surface == s) server.last_pointer_surface = null;

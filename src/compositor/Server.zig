@@ -2897,6 +2897,24 @@ pub fn nodeAtPoint(self: *const Server, x: f64, y: f64) ?u64 {
     return best_floating orelse best_tiled;
 }
 
+/// Null every Server pointer that references the node being torn down.
+/// Call BEFORE freeing the pane / view — a reentrant render or any code
+/// that dereferences focused_terminal / focused_view touches freed memory
+/// otherwise. `last_pointer_surface` is handled by the View's unmap/
+/// destroy handlers since it's keyed on wlr_surface, not node_id.
+pub fn clearFocusRefs(self: *Server, node_id: u64) void {
+    if (self.focused_terminal) |tp| {
+        if (tp.node_id == node_id) self.focused_terminal = null;
+    }
+    if (self.focused_view) |view| {
+        if (view.node_id == node_id) self.focused_view = null;
+    }
+    if (self.grab_node_id) |id| if (id == node_id) {
+        self.grab_node_id = null;
+        self.cursor_mode = .normal;
+    };
+}
+
 pub fn closeNode(self: *Server, node_id: u64) bool {
     // Try terminal pane first
     for (&self.terminal_panes, 0..) |*slot, i| {
@@ -2907,15 +2925,7 @@ pub fn closeNode(self: *Server, node_id: u64) bool {
                 self.layout_engine.workspaces[ws].removeNode(node_id);
                 if (self.nodes.findById(node_id)) |_| _ = self.nodes.remove(node_id);
 
-                // Null any Server pointers into this pane BEFORE freeing.
-                // Otherwise a reentrant render (or any code that dereferences
-                // focused_terminal) touches a freed TerminalPane. Fixes the
-                // SIGSEGV seen in coredump 283923 via Bar.buildBarData.
-                if (self.focused_terminal == tp) self.focused_terminal = null;
-                if (self.grab_node_id) |id| if (id == node_id) {
-                    self.grab_node_id = null;
-                    self.cursor_mode = .normal;
-                };
+                self.clearFocusRefs(node_id);
 
                 tp.deinit(self.zig_allocator);
                 self.zig_allocator.destroy(tp);
@@ -2937,10 +2947,7 @@ pub fn closeNode(self: *Server, node_id: u64) bool {
     // before touching the toplevel.
     if (self.focused_view) |view| {
         if (view.node_id == node_id and self.nodes.findById(node_id) != null) {
-            if (self.grab_node_id) |id| if (id == node_id) {
-                self.grab_node_id = null;
-                self.cursor_mode = .normal;
-            };
+            self.clearFocusRefs(node_id);
             wlr.wlr_xdg_toplevel_send_close(view.toplevel);
             return true;
         }
@@ -2955,10 +2962,7 @@ pub fn closeNode(self: *Server, node_id: u64) bool {
 /// Bound to Win+X. No-op if nothing focused.
 pub fn closeFocused(self: *Server) void {
     if (self.focused_view) |view| {
-        if (self.grab_node_id) |id| if (id == view.node_id) {
-            self.grab_node_id = null;
-            self.cursor_mode = .normal;
-        };
+        self.clearFocusRefs(view.node_id);
         std.debug.print("teruwm: closeFocused → xdg view node={d}\n", .{view.node_id});
         wlr.wlr_xdg_toplevel_send_close(view.toplevel);
         return;
@@ -2983,14 +2987,7 @@ pub fn closeFocused(self: *Server) void {
 pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
     std.debug.print("teruwm: terminal exited node={d}\n", .{tp.node_id});
 
-    // Defensive: null Server pointers into this pane before removal, same
-    // rationale as closeNode — a render callback firing during teardown
-    // must not dereference a soon-to-be-freed TerminalPane.
-    if (self.focused_terminal == tp) self.focused_terminal = null;
-    if (self.grab_node_id) |id| if (id == tp.node_id) {
-        self.grab_node_id = null;
-        self.cursor_mode = .normal;
-    };
+    self.clearFocusRefs(tp.node_id);
 
     // Remove from node registry and tiling engine
     _ = self.nodes.remove(tp.node_id);
