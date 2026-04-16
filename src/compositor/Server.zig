@@ -189,6 +189,13 @@ new_xdg_decoration: wlr.wl_listener = makeListener(handleNewXdgDecoration),
 // Null = feature unavailable (should never happen; we own the global).
 idle_notifier: ?*wlr.wlr_idle_notifier_v1 = null,
 
+// wlr_idle_inhibit_v1 — mpv / browsers / video calls pin inhibitors
+// to keep the screen awake. We count live inhibitors and flip the
+// idle_notifier's inhibited flag accordingly.
+idle_inhibit_mgr: ?*wlr.wlr_idle_inhibit_manager_v1 = null,
+idle_inhibitor_count: u16 = 0,
+new_inhibitor: wlr.wl_listener = makeListener(handleNewInhibitor),
+
 // ── Types ─────────────────────────────────────────────────────
 
 pub const PerfStats = struct {
@@ -331,6 +338,29 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     // foot, GTK4. Otherwise clients use client-side xcursor themes.
     _ = wlr.wlr_cursor_shape_manager_v1_create(display, 1);
 
+    // ── Protocol pack #2 — clipboard + tearing + idle inhibit ─────
+    //
+    // wlr_data_control_v1: wl-clipboard (wl-copy/wl-paste), cliphist,
+    // clipman — all the clipboard managers depend on this to read the
+    // seat clipboard without owning keyboard focus. Matches sway /
+    // river / hyprland defaults. Fire-and-forget: wlroots wires it
+    // into the seat we already created.
+    _ = wlr.wlr_data_control_manager_v1_create(display);
+
+    // wp_tearing_control_v1: games + emulators opt specific surfaces
+    // into tearing presents (no vsync) to lower input latency.
+    // wlroots reads the per-surface hint during output commit; no
+    // listener required.
+    _ = wlr.wlr_tearing_control_manager_v1_create(display, 1);
+
+    // wlr_idle_inhibit_v1: mpv, browsers, video-call clients pin an
+    // inhibitor while they need the screen awake. We track live
+    // inhibitor count and flip the idle notifier's inhibited flag —
+    // swayidle / gammastep / loginctl idle hooks stop firing during
+    // video playback. The manager pointer is stored below in the
+    // returned struct literal.
+    const idle_inhibit_mgr = wlr.wlr_idle_inhibit_v1_create(display);
+
     // XDG shell
     const xdg_shell = wlr.wlr_xdg_shell_create(display, 3) orelse
         return error.XdgShellCreateFailed;
@@ -379,6 +409,7 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
         .xdg_activation = xdg_act,
         .xdg_decoration_mgr = xdg_deco,
         .idle_notifier = idle_notif,
+        .idle_inhibit_mgr = idle_inhibit_mgr,
     };
 }
 
@@ -400,6 +431,11 @@ fn registerListeners(self: *Server) void {
     // no per-decoration state to track afterwards.
     if (self.xdg_decoration_mgr) |m| {
         wlr.wl_signal_add(wlr.miozu_xdg_decoration_new_toplevel_decoration(m), &self.new_xdg_decoration);
+    }
+
+    // wlr_idle_inhibit_v1 — per-client inhibitor tracking.
+    if (self.idle_inhibit_mgr) |m| {
+        wlr.wl_signal_add(wlr.miozu_idle_inhibit_new_inhibitor(m), &self.new_inhibitor);
     }
     wlr.wl_signal_add(wlr.miozu_cursor_motion(self.cursor), &self.cursor_motion);
     wlr.wl_signal_add(wlr.miozu_cursor_motion_absolute(self.cursor), &self.cursor_motion_absolute);
@@ -747,6 +783,7 @@ pub fn deinit(self: *Server) void {
     safeRemoveListener(&self.cursor_frame);
     safeRemoveListener(&self.request_set_cursor);
     safeRemoveListener(&self.new_xwayland_surface);
+    safeRemoveListener(&self.new_inhibitor);
 
     // Our ArrayListUnmanaged collections. The *Output / *Keyboard
     // items themselves are owned by wlroots' destroy-chain when the
@@ -853,6 +890,51 @@ fn handleXdgActivation(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.
 fn handleNewXdgDecoration(_: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const dec: *wlr.wlr_xdg_toplevel_decoration_v1 = @ptrCast(@alignCast(data orelse return));
     _ = wlr.wlr_xdg_toplevel_decoration_v1_set_mode(dec, wlr.XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+}
+
+// ── idle_inhibit_v1 tracking ──────────────────────────────────
+//
+// wlroots stores inhibitors in a list we don't own. Rather than walk
+// that list on every update, we bump a local counter on new/destroy
+// and flip the idle_notifier flag when it crosses 0↔1. Each inhibitor
+// gets a tiny heap-alloc wrapper so we can register a destroy listener
+// without pulling InhibitorDestroy into the inhibitor itself.
+
+const InhibitorTracker = struct {
+    server: *Server,
+    destroy_listener: wlr.wl_listener,
+};
+
+fn handleNewInhibitor(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const server = wlr.listenerParent(Server, "new_inhibitor", listener);
+    const inhibitor: *wlr.wlr_idle_inhibitor_v1 = @ptrCast(@alignCast(data orelse return));
+
+    const tracker = server.zig_allocator.create(InhibitorTracker) catch return;
+    tracker.* = .{
+        .server = server,
+        .destroy_listener = makeListener(handleInhibitorDestroy),
+    };
+    wlr.wl_signal_add(wlr.miozu_idle_inhibitor_destroy(inhibitor), &tracker.destroy_listener);
+
+    server.idle_inhibitor_count += 1;
+    server.refreshIdleInhibited();
+}
+
+fn handleInhibitorDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const tracker: *InhibitorTracker = @fieldParentPtr("destroy_listener", listener);
+    const server = tracker.server;
+
+    server.idle_inhibitor_count -|= 1;
+    server.refreshIdleInhibited();
+
+    wlr.wl_list_remove(&tracker.destroy_listener.link);
+    server.zig_allocator.destroy(tracker);
+}
+
+fn refreshIdleInhibited(self: *Server) void {
+    if (self.idle_notifier) |n| {
+        wlr.wlr_idle_notifier_v1_set_inhibited(n, self.idle_inhibitor_count > 0);
+    }
 }
 
 /// Tiny inline: push a "user is active" ping to idle-notify subscribers.
