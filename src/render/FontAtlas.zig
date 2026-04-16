@@ -11,10 +11,26 @@ const compat = @import("../compat.zig");
 const FontAtlas = @This();
 
 // ── stb_truetype C bindings ────────────────────────────────────────
+//
+// Hand-declared per .claude/rules/zig-terminal.md anti-pattern #10.
+// The real stbtt_fontinfo is 160 bytes (10 ints + 2 ptrs + 6 × 16-byte
+// stbtt__buf). A 256-byte aligned buffer is our opaque stack storage;
+// vendor/stb_truetype.c carries a _Static_assert guarding that ceiling.
 
-const stbtt = @cImport({
-    @cInclude("stb_truetype.h");
-});
+const stbtt = struct {
+    /// Opaque stack storage for an stbtt_fontinfo. Real struct is ~160 B;
+    /// vendor/stb_truetype.c carries a _Static_assert guarding this cap.
+    pub const stbtt_fontinfo = extern struct {
+        _storage: [256]u8 align(8) = undefined,
+    };
+
+    pub extern fn stbtt_InitFont(info: *stbtt_fontinfo, data: [*]const u8, offset: c_int) callconv(.c) c_int;
+    pub extern fn stbtt_ScaleForPixelHeight(info: *const stbtt_fontinfo, pixel_height: f32) callconv(.c) f32;
+    pub extern fn stbtt_GetFontVMetrics(info: *const stbtt_fontinfo, ascent: *c_int, descent: *c_int, line_gap: *c_int) callconv(.c) void;
+    pub extern fn stbtt_GetCodepointHMetrics(info: *const stbtt_fontinfo, cp: c_int, advance_width: *c_int, left_side_bearing: *c_int) callconv(.c) void;
+    pub extern fn stbtt_GetCodepointBitmapBox(info: *const stbtt_fontinfo, cp: c_int, scale_x: f32, scale_y: f32, ix0: *c_int, iy0: *c_int, ix1: *c_int, iy1: *c_int) callconv(.c) void;
+    pub extern fn stbtt_MakeCodepointBitmap(info: *const stbtt_fontinfo, output: [*]u8, out_w: c_int, out_h: c_int, out_stride: c_int, scale_x: f32, scale_y: f32, codepoint: c_int) callconv(.c) void;
+};
 
 // ── Public types ───────────────────────────────────────────────────
 
