@@ -726,7 +726,41 @@ pub fn execRestart(self: *Server) void {
 
 pub fn deinit(self: *Server) void {
     if (self.wm_mcp) |mcp| mcp.deinit(self.zig_allocator);
+
+    // Remove every Server-owned wl_listener. wlroots allocates each
+    // listener's list node in-place inside the signal it's attached
+    // to; leaking these means the signal keeps a dangling pointer
+    // into freed Server memory on the next tick.
+    //
+    // Listeners without a live link (link.next == null) were never
+    // registered (optional protocol paths: xwayland, xdg-activation,
+    // xdg-decoration).
+    safeRemoveListener(&self.new_output);
+    safeRemoveListener(&self.new_input);
+    safeRemoveListener(&self.new_xdg_toplevel);
+    safeRemoveListener(&self.xdg_activate);
+    safeRemoveListener(&self.new_xdg_decoration);
+    safeRemoveListener(&self.cursor_motion);
+    safeRemoveListener(&self.cursor_motion_absolute);
+    safeRemoveListener(&self.cursor_button);
+    safeRemoveListener(&self.cursor_axis);
+    safeRemoveListener(&self.cursor_frame);
+    safeRemoveListener(&self.request_set_cursor);
+    safeRemoveListener(&self.new_xwayland_surface);
+
+    // Our ArrayListUnmanaged collections. The *Output / *Keyboard
+    // items themselves are owned by wlroots' destroy-chain when the
+    // wl_display tears down; we only free our pointer arrays here.
+    self.outputs.deinit(self.zig_allocator);
+    self.keyboards.deinit(self.zig_allocator);
+
     wlr.xkb_context_unref(self.xkb_ctx);
+}
+
+fn safeRemoveListener(listener: *wlr.wl_listener) void {
+    if (listener.link.next != null) {
+        wlr.wl_list_remove(&listener.link);
+    }
 }
 
 // ── Signal handlers ────────────────────────────────────────────
