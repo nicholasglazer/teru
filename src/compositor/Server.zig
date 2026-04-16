@@ -215,7 +215,8 @@ output_power_set_mode: wlr.wl_listener = makeListener(handleOutputPowerSetMode),
 // wlr_virtual_keyboard_v1 / wlr_virtual_pointer_v1 — synthetic input
 // for wtype / ydotool / wlrctl / accessibility. Each new object
 // arrives embedding a wlr_keyboard / wlr_pointer we route through
-// the normal input-device setup paths. Default-on to match sway.
+// the normal input-device setup paths. Default-on; gate via config
+// if you need to harden a shared host.
 virtual_keyboard_mgr: ?*wlr.wlr_virtual_keyboard_manager_v1 = null,
 virtual_pointer_mgr: ?*wlr.wlr_virtual_pointer_manager_v1 = null,
 new_virtual_keyboard: wlr.wl_listener = makeListener(handleNewVirtualKeyboard),
@@ -348,14 +349,11 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     // absent this global the renderer can't commit those buffers and
     // the browser sits on its welcome screen forever. Firefox's
     // Gecko renderer is pure wl_shm and doesn't touch any of these.
-    // Confirmed via Mozilla bugzilla 1617498 + chromium Ozone source
-    // at ui/ozone/platform/wayland/host/wayland_connection.cc:877-883.
     _ = wlr.wlr_viewporter_create(display);
 
     // zwp_linux_dmabuf_v1 — GPU process buffer transport. Chromium
     // falls back to wl_shm without this, which is slow and triggers
-    // the FD-mode mismatch tracked in swaywm/wlroots#3168 on some
-    // chromium versions.
+    // an FD-mode mismatch in some chromium versions.
     _ = wlr.wlr_linux_dmabuf_v1_create_with_renderer(display, 4, renderer);
 
     // wp_single_pixel_buffer_v1 — solid-color fills without allocating
@@ -379,9 +377,8 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     //
     // wlr_data_control_v1: wl-clipboard (wl-copy/wl-paste), cliphist,
     // clipman — all the clipboard managers depend on this to read the
-    // seat clipboard without owning keyboard focus. Matches sway /
-    // river / hyprland defaults. Fire-and-forget: wlroots wires it
-    // into the seat we already created.
+    // seat clipboard without owning keyboard focus. Fire-and-forget:
+    // wlroots wires it into the seat we already created.
     _ = wlr.wlr_data_control_manager_v1_create(display);
 
     // wp_tearing_control_v1: games + emulators opt specific surfaces
@@ -391,23 +388,26 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     _ = wlr.wlr_tearing_control_manager_v1_create(display, 1);
 
     // wlr_idle_inhibit_v1: mpv, browsers, video-call clients pin an
-    // inhibitor while they need the screen awake. We track live
-    // inhibitor count and flip the idle notifier's inhibited flag —
-    // swayidle / gammastep / loginctl idle hooks stop firing during
-    // video playback. The manager pointer is stored below in the
-    // returned struct literal.
+    // inhibitor while they need the screen awake. Track live inhibitor
+    // count and flip the idle notifier's inhibited flag so any idle
+    // subscribers (swayidle, gammastep, loginctl) stop firing during
+    // playback. The manager pointer is stored below in the returned
+    // struct literal.
     const idle_inhibit_mgr = wlr.wlr_idle_inhibit_v1_create(display);
 
-    // wlr_output_power_management_v1: wlopm, `swayidle timeout N
-    // "wlr-randr --output X --off"` — clients turn individual outputs
-    // on/off. We commit the requested enabled state on the output.
+    // wlr_output_power_management_v1: DPMS. Clients (wlopm, swayidle
+    // `timeout N wlr-randr --output X --off`, wdisplays) toggle
+    // individual outputs on/off. We commit the requested enabled
+    // state on the output.
     const output_power_mgr = wlr.wlr_output_power_manager_v1_create(display);
 
     // wlr_virtual_keyboard_v1 / wlr_virtual_pointer_v1 — synthetic
-    // input. wtype, ydotool, wlrctl, accessibility. Any client binding
-    // these globals can inject keys / pointer events — same default
-    // as sway. wlroots handles the ABI; we just route the new object
-    // into the existing real-device setup paths via handleNewVirtual*.
+    // input. wtype, ydotool, wlrctl, accessibility tools. Any client
+    // binding these globals can inject keys / pointer events —
+    // default-on; gate behind a config field if you need to harden a
+    // kiosk / shared host. wlroots handles the ABI; route the new
+    // object into the existing real-device setup path via
+    // handleNewVirtual*.
     const virtual_keyboard_mgr = wlr.wlr_virtual_keyboard_manager_v1_create(display);
     const virtual_pointer_mgr = wlr.wlr_virtual_pointer_manager_v1_create(display);
 
@@ -865,9 +865,9 @@ fn handleNewXdgToplevel(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
 }
 
 /// Client requested focus via xdg_activation_v1. We don't steal focus —
-/// we just mark the node urgent so the bar indicator flips and agents
-/// polling `teruwm_list_windows` see the flag. Focus-steal-prevention
-/// policy matches i3/sway default.
+/// mark the node urgent so the bar indicator flips and agents polling
+/// `teruwm_list_windows` see the flag. Focus-steal-prevention is on
+/// by default; no auto-raise on activation.
 fn handleXdgActivation(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const server = wlr.listenerParent(Server, "xdg_activate", listener);
     const ev: *wlr.wlr_xdg_activation_v1_request_activate_event = @ptrCast(@alignCast(data orelse return));
@@ -1218,30 +1218,40 @@ fn tryBeginBorderDrag(server: *Server, cx: f64) bool {
 /// call gets cancelled by the concurrent focus dance. Delivering the
 /// button then swapping focus lets the click hit a stable surface.
 fn forwardAndFocus(server: *Server, button: u32, state: u32, time: u32, super_held: bool, cx: f64, cy: f64) void {
+    _ = super_held; // prior diagnostic use removed; kept in signature for callers
+
+    // Ordering: focus update FIRST, then button. Chromium's Ozone
+    // state machine expects xdg_toplevel.configure(activated=true) +
+    // keyboard.enter to arrive BEFORE the button that triggered the
+    // focus change. With the previous button-first order, chromium
+    // received configure+enter in the SAME batch as the press, ack'd
+    // the configure first, and by the time it could handle the press
+    // the release was already in a subsequent batch — the click
+    // dispatcher dropped the click as spurious.
+    if (state == 1) {
+        if (server.nodeAtPoint(cx, cy)) |nid| {
+            if (server.nodes.findById(nid)) |slot| {
+                switch (server.nodes.kind[slot]) {
+                    .terminal => server.focusTerminalByNode(nid),
+                    .wayland_surface => {
+                        if (server.nodes.xdg_view[slot]) |opaque_view| {
+                            const view: *XdgView = @ptrCast(@alignCast(opaque_view));
+                            server.focusView(view);
+                            syncWsActiveIndex(&server.layout_engine.workspaces[server.layout_engine.active_workspace], nid);
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+    }
+
+    // Deliver the button event AFTER focus has been updated. Seat
+    // routes to the (now-activated) surface; chromium sees
+    // configure → enter → button as three ordered protocol events
+    // rather than one batched frame.
     _ = wlr.wlr_seat_pointer_notify_button(server.seat, time, button, state);
     wlr.wlr_seat_pointer_notify_frame(server.seat);
-
-    if (state != 1) return; // only press updates focus
-    _ = super_held; // prior diagnostic use removed; kept in signature for callers
-    const nid = server.nodeAtPoint(cx, cy) orelse return;
-    const slot = server.nodes.findById(nid) orelse return;
-
-    switch (server.nodes.kind[slot]) {
-        .terminal => server.focusTerminalByNode(nid),
-        .wayland_surface => {
-            // xdg_view pointer populated in XdgView.handleMap; route
-            // through focusView so focused_view gets set. Pre-0.4.27
-            // this branch forwarded keyboard focus but left
-            // focused_view null — Win+X / Win+S then acted on the
-            // wrong window.
-            if (server.nodes.xdg_view[slot]) |opaque_view| {
-                const view: *XdgView = @ptrCast(@alignCast(opaque_view));
-                server.focusView(view);
-                syncWsActiveIndex(&server.layout_engine.workspaces[server.layout_engine.active_workspace], nid);
-            }
-        },
-        else => {},
-    }
 }
 
 /// Focus a terminal pane by node id: deactivate any prior XDG focus,
@@ -2497,10 +2507,9 @@ pub fn focusView(self: *Server, view: *XdgView) void {
         break :blk root_surface;
     };
 
-    // Pull live keyboard state — currently-pressed keycodes + modifiers
-    // — and pass them to notify_enter. tinywl does this; without it,
-    // browsers/IMEs treat focus-enter as "no keys held" and any
-    // modifier-held click-action gets dropped.
+    // Pass live keyboard state (pressed keycodes + modifiers) to
+    // notify_enter. Without it, browsers / IMEs treat focus-enter as
+    // "no keys held" and any modifier-held click-action gets dropped.
     const kb_opt = wlr.miozu_seat_get_keyboard(self.seat);
     const modifiers: ?*anyopaque = if (kb_opt) |kb| wlr.miozu_keyboard_modifiers_ptr(kb) else null;
     const keycodes: ?[*]const u32 = if (kb_opt) |kb| wlr.miozu_keyboard_keycodes(kb) else null;
@@ -2511,14 +2520,13 @@ pub fn focusView(self: *Server, view: *XdgView) void {
         .{ @intFromPtr(target), @intFromPtr(root_surface), if (self.last_pointer_surface) |l| @intFromPtr(l) else null },
     );
 
-    // Flush the activation configure + keyboard.enter to the client
-    // *before* any subsequent button event reaches it. Chromium's Ozone
-    // gates input-element focus on the activated configure being acked
-    // (per their wayland_window state machine); without an explicit
-    // flush wlroots queues both events, sends them in order, but the
-    // button can land before chromium has processed the activation —
-    // looking like "click event reached chrome but input never focused".
-    wlr.wl_display_flush_clients(self.display);
+    // No explicit wl_display_flush_clients here — the event loop
+    // flushes on its next iteration. An earlier attempt to race the
+    // activation configure ahead of the next button by calling flush
+    // here instead interleaved button + configure + enter in the
+    // same batch; clients ack'd configure first and by the time they
+    // handled the press the release was already in the next batch,
+    // so the click dispatcher dropped it.
 
     if (self.bar) |b| b.render(self);
 }

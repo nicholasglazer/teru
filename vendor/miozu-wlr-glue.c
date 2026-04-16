@@ -407,11 +407,11 @@ int miozu_surfaces_same_client(struct wlr_surface *a, struct wlr_surface *b) {
     return wl_resource_get_client(a->resource) == wl_resource_get_client(b->resource) ? 1 : 0;
 }
 
-/* Pointer to the keyboard's pressed-keycodes buffer + count. tinywl
- * passes these to wlr_seat_keyboard_notify_enter so the client knows
- * which keys are currently held when focus arrives — without them
- * the client treats the focus-enter as "no keys pressed" which can
- * confuse browsers when focus arrives mid-modifier-hold. */
+/* Pointer to the keyboard's pressed-keycodes buffer + count. Passed
+ * to wlr_seat_keyboard_notify_enter so the client knows which keys
+ * are currently held when focus arrives — without them the client
+ * treats the focus-enter as "no keys pressed" which can confuse
+ * browsers when focus arrives mid-modifier-hold. */
 const uint32_t *miozu_keyboard_keycodes(struct wlr_keyboard *k) {
     return k->keycodes;
 }

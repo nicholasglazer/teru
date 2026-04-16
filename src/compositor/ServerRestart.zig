@@ -1,16 +1,15 @@
 //! Hot-restart for teruwm — serialize + exec + restore.
 //!
-//! The xmonad-style "restart the WM without losing client state" trick:
-//! we write the compositor's live state (pane count, workspace layouts,
-//! per-pane PTY master fd + rows/cols + shell pid) to a state file,
-//! clear FD_CLOEXEC on every PTY master so the fds survive the
-//! execve(), then exec the new binary with `--restore`. On the other
-//! side, `restoreSession` reads the state file and reattaches each
-//! PTY fd as a TerminalPane — shells keep running without noticing.
+//! Restart the WM without losing client state: write live state
+//! (pane count, per-workspace layout, per-pane PTY master fd + rows/
+//! cols + shell pid) to a state file, clear FD_CLOEXEC on every PTY
+//! master so the fds survive execve(), then exec the new binary with
+//! `--restore`. `restoreSession` reads the state file and reattaches
+//! each PTY fd as a TerminalPane — shells keep running without
+//! noticing the compositor restart.
 //!
-//! Split out of Server.zig as part of the 2026-04-16 modularization
-//! pass. Functions take `*Server` directly to avoid the usingnamespace
-//! patterns Zig 0.16 no longer supports.
+//! Functions take `*Server` directly; Zig 0.16 has no usingnamespace
+//! equivalent, so free-functions-on-Server is the idiomatic split.
 
 const std = @import("std");
 const teru = @import("teru");
