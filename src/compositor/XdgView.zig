@@ -23,6 +23,14 @@ unmap: wlr.wl_listener,
 destroy: wlr.wl_listener,
 commit: wlr.wl_listener,
 
+// wlr_foreign_toplevel_management_v1 handle. Created on map, destroyed
+// on unmap; null in between. Taskbar clients (waybar, nwg-panel) see
+// the handle and can activate/close it — we translate those requests
+// back into focusView / wlr_xdg_toplevel_send_close.
+ftl_handle: ?*wlr.wlr_foreign_toplevel_handle_v1 = null,
+ftl_request_activate: wlr.wl_listener = undefined,
+ftl_request_close: wlr.wl_listener = undefined,
+
 /// Create an XdgView for a new toplevel surface.
 pub fn create(server: *Server, toplevel: *wlr.wlr_xdg_toplevel) ?*XdgView {
     const allocator = server.zig_allocator;
@@ -109,8 +117,37 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     // Trigger re-tile
     server.arrangeworkspace(ws);
 
+    // Register as a foreign-toplevel handle so taskbars see this
+    // window. Push title + app_id so the taskbar icon labels itself.
+    if (server.foreign_toplevel_mgr) |mgr| {
+        if (wlr.wlr_foreign_toplevel_handle_v1_create(mgr)) |h| {
+            view.ftl_handle = h;
+            const title = wlr.miozu_xdg_toplevel_title(view.toplevel);
+            if (title) |t| wlr.wlr_foreign_toplevel_handle_v1_set_title(h, t);
+            if (app_id) |a| wlr.wlr_foreign_toplevel_handle_v1_set_app_id(h, a);
+
+            view.ftl_request_activate = makeListener(handleFtlActivate);
+            view.ftl_request_close = makeListener(handleFtlClose);
+            wlr.wl_signal_add(wlr.miozu_ftl_request_activate(h), &view.ftl_request_activate);
+            wlr.wl_signal_add(wlr.miozu_ftl_request_close(h), &view.ftl_request_close);
+        }
+    }
+
     // Focus the new surface
     server.focusView(view);
+}
+
+fn handleFtlActivate(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const view: *XdgView = @fieldParentPtr("ftl_request_activate", listener);
+    // Taskbar asked us to focus this window — route through focusView
+    // which handles ws switch + keyboard notify + bar re-render.
+    view.server.focusView(view);
+}
+
+fn handleFtlClose(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const view: *XdgView = @fieldParentPtr("ftl_request_close", listener);
+    // Same path as Win+X / teruwm_close_window.
+    wlr.wlr_xdg_toplevel_send_close(view.toplevel);
 }
 
 fn handleUnmap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
@@ -131,6 +168,15 @@ fn handleUnmap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         if (wlr.miozu_xdg_surface_surface(xdg_surface)) |s| {
             if (server.last_pointer_surface == s) server.last_pointer_surface = null;
         }
+    }
+
+    // Tear down the foreign-toplevel handle — taskbars receive the
+    // `closed` event and drop the icon.
+    if (view.ftl_handle) |h| {
+        wlr.wl_list_remove(&view.ftl_request_activate.link);
+        wlr.wl_list_remove(&view.ftl_request_close.link);
+        wlr.wlr_foreign_toplevel_handle_v1_destroy(h);
+        view.ftl_handle = null;
     }
 
     // Remove from node registry and tiling engine
@@ -156,6 +202,14 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         if (wlr.miozu_xdg_surface_surface(xdg_surface)) |s| {
             if (server.last_pointer_surface == s) server.last_pointer_surface = null;
         }
+    }
+
+    // Tear down foreign-toplevel handle if unmap didn't already.
+    if (view.ftl_handle) |h| {
+        wlr.wl_list_remove(&view.ftl_request_activate.link);
+        wlr.wl_list_remove(&view.ftl_request_close.link);
+        wlr.wlr_foreign_toplevel_handle_v1_destroy(h);
+        view.ftl_handle = null;
     }
 
     // Clean up node registry

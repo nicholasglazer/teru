@@ -327,6 +327,22 @@ pub extern "c" fn miozu_output_push_state(mgr: *wlr_output_manager_v1, layout: *
 pub extern "c" fn miozu_output_config_send_succeeded(cfg: *wlr_output_configuration_v1) callconv(.c) void;
 pub extern "c" fn miozu_output_config_send_failed(cfg: *wlr_output_configuration_v1) callconv(.c) void;
 
+// wlr_foreign_toplevel_management_v1 — zwlr taskbar / window-switcher
+// protocol. waybar 0.11's wlr/taskbar module, wlrctl, nwg-panel,
+// rofi-wayland all speak this. One handle per mapped xdg toplevel;
+// client requests (activate / close) route into our focus/close paths.
+pub const wlr_foreign_toplevel_manager_v1 = opaque {};
+pub const wlr_foreign_toplevel_handle_v1 = opaque {};
+pub const wlr_foreign_toplevel_handle_v1_activated_event = opaque {};
+pub extern "wlroots-0.18" fn wlr_foreign_toplevel_manager_v1_create(display: *wl_display) callconv(.c) ?*wlr_foreign_toplevel_manager_v1;
+pub extern "wlroots-0.18" fn wlr_foreign_toplevel_handle_v1_create(manager: *wlr_foreign_toplevel_manager_v1) callconv(.c) ?*wlr_foreign_toplevel_handle_v1;
+pub extern "wlroots-0.18" fn wlr_foreign_toplevel_handle_v1_destroy(handle: *wlr_foreign_toplevel_handle_v1) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_foreign_toplevel_handle_v1_set_title(handle: *wlr_foreign_toplevel_handle_v1, title: [*:0]const u8) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_foreign_toplevel_handle_v1_set_app_id(handle: *wlr_foreign_toplevel_handle_v1, app_id: [*:0]const u8) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_foreign_toplevel_handle_v1_set_activated(handle: *wlr_foreign_toplevel_handle_v1, activated: bool) callconv(.c) void;
+pub extern "c" fn miozu_ftl_request_activate(handle: *wlr_foreign_toplevel_handle_v1) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_ftl_request_close(handle: *wlr_foreign_toplevel_handle_v1) callconv(.c) *wl_signal;
+
 // Glue — signal accessors and list_length helper.
 pub extern "c" fn miozu_idle_inhibit_new_inhibitor(mgr: *wlr_idle_inhibit_manager_v1) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_idle_inhibitor_destroy(inhibitor: *wlr_idle_inhibitor_v1) callconv(.c) *wl_signal;
