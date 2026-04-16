@@ -976,216 +976,195 @@ fn handleCursorButton(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c
 /// test tools. `super_override = null` reads the live xkb state;
 /// `.some(true|false)` forces the Super-held value (used by E2E tests
 /// so the drag path works regardless of the synthetic keyboard state).
+///
+/// Split into four phases for readability; the parent just sequences
+/// them. Each sub-function returns true if it claimed the event.
 pub fn processCursorButton(server: *Server, button: u32, state: u32, time: u32, super_override: ?bool) void {
-    // Button release: end any active grab
     if (state == 0) {
-        if (server.cursor_mode == .border_drag) {
-            // Drag ended — do the actual resize (re-render all panes at final size)
-            server.arrangeworkspace(server.layout_engine.active_workspace);
-        }
-        if (server.cursor_mode != .normal) {
-            server.cursor_mode = .normal;
-            server.grab_node_id = null;
-        }
-        _ = wlr.wlr_seat_pointer_notify_button(server.seat, time, button, state);
-        // Every button notify must be followed by a frame, or clients
-        // that batch (chromium, GTK) never dispatch the click. libinput
-        // does this automatically via the cursor_frame signal, but
-        // synthetic events from MCP bypass that path, and on touchpads
-        // the frame can arrive after a subsequent motion — dropping the
-        // effective click target into the "next surface" bucket. Always
-        // flushing after button fixes both cases.
-        wlr.wlr_seat_pointer_notify_frame(server.seat);
+        server.endGrab(button, state, time);
         return;
     }
 
-    // Button press: check for Super modifier to initiate move/resize on floating windows
-    const super_held: bool = if (super_override) |v| v else blk: {
-        const keyboard = wlr.miozu_seat_get_keyboard(server.seat);
-        break :blk if (keyboard) |kb|
-            if (wlr.miozu_keyboard_xkb_state(kb)) |xkb_st|
-                wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_LOGO, wlr.XKB_STATE_MODS_EFFECTIVE) > 0
-            else false
-        else false;
-    };
+    const cx = wlr.miozu_cursor_x(server.cursor);
+    const cy = wlr.miozu_cursor_y(server.cursor);
+    const super_held = readSuperHeld(server, super_override);
 
-    if (super_held) {
-        // Identify the pane under the cursor (not necessarily focused).
-        // Focused pane is a fallback for clicks not on any pane's rect.
-        const cx = wlr.miozu_cursor_x(server.cursor);
-        const cy = wlr.miozu_cursor_y(server.cursor);
-        const nid: ?u64 = server.nodeAtPoint(cx, cy) orelse
-            (if (server.focused_terminal) |tp| tp.node_id
-             else if (server.focused_view) |view| view.node_id
-             else null);
+    if (super_held and server.tryBeginFloatDrag(button, cx, cy)) return;
+    if (!super_held and server.tryBeginBorderDrag(cx)) return;
 
-        if (nid) |id| {
-            if (server.nodes.findById(id)) |slot| {
-                // Auto-float: if the pane is still tiled, detach it from
-                // the layout engine, mark floating, and give it a cursor-
-                // anchored rect so the drag starts naturally under the
-                // mouse instead of jumping to screen center.
-                if (!server.nodes.floating[slot]) {
-                    const cur_w = server.nodes.width[slot];
-                    const cur_h = server.nodes.height[slot];
-                    const float_w: u32 = if (cur_w > 0) cur_w else server.wm_config.float_default_w;
-                    const float_h: u32 = if (cur_h > 0) cur_h else server.wm_config.float_default_h;
-                    const fx: i32 = @intFromFloat(cx - @as(f64, @floatFromInt(float_w)) / 2.0);
-                    const fy: i32 = @intFromFloat(cy - @as(f64, @floatFromInt(float_h)) / 2.0);
+    server.forwardAndFocus(button, state, time, super_held, cx, cy);
+}
 
-                    server.nodes.floating[slot] = true;
-                    server.layout_engine.workspaces[server.layout_engine.active_workspace].removeNode(id);
-                    server.nodes.applyRect(slot, fx, fy, float_w, float_h);
-                    // Resize terminal pane framebuffer to match new rect
-                    if (server.nodes.kind[slot] == .terminal) {
-                        if (server.terminalPaneById(id)) |tp| tp.resize(float_w, float_h);
-                    }
-                    // Re-tile remaining siblings
-                    server.arrangeworkspace(server.layout_engine.active_workspace);
-                }
+/// Phase A — button release. Drop any active grab, arrange if we
+/// were border-dragging, flush the button + frame to the seat.
+fn endGrab(server: *Server, button: u32, state: u32, time: u32) void {
+    if (server.cursor_mode == .border_drag) {
+        server.arrangeworkspace(server.layout_engine.active_workspace);
+    }
+    if (server.cursor_mode != .normal) {
+        server.cursor_mode = .normal;
+        server.grab_node_id = null;
+    }
+    _ = wlr.wlr_seat_pointer_notify_button(server.seat, time, button, state);
+    // Every button notify must be followed by a frame, or clients
+    // that batch (chromium, GTK) never dispatch the click. libinput
+    // sends it via cursor_frame normally, but MCP test events and
+    // some touchpad timings bypass that — flush explicitly.
+    wlr.wlr_seat_pointer_notify_frame(server.seat);
+}
 
-                if (button == 272) { // BTN_LEFT: move
-                    server.cursor_mode = .move;
-                    server.grab_node_id = id;
-                    server.grab_x = cx - @as(f64, @floatFromInt(server.nodes.pos_x[slot]));
-                    server.grab_y = cy - @as(f64, @floatFromInt(server.nodes.pos_y[slot]));
-                    return;
-                } else if (button == 274) { // BTN_RIGHT: resize
-                    server.cursor_mode = .resize;
-                    server.grab_node_id = id;
-                    server.grab_x = cx;
-                    server.grab_y = cy;
-                    server.grab_w = server.nodes.width[slot];
-                    server.grab_h = server.nodes.height[slot];
-                    return;
-                }
-            }
+/// Read the effective Super-held bit. `override` from MCP test tools
+/// skips the xkb state read (synthetic keyboards don't mirror it).
+fn readSuperHeld(server: *Server, override: ?bool) bool {
+    if (override) |v| return v;
+    const keyboard = wlr.miozu_seat_get_keyboard(server.seat) orelse return false;
+    const xkb_st = wlr.miozu_keyboard_xkb_state(keyboard) orelse return false;
+    return wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_LOGO, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
+}
+
+/// Phase B — Super+click initiates move (LEFT) or resize (RIGHT) on
+/// the pane under the cursor. Auto-floats a still-tiled pane first so
+/// the drag starts under the cursor instead of snapping to center.
+/// Returns true if a grab was started.
+fn tryBeginFloatDrag(server: *Server, button: u32, cx: f64, cy: f64) bool {
+    const nid: u64 = server.nodeAtPoint(cx, cy) orelse
+        (if (server.focused_terminal) |tp| tp.node_id
+         else if (server.focused_view) |view| view.node_id
+         else return false);
+
+    const slot = server.nodes.findById(nid) orelse return false;
+
+    if (!server.nodes.floating[slot]) {
+        const cur_w = server.nodes.width[slot];
+        const cur_h = server.nodes.height[slot];
+        const float_w: u32 = if (cur_w > 0) cur_w else server.wm_config.float_default_w;
+        const float_h: u32 = if (cur_h > 0) cur_h else server.wm_config.float_default_h;
+        const fx: i32 = @intFromFloat(cx - @as(f64, @floatFromInt(float_w)) / 2.0);
+        const fy: i32 = @intFromFloat(cy - @as(f64, @floatFromInt(float_h)) / 2.0);
+
+        server.nodes.floating[slot] = true;
+        server.layout_engine.workspaces[server.layout_engine.active_workspace].removeNode(nid);
+        server.nodes.applyRect(slot, fx, fy, float_w, float_h);
+        if (server.nodes.kind[slot] == .terminal) {
+            if (server.terminalPaneById(nid)) |tp| tp.resize(float_w, float_h);
         }
+        server.arrangeworkspace(server.layout_engine.active_workspace);
     }
 
-    // Tiled border drag: if click is on the gap between panes, start master ratio resize
-    if (state == 1 and !super_held) {
-        const ws = server.layout_engine.getActiveWorkspace();
-        if (ws.node_ids.items.len >= 2) {
-            // Check if cursor is near a pane border (within gap area)
-            var on_border = false;
-            for (server.terminal_panes) |maybe_tp| {
-                if (maybe_tp) |tp| {
-                    if (server.nodes.findById(tp.node_id)) |slot| {
-                        const px = server.nodes.pos_x[slot];
-                        const pw: i32 = @intCast(server.nodes.width[slot]);
-                        const right_edge = px + pw;
-                        const cursor_x: i32 = @intFromFloat(wlr.miozu_cursor_x(server.cursor));
-                        // Hit-test the gap area around the right edge.
-                        const ins = server.wm_config.border_drag_insensitive_px;
-                        const zone = server.wm_config.border_drag_zone_px;
-                        if (cursor_x >= right_edge - ins and cursor_x <= right_edge + zone) {
-                            on_border = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            if (on_border) {
-                server.cursor_mode = .border_drag;
-                server.grab_x = wlr.miozu_cursor_x(server.cursor);
-                return;
-            }
+    if (button == 272) { // BTN_LEFT: move
+        server.cursor_mode = .move;
+        server.grab_node_id = nid;
+        server.grab_x = cx - @as(f64, @floatFromInt(server.nodes.pos_x[slot]));
+        server.grab_y = cy - @as(f64, @floatFromInt(server.nodes.pos_y[slot]));
+        return true;
+    } else if (button == 274) { // BTN_RIGHT: resize
+        server.cursor_mode = .resize;
+        server.grab_node_id = nid;
+        server.grab_x = cx;
+        server.grab_y = cy;
+        server.grab_w = server.nodes.width[slot];
+        server.grab_h = server.nodes.height[slot];
+        return true;
+    }
+    return false;
+}
+
+/// Phase C — if a click lands on the gap between tiled panes, start
+/// a master-ratio drag. Returns true on hit.
+fn tryBeginBorderDrag(server: *Server, cx: f64) bool {
+    const ws = server.layout_engine.getActiveWorkspace();
+    if (ws.node_ids.items.len < 2) return false;
+
+    const cursor_x: i32 = @intFromFloat(cx);
+    const ins = server.wm_config.border_drag_insensitive_px;
+    const zone = server.wm_config.border_drag_zone_px;
+
+    for (server.terminal_panes) |maybe_tp| {
+        const tp = maybe_tp orelse continue;
+        const slot = server.nodes.findById(tp.node_id) orelse continue;
+        const px = server.nodes.pos_x[slot];
+        const pw: i32 = @intCast(server.nodes.width[slot]);
+        const right_edge = px + pw;
+        if (cursor_x >= right_edge - ins and cursor_x <= right_edge + zone) {
+            server.cursor_mode = .border_drag;
+            server.grab_x = cx;
+            return true;
         }
     }
+    return false;
+}
 
-    // CRITICAL ORDERING: send the button event FIRST, then update focus.
-    // tinywl does the same. Browsers (chromium, firefox) interpret
-    // events arriving during a focus state transition as suspect — the
-    // mousedown handler runs but the in-page focus-on-mousedown call
-    // may be cancelled by the focus dance happening at the same moment.
-    // By delivering the button THEN swapping focus, the click hits a
-    // stable surface, browser internal focus-on-click works, then
-    // keyboard focus arrives separately as additive state.
+/// Phase D — the normal case: forward the button + frame, then update
+/// keyboard focus to the clicked node.
+///
+/// CRITICAL ORDERING: button FIRST, focus dance SECOND. Browsers
+/// (chromium, firefox) see events delivered during a focus transition
+/// as suspect — the mousedown handler runs but any focus-on-mousedown
+/// call gets cancelled by the concurrent focus dance. Delivering the
+/// button then swapping focus lets the click hit a stable surface.
+fn forwardAndFocus(server: *Server, button: u32, state: u32, time: u32, super_held: bool, cx: f64, cy: f64) void {
     _ = wlr.wlr_seat_pointer_notify_button(server.seat, time, button, state);
     wlr.wlr_seat_pointer_notify_frame(server.seat);
 
-    // Click-to-focus: AFTER the button has been delivered, update
-    // keyboard focus to the clicked node.
-    if (state == 1) { // press
-        const _cx = wlr.miozu_cursor_x(server.cursor);
-        const _cy = wlr.miozu_cursor_y(server.cursor);
-        const _nid_opt = server.nodeAtPoint(_cx, _cy);
-        std.debug.print(
-            "teruwm: click@({d:.0},{d:.0}) hit_node={?d} super={}\n",
-            .{ _cx, _cy, _nid_opt, super_held },
-        );
-        if (_nid_opt) |nid| {
-            // Find the node's kind and dispatch.
-            if (server.nodes.findById(nid)) |slot| {
-                std.debug.print(
-                    "teruwm: click slot kind={s} rect=({d},{d}) {d}x{d}\n",
-                    .{
-                        @tagName(server.nodes.kind[slot]),
-                        server.nodes.pos_x[slot], server.nodes.pos_y[slot],
-                        server.nodes.width[slot], server.nodes.height[slot],
-                    },
-                );
-                if (server.nodes.kind[slot] == .terminal) {
-                    // Terminal: focus the pane, update layout engine.
-                    for (server.terminal_panes) |maybe_tp| {
-                        if (maybe_tp) |tp| {
-                            if (tp.node_id == nid) {
-                                // Deactivate any prior XDG focus so
-                                // chromium/firefox stop drawing the
-                                // "activated" chrome when focus moves
-                                // onto a terminal pane.
-                                if (server.focused_view) |prev_view| {
-                                    _ = wlr.wlr_xdg_toplevel_set_activated(prev_view.toplevel, false);
-                                }
-                                server.focused_terminal = tp;
-                                server.focused_view = null;
-                                const ws = server.layout_engine.getActiveWorkspace();
-                                for (ws.node_ids.items, 0..) |id2, idx| {
-                                    if (id2 == nid) {
-                                        ws.active_index = @intCast(idx);
-                                        break;
-                                    }
-                                }
-                                for (server.terminal_panes) |mtp| {
-                                    if (mtp) |t| t.render();
-                                }
-                                if (server.bar) |b| b.render(server);
-                                break;
-                            }
-                        }
-                    }
-                } else if (server.nodes.kind[slot] == .wayland_surface) {
-                    // Wayland client: route through focusView so
-                    // server.focused_view gets set. Prior to v0.4.27
-                    // this branch activated the toplevel and forwarded
-                    // keyboard focus directly, but left focused_view
-                    // null — so Win+X (closeFocused) and Win+S
-                    // (toggleFloat) read stale state and no-op'd or
-                    // acted on the wrong window. The XdgView pointer
-                    // comes from the node registry back-pointer
-                    // populated in XdgView.handleMap.
-                    if (server.nodes.xdg_view[slot]) |opaque_view| {
-                        const view: *XdgView = @ptrCast(@alignCast(opaque_view));
-                        server.focusView(view);
-                        // Also sync tiling engine's active_index so
-                        // subsequent focus_next / swap operations start
-                        // from this window, matching terminal behavior.
-                        const ws = server.layout_engine.getActiveWorkspace();
-                        for (ws.node_ids.items, 0..) |id2, idx| {
-                            if (id2 == nid) {
-                                ws.active_index = @intCast(idx);
-                                break;
-                            }
-                        }
-                    }
-                }
+    if (state != 1) return; // only press updates focus
+    const nid_opt = server.nodeAtPoint(cx, cy);
+    std.debug.print(
+        "teruwm: click@({d:.0},{d:.0}) hit_node={?d} super={}\n",
+        .{ cx, cy, nid_opt, super_held },
+    );
+    const nid = nid_opt orelse return;
+    const slot = server.nodes.findById(nid) orelse return;
+
+    std.debug.print(
+        "teruwm: click slot kind={s} rect=({d},{d}) {d}x{d}\n",
+        .{
+            @tagName(server.nodes.kind[slot]),
+            server.nodes.pos_x[slot], server.nodes.pos_y[slot],
+            server.nodes.width[slot], server.nodes.height[slot],
+        },
+    );
+
+    switch (server.nodes.kind[slot]) {
+        .terminal => server.focusTerminalByNode(nid),
+        .wayland_surface => {
+            // xdg_view pointer populated in XdgView.handleMap; route
+            // through focusView so focused_view gets set. Pre-0.4.27
+            // this branch forwarded keyboard focus but left
+            // focused_view null — Win+X / Win+S then acted on the
+            // wrong window.
+            if (server.nodes.xdg_view[slot]) |opaque_view| {
+                const view: *XdgView = @ptrCast(@alignCast(opaque_view));
+                server.focusView(view);
+                syncWsActiveIndex(&server.layout_engine.workspaces[server.layout_engine.active_workspace], nid);
             }
+        },
+        else => {},
+    }
+}
+
+/// Focus a terminal pane by node id: deactivate any prior XDG focus,
+/// set focused_terminal, re-render all panes + bar, sync active_index.
+fn focusTerminalByNode(server: *Server, nid: u64) void {
+    const tp = server.terminalPaneById(nid) orelse return;
+    if (server.focused_view) |prev_view| {
+        _ = wlr.wlr_xdg_toplevel_set_activated(prev_view.toplevel, false);
+    }
+    server.focused_terminal = tp;
+    server.focused_view = null;
+    syncWsActiveIndex(server.layout_engine.getActiveWorkspace(), nid);
+    for (server.terminal_panes) |mtp| {
+        if (mtp) |t| t.render();
+    }
+    if (server.bar) |b| b.render(server);
+}
+
+fn syncWsActiveIndex(ws: anytype, nid: u64) void {
+    for (ws.node_ids.items, 0..) |id2, idx| {
+        if (id2 == nid) {
+            ws.active_index = @intCast(idx);
+            return;
         }
     }
-
-    // Note: notify_button + frame already sent above (before focus
-    // dance) — see "CRITICAL ORDERING" comment. Don't re-send here.
 }
 
 fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
