@@ -771,7 +771,7 @@ fn handleXdgActivation(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.
         std.debug.print("teruwm: urgent node={d} ws={d}\n", .{ nid, ws });
         server.emitMcpEventKind("urgent", ",\"node_id\":{d},\"workspace\":{d}", .{ nid, ws });
         if (server.bar) |b| b.render(server);
-        if (server.primary_output) |out| wlr.wlr_output_schedule_frame(out);
+        server.scheduleRender();
     }
 }
 
@@ -1287,8 +1287,18 @@ pub fn countPushWidgets(self: *const Server) usize {
 /// Ask wlroots to fire a frame callback on the primary output. Used after
 /// any push-widget update so the bar paints the new value without waiting
 /// for the next vsync on a dirty terminal pane.
+/// Schedule a frame on every connected output. A pane on workspace K is
+/// only visible on the output showing K, but with <=4 outputs in practice
+/// iterating is trivial and avoids the "non-primary pane didn't repaint"
+/// class (resize on a pane owned by output #2 otherwise waited for an
+/// unrelated frame). Falls back to primary_output during the init window
+/// before outputs[] populates.
 fn scheduleRender(self: *Server) void {
-    if (self.primary_output) |out| {
+    if (self.outputs.items.len > 0) {
+        for (self.outputs.items) |o| {
+            wlr.wlr_output_schedule_frame(o.wlr_output);
+        }
+    } else if (self.primary_output) |out| {
         wlr.wlr_output_schedule_frame(out);
     }
 }
@@ -1444,7 +1454,7 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
         self.grab_x = cx;
         // Defer layout to frame callback — one arrange per vsync, not per motion event
         self.layout_dirty = true;
-        if (self.primary_output) |output| wlr.wlr_output_schedule_frame(output);
+        self.scheduleRender();
         return;
     }
 
@@ -1512,7 +1522,7 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
                     self.resize_pending_id = id;
                     self.resize_pending_w = new_w;
                     self.resize_pending_h = new_h;
-                    if (self.primary_output) |output| wlr.wlr_output_schedule_frame(output);
+                    self.scheduleRender();
                 }
             }
         }
