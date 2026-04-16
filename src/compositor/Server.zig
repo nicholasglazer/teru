@@ -196,6 +196,12 @@ idle_inhibit_mgr: ?*wlr.wlr_idle_inhibit_manager_v1 = null,
 idle_inhibitor_count: u16 = 0,
 new_inhibitor: wlr.wl_listener = makeListener(handleNewInhibitor),
 
+// wlr_output_power_management_v1 — wlopm / swayidle dpms hook.
+// Clients call set_mode with ON/OFF per output; we commit the
+// corresponding wlr_output_state.enabled.
+output_power_mgr: ?*wlr.wlr_output_power_manager_v1 = null,
+output_power_set_mode: wlr.wl_listener = makeListener(handleOutputPowerSetMode),
+
 // ── Types ─────────────────────────────────────────────────────
 
 pub const PerfStats = struct {
@@ -361,6 +367,11 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     // returned struct literal.
     const idle_inhibit_mgr = wlr.wlr_idle_inhibit_v1_create(display);
 
+    // wlr_output_power_management_v1: wlopm, `swayidle timeout N
+    // "wlr-randr --output X --off"` — clients turn individual outputs
+    // on/off. We commit the requested enabled state on the output.
+    const output_power_mgr = wlr.wlr_output_power_manager_v1_create(display);
+
     // XDG shell
     const xdg_shell = wlr.wlr_xdg_shell_create(display, 3) orelse
         return error.XdgShellCreateFailed;
@@ -410,6 +421,7 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
         .xdg_decoration_mgr = xdg_deco,
         .idle_notifier = idle_notif,
         .idle_inhibit_mgr = idle_inhibit_mgr,
+        .output_power_mgr = output_power_mgr,
     };
 }
 
@@ -436,6 +448,11 @@ fn registerListeners(self: *Server) void {
     // wlr_idle_inhibit_v1 — per-client inhibitor tracking.
     if (self.idle_inhibit_mgr) |m| {
         wlr.wl_signal_add(wlr.miozu_idle_inhibit_new_inhibitor(m), &self.new_inhibitor);
+    }
+
+    // wlr_output_power_management_v1 — DPMS set_mode requests.
+    if (self.output_power_mgr) |m| {
+        wlr.wl_signal_add(wlr.miozu_output_power_mgr_set_mode(m), &self.output_power_set_mode);
     }
     wlr.wl_signal_add(wlr.miozu_cursor_motion(self.cursor), &self.cursor_motion);
     wlr.wl_signal_add(wlr.miozu_cursor_motion_absolute(self.cursor), &self.cursor_motion_absolute);
@@ -784,6 +801,7 @@ pub fn deinit(self: *Server) void {
     safeRemoveListener(&self.request_set_cursor);
     safeRemoveListener(&self.new_xwayland_surface);
     safeRemoveListener(&self.new_inhibitor);
+    safeRemoveListener(&self.output_power_set_mode);
 
     // Our ArrayListUnmanaged collections. The *Output / *Keyboard
     // items themselves are owned by wlroots' destroy-chain when the
@@ -935,6 +953,22 @@ fn refreshIdleInhibited(self: *Server) void {
     if (self.idle_notifier) |n| {
         wlr.wlr_idle_notifier_v1_set_inhibited(n, self.idle_inhibitor_count > 0);
     }
+}
+
+// ── output_power_management_v1 ────────────────────────────────
+//
+// Client asks us to toggle an output's power state. We map the
+// request to wlr_output enabled; backend handles the actual DRM
+// blank/resume. Rate-limit equal-state commits to avoid DRM thrash
+// from wlopm / swayidle timers firing on already-off outputs.
+
+fn handleOutputPowerSetMode(_: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const event: *wlr.wlr_output_power_v1_set_mode_event = @ptrCast(@alignCast(data orelse return));
+    const output = wlr.miozu_output_power_event_output(event);
+    const want_on = wlr.miozu_output_power_event_mode_on(event) != 0;
+    const currently_on = wlr.miozu_output_enabled(output) != 0;
+    if (want_on == currently_on) return;
+    _ = wlr.miozu_output_commit_enabled(output, if (want_on) 1 else 0);
 }
 
 /// Tiny inline: push a "user is active" ping to idle-notify subscribers.

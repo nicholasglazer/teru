@@ -20,6 +20,7 @@
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_idle_inhibit_v1.h>
+#include <wlr/types/wlr_output_power_management_v1.h>
 #include <wayland-server-core.h>
 
 /* ── Backend signals ─────────────────────────────────────────── */
@@ -524,4 +525,37 @@ struct wl_signal *miozu_idle_inhibitor_destroy(struct wlr_idle_inhibitor_v1 *i) 
  * whether to flip wlr_idle_notifier_v1_set_inhibited. */
 int miozu_idle_inhibit_count(struct wlr_idle_inhibit_manager_v1 *m) {
     return wl_list_length(&m->inhibitors);
+}
+
+/* ── output_power_management_v1 ──────────────────────────────── */
+
+struct wl_signal *miozu_output_power_mgr_set_mode(struct wlr_output_power_manager_v1 *m) {
+    return &m->events.set_mode;
+}
+
+struct wlr_output *miozu_output_power_event_output(struct wlr_output_power_v1_set_mode_event *e) {
+    return e->output;
+}
+
+int miozu_output_power_event_mode_on(struct wlr_output_power_v1_set_mode_event *e) {
+    return e->mode == ZWLR_OUTPUT_POWER_V1_MODE_ON;
+}
+
+/* One-shot enabled-state commit. wlr_output_state is opaque in Zig so
+ * we stack-allocate on the C side and run the usual init/set/commit/
+ * finish pattern inline. Returns 1 on commit success. */
+int miozu_output_commit_enabled(struct wlr_output *output, int enabled) {
+    struct wlr_output_state state;
+    wlr_output_state_init(&state);
+    wlr_output_state_set_enabled(&state, enabled != 0);
+    int ok = wlr_output_commit_state(output, &state);
+    wlr_output_state_finish(&state);
+    return ok ? 1 : 0;
+}
+
+/* Expose wlr_output->enabled so the set_mode handler can short-circuit
+ * when the client asks for the state we're already in (wlopm spam
+ * protection). */
+int miozu_output_enabled(struct wlr_output *output) {
+    return output->enabled ? 1 : 0;
 }
