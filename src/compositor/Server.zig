@@ -3552,97 +3552,15 @@ pub fn spawnShell(self: *Server, cmd: []const u8) void {
     self.spawnProcess(@ptrCast(&buf));
 }
 
-/// Take a screenshot of the entire output and save as PNG.
-/// Composites all visible terminal pane framebuffers + bars into a single image.
+/// Shell-spawn screenshot. Delegates to ServerScreenshot.zig.
 fn takeScreenshot(self: *Server) void {
-    var path_buf: [256:0]u8 = undefined;
-    const home = teru.compat.getenv("HOME") orelse "/tmp";
-    const timestamp = teru.compat.monotonicNow();
-    const path = std.fmt.bufPrint(&path_buf, "{s}/Pictures/screenshot_{d}.png", .{ home, timestamp }) catch return;
-    path_buf[path.len] = 0;
-
-    if (self.takeScreenshotToPath(path)) {
-        std.debug.print("teruwm: screenshot → {s}\n", .{path});
-    }
+    @import("ServerScreenshot.zig").takeScreenshot(self);
 }
 
-/// Take a screenshot to a specific path. Returns true on success.
+/// Named-path screenshot. Public because WmMcpServer.teruwm_screenshot
+/// calls it through self.server.takeScreenshotToPath. Delegates.
 pub fn takeScreenshotToPath(self: *Server, path: []const u8) bool {
-    const dims_ss = self.activeOutputDims();
-    const out_w: u32 = dims_ss.w;
-    const out_h: u32 = dims_ss.h;
-    const total = @as(usize, out_w) * @as(usize, out_h);
-    if (total == 0) return false;
-
-    // Allocate compositing buffer
-    const pixels = self.zig_allocator.alloc(u32, total) catch return false;
-    defer self.zig_allocator.free(pixels);
-
-    // Clear to configured background color (what the user actually sees in gaps)
-    @memset(pixels, self.wm_config.bg_color);
-
-    // Composite visible terminal panes — two passes so floating windows
-    // land on top of tiled ones, matching wlroots' scene-graph z-order.
-    // Without this, the screenshot tool disagrees with what the real
-    // compositor draws, and float/drag E2E snapshots become misleading.
-    const ws = self.layout_engine.active_workspace;
-    for ([_]bool{ false, true }) |want_floating| {
-        for (self.terminal_panes) |maybe_tp| {
-            if (maybe_tp) |tp| {
-                const slot = self.nodes.findById(tp.node_id) orelse continue;
-                if (self.nodes.workspace[slot] != ws) continue;
-                if (self.nodes.floating[slot] != want_floating) continue;
-                tp.render();
-                blitRect(
-                    pixels, out_w, out_h,
-                    tp.renderer.framebuffer, tp.renderer.width, tp.renderer.height,
-                    self.nodes.pos_x[slot], self.nodes.pos_y[slot],
-                );
-            }
-        }
-    }
-
-    // Scratchpads are now in the NodeRegistry with floating=true (v0.4.18),
-    // so the two-pass walk above already composited them at the correct
-    // z-order. No dedicated third pass needed.
-
-    // Composite top bar
-    if (self.bar) |b| {
-        if (b.top.enabled) {
-            blitRect(pixels, out_w, out_h, b.top.renderer.framebuffer, b.output_width, b.bar_height, 0, 0);
-        }
-        if (b.bottom.enabled) {
-            blitRect(pixels, out_w, out_h, b.bottom.renderer.framebuffer, b.output_width, b.bar_height, 0, @intCast(out_h - b.bar_height));
-        }
-    }
-
-    // Encode
-    var path_z: [512:0]u8 = undefined;
-    if (path.len >= path_z.len) return false;
-    @memcpy(path_z[0..path.len], path);
-    path_z[path.len] = 0;
-
-    const png = teru.png;
-    png.write(self.zig_allocator, @ptrCast(path_z[0..path.len :0]), pixels, out_w, out_h) catch return false;
-    return true;
-}
-
-/// Blit a source framebuffer into a destination at the given offset.
-fn blitRect(dst: []u32, dst_w: u32, dst_h: u32, src: []const u32, src_w: u32, src_h: u32, off_x: i32, off_y: i32) void {
-    if (off_x < 0 or off_y < 0) return;
-    const ox: u32 = @intCast(off_x);
-    const oy: u32 = @intCast(off_y);
-
-    const rows = @min(src_h, dst_h -| oy);
-    const cols = @min(src_w, dst_w -| ox);
-    if (rows == 0 or cols == 0) return;
-
-    for (0..rows) |y| {
-        const dst_start = (@as(usize, oy) + y) * @as(usize, dst_w) + @as(usize, ox);
-        const src_start = y * @as(usize, src_w);
-        if (dst_start + cols > dst.len or src_start + cols > src.len) continue;
-        @memcpy(dst[dst_start..][0..cols], src[src_start..][0..cols]);
-    }
+    return @import("ServerScreenshot.zig").takeScreenshotToPath(self, path);
 }
 
 // ── Helper ─────────────────────────────────────────────────────
