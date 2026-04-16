@@ -17,8 +17,7 @@ const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 const TerminalPane = @import("TerminalPane.zig");
 const NodeRegistry = @import("Node.zig");
-// Version comes from teru's McpServer which gets it from build_options
-const version = "0.4.0";
+const version = teru.build_options.version;
 
 const WmMcpServer = @This();
 

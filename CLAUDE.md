@@ -63,18 +63,13 @@ bash tools/run-bench.sh               # reproduce benchmarks from docs/BENCHMARK
 
 ## Version
 
-Current: **0.4.14** — see `build.zig` line 10 (`const version`).
+Current: **0.5.0** — see `build.zig` line 10 (`const version`).
 Propagated via `build_options.version` to `main.zig`, `McpServer.zig`,
 `WmMcpServer.zig`. Bump with `make bump-version V=x.y.z`.
 
-The 0.4.x line is patches leading to the 0.5.0 milestone. v0.4.2..v0.4.12
-were retroactively tagged against past feature waves; 0.4.13 (smart
-borders + autostart) and 0.4.14 (MCP three-tier refactor) ship today's
-work. Remaining 0.4.x → 0.5.0: 0.4.15 Foundation (per-output,
-rotate_slaves, spawn chords, sink_all), 0.4.16 AI-Surface (xdg_activation
-+ MCP events + DynamicProjects + named scratchpads), 0.4.17 Screen-Capture
-(wlr-screencopy + area shot + fade + record). See `git tag` for the full
-series.
+The v0.4.x line shipped as 0.4.2..0.4.26, hitting the 0.5.0 milestone
+after the chromium/vivaldi fix pack (wp_viewporter + 5 related globals).
+See `git tag` for the full series.
 
 ## Known crash patterns + invariants (post-v0.4.25 defensive set)
 
