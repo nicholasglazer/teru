@@ -661,7 +661,10 @@ pub fn reloadWmConfig(self: *Server) void {
     // Use libc fopen/fread to reload config (no Io needed)
     self.wm_config = WmConfig.loadWithLibc();
 
-    // Re-apply bar configuration
+    // Re-apply bar configuration — widget layout or thresholds may
+    // have changed in ways the signature hash doesn't detect
+    // (widgets.count alone can't express a widget's internal fmt).
+    // Force a repaint.
     if (self.bar) |b| {
         b.configure(
             self.wm_config.bar_top_left,
@@ -671,6 +674,7 @@ pub fn reloadWmConfig(self: *Server) void {
             self.wm_config.bar_bottom_center,
             self.wm_config.bar_bottom_right,
         );
+        b.dirty = true;
         b.render(self);
     }
 
