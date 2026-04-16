@@ -98,7 +98,6 @@ keyboards: std.ArrayListUnmanaged(*Keyboard) = .empty,
 // called with, so motion logging can print only on transitions instead
 // of every motion event. Not authoritative.
 last_pointer_surface: ?*wlr.wlr_surface = null,
-motion_log_counter: u32 = 0,
 
 /// Push widgets registered via MCP. Referenced by bar format strings
 /// with `{widget:name}`. Fixed-size array; slot 0..N with `.used=false`
@@ -1314,22 +1313,9 @@ fn forwardAndFocus(server: *Server, button: u32, state: u32, time: u32, super_he
     wlr.wlr_seat_pointer_notify_frame(server.seat);
 
     if (state != 1) return; // only press updates focus
-    const nid_opt = server.nodeAtPoint(cx, cy);
-    std.debug.print(
-        "teruwm: click@({d:.0},{d:.0}) hit_node={?d} super={}\n",
-        .{ cx, cy, nid_opt, super_held },
-    );
-    const nid = nid_opt orelse return;
+    _ = super_held; // prior diagnostic use removed; kept in signature for callers
+    const nid = server.nodeAtPoint(cx, cy) orelse return;
     const slot = server.nodes.findById(nid) orelse return;
-
-    std.debug.print(
-        "teruwm: click slot kind={s} rect=({d},{d}) {d}x{d}\n",
-        .{
-            @tagName(server.nodes.kind[slot]),
-            server.nodes.pos_x[slot], server.nodes.pos_y[slot],
-            server.nodes.width[slot], server.nodes.height[slot],
-        },
-    );
 
     switch (server.nodes.kind[slot]) {
         .terminal => server.focusTerminalByNode(nid),
@@ -1356,12 +1342,16 @@ fn focusTerminalByNode(server: *Server, nid: u64) void {
     if (server.focused_view) |prev_view| {
         _ = wlr.wlr_xdg_toplevel_set_activated(prev_view.toplevel, false);
     }
+    const prev_focused = server.focused_terminal;
     server.focused_terminal = tp;
     server.focused_view = null;
     syncWsActiveIndex(server.layout_engine.getActiveWorkspace(), nid);
-    for (server.terminal_panes) |mtp| {
-        if (mtp) |t| t.render();
+    // Only the two panes whose focus flipped need a border repaint —
+    // full tp.render() on N panes was ~N×300 µs of pointless SIMD blit.
+    if (prev_focused) |prev| {
+        if (prev != tp) prev.repaintBorderOnly();
     }
+    tp.repaintBorderOnly();
     if (server.bar) |b| b.render(server);
 }
 
@@ -1889,14 +1879,13 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
                             // motion that reaches a live surface, not just the
                             // first one. Without this, click-to-focus right after
                             // a synthetic warp+motion saw leaf=null.
-                            if (self.last_pointer_surface != surface) {
-                                std.debug.print("teruwm: motion→pointer-enter surface={x}\n", .{@intFromPtr(surface)});
-                            }
+                            // Motion fires 1000s/sec on a moving pointer —
+                            // every std.debug.print costs a line-buffered
+                            // stderr syscall (~30 µs) that torched our
+                            // frame budget. Prints were diagnostic aids
+                            // during the v0.4.27 click-to-focus work; see
+                            // git log for context if they're needed again.
                             self.last_pointer_surface = surface;
-                            self.motion_log_counter +%= 1;
-                            if (self.motion_log_counter % 40 == 0) {
-                                std.debug.print("teruwm: motion sx={d:.1} sy={d:.1} (cx={d:.0},cy={d:.0})\n", .{ sx, sy, cx, cy });
-                            }
                             wlr.wlr_seat_pointer_notify_enter(self.seat, surface, sx, sy);
                             wlr.wlr_seat_pointer_notify_motion(self.seat, time, sx, sy);
                             // Chromium and GTK batch events until frame;
@@ -1919,13 +1908,10 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
         // pointer to the view's root surface at clamped coords so
         // clicks register where the user expects.
         if (self.fallbackPointerToTiledView(cx, cy, time)) return;
-
-        std.debug.print("teruwm: motion miss — non-buffer scene node at ({d:.0},{d:.0})\n", .{ cx, cy });
         wlr.wlr_cursor_set_xcursor(self.cursor, self.cursor_mgr, "default");
         wlr.wlr_seat_pointer_clear_focus(self.seat);
     } else {
         if (self.fallbackPointerToTiledView(cx, cy, time)) return;
-        std.debug.print("teruwm: motion miss — no node at ({d:.0},{d:.0})\n", .{ cx, cy });
         wlr.wlr_cursor_set_xcursor(self.cursor, self.cursor_mgr, "default");
         wlr.wlr_seat_pointer_clear_focus(self.seat);
     }
@@ -1963,9 +1949,6 @@ fn fallbackPointerToTiledView(self: *Server, cx: f64, cy: f64, time: u32) bool {
         // chromium's mousedown handler fire on its content area.
         const sx_local: f64 = @max(0, cx - @as(f64, @floatFromInt(px)));
         const sy_local: f64 = @max(0, cy - @as(f64, @floatFromInt(py)));
-        if (self.last_pointer_surface != surface) {
-            std.debug.print("teruwm: motion FALLBACK→view node={d} at ({d:.0},{d:.0})\n", .{ self.nodes.node_id[i], cx, cy });
-        }
         self.last_pointer_surface = surface;
         wlr.wlr_seat_pointer_notify_enter(self.seat, surface, sx_local, sy_local);
         wlr.wlr_seat_pointer_notify_motion(self.seat, time, sx_local, sy_local);
@@ -3343,8 +3326,10 @@ pub fn updateFocusedTerminal(self: *Server) void {
                 const view: *XdgView = @ptrCast(@alignCast(opaque_view));
                 self.focusView(view);
                 // focusView already emits focus_changed + renders bar.
+                // Border-only repaint on every pane — cells unchanged,
+                // only the focus-state colour flipped.
                 for (self.terminal_panes) |maybe_tp| {
-                    if (maybe_tp) |tp| tp.render();
+                    if (maybe_tp) |tp| tp.repaintBorderOnly();
                 }
                 return;
             }
@@ -3359,9 +3344,11 @@ pub fn updateFocusedTerminal(self: *Server) void {
 
     self.applyFocusOpacity();
 
-    // Re-render ALL visible panes so border colors update immediately
+    // Border-colour repaint only — cells haven't changed, just focus
+    // state flipped. Full render() here was ~N×300 µs of pointless
+    // SIMD blit on every workspace switch + Mod+Tab.
     for (self.terminal_panes) |maybe_tp| {
-        if (maybe_tp) |tp| tp.render();
+        if (maybe_tp) |tp| tp.repaintBorderOnly();
     }
     if (self.bar) |b| b.render(self);
 }
