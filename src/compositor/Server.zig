@@ -1821,6 +1821,65 @@ pub fn handleKey(self: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) boo
     return self.executeAction(action);
 }
 
+/// Run one of the media/brightness/volume shell-spawn actions.
+/// Extracted so executeAction's big switch doesn't carry 24 lines of
+/// near-identical one-shot spawnProcess() calls.
+fn runMediaAction(self: *Server, action: KBAction) void {
+    const cmd: [*:0]const u8 = switch (action) {
+        .volume_up     => "wpctl set-volume @DEFAULT_SINK@ 5%+",
+        .volume_down   => "wpctl set-volume @DEFAULT_SINK@ 5%-",
+        .volume_mute   => "wpctl set-mute @DEFAULT_SINK@ toggle",
+        .brightness_up   => "brightnessctl set +5%",
+        .brightness_down => "brightnessctl set 5%-",
+        .media_play => "playerctl play-pause",
+        .media_next => "playerctl next",
+        .media_prev => "playerctl previous",
+        else => return,
+    };
+    self.spawnProcess(cmd);
+}
+
+/// Apply a scroll action to the focused terminal. Pure state mutation
+/// + one re-render; doesn't touch the layout engine or seat.
+fn applyScrollAction(tp: *TerminalPane, action: KBAction) void {
+    switch (action) {
+        .scroll_up_1, .scroll_up_half => {
+            const lines: u32 = if (action == .scroll_up_half) tp.pane.grid.rows / 2 else 1;
+            const max_offset: u32 = @intCast(tp.pane.scrollback.total_lines);
+            if (max_offset == 0) return;
+            tp.pane.scroll_offset = @min(tp.pane.scroll_offset + lines, max_offset);
+        },
+        .scroll_down_1, .scroll_down_half => {
+            const lines: u32 = if (action == .scroll_down_half) tp.pane.grid.rows / 2 else 1;
+            tp.pane.scroll_offset -|= lines;
+        },
+        .scroll_top => {
+            tp.pane.scroll_offset = @intCast(tp.pane.scrollback.total_lines);
+        },
+        .scroll_bottom => {
+            tp.pane.scroll_offset = 0;
+        },
+        else => return,
+    }
+    tp.pane.scroll_pixel = 0;
+    tp.pane.grid.dirty = true;
+    tp.render();
+}
+
+/// Resolve a `spawn_N` action variant (the else branch of executeAction)
+/// to its configured shell command. Returns true if the action was a
+/// spawn_N with a populated slot; false for any other action.
+fn tryRunSpawnChord(self: *Server, action: KBAction) bool {
+    const tag: u8 = @intFromEnum(action);
+    const first: u8 = @intFromEnum(KBAction.spawn_0);
+    const last: u8 = @intFromEnum(KBAction.spawn_31);
+    if (tag < first or tag > last) return false;
+    const slot: u8 = tag - first;
+    const len: usize = self.spawn_table_len[slot];
+    if (len > 0) self.spawnShell(self.spawn_table[slot][0..len]);
+    return true;
+}
+
 /// Execute a keybind action. Shared by both compositor keybinds and
 /// terminal pane keybinds (same Action enum, same execution logic).
 pub fn executeAction(self: *Server, action: KBAction) bool {
@@ -2111,96 +2170,19 @@ pub fn executeAction(self: *Server, action: KBAction) bool {
             }
             return true;
         },
-        .volume_up => {
-            self.spawnProcess("wpctl set-volume @DEFAULT_SINK@ 5%+");
+        .volume_up, .volume_down, .volume_mute,
+        .brightness_up, .brightness_down,
+        .media_play, .media_next, .media_prev => {
+            self.runMediaAction(action);
             return true;
         },
-        .volume_down => {
-            self.spawnProcess("wpctl set-volume @DEFAULT_SINK@ 5%-");
+        .scroll_up_1, .scroll_up_half,
+        .scroll_down_1, .scroll_down_half,
+        .scroll_top, .scroll_bottom => {
+            if (self.focused_terminal) |tp| applyScrollAction(tp, action);
             return true;
         },
-        .volume_mute => {
-            self.spawnProcess("wpctl set-mute @DEFAULT_SINK@ toggle");
-            return true;
-        },
-        .brightness_up => {
-            self.spawnProcess("brightnessctl set +5%");
-            return true;
-        },
-        .brightness_down => {
-            self.spawnProcess("brightnessctl set 5%-");
-            return true;
-        },
-        .media_play => {
-            self.spawnProcess("playerctl play-pause");
-            return true;
-        },
-        .media_next => {
-            self.spawnProcess("playerctl next");
-            return true;
-        },
-        .media_prev => {
-            self.spawnProcess("playerctl previous");
-            return true;
-        },
-        .scroll_up_1, .scroll_up_half => {
-            if (self.focused_terminal) |tp| {
-                const lines: u32 = if (action == .scroll_up_half) tp.pane.grid.rows / 2 else 1;
-                const max_offset: u32 = @intCast(tp.pane.scrollback.total_lines);
-                if (max_offset > 0) {
-                    tp.pane.scroll_offset = @min(tp.pane.scroll_offset + lines, max_offset);
-                    tp.pane.scroll_pixel = 0;
-                    tp.pane.grid.dirty = true;
-                    tp.render();
-                }
-            }
-            return true;
-        },
-        .scroll_down_1, .scroll_down_half => {
-            if (self.focused_terminal) |tp| {
-                const lines: u32 = if (action == .scroll_down_half) tp.pane.grid.rows / 2 else 1;
-                tp.pane.scroll_offset -|= lines;
-                tp.pane.scroll_pixel = 0;
-                tp.pane.grid.dirty = true;
-                tp.render();
-            }
-            return true;
-        },
-        .scroll_top => {
-            if (self.focused_terminal) |tp| {
-                const max_offset: u32 = @intCast(tp.pane.scrollback.total_lines);
-                tp.pane.scroll_offset = max_offset;
-                tp.pane.scroll_pixel = 0;
-                tp.pane.grid.dirty = true;
-                tp.render();
-            }
-            return true;
-        },
-        .scroll_bottom => {
-            if (self.focused_terminal) |tp| {
-                tp.pane.scroll_offset = 0;
-                tp.pane.scroll_pixel = 0;
-                tp.pane.grid.dirty = true;
-                tp.render();
-            }
-            return true;
-        },
-        else => {
-            // User-defined spawn chord? Each spawn_N action variant
-            // resolves to spawn_table[N] if that slot is populated.
-            const tag: u8 = @intFromEnum(action);
-            const first: u8 = @intFromEnum(KBAction.spawn_0);
-            const last: u8 = @intFromEnum(KBAction.spawn_31);
-            if (tag >= first and tag <= last) {
-                const slot: u8 = tag - first;
-                const len: usize = self.spawn_table_len[slot];
-                if (len > 0) {
-                    self.spawnShell(self.spawn_table[slot][0..len]);
-                }
-                return true;
-            }
-            return false;
-        },
+        else => return self.tryRunSpawnChord(action),
     }
 }
 
