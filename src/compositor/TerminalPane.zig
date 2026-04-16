@@ -234,6 +234,18 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     return true;
 }
 
+/// Repaint the border only (no grid rerender) and commit.
+/// Called on focus state flip — the previous + new focused pane's
+/// border colour changes but the cells haven't; a full `render()`
+/// here was re-SIMD-blitting thousands of cells for nothing.
+pub fn repaintBorderOnly(self: *TerminalPane) void {
+    if (!self.shouldDrawBorder()) return;
+    const is_focused = (self.server.focused_terminal == self);
+    const border_color: u32 = if (is_focused) 0xFFFF9837 else 0xFF3E4359;
+    self.drawBorder(border_color);
+    wlr.wlr_scene_buffer_set_buffer_with_damage(self.scene_buffer, self.pixel_buffer, null);
+}
+
 /// Write input to the terminal's PTY.
 pub fn writeInput(self: *TerminalPane, data: []const u8) void {
     _ = self.pane.ptyWrite(data) catch {};
