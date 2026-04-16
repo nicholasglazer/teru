@@ -229,6 +229,32 @@ pub extern "wlroots-0.18" fn wlr_idle_notifier_v1_notify_activity(notifier: *wlr
 pub const wlr_xdg_output_manager_v1 = opaque {};
 pub extern "wlroots-0.18" fn wlr_xdg_output_manager_v1_create(display: *wl_display, layout: *wlr_output_layout) callconv(.c) ?*wlr_xdg_output_manager_v1;
 
+// ── Protocols chromium requires to progress past its splash ────
+//
+// All of these are single-call wlroots globals with zero listener
+// wiring. Together they unblock chromium's Viz/WebRender subsurface
+// + picture-cache path. Firefox (Gecko) doesn't use any of them;
+// chromium hard-depends on them (notably viewporter per Mozilla's
+// own analysis: bugzilla.mozilla.org/show_bug.cgi?id=1617498).
+
+pub const wlr_viewporter = opaque {};
+pub extern "wlroots-0.18" fn wlr_viewporter_create(display: *wl_display) callconv(.c) ?*wlr_viewporter;
+
+pub const wlr_linux_dmabuf_v1 = opaque {};
+pub extern "wlroots-0.18" fn wlr_linux_dmabuf_v1_create_with_renderer(display: *wl_display, version: u32, renderer: *wlr_renderer) callconv(.c) ?*wlr_linux_dmabuf_v1;
+
+pub const wlr_single_pixel_buffer_manager_v1 = opaque {};
+pub extern "wlroots-0.18" fn wlr_single_pixel_buffer_manager_v1_create(display: *wl_display) callconv(.c) ?*wlr_single_pixel_buffer_manager_v1;
+
+pub const wlr_fractional_scale_manager_v1 = opaque {};
+pub extern "wlroots-0.18" fn wlr_fractional_scale_manager_v1_create(display: *wl_display, version: u32) callconv(.c) ?*wlr_fractional_scale_manager_v1;
+
+pub const wlr_presentation = opaque {};
+pub extern "wlroots-0.18" fn wlr_presentation_create(display: *wl_display) callconv(.c) ?*wlr_presentation;
+
+pub const wlr_cursor_shape_manager_v1 = opaque {};
+pub extern "wlroots-0.18" fn wlr_cursor_shape_manager_v1_create(display: *wl_display, version: u32) callconv(.c) ?*wlr_cursor_shape_manager_v1;
+
 // ── C stdlib (for setenv) ──────────────────────────────────────
 
 pub extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) callconv(.c) c_int;
