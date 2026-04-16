@@ -19,6 +19,7 @@
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
+#include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wayland-server-core.h>
 
 /* ── Backend signals ─────────────────────────────────────────── */
@@ -525,4 +526,20 @@ int miozu_surface_is_live(struct wlr_surface *s) {
  * output init), so callers must pre-filter. */
 int miozu_scene_node_is_buffer(struct wlr_scene_node *n) {
     return n && n->type == WLR_SCENE_NODE_BUFFER;
+}
+
+/* ── idle_inhibit_v1 ─────────────────────────────────────────── */
+
+struct wl_signal *miozu_idle_inhibit_new_inhibitor(struct wlr_idle_inhibit_manager_v1 *m) {
+    return &m->events.new_inhibitor;
+}
+
+struct wl_signal *miozu_idle_inhibitor_destroy(struct wlr_idle_inhibitor_v1 *i) {
+    return &i->events.destroy;
+}
+
+/* Returns the live inhibitor count. Used after new/destroy to decide
+ * whether to flip wlr_idle_notifier_v1_set_inhibited. */
+int miozu_idle_inhibit_count(struct wlr_idle_inhibit_manager_v1 *m) {
+    return wl_list_length(&m->inhibitors);
 }
