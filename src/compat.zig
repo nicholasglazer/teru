@@ -338,6 +338,32 @@ pub fn ensureParentDirC(path: []const u8) void {
     mkdirAllTo(path[0..last_slash]);
 }
 
+/// Read /proc/<pid>/cmdline, replacing null separators with spaces.
+/// Returns the bytes written into `buf`. Empty on non-Linux or on error.
+///
+/// /proc reads are handled synchronously by the kernel (no real block);
+/// we use raw std.c.open/read here rather than std.Io since this path
+/// is called from contexts that don't thread io (session serialize).
+pub fn readProcCmdline(pid: c_int, buf: []u8) []const u8 {
+    if (builtin.os.tag != .linux) return "";
+    var proc_path: [64:0]u8 = undefined;
+    const p = std.fmt.bufPrint(&proc_path, "/proc/{d}/cmdline", .{pid}) catch return "";
+    proc_path[p.len] = 0;
+
+    const fd = std.c.open(&proc_path, .{ .ACCMODE = .RDONLY }, @as(std.posix.mode_t, 0));
+    if (fd < 0) return "";
+    defer _ = std.posix.system.close(fd);
+
+    const n = std.c.read(fd, buf.ptr, buf.len);
+    if (n <= 0) return "";
+    var end: usize = @intCast(n);
+    while (end > 0 and buf[end - 1] == 0) end -= 1;
+    for (buf[0..end]) |*c| {
+        if (c.* == 0) c.* = ' ';
+    }
+    return buf[0..end];
+}
+
 fn mkdirAllTo(path: []const u8) void {
     var path_z: [std.fs.max_path_bytes:0]u8 = undefined;
     if (path.len >= path_z.len) return;
