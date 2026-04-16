@@ -618,24 +618,40 @@ pub fn reloadWmConfig(self: *Server) void {
 pub fn execRestart(self: *Server) void {
     const restart_path = "/tmp/teruwm-restart.bin";
 
-    // Serialize: for each terminal pane, write {workspace, pty_fd, rows, cols, pid}
-    var buf: [4096]u8 = undefined;
+    // 64 KiB buffer: 13 bytes/pane + 13-byte header ⇒ cap at ~5000 panes.
+    // Previous 4 KiB silently truncated beyond ~300.
+    var buf: [65536]u8 = undefined;
     var pos: usize = 0;
+    var truncated = false;
+
+    const writeBytes = struct {
+        fn f(b: *[65536]u8, p: *usize, trunc: *bool, bytes: []const u8) void {
+            if (p.* + bytes.len > b.len) { trunc.* = true; return; }
+            @memcpy(b[p.*..][0..bytes.len], bytes);
+            p.* += bytes.len;
+        }
+    }.f;
 
     // Header: pane count
     var pane_count: u16 = 0;
     for (self.terminal_panes) |maybe_tp| {
         if (maybe_tp != null) pane_count += 1;
     }
-    if (pos + 2 <= buf.len) { std.mem.writeInt(u16, buf[pos..][0..2], pane_count, .little); pos += 2; }
+    var hdr: [2]u8 = undefined;
+    std.mem.writeInt(u16, &hdr, pane_count, .little);
+    writeBytes(&buf, &pos, &truncated, &hdr);
 
     // Active workspace
-    if (pos + 1 <= buf.len) { buf[pos] = self.layout_engine.active_workspace; pos += 1; }
+    writeBytes(&buf, &pos, &truncated, &[_]u8{self.layout_engine.active_workspace});
 
     // Per-workspace layouts (10 workspaces)
     for (0..10) |wi| {
-        if (pos + 1 <= buf.len) { buf[pos] = @intFromEnum(self.layout_engine.workspaces[wi].layout); pos += 1; }
+        writeBytes(&buf, &pos, &truncated, &[_]u8{@intFromEnum(self.layout_engine.workspaces[wi].layout)});
     }
+
+    // Track fds we cleared FD_CLOEXEC on so we can restore on exec-fail.
+    var cleared_fds: std.ArrayListUnmanaged(i32) = .empty;
+    defer cleared_fds.deinit(self.zig_allocator);
 
     // Per-pane data
     for (self.terminal_panes) |maybe_tp| {
@@ -649,23 +665,40 @@ pub fn execRestart(self: *Server) void {
                 .local => |p| if (p.child_pid) |cp| @intCast(cp) else -1,
                 .remote => -1,
             };
-            if (pos + 13 <= buf.len) {
-                buf[pos] = ws; pos += 1;
-                std.mem.writeInt(i32, buf[pos..][0..4], pty_fd, .little); pos += 4;
-                std.mem.writeInt(u16, buf[pos..][0..2], tp.pane.grid.rows, .little); pos += 2;
-                std.mem.writeInt(u16, buf[pos..][0..2], tp.pane.grid.cols, .little); pos += 2;
-                std.mem.writeInt(i32, buf[pos..][0..4], pid, .little); pos += 4;
-            }
+            var record: [13]u8 = undefined;
+            record[0] = ws;
+            std.mem.writeInt(i32, record[1..5], pty_fd, .little);
+            std.mem.writeInt(u16, record[5..7], tp.pane.grid.rows, .little);
+            std.mem.writeInt(u16, record[7..9], tp.pane.grid.cols, .little);
+            std.mem.writeInt(i32, record[9..13], pid, .little);
+            writeBytes(&buf, &pos, &truncated, &record);
 
-            // Clear FD_CLOEXEC on pty master so it survives exec
+            // Clear FD_CLOEXEC on pty master so it survives exec.
             if (pty_fd >= 0) {
                 const flags = std.c.fcntl(pty_fd, std.posix.F.GETFD);
-                if (flags >= 0) {
-                    _ = std.c.fcntl(pty_fd, std.posix.F.SETFD, flags & ~@as(c_int, 1)); // clear FD_CLOEXEC
+                if (flags >= 0 and (flags & 1) != 0) {
+                    if (std.c.fcntl(pty_fd, std.posix.F.SETFD, flags & ~@as(c_int, 1)) >= 0) {
+                        cleared_fds.append(self.zig_allocator, pty_fd) catch {};
+                    }
                 }
             }
         }
     }
+
+    if (truncated) {
+        std.debug.print("teruwm: restart state truncated at {d} bytes ({d} panes)\n", .{ pos, pane_count });
+    }
+
+    const restoreCloexec = struct {
+        fn f(fds: []const i32) void {
+            for (fds) |fd| {
+                const flags = std.c.fcntl(fd, std.posix.F.GETFD);
+                if (flags >= 0) {
+                    _ = std.c.fcntl(fd, std.posix.F.SETFD, flags | @as(c_int, 1));
+                }
+            }
+        }
+    }.f;
 
     // Write state file
     const file = std.c.fopen(restart_path, "wb");
@@ -674,6 +707,7 @@ pub fn execRestart(self: *Server) void {
         _ = std.c.fclose(f);
     } else {
         std.debug.print("teruwm: failed to write restart state\n", .{});
+        restoreCloexec(cleared_fds.items);
         return;
     }
 
@@ -684,8 +718,10 @@ pub fn execRestart(self: *Server) void {
     var argv_buf: [3:null]?[*:0]const u8 = .{ @ptrCast(self_exe), @ptrCast("--restore"), null };
     _ = std.posix.system.execve(@ptrCast(self_exe), @ptrCast(&argv_buf), std.c.environ);
 
-    // If exec fails, we're still running
+    // If exec returns, it failed — put FD_CLOEXEC back so the open PTY
+    // masters don't leak into any future forked child.
     std.debug.print("teruwm: exec failed, continuing\n", .{});
+    restoreCloexec(cleared_fds.items);
 }
 
 pub fn deinit(self: *Server) void {
