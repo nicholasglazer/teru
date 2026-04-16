@@ -218,6 +218,11 @@ output_manager: ?*wlr.wlr_output_manager_v1 = null,
 output_manager_apply: wlr.wl_listener = makeListener(handleOutputManagerApply),
 output_manager_test: wlr.wl_listener = makeListener(handleOutputManagerTest),
 
+// wlr_foreign_toplevel_management_v1 — zwlr. waybar / nwg-panel /
+// wlrctl list our mapped xdg toplevels and can activate/close them.
+// One handle per XdgView, created in handleMap, destroyed in handleUnmap.
+foreign_toplevel_mgr: ?*wlr.wlr_foreign_toplevel_manager_v1 = null,
+
 // ── Types ─────────────────────────────────────────────────────
 
 pub const PerfStats = struct {
@@ -401,6 +406,12 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     // before apply_configuration; handling only apply hangs kanshi.
     const output_manager = wlr.wlr_output_manager_v1_create(display);
 
+    // wlr_foreign_toplevel_management_v1 — taskbars + window lists.
+    // XdgView.handleMap registers a handle, XdgView.handleUnmap
+    // destroys it; request_close + request_activate listeners
+    // route into closeNode / focusView.
+    const foreign_toplevel_mgr = wlr.wlr_foreign_toplevel_manager_v1_create(display);
+
     // XDG shell
     const xdg_shell = wlr.wlr_xdg_shell_create(display, 3) orelse
         return error.XdgShellCreateFailed;
@@ -454,6 +465,7 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
         .virtual_keyboard_mgr = virtual_keyboard_mgr,
         .virtual_pointer_mgr = virtual_pointer_mgr,
         .output_manager = output_manager,
+        .foreign_toplevel_mgr = foreign_toplevel_mgr,
     };
 }
 
@@ -2513,11 +2525,15 @@ pub fn focusView(self: *Server, view: *XdgView) void {
     if (self.focused_view) |prev| {
         if (prev != view) {
             _ = wlr.wlr_xdg_toplevel_set_activated(prev.toplevel, false);
+            if (prev.ftl_handle) |h| {
+                wlr.wlr_foreign_toplevel_handle_v1_set_activated(h, false);
+            }
         }
     }
 
     // Activate (idempotent — wlroots dedups if already activated)
     _ = wlr.wlr_xdg_toplevel_set_activated(view.toplevel, true);
+    if (view.ftl_handle) |h| wlr.wlr_foreign_toplevel_handle_v1_set_activated(h, true);
     const was_focused = (self.focused_view == view and self.focused_terminal == null);
     self.focused_view = view;
     self.focused_terminal = null;

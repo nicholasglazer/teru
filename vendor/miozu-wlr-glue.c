@@ -25,6 +25,7 @@
 #include <wlr/types/wlr_virtual_pointer_v1.h>
 #include <wlr/types/wlr_output_management_v1.h>
 #include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wayland-server-core.h>
 
 /* ── Backend signals ─────────────────────────────────────────── */
@@ -679,4 +680,14 @@ void miozu_output_config_send_succeeded(struct wlr_output_configuration_v1 *cfg)
 void miozu_output_config_send_failed(struct wlr_output_configuration_v1 *cfg) {
     wlr_output_configuration_v1_send_failed(cfg);
     wlr_output_configuration_v1_destroy(cfg);
+}
+
+/* ── foreign_toplevel_management_v1 ──────────────────────────── */
+
+struct wl_signal *miozu_ftl_request_activate(struct wlr_foreign_toplevel_handle_v1 *h) {
+    return &h->events.request_activate;
+}
+
+struct wl_signal *miozu_ftl_request_close(struct wlr_foreign_toplevel_handle_v1 *h) {
+    return &h->events.request_close;
 }
