@@ -2298,152 +2298,27 @@ pub fn executeAction(self: *Server, action: KBAction) bool {
     }
 }
 
-/// Un-float the focused node if it's currently floating. Reversed by
-/// another float_toggle. Mirrors xmonad's W.sink on one window.
-///
-/// The focused node may be floating, and the layout engine's
-/// `getActiveNodeId` only iterates *tiled* nodes — so we resolve the
-/// target via `focused_terminal`/`focused_view` instead, which track
-/// whichever node the user is actually looking at regardless of tile
-/// state. Before v0.5.1 this used `active_ws.getActiveNodeId()` and
-/// silently no-op'd on the very case the action exists to handle.
+/// Un-float the focused node. Delegates to ServerLayout.zig.
 pub fn sinkFocused(self: *Server) void {
-    const nid: u64 = if (self.focused_terminal) |tp|
-        tp.node_id
-    else if (self.focused_view) |v|
-        v.node_id
-    else
-        return;
-    const slot = self.nodes.findById(nid) orelse return;
-    if (!self.nodes.floating[slot]) return;
-    self.nodes.floating[slot] = false;
-    self.layout_engine.workspaces[self.layout_engine.active_workspace].addNode(self.zig_allocator, nid) catch {};
-    self.arrangeworkspace(self.layout_engine.active_workspace);
+    @import("ServerLayout.zig").sinkFocused(self);
 }
 
-/// Sink every floating node on the active workspace back into tiling.
-/// Skips scratchpads (they live outside the tiled node list).
+/// Sink all floating nodes on the active workspace. Delegates.
 pub fn sinkAllOnActiveWorkspace(self: *Server) void {
-    const ws_index = self.layout_engine.active_workspace;
-    var changed = false;
-    for (0..NodeRegistry.max_nodes) |i| {
-        if (self.nodes.kind[i] == .empty) continue;
-        if (self.nodes.workspace[i] != ws_index) continue;
-        if (!self.nodes.floating[i]) continue;
-        const nid = self.nodes.node_id[i];
-        self.nodes.floating[i] = false;
-        self.layout_engine.workspaces[ws_index].addNode(self.zig_allocator, nid) catch continue;
-        changed = true;
-    }
-    if (changed) self.arrangeworkspace(ws_index);
+    @import("ServerLayout.zig").sinkAllOnActiveWorkspace(self);
 }
 
 // ── Tiling ─────────────────────────────────────────────────────
 
-/// Recalculate layout for a workspace and apply rects to all scene nodes.
-/// Gap-inset screen rectangle. Both arrange paths must use identical
-/// math (see CLAUDE.md "Gap system"); any drift between them shows as
-/// jumping panes on drag-release.
-///
-/// Pre-inset the screen by half-gap so edge gaps match inter-pane gaps:
-/// layout divides the inset area, each pane is post-inset another hg per
-/// side, result is edge = hg+hg = gap, between panes = hg+hg = gap.
-fn computeTilingScreen(self: *Server) struct { rect: LayoutEngine.Rect, hg: i32, g: i32 } {
-    const dims = self.activeOutputDims();
-    const w: u16 = @intCast(dims.w);
-    const full_h: u32 = dims.h;
-    const bar_h: u32 = if (self.bar) |b| b.totalHeight() else 0;
-    const bar_y_offset: i32 = if (self.bar) |b| @intCast(b.tilingOffsetY()) else 0;
-    const h: u16 = @intCast(@max(1, full_h - bar_h));
-
-    const g: i32 = @intCast(self.wm_config.gap);
-    const hg: i32 = @divTrunc(g, 2);
-    return .{
-        .rect = .{
-            .x = @intCast(@as(i32, 0) + hg),
-            .y = @intCast(bar_y_offset + hg),
-            .width = if (w > @as(u16, @intCast(g))) w - @as(u16, @intCast(g)) else w,
-            .height = if (h > @as(u16, @intCast(g))) h - @as(u16, @intCast(g)) else h,
-        },
-        .hg = hg,
-        .g = g,
-    };
-}
-
+/// Arrange all nodes on a workspace according to its layout. Delegates.
 pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
-    const geom = self.computeTilingScreen();
-    const hg = geom.hg;
-    const g = geom.g;
-
-    var fba = std.heap.FixedBufferAllocator.init(&self.arrange_scratch_buf);
-    const rects = self.layout_engine.calculateWith(ws_index, geom.rect, fba.allocator()) catch return;
-    // no free — FBA resets on next call
-
-    const ws = &self.layout_engine.workspaces[ws_index];
-    const node_ids = ws.node_ids.items;
-
-    for (node_ids, 0..) |nid, i| {
-        if (i >= rects.len) break;
-        if (self.nodes.findById(nid)) |slot| {
-            // Each pane inset by hg on all sides — combined with pre-inset,
-            // this gives uniform gap at edges and between panes.
-            const rx = rects[i].x + hg;
-            const ry = rects[i].y + hg;
-            const gu16: u16 = @intCast(g);
-            const rw: u16 = if (rects[i].width > gu16) rects[i].width - gu16 else rects[i].width;
-            const rh: u16 = if (rects[i].height > gu16) rects[i].height - gu16 else rects[i].height;
-            self.nodes.applyRect(slot, rx, ry, rw, rh);
-
-            // Resize terminal panes to match their assigned rect
-            if (self.nodes.kind[slot] == .terminal) {
-                if (self.terminalPaneById(nid)) |tp| {
-                    tp.resize(rw, rh);
-                    tp.setPosition(rx, ry);
-                    // Force repaint so smart-border state (count changed,
-                    // solo → shared or vice versa) gets reflected even
-                    // when the rect didn't change.
-                    tp.pane.grid.dirty = true;
-                }
-            }
-        }
-    }
+    @import("ServerLayout.zig").arrangeWorkspace(self, ws_index);
 }
 
-/// Smooth arrange: reposition + scale scene buffers WITHOUT resizing terminal grids.
-/// Used during drag for instant visual feedback. Actual resize happens on release.
+/// Drag-feedback arrange — reposition scene buffers without grid
+/// resize. Used during interactive resize drag. Delegates.
 pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
-    const geom = self.computeTilingScreen();
-    const hg = geom.hg;
-    const g = geom.g;
-
-    var fba = std.heap.FixedBufferAllocator.init(&self.arrange_scratch_buf);
-    const rects = self.layout_engine.calculateWith(ws_index, geom.rect, fba.allocator()) catch return;
-
-    const ws = &self.layout_engine.workspaces[ws_index];
-    const node_ids = ws.node_ids.items;
-
-    for (node_ids, 0..) |nid, i| {
-        if (i >= rects.len) break;
-        const rx = rects[i].x + hg;
-        const ry = rects[i].y + hg;
-        const gu16: u16 = @intCast(g);
-        const rw: u16 = if (rects[i].width > gu16) rects[i].width - gu16 else rects[i].width;
-        const rh: u16 = if (rects[i].height > gu16) rects[i].height - gu16 else rects[i].height;
-
-        // Only reposition + scale — don't resize grid/PTY
-        if (self.terminalPaneById(nid)) |tp| {
-            tp.setPosition(rx, ry);
-            // Scale existing pixels to new size (no re-render)
-            wlr.wlr_scene_buffer_set_dest_size(tp.scene_buffer, @intCast(rw), @intCast(rh));
-        }
-
-        if (self.nodes.findById(nid)) |slot| {
-            self.nodes.pos_x[slot] = rx;
-            self.nodes.pos_y[slot] = ry;
-            self.nodes.width[slot] = rw;
-            self.nodes.height[slot] = rh;
-        }
-    }
+    @import("ServerLayout.zig").arrangeWorkspaceSmooth(self, ws_index);
 }
 
 /// Focus a view — activate its toplevel and send keyboard focus.
