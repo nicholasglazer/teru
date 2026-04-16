@@ -492,8 +492,6 @@ pub extern "wlroots-0.18" fn wlr_xdg_toplevel_send_close(toplevel: *wlr_xdg_topl
 pub extern "c" fn miozu_scene_surface_get_surface(scene_surface: *wlr_scene_surface) callconv(.c) ?*wlr_surface;
 
 // Output primary dimensions (in glue — returns first output w/h)
-pub extern "c" fn miozu_output_layout_first_width(layout: *wlr_output_layout) callconv(.c) c_int;
-pub extern "c" fn miozu_output_layout_first_height(layout: *wlr_output_layout) callconv(.c) c_int;
 
 // Request set cursor event accessors (in glue)
 pub extern "c" fn miozu_set_cursor_event_surface(event: *anyopaque) callconv(.c) ?*wlr_surface;

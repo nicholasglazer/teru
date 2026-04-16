@@ -761,8 +761,9 @@ fn toolGetConfig(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
     const cfg = &self.server.wm_config;
     const srv = self.server;
 
-    const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(srv.output_layout)));
-    const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(srv.output_layout)));
+    const dims = srv.activeOutputDims();
+    const out_w: u32 = dims.w;
+    const out_h: u32 = dims.h;
 
     const top_enabled = if (srv.bar) |b| b.top.enabled else false;
     const bot_enabled = if (srv.bar) |b| b.bottom.enabled else false;
@@ -823,8 +824,9 @@ fn toolScreenshot(self: *WmMcpServer, path: []const u8, buf: []u8, id: ?[]const 
     const id_str = id orelse "null";
 
     if (self.server.takeScreenshotToPath(path)) {
-        const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.server.output_layout)));
-        const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.server.output_layout)));
+        const dims = self.server.activeOutputDims();
+        const out_w: u32 = dims.w;
+        const out_h: u32 = dims.h;
         return std.fmt.bufPrint(buf,
             \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"screenshot saved to {s} ({d}x{d})"}}]}},"id":{s}}}
         , .{ path, out_w, out_h, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
