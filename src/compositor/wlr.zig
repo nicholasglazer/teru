@@ -342,6 +342,7 @@ pub extern "wlroots-0.18" fn wlr_foreign_toplevel_handle_v1_set_app_id(handle: *
 pub extern "wlroots-0.18" fn wlr_foreign_toplevel_handle_v1_set_activated(handle: *wlr_foreign_toplevel_handle_v1, activated: bool) callconv(.c) void;
 pub extern "c" fn miozu_ftl_request_activate(handle: *wlr_foreign_toplevel_handle_v1) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_ftl_request_close(handle: *wlr_foreign_toplevel_handle_v1) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_ftl_handle_destroy_signal(handle: *wlr_foreign_toplevel_handle_v1) callconv(.c) *wl_signal;
 
 // Glue — signal accessors and list_length helper.
 pub extern "c" fn miozu_idle_inhibit_new_inhibitor(mgr: *wlr_idle_inhibit_manager_v1) callconv(.c) *wl_signal;

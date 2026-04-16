@@ -27,9 +27,16 @@ commit: wlr.wl_listener,
 // on unmap; null in between. Taskbar clients (waybar, nwg-panel) see
 // the handle and can activate/close it — we translate those requests
 // back into focusView / wlr_xdg_toplevel_send_close.
+//
+// ftl_destroy fires when wlroots tears the handle down before we get
+// a chance (e.g. manager destroyed by wl_display_destroy on shutdown);
+// it nulls view.ftl_handle so handleUnmap/handleDestroy skip the
+// double-destroy. Default listeners use inert notify fns — callers
+// must wl_signal_add to arm them; they're no-ops if invoked unarmed.
 ftl_handle: ?*wlr.wlr_foreign_toplevel_handle_v1 = null,
-ftl_request_activate: wlr.wl_listener = undefined,
-ftl_request_close: wlr.wl_listener = undefined,
+ftl_request_activate: wlr.wl_listener = makeListener(handleFtlActivate),
+ftl_request_close: wlr.wl_listener = makeListener(handleFtlClose),
+ftl_destroy: wlr.wl_listener = makeListener(handleFtlDestroy),
 
 /// Create an XdgView for a new toplevel surface.
 pub fn create(server: *Server, toplevel: *wlr.wlr_xdg_toplevel) ?*XdgView {
@@ -126,10 +133,9 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
             if (title) |t| wlr.wlr_foreign_toplevel_handle_v1_set_title(h, t);
             if (app_id) |a| wlr.wlr_foreign_toplevel_handle_v1_set_app_id(h, a);
 
-            view.ftl_request_activate = makeListener(handleFtlActivate);
-            view.ftl_request_close = makeListener(handleFtlClose);
             wlr.wl_signal_add(wlr.miozu_ftl_request_activate(h), &view.ftl_request_activate);
             wlr.wl_signal_add(wlr.miozu_ftl_request_close(h), &view.ftl_request_close);
+            wlr.wl_signal_add(wlr.miozu_ftl_handle_destroy_signal(h), &view.ftl_destroy);
         }
     }
 
@@ -148,6 +154,18 @@ fn handleFtlClose(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void 
     const view: *XdgView = @fieldParentPtr("ftl_request_close", listener);
     // Same path as Win+X / teruwm_close_window.
     wlr.wlr_xdg_toplevel_send_close(view.toplevel);
+}
+
+/// wlroots destroyed the handle beneath us (manager teardown or
+/// shutdown). Null our pointer so handleUnmap/handleDestroy don't
+/// call _destroy again + unhook our own request listener links so
+/// they don't live past the signal they're attached to.
+fn handleFtlDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const view: *XdgView = @fieldParentPtr("ftl_destroy", listener);
+    wlr.wl_list_remove(&view.ftl_request_activate.link);
+    wlr.wl_list_remove(&view.ftl_request_close.link);
+    wlr.wl_list_remove(&view.ftl_destroy.link);
+    view.ftl_handle = null;
 }
 
 fn handleUnmap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
@@ -171,12 +189,10 @@ fn handleUnmap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     }
 
     // Tear down the foreign-toplevel handle — taskbars receive the
-    // `closed` event and drop the icon.
+    // `closed` event and drop the icon. handleFtlDestroy will clear
+    // the listener links + null ftl_handle; we don't touch them here.
     if (view.ftl_handle) |h| {
-        wlr.wl_list_remove(&view.ftl_request_activate.link);
-        wlr.wl_list_remove(&view.ftl_request_close.link);
         wlr.wlr_foreign_toplevel_handle_v1_destroy(h);
-        view.ftl_handle = null;
     }
 
     // Remove from node registry and tiling engine

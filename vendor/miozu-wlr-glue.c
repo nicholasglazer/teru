@@ -691,3 +691,11 @@ struct wl_signal *miozu_ftl_request_activate(struct wlr_foreign_toplevel_handle_
 struct wl_signal *miozu_ftl_request_close(struct wlr_foreign_toplevel_handle_v1 *h) {
     return &h->events.request_close;
 }
+
+/* wlroots' own destroy signal on the handle fires when the manager /
+ * display tears down (or we call _destroy ourselves). Let XdgView null
+ * its ftl_handle + unhook its request listeners so we don't later call
+ * _destroy on freed memory. */
+struct wl_signal *miozu_ftl_handle_destroy_signal(struct wlr_foreign_toplevel_handle_v1 *h) {
+    return &h->events.destroy;
+}

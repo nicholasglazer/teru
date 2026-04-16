@@ -195,6 +195,8 @@ idle_notifier: ?*wlr.wlr_idle_notifier_v1 = null,
 idle_inhibit_mgr: ?*wlr.wlr_idle_inhibit_manager_v1 = null,
 idle_inhibitor_count: u16 = 0,
 new_inhibitor: wlr.wl_listener = makeListener(handleNewInhibitor),
+inhibitor_trackers: std.ArrayListUnmanaged(*InhibitorTracker) = .empty,
+shutting_down: bool = false,
 
 // wlr_output_power_management_v1 — wlopm / swayidle dpms hook.
 // Clients call set_mode with ON/OFF per output; we commit the
@@ -836,6 +838,20 @@ pub fn execRestart(self: *Server) void {
 }
 
 pub fn deinit(self: *Server) void {
+    // Flag before teardown so any destroy-signal handler that fires
+    // during wl_display_destroy (idle-inhibit trackers, etc.) skips
+    // the server deref path.
+    self.shutting_down = true;
+
+    // Free every InhibitorTracker before wl_display_destroy fires
+    // inhibitor destroy signals on what would then be stale state.
+    // Each tracker unhooks its own listener + drops itself.
+    for (self.inhibitor_trackers.items) |tracker| {
+        wlr.wl_list_remove(&tracker.destroy_listener.link);
+        self.zig_allocator.destroy(tracker);
+    }
+    self.inhibitor_trackers.deinit(self.zig_allocator);
+
     if (self.wm_mcp) |mcp| mcp.deinit(self.zig_allocator);
 
     // Remove every Server-owned wl_listener. wlroots allocates each
@@ -1000,6 +1016,17 @@ fn handleNewInhibitor(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c
     };
     wlr.wl_signal_add(wlr.miozu_idle_inhibitor_destroy(inhibitor), &tracker.destroy_listener);
 
+    // Track the tracker so Server.deinit can free it before
+    // wl_display_destroy fires inhibitor destroy signals on a stale
+    // Server.
+    server.inhibitor_trackers.append(server.zig_allocator, tracker) catch {
+        // Append failed — drop the listener + tracker rather than
+        // leave an orphan.
+        wlr.wl_list_remove(&tracker.destroy_listener.link);
+        server.zig_allocator.destroy(tracker);
+        return;
+    };
+
     server.idle_inhibitor_count += 1;
     server.refreshIdleInhibited();
 }
@@ -1008,8 +1035,20 @@ fn handleInhibitorDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.
     const tracker: *InhibitorTracker = @fieldParentPtr("destroy_listener", listener);
     const server = tracker.server;
 
+    // Server.deinit already freed us — skip to avoid dereferencing
+    // torn-down wlr_idle_notifier during wl_display_destroy.
+    if (server.shutting_down) return;
+
     server.idle_inhibitor_count -|= 1;
     server.refreshIdleInhibited();
+
+    // Remove ourselves from the tracker list before freeing.
+    for (server.inhibitor_trackers.items, 0..) |t, i| {
+        if (t == tracker) {
+            _ = server.inhibitor_trackers.swapRemove(i);
+            break;
+        }
+    }
 
     wlr.wl_list_remove(&tracker.destroy_listener.link);
     server.zig_allocator.destroy(tracker);
@@ -1740,7 +1779,10 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
 
     // Handle tiled border drag — update ratio, defer layout to frame callback
     if (self.cursor_mode == .border_drag) {
-        const out_w: f64 = @floatFromInt(self.activeOutputDims().w);
+        // Belt-and-suspenders against div-by-zero — activeOutputDims
+        // already clamps to 1920 on zero-outputs, but a racing hotplug
+        // during drag could theoretically slip through.
+        const out_w: f64 = @floatFromInt(@max(@as(u32, 1), self.activeOutputDims().w));
         const delta = cx - self.grab_x;
         const ratio_delta: f32 = @floatCast(delta / out_w);
         const ws = self.layout_engine.getActiveWorkspace();
@@ -3097,13 +3139,18 @@ pub fn nodeAtPoint(self: *const Server, x: f64, y: f64) ?u64 {
 /// no focus yet). Replaces miozu_output_layout_first_* which always
 /// returned the first output in layout order — wrong under multi-head
 /// for callers that mean "the output the user is looking at".
+///
+/// Returns 1920×1080 fallback when no outputs are connected (same as
+/// the previous glue helper). Several callers do (w - x)/2 arithmetic
+/// that would underflow u32 at w=0; 1920×1080 is the "drawing on a
+/// virtual display" best guess.
 pub fn activeOutputDims(self: *const Server) struct { w: u32, h: u32 } {
     const out: *wlr.wlr_output = if (self.focused_output) |o|
         o.wlr_output
     else if (self.outputs.items.len > 0)
         self.outputs.items[0].wlr_output
     else
-        return .{ .w = 0, .h = 0 };
+        return .{ .w = 1920, .h = 1080 };
     return .{
         .w = @intCast(@max(1, wlr.miozu_output_width(out))),
         .h = @intCast(@max(1, wlr.miozu_output_height(out))),
