@@ -327,7 +327,19 @@ pub fn getenv(name: [*:0]const u8) ?[]const u8 {
 /// Create a directory and all parent components (like mkdir -p).
 /// Uses C mkdir, ignoring EEXIST. No Io required.
 pub fn ensureDirC(path: []const u8) void {
-    var path_z: [512:0]u8 = undefined;
+    mkdirAllTo(path);
+}
+
+/// Ensure the parent directory of `path` exists (mkdir -p on dirname).
+/// No-op if `path` has no slash or its parent is "/".
+pub fn ensureParentDirC(path: []const u8) void {
+    const last_slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return;
+    if (last_slash == 0) return;
+    mkdirAllTo(path[0..last_slash]);
+}
+
+fn mkdirAllTo(path: []const u8) void {
+    var path_z: [std.fs.max_path_bytes:0]u8 = undefined;
     if (path.len >= path_z.len) return;
     var i: usize = 1;
     while (i < path.len) : (i += 1) {

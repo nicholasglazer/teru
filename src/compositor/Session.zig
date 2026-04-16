@@ -74,7 +74,7 @@ pub fn save(server: *Server, name: []const u8) !void {
     const path = try CoreSession.getSessionPath(allocator, name);
     defer allocator.free(path);
 
-    ensureParentDirLibc(path);
+    teru.compat.ensureParentDirC(path);
 
     var path_z: [std.fs.max_path_bytes:0]u8 = undefined;
     if (path.len >= path_z.len) return error.PathTooLong;
@@ -244,23 +244,3 @@ fn writeFmt(dst: []u8, comptime fmt: []const u8, args: anytype) !usize {
     return out.len;
 }
 
-fn ensureParentDirLibc(path: []const u8) void {
-    const last_slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return;
-    if (last_slash == 0) return;
-    const parent = path[0..last_slash];
-
-    var buf: [std.fs.max_path_bytes:0]u8 = undefined;
-    if (parent.len >= buf.len) return;
-
-    var i: usize = 1;
-    while (i < parent.len) : (i += 1) {
-        if (parent[i] == '/') {
-            @memcpy(buf[0..i], parent[0..i]);
-            buf[i] = 0;
-            _ = std.c.mkdir(@ptrCast(buf[0..i :0]), 0o755);
-        }
-    }
-    @memcpy(buf[0..parent.len], parent);
-    buf[parent.len] = 0;
-    _ = std.c.mkdir(@ptrCast(buf[0..parent.len :0]), 0o755);
-}
