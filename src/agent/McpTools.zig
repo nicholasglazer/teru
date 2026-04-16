@@ -4,6 +4,7 @@
 //! that don't depend on McpServer state (no `self` parameter).
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 
 /// Escape a string for safe embedding inside a JSON string value.
 /// Handles: " \ \n \r \t and strips control chars below 0x20.
@@ -141,21 +142,10 @@ pub fn lineMatchesKey(line: []const u8, key: []const u8) bool {
 }
 
 /// Ensure parent directory exists using C mkdir (recursive).
+/// Thin forwarder to compat so callers outside agent/ (compositor, main)
+/// share one mkdir-p implementation.
 pub fn ensureParentDirC(path: []const u8) void {
-    // Find last '/' to get parent dir
-    const last_slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return;
-    if (last_slash == 0) return;
-
-    // Walk path components and create each one
-    var path_z: [512:0]u8 = undefined;
-    var i: usize = 1;
-    while (i <= last_slash and i < path_z.len) : (i += 1) {
-        if (path[i] == '/' or i == last_slash) {
-            @memcpy(path_z[0..i], path[0..i]);
-            path_z[i] = 0;
-            _ = std.c.mkdir(@ptrCast(path_z[0..i :0]), 0o755);
-        }
-    }
+    compat.ensureParentDirC(path);
 }
 
 /// Unescape JSON string escape sequences: \n \r \t \\ \"
