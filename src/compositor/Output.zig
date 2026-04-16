@@ -109,12 +109,12 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
         server.applyWmBar(); // apply teruwm config bar format strings
 
         // Start on workspace 1 (key 1, index 0). Do NOT auto-spawn a
-        // terminal — tiling compositors (sway, river, hyprland, xmonad,
-        // dwm) all start empty and let the user (or autostart config)
-        // decide what to launch. Auto-spawn also made the "close all"
-        // UX confusing: the last-closed pane would vanish, then the
-        // auto-spawn ran only on first output so it didn't come back,
-        // leaving users unsure whether close worked.
+        // terminal — tiling compositors conventionally start empty
+        // and let the user (or an autostart config) decide what to
+        // launch. Auto-spawn also made the "close all" UX confusing:
+        // the last-closed pane would vanish, then the auto-spawn ran
+        // only on first output so it didn't come back, leaving users
+        // unsure whether close worked.
         server.layout_engine.switchWorkspace(0);
 
         if (server.bar) |b| b.render(server);

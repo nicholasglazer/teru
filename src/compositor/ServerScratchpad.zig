@@ -1,4 +1,4 @@
-//! Named + numbered scratchpads (xmonad NamedScratchpad model).
+//! Named + numbered scratchpads.
 //!
 //! A scratchpad is a regular terminal pane with a stable string
 //! identity and a HIDDEN_WS "parked" sentinel. Toggling it promotes
@@ -11,8 +11,6 @@
 //! `scratchpad_name` set and an optional HIDDEN_WS workspace. That
 //! means list_windows sees them, screenshot paths pick them up via
 //! the floating walk, and hot-restart serializes them.
-//!
-//! Split out of Server.zig as part of the 2026-04-16 modularization pass.
 
 const std = @import("std");
 const Server = @import("Server.zig");
@@ -23,7 +21,7 @@ const max_auto_name_len = 32;
 
 pub const ScratchRect = struct { x: i32, y: i32, w: u32, h: u32 };
 
-/// xmonad namedScratchpadAction semantics:
+/// Scratchpad toggle semantics:
 ///   (a) no such scratchpad     → spawn a floating terminal, tag it, show it
 ///   (b) hidden (HIDDEN_WS)     → promote to active workspace
 ///   (c) on active workspace    → demote to HIDDEN_WS

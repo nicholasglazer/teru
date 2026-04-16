@@ -211,10 +211,11 @@ pub extern "wlroots-0.18" fn wlr_xdg_toplevel_decoration_v1_set_mode(dec: *wlr_x
 pub extern "c" fn miozu_xdg_decoration_new_toplevel_decoration(mgr: *wlr_xdg_decoration_manager_v1) callconv(.c) *wl_signal;
 
 // ── idle-notify-v1 (laptop sleep, screensaver) ────────────────
-// swayidle and friends subscribe; we just call notify_activity on every
-// real input event. wlroots handles idle-timer bookkeeping and notifies
-// subscribers when their threshold is crossed. Cost per input event:
-// one indirect call, amortised across many events per frame.
+// Idle-timer clients subscribe; we call notify_activity on every
+// real input event. wlroots handles idle-timer bookkeeping and
+// notifies subscribers when their threshold is crossed. Cost per
+// input event: one indirect call, amortised across many events per
+// frame.
 
 pub const wlr_idle_notifier_v1 = opaque {};
 pub extern "wlroots-0.18" fn wlr_idle_notifier_v1_create(display: *wl_display) callconv(.c) ?*wlr_idle_notifier_v1;
@@ -234,8 +235,10 @@ pub extern "wlroots-0.18" fn wlr_xdg_output_manager_v1_create(display: *wl_displ
 // All of these are single-call wlroots globals with zero listener
 // wiring. Together they unblock chromium's Viz/WebRender subsurface
 // + picture-cache path. Firefox (Gecko) doesn't use any of them;
-// chromium hard-depends on them (notably viewporter per Mozilla's
-// own analysis: bugzilla.mozilla.org/show_bug.cgi?id=1617498).
+// chromium hard-depends on them (notably viewporter — its Viz
+// renderer commits page-content tiles as wl_subsurfaces clipped via
+// viewporter, so without the global those buffers never commit and
+// the browser sits on its welcome screen forever).
 
 pub const wlr_viewporter = opaque {};
 pub extern "wlroots-0.18" fn wlr_viewporter_create(display: *wl_display) callconv(.c) ?*wlr_viewporter;
@@ -259,9 +262,9 @@ pub extern "wlroots-0.18" fn wlr_cursor_shape_manager_v1_create(display: *wl_dis
 //
 // wlr_data_control_v1: wl-clipboard / cliphist / clipman clients that
 // read/write the seat's clipboard without a focused surface. Needed
-// for password managers, clipboard history, and scripted copy. Sway,
-// river and hyprland all bind this. Fire-and-forget: wlroots wires
-// the manager to all existing seats automatically.
+// for password managers, clipboard history, and scripted copy.
+// Fire-and-forget: wlroots wires the manager to all existing seats
+// automatically.
 pub const wlr_data_control_manager_v1 = opaque {};
 pub extern "wlroots-0.18" fn wlr_data_control_manager_v1_create(display: *wl_display) callconv(.c) ?*wlr_data_control_manager_v1;
 
@@ -276,19 +279,17 @@ pub extern "wlroots-0.18" fn wlr_tearing_control_manager_v1_create(display: *wl_
 // wlr_idle_inhibit_v1: clients (mpv, browsers, video calls) pin an
 // inhibitor to a surface while they need the screen awake. We count
 // inhibitors and flip wlr_idle_notifier_v1's inhibited flag
-// accordingly so swayidle / gammastep / loginctl idle hooks stop
-// firing during playback. Needs a new_inhibitor listener + per-
-// inhibitor destroy listener.
+// accordingly so idle subscribers stop firing during playback. Needs
+// a new_inhibitor listener + per-inhibitor destroy listener.
 pub const wlr_idle_inhibit_manager_v1 = opaque {};
 pub const wlr_idle_inhibitor_v1 = opaque {};
 pub extern "wlroots-0.18" fn wlr_idle_inhibit_v1_create(display: *wl_display) callconv(.c) ?*wlr_idle_inhibit_manager_v1;
 pub extern "wlroots-0.18" fn wlr_idle_notifier_v1_set_inhibited(notifier: *wlr_idle_notifier_v1, inhibited: bool) callconv(.c) void;
 
-// wlr_output_power_management_v1 — DPMS (display power). Clients like
-// wlopm / swayidle `timeout 600 "wlr-randr --output X --off"` ask to
-// toggle each output's enabled state; we honour it via wlr_output_state
-// + commit. Rate-limit equal-state commits to avoid DRM thrash from
-// well-intentioned repeat senders.
+// wlr_output_power_management_v1 — DPMS (display power). Clients
+// (wlopm, idle-timer scripts, display arrangement tools) toggle each
+// output's enabled state; we honour it via wlr_output_state + commit.
+// Rate-limit equal-state commits to avoid DRM thrash.
 pub const wlr_output_power_manager_v1 = opaque {};
 pub const wlr_output_power_v1_set_mode_event = opaque {};
 pub extern "wlroots-0.18" fn wlr_output_power_manager_v1_create(display: *wl_display) callconv(.c) ?*wlr_output_power_manager_v1;
