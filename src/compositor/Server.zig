@@ -211,6 +211,13 @@ virtual_pointer_mgr: ?*wlr.wlr_virtual_pointer_manager_v1 = null,
 new_virtual_keyboard: wlr.wl_listener = makeListener(handleNewVirtualKeyboard),
 new_virtual_pointer: wlr.wl_listener = makeListener(handleNewVirtualPointer),
 
+// wlr_output_management_v1 — kanshi, wlr-randr, wdisplays.
+// Clients post configurations; we apply/test and push current state
+// back on any output add/remove/mode change.
+output_manager: ?*wlr.wlr_output_manager_v1 = null,
+output_manager_apply: wlr.wl_listener = makeListener(handleOutputManagerApply),
+output_manager_test: wlr.wl_listener = makeListener(handleOutputManagerTest),
+
 // ── Types ─────────────────────────────────────────────────────
 
 pub const PerfStats = struct {
@@ -389,6 +396,11 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     const virtual_keyboard_mgr = wlr.wlr_virtual_keyboard_manager_v1_create(display);
     const virtual_pointer_mgr = wlr.wlr_virtual_pointer_manager_v1_create(display);
 
+    // wlr_output_management_v1 — kanshi & wlr-randr & wdisplays
+    // speak this. Two-phase: clients always test_configuration
+    // before apply_configuration; handling only apply hangs kanshi.
+    const output_manager = wlr.wlr_output_manager_v1_create(display);
+
     // XDG shell
     const xdg_shell = wlr.wlr_xdg_shell_create(display, 3) orelse
         return error.XdgShellCreateFailed;
@@ -441,6 +453,7 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
         .output_power_mgr = output_power_mgr,
         .virtual_keyboard_mgr = virtual_keyboard_mgr,
         .virtual_pointer_mgr = virtual_pointer_mgr,
+        .output_manager = output_manager,
     };
 }
 
@@ -480,6 +493,12 @@ fn registerListeners(self: *Server) void {
     }
     if (self.virtual_pointer_mgr) |m| {
         wlr.wl_signal_add(wlr.miozu_virtual_pointer_mgr_new(m), &self.new_virtual_pointer);
+    }
+
+    // wlr_output_management_v1 — apply + test listeners.
+    if (self.output_manager) |m| {
+        wlr.wl_signal_add(wlr.miozu_output_manager_apply(m), &self.output_manager_apply);
+        wlr.wl_signal_add(wlr.miozu_output_manager_test(m), &self.output_manager_test);
     }
     wlr.wl_signal_add(wlr.miozu_cursor_motion(self.cursor), &self.cursor_motion);
     wlr.wl_signal_add(wlr.miozu_cursor_motion_absolute(self.cursor), &self.cursor_motion_absolute);
@@ -831,6 +850,8 @@ pub fn deinit(self: *Server) void {
     safeRemoveListener(&self.output_power_set_mode);
     safeRemoveListener(&self.new_virtual_keyboard);
     safeRemoveListener(&self.new_virtual_pointer);
+    safeRemoveListener(&self.output_manager_apply);
+    safeRemoveListener(&self.output_manager_test);
 
     // Our ArrayListUnmanaged collections. The *Output / *Keyboard
     // items themselves are owned by wlroots' destroy-chain when the
@@ -864,6 +885,10 @@ fn handleNewOutput(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) v
         server.autostart_fired = true;
         server.runAutostart();
     }
+
+    // Announce the new head to wlr-output-management listeners
+    // (kanshi refreshes its DB; waybar's output module resyncs).
+    server.pushOutputManagerState();
 }
 
 /// Run each command in `wm_config.autostart` via /bin/sh, inheriting env
@@ -1020,6 +1045,52 @@ fn handleNewVirtualPointer(listener: *wlr.wl_listener, data: ?*anyopaque) callco
     const event: *wlr.wlr_virtual_pointer_v1_new_pointer_event = @ptrCast(@alignCast(data orelse return));
     const device = wlr.miozu_virtual_pointer_new_pointer(event);
     wlr.wlr_cursor_attach_input_device(server.cursor, device);
+}
+
+// ── output_management_v1 ────────────────────────────────────
+//
+// Two-phase: clients (kanshi / wdisplays / wlr-randr) send a config,
+// we test it without committing, they see OK and send apply, we
+// commit for real. Both events hand us ownership of the cfg — the
+// send_succeeded/send_failed helpers destroy it.
+//
+// After any successful apply (and on output connect/disconnect) we
+// push the current state via miozu_output_push_state so clients
+// observing the manager resync. Kanshi listens to this.
+
+fn handleOutputManagerApply(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const server = wlr.listenerParent(Server, "output_manager_apply", listener);
+    const cfg: *wlr.wlr_output_configuration_v1 = @ptrCast(@alignCast(data orelse return));
+    const ok = wlr.miozu_output_apply_config(server.output_layout, cfg, 0) != 0;
+    if (ok) {
+        wlr.miozu_output_config_send_succeeded(cfg);
+        server.pushOutputManagerState();
+    } else {
+        wlr.miozu_output_config_send_failed(cfg);
+    }
+}
+
+fn handleOutputManagerTest(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const server = wlr.listenerParent(Server, "output_manager_test", listener);
+    const cfg: *wlr.wlr_output_configuration_v1 = @ptrCast(@alignCast(data orelse return));
+    const ok = wlr.miozu_output_apply_config(server.output_layout, cfg, 1) != 0;
+    if (ok) {
+        wlr.miozu_output_config_send_succeeded(cfg);
+    } else {
+        wlr.miozu_output_config_send_failed(cfg);
+    }
+}
+
+/// Broadcast current output state to wlr_output_management_v1 clients.
+/// Call after any output add, destroy, mode-change, or successful apply.
+pub fn pushOutputManagerState(self: *Server) void {
+    const mgr = self.output_manager orelse return;
+
+    // Build a compact array of wlr_output pointers for the glue helper.
+    var buf: [16]*wlr.wlr_output = undefined;
+    const n = @min(self.outputs.items.len, buf.len);
+    for (0..n) |i| buf[i] = self.outputs.items[i].wlr_output;
+    wlr.miozu_output_push_state(mgr, self.output_layout, &buf, @intCast(n));
 }
 
 /// Tiny inline: push a "user is active" ping to idle-notify subscribers.

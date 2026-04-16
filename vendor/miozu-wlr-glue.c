@@ -23,6 +23,8 @@
 #include <wlr/types/wlr_output_power_management_v1.h>
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
 #include <wlr/types/wlr_virtual_pointer_v1.h>
+#include <wlr/types/wlr_output_management_v1.h>
+#include <wlr/types/wlr_output_layout.h>
 #include <wayland-server-core.h>
 
 /* ── Backend signals ─────────────────────────────────────────── */
@@ -583,4 +585,98 @@ struct wlr_input_device *miozu_virtual_keyboard_input_device(struct wlr_virtual_
  * resolve to the input device suitable for wlr_cursor_attach_input_device. */
 struct wlr_input_device *miozu_virtual_pointer_new_pointer(struct wlr_virtual_pointer_v1_new_pointer_event *e) {
     return &e->new_pointer->pointer.base;
+}
+
+/* ── output_management_v1 ────────────────────────────────────── */
+
+struct wl_signal *miozu_output_manager_apply(struct wlr_output_manager_v1 *m) {
+    return &m->events.apply;
+}
+
+struct wl_signal *miozu_output_manager_test(struct wlr_output_manager_v1 *m) {
+    return &m->events.test;
+}
+
+/* Walk the heads in a client-supplied configuration, apply (or test)
+ * each one via wlroots' helpers, keep the output_layout position in
+ * sync. Returns 1 iff every head committed/tested successfully.
+ *
+ * The two-phase design is why clients call test_configuration before
+ * apply_configuration — kanshi/wdisplays preview before confirming.
+ * test_only=1 forbids state mutation; wlroots enforces that
+ * wlr_output_test_state doesn't commit. */
+int miozu_output_apply_config(
+    struct wlr_output_layout *layout,
+    struct wlr_output_configuration_v1 *cfg,
+    int test_only
+) {
+    int all_ok = 1;
+    struct wlr_output_configuration_head_v1 *head;
+    wl_list_for_each(head, &cfg->heads, link) {
+        struct wlr_output *output = head->state.output;
+        struct wlr_output_state state;
+        wlr_output_state_init(&state);
+        wlr_output_head_v1_state_apply(&head->state, &state);
+
+        int ok;
+        if (test_only) {
+            ok = wlr_output_test_state(output, &state);
+        } else {
+            ok = wlr_output_commit_state(output, &state);
+            if (ok) {
+                /* head_v1_state_apply doesn't touch x/y — we must mirror
+                 * the client's layout position into output_layout or the
+                 * cursor warp/scene coords drift from the reported head
+                 * position. */
+                if (head->state.enabled) {
+                    wlr_output_layout_add(layout, output,
+                                          head->state.x, head->state.y);
+                } else {
+                    wlr_output_layout_remove(layout, output);
+                }
+            }
+        }
+
+        wlr_output_state_finish(&state);
+        if (!ok) all_ok = 0;
+    }
+    return all_ok;
+}
+
+/* Build an output_configuration_v1 reflecting current state of each
+ * connected wlr_output and push it to the manager. Called on output
+ * add/destroy/mode-change so clients see live heads. */
+void miozu_output_push_state(
+    struct wlr_output_manager_v1 *mgr,
+    struct wlr_output_layout *layout,
+    struct wlr_output **outputs,
+    int n_outputs
+) {
+    struct wlr_output_configuration_v1 *cfg = wlr_output_configuration_v1_create();
+    if (!cfg) return;
+    for (int i = 0; i < n_outputs; i++) {
+        struct wlr_output *output = outputs[i];
+        struct wlr_output_configuration_head_v1 *head =
+            wlr_output_configuration_head_v1_create(cfg, output);
+        if (!head) continue;
+        /* Pre-fill from output is done by _create — just override
+         * x/y with the real layout position. */
+        struct wlr_output_layout_output *lo =
+            wlr_output_layout_get(layout, output);
+        if (lo) {
+            head->state.x = lo->x;
+            head->state.y = lo->y;
+        }
+    }
+    wlr_output_manager_v1_set_configuration(mgr, cfg);
+}
+
+void miozu_output_config_send_succeeded(struct wlr_output_configuration_v1 *cfg) {
+    wlr_output_configuration_v1_send_succeeded(cfg);
+    wlr_output_configuration_v1_destroy(cfg);
+}
+
+void miozu_output_config_send_failed(struct wlr_output_configuration_v1 *cfg) {
+    wlr_output_configuration_v1_send_failed(cfg);
+    wlr_output_configuration_v1_destroy(cfg);
 }

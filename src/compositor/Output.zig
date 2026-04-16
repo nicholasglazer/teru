@@ -223,5 +223,8 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     }
     server.recomputeVisibility();
 
+    // Tell wlr-output-management clients the head is gone.
+    server.pushOutputManagerState();
+
     server.zig_allocator.destroy(output);
 }
