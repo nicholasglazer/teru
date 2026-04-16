@@ -201,26 +201,8 @@ fn getChildCwd(pane: *const Pane, buf: []u8) []const u8 {
 }
 
 fn getChildCmd(pane: *const Pane, buf: []u8) []const u8 {
-    if (builtin.os.tag != .linux) return "";
     const pid = pane.childPid() orelse return "";
-    var proc_path: [64:0]u8 = undefined;
-    const path = std.fmt.bufPrint(&proc_path, "/proc/{d}/cmdline", .{pid}) catch return "";
-    proc_path[path.len] = 0;
-
-    const fd = std.c.open(&proc_path, .{ .ACCMODE = .RDONLY }, @as(std.posix.mode_t, 0));
-    if (fd < 0) return "";
-    defer _ = std.posix.system.close(fd);
-
-    const n = std.c.read(fd, buf.ptr, buf.len);
-    if (n <= 0) return "";
-    const len: usize = @intCast(n);
-
-    var end: usize = len;
-    while (end > 0 and buf[end - 1] == 0) end -= 1;
-    for (buf[0..end]) |*c| {
-        if (c.* == 0) c.* = ' ';
-    }
-    return buf[0..end];
+    return teru.compat.readProcCmdline(@intCast(pid), buf);
 }
 
 fn expandTilde(path: []const u8, buf: []u8) ?[]const u8 {
