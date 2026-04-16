@@ -738,115 +738,11 @@ pub fn reloadWmConfig(self: *Server) void {
     std.debug.print("teruwm: config reloaded (gap={d}, border={d}, bg=0x{x:0>8})\n", .{ self.wm_config.gap, self.wm_config.border_width, self.wm_config.bg_color });
 }
 
-/// Restart the compositor: serialize state, exec new binary.
-/// PTY fds survive exec() — shells keep running, zero downtime.
+/// Hot-restart entry point. Implementation lives in ServerRestart.zig
+/// (serialize + execve + FD_CLOEXEC bookkeeping). Kept as a method on
+/// Server for callers that already dispatch to self.execRestart().
 pub fn execRestart(self: *Server) void {
-    const restart_path = "/tmp/teruwm-restart.bin";
-
-    // 64 KiB buffer: 13 bytes/pane + 13-byte header ⇒ cap at ~5000 panes.
-    // Previous 4 KiB silently truncated beyond ~300.
-    var buf: [65536]u8 = undefined;
-    var pos: usize = 0;
-    var truncated = false;
-
-    const writeBytes = struct {
-        fn f(b: *[65536]u8, p: *usize, trunc: *bool, bytes: []const u8) void {
-            if (p.* + bytes.len > b.len) { trunc.* = true; return; }
-            @memcpy(b[p.*..][0..bytes.len], bytes);
-            p.* += bytes.len;
-        }
-    }.f;
-
-    // Header: pane count
-    var pane_count: u16 = 0;
-    for (self.terminal_panes) |maybe_tp| {
-        if (maybe_tp != null) pane_count += 1;
-    }
-    var hdr: [2]u8 = undefined;
-    std.mem.writeInt(u16, &hdr, pane_count, .little);
-    writeBytes(&buf, &pos, &truncated, &hdr);
-
-    // Active workspace
-    writeBytes(&buf, &pos, &truncated, &[_]u8{self.layout_engine.active_workspace});
-
-    // Per-workspace layouts (10 workspaces)
-    for (0..10) |wi| {
-        writeBytes(&buf, &pos, &truncated, &[_]u8{@intFromEnum(self.layout_engine.workspaces[wi].layout)});
-    }
-
-    // Track fds we cleared FD_CLOEXEC on so we can restore on exec-fail.
-    var cleared_fds: std.ArrayListUnmanaged(i32) = .empty;
-    defer cleared_fds.deinit(self.zig_allocator);
-
-    // Per-pane data
-    for (self.terminal_panes) |maybe_tp| {
-        if (maybe_tp) |tp| {
-            const ws = if (self.nodes.findById(tp.node_id)) |slot| self.nodes.workspace[slot] else 0;
-            const pty_fd: i32 = switch (tp.pane.backend) {
-                .local => |p| p.master,
-                .remote => -1,
-            };
-            const pid: i32 = switch (tp.pane.backend) {
-                .local => |p| if (p.child_pid) |cp| @intCast(cp) else -1,
-                .remote => -1,
-            };
-            var record: [13]u8 = undefined;
-            record[0] = ws;
-            std.mem.writeInt(i32, record[1..5], pty_fd, .little);
-            std.mem.writeInt(u16, record[5..7], tp.pane.grid.rows, .little);
-            std.mem.writeInt(u16, record[7..9], tp.pane.grid.cols, .little);
-            std.mem.writeInt(i32, record[9..13], pid, .little);
-            writeBytes(&buf, &pos, &truncated, &record);
-
-            // Clear FD_CLOEXEC on pty master so it survives exec.
-            if (pty_fd >= 0) {
-                const flags = std.c.fcntl(pty_fd, std.posix.F.GETFD);
-                if (flags >= 0 and (flags & 1) != 0) {
-                    if (std.c.fcntl(pty_fd, std.posix.F.SETFD, flags & ~@as(c_int, 1)) >= 0) {
-                        cleared_fds.append(self.zig_allocator, pty_fd) catch {};
-                    }
-                }
-            }
-        }
-    }
-
-    if (truncated) {
-        std.debug.print("teruwm: restart state truncated at {d} bytes ({d} panes)\n", .{ pos, pane_count });
-    }
-
-    const restoreCloexec = struct {
-        fn f(fds: []const i32) void {
-            for (fds) |fd| {
-                const flags = std.c.fcntl(fd, std.posix.F.GETFD);
-                if (flags >= 0) {
-                    _ = std.c.fcntl(fd, std.posix.F.SETFD, flags | @as(c_int, 1));
-                }
-            }
-        }
-    }.f;
-
-    // Write state file
-    const file = std.c.fopen(restart_path, "wb");
-    if (file) |f| {
-        _ = std.c.fwrite(buf[0..pos].ptr, 1, pos, f);
-        _ = std.c.fclose(f);
-    } else {
-        std.debug.print("teruwm: failed to write restart state\n", .{});
-        restoreCloexec(cleared_fds.items);
-        return;
-    }
-
-    std.debug.print("teruwm: restarting ({d} panes saved)\n", .{pane_count});
-
-    // exec the new binary
-    const self_exe = "/proc/self/exe";
-    var argv_buf: [3:null]?[*:0]const u8 = .{ @ptrCast(self_exe), @ptrCast("--restore"), null };
-    _ = std.posix.system.execve(@ptrCast(self_exe), @ptrCast(&argv_buf), std.c.environ);
-
-    // If exec returns, it failed — put FD_CLOEXEC back so the open PTY
-    // masters don't leak into any future forked child.
-    std.debug.print("teruwm: exec failed, continuing\n", .{});
-    restoreCloexec(cleared_fds.items);
+    @import("ServerRestart.zig").execRestart(self);
 }
 
 pub fn deinit(self: *Server) void {
