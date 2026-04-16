@@ -2197,27 +2197,40 @@ pub fn sinkAllOnActiveWorkspace(self: *Server) void {
 // ── Tiling ─────────────────────────────────────────────────────
 
 /// Recalculate layout for a workspace and apply rects to all scene nodes.
-pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
-    // Get dimensions from the primary output, minus status bar height
+/// Gap-inset screen rectangle. Both arrange paths must use identical
+/// math (see CLAUDE.md "Gap system"); any drift between them shows as
+/// jumping panes on drag-release.
+///
+/// Pre-inset the screen by half-gap so edge gaps match inter-pane gaps:
+/// layout divides the inset area, each pane is post-inset another hg per
+/// side, result is edge = hg+hg = gap, between panes = hg+hg = gap.
+fn computeTilingScreen(self: *Server) struct { rect: LayoutEngine.Rect, hg: i32, g: i32 } {
     const w: u16 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
     const full_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
     const bar_h: u32 = if (self.bar) |b| b.totalHeight() else 0;
     const bar_y_offset: i32 = if (self.bar) |b| @intCast(b.tilingOffsetY()) else 0;
     const h: u16 = @intCast(@max(1, full_h - bar_h));
 
-    // Pre-inset screen by half-gap so edge gaps equal inter-pane gaps.
-    // Layout divides the inset area; post-processing adds another hg per side.
-    // Result: edges = hg + hg = gap, between panes = hg + hg = gap.
     const g: i32 = @intCast(self.wm_config.gap);
     const hg: i32 = @divTrunc(g, 2);
-    const screen = LayoutEngine.Rect{
-        .x = @intCast(@as(i32, 0) + hg),
-        .y = @intCast(bar_y_offset + hg),
-        .width = if (w > @as(u16, @intCast(g))) w - @as(u16, @intCast(g)) else w,
-        .height = if (h > @as(u16, @intCast(g))) h - @as(u16, @intCast(g)) else h,
+    return .{
+        .rect = .{
+            .x = @intCast(@as(i32, 0) + hg),
+            .y = @intCast(bar_y_offset + hg),
+            .width = if (w > @as(u16, @intCast(g))) w - @as(u16, @intCast(g)) else w,
+            .height = if (h > @as(u16, @intCast(g))) h - @as(u16, @intCast(g)) else h,
+        },
+        .hg = hg,
+        .g = g,
     };
+}
 
-    const rects = self.layout_engine.calculate(ws_index, screen) catch return;
+pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
+    const geom = self.computeTilingScreen();
+    const hg = geom.hg;
+    const g = geom.g;
+
+    const rects = self.layout_engine.calculate(ws_index, geom.rect) catch return;
     defer self.zig_allocator.free(rects);
 
     const ws = &self.layout_engine.workspaces[ws_index];
@@ -2258,22 +2271,11 @@ pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
 /// Smooth arrange: reposition + scale scene buffers WITHOUT resizing terminal grids.
 /// Used during drag for instant visual feedback. Actual resize happens on release.
 pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
-    const w: u16 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
-    const full_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
-    const bar_h: u32 = if (self.bar) |b| b.totalHeight() else 0;
-    const bar_y_offset: i32 = if (self.bar) |b| @intCast(b.tilingOffsetY()) else 0;
-    const h: u16 = @intCast(@max(1, full_h - bar_h));
+    const geom = self.computeTilingScreen();
+    const hg = geom.hg;
+    const g = geom.g;
 
-    const g: i32 = @intCast(self.wm_config.gap);
-    const hg: i32 = @divTrunc(g, 2);
-    const screen = LayoutEngine.Rect{
-        .x = @intCast(@as(i32, 0) + hg),
-        .y = @intCast(bar_y_offset + hg),
-        .width = if (w > @as(u16, @intCast(g))) w - @as(u16, @intCast(g)) else w,
-        .height = if (h > @as(u16, @intCast(g))) h - @as(u16, @intCast(g)) else h,
-    };
-
-    const rects = self.layout_engine.calculate(ws_index, screen) catch return;
+    const rects = self.layout_engine.calculate(ws_index, geom.rect) catch return;
     defer self.zig_allocator.free(rects);
 
     const ws = &self.layout_engine.workspaces[ws_index];
