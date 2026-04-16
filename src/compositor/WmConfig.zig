@@ -149,6 +149,22 @@ resize_min_px: i32 = 100,
 scratchpad_width_pct: u8 = 35,
 scratchpad_height_pct: u8 = 40,
 
+// ── Synthetic-mouse trajectory ─────────────────────────────────
+
+/// Humanize synthetic cursor movement. Default off — warps are
+/// instant, matching naive bot behaviour. When on, test_drag and
+/// the dedicated `teruwm_mouse_path` MCP tool sample a Bezier curve
+/// between from/to with per-waypoint jitter and real wall-clock
+/// delays. Useful for automation that needs to look like a person
+/// (browsing-data collection, UI smoke tests against anti-bot
+/// heuristics). Explicit `humanize: true` on `teruwm_mouse_path`
+/// overrides this per-call.
+mouse_humanize: bool = false,
+
+/// Default wall-clock duration for a humanized path, in ms. Fitts-
+/// law-ish — longer for longer distances too, but this is the floor.
+mouse_path_default_ms: u32 = 250,
+
 // ── Bar widget color thresholds ────────────────────────────────
 // Low/high boundaries for each numeric widget. Values below `_low` are
 // green, below `_high` yellow, else red (battery is inverted).
@@ -425,6 +441,10 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.scratchpad_width_pct = std.fmt.parseInt(u8, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "scratchpad_height_pct")) {
         self.scratchpad_height_pct = std.fmt.parseInt(u8, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "mouse_humanize")) {
+        self.mouse_humanize = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1") or std.mem.eql(u8, value, "yes");
+    } else if (std.mem.eql(u8, key, "mouse_path_default_ms")) {
+        self.mouse_path_default_ms = std.fmt.parseInt(u32, value, 10) catch return;
     }
 }
 
