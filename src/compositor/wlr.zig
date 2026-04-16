@@ -314,6 +314,19 @@ pub extern "c" fn miozu_virtual_pointer_mgr_new(mgr: *wlr_virtual_pointer_manage
 pub extern "c" fn miozu_virtual_keyboard_input_device(vkbd: *wlr_virtual_keyboard_v1) callconv(.c) *wlr_input_device;
 pub extern "c" fn miozu_virtual_pointer_new_pointer(event: *wlr_virtual_pointer_v1_new_pointer_event) callconv(.c) *wlr_input_device;
 
+// wlr_output_management_v1 — kanshi, wlr-randr, wdisplays. Clients
+// list our outputs and apply/test configurations (enable/disable,
+// mode, scale, transform, position). Two-phase: test before apply.
+pub const wlr_output_manager_v1 = opaque {};
+pub const wlr_output_configuration_v1 = opaque {};
+pub extern "wlroots-0.18" fn wlr_output_manager_v1_create(display: *wl_display) callconv(.c) ?*wlr_output_manager_v1;
+pub extern "c" fn miozu_output_manager_apply(mgr: *wlr_output_manager_v1) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_output_manager_test(mgr: *wlr_output_manager_v1) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_output_apply_config(layout: *wlr_output_layout, cfg: *wlr_output_configuration_v1, test_only: c_int) callconv(.c) c_int;
+pub extern "c" fn miozu_output_push_state(mgr: *wlr_output_manager_v1, layout: *wlr_output_layout, outputs: [*]*wlr_output, n_outputs: c_int) callconv(.c) void;
+pub extern "c" fn miozu_output_config_send_succeeded(cfg: *wlr_output_configuration_v1) callconv(.c) void;
+pub extern "c" fn miozu_output_config_send_failed(cfg: *wlr_output_configuration_v1) callconv(.c) void;
+
 // Glue — signal accessors and list_length helper.
 pub extern "c" fn miozu_idle_inhibit_new_inhibitor(mgr: *wlr_idle_inhibit_manager_v1) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_idle_inhibitor_destroy(inhibitor: *wlr_idle_inhibitor_v1) callconv(.c) *wl_signal;
