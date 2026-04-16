@@ -221,11 +221,12 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     }
 
     // Tear down foreign-toplevel handle if unmap didn't already.
+    // wlroots fires the handle's destroy signal from inside
+    // _destroy → handleFtlDestroy pulls the three listener links
+    // + nulls ftl_handle. Don't remove them ourselves first, or
+    // the signal handler double-removes undefined link state.
     if (view.ftl_handle) |h| {
-        wlr.wl_list_remove(&view.ftl_request_activate.link);
-        wlr.wl_list_remove(&view.ftl_request_close.link);
         wlr.wlr_foreign_toplevel_handle_v1_destroy(h);
-        view.ftl_handle = null;
     }
 
     // Clean up node registry
