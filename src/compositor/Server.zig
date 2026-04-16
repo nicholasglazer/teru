@@ -202,6 +202,15 @@ new_inhibitor: wlr.wl_listener = makeListener(handleNewInhibitor),
 output_power_mgr: ?*wlr.wlr_output_power_manager_v1 = null,
 output_power_set_mode: wlr.wl_listener = makeListener(handleOutputPowerSetMode),
 
+// wlr_virtual_keyboard_v1 / wlr_virtual_pointer_v1 — synthetic input
+// for wtype / ydotool / wlrctl / accessibility. Each new object
+// arrives embedding a wlr_keyboard / wlr_pointer we route through
+// the normal input-device setup paths. Default-on to match sway.
+virtual_keyboard_mgr: ?*wlr.wlr_virtual_keyboard_manager_v1 = null,
+virtual_pointer_mgr: ?*wlr.wlr_virtual_pointer_manager_v1 = null,
+new_virtual_keyboard: wlr.wl_listener = makeListener(handleNewVirtualKeyboard),
+new_virtual_pointer: wlr.wl_listener = makeListener(handleNewVirtualPointer),
+
 // ── Types ─────────────────────────────────────────────────────
 
 pub const PerfStats = struct {
@@ -372,6 +381,14 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     // on/off. We commit the requested enabled state on the output.
     const output_power_mgr = wlr.wlr_output_power_manager_v1_create(display);
 
+    // wlr_virtual_keyboard_v1 / wlr_virtual_pointer_v1 — synthetic
+    // input. wtype, ydotool, wlrctl, accessibility. Any client binding
+    // these globals can inject keys / pointer events — same default
+    // as sway. wlroots handles the ABI; we just route the new object
+    // into the existing real-device setup paths via handleNewVirtual*.
+    const virtual_keyboard_mgr = wlr.wlr_virtual_keyboard_manager_v1_create(display);
+    const virtual_pointer_mgr = wlr.wlr_virtual_pointer_manager_v1_create(display);
+
     // XDG shell
     const xdg_shell = wlr.wlr_xdg_shell_create(display, 3) orelse
         return error.XdgShellCreateFailed;
@@ -422,6 +439,8 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
         .idle_notifier = idle_notif,
         .idle_inhibit_mgr = idle_inhibit_mgr,
         .output_power_mgr = output_power_mgr,
+        .virtual_keyboard_mgr = virtual_keyboard_mgr,
+        .virtual_pointer_mgr = virtual_pointer_mgr,
     };
 }
 
@@ -453,6 +472,14 @@ fn registerListeners(self: *Server) void {
     // wlr_output_power_management_v1 — DPMS set_mode requests.
     if (self.output_power_mgr) |m| {
         wlr.wl_signal_add(wlr.miozu_output_power_mgr_set_mode(m), &self.output_power_set_mode);
+    }
+
+    // wlr_virtual_keyboard_v1 + wlr_virtual_pointer_v1 — synthetic input.
+    if (self.virtual_keyboard_mgr) |m| {
+        wlr.wl_signal_add(wlr.miozu_virtual_keyboard_mgr_new(m), &self.new_virtual_keyboard);
+    }
+    if (self.virtual_pointer_mgr) |m| {
+        wlr.wl_signal_add(wlr.miozu_virtual_pointer_mgr_new(m), &self.new_virtual_pointer);
     }
     wlr.wl_signal_add(wlr.miozu_cursor_motion(self.cursor), &self.cursor_motion);
     wlr.wl_signal_add(wlr.miozu_cursor_motion_absolute(self.cursor), &self.cursor_motion_absolute);
@@ -802,6 +829,8 @@ pub fn deinit(self: *Server) void {
     safeRemoveListener(&self.new_xwayland_surface);
     safeRemoveListener(&self.new_inhibitor);
     safeRemoveListener(&self.output_power_set_mode);
+    safeRemoveListener(&self.new_virtual_keyboard);
+    safeRemoveListener(&self.new_virtual_pointer);
 
     // Our ArrayListUnmanaged collections. The *Output / *Keyboard
     // items themselves are owned by wlroots' destroy-chain when the
@@ -969,6 +998,28 @@ fn handleOutputPowerSetMode(_: *wlr.wl_listener, data: ?*anyopaque) callconv(.c)
     const currently_on = wlr.miozu_output_enabled(output) != 0;
     if (want_on == currently_on) return;
     _ = wlr.miozu_output_commit_enabled(output, if (want_on) 1 else 0);
+}
+
+// ── virtual_keyboard_v1 / virtual_pointer_v1 ─────────────────
+//
+// wlroots embeds a real wlr_keyboard / wlr_pointer inside each virtual
+// object, so we just pass the embedded input_device into the same
+// setup paths used for physical devices (setupKeyboard attaches to
+// the seat + registers key/modifiers listeners; wlr_cursor_attach_
+// input_device fans pointer events into our cursor signals).
+
+fn handleNewVirtualKeyboard(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const server = wlr.listenerParent(Server, "new_virtual_keyboard", listener);
+    const vkbd: *wlr.wlr_virtual_keyboard_v1 = @ptrCast(@alignCast(data orelse return));
+    const device = wlr.miozu_virtual_keyboard_input_device(vkbd);
+    server.setupKeyboard(device);
+}
+
+fn handleNewVirtualPointer(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const server = wlr.listenerParent(Server, "new_virtual_pointer", listener);
+    const event: *wlr.wlr_virtual_pointer_v1_new_pointer_event = @ptrCast(@alignCast(data orelse return));
+    const device = wlr.miozu_virtual_pointer_new_pointer(event);
+    wlr.wlr_cursor_attach_input_device(server.cursor, device);
 }
 
 /// Tiny inline: push a "user is active" ping to idle-notify subscribers.

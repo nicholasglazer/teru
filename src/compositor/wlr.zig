@@ -298,6 +298,22 @@ pub extern "c" fn miozu_output_power_event_mode_on(e: *wlr_output_power_v1_set_m
 pub extern "c" fn miozu_output_commit_enabled(output: *wlr_output, enabled: c_int) callconv(.c) c_int;
 pub extern "c" fn miozu_output_enabled(output: *wlr_output) callconv(.c) c_int;
 
+// wlr_virtual_keyboard_v1 / wlr_virtual_pointer_v1 — synthetic input
+// from wtype / ydotool / wlrctl / accessibility tools. Each new
+// object embeds a real wlr_keyboard / wlr_pointer and feeds through
+// the same seat + cursor paths as physical devices.
+pub const wlr_virtual_keyboard_manager_v1 = opaque {};
+pub const wlr_virtual_keyboard_v1 = opaque {};
+pub const wlr_virtual_pointer_manager_v1 = opaque {};
+pub const wlr_virtual_pointer_v1 = opaque {};
+pub const wlr_virtual_pointer_v1_new_pointer_event = opaque {};
+pub extern "wlroots-0.18" fn wlr_virtual_keyboard_manager_v1_create(display: *wl_display) callconv(.c) ?*wlr_virtual_keyboard_manager_v1;
+pub extern "wlroots-0.18" fn wlr_virtual_pointer_manager_v1_create(display: *wl_display) callconv(.c) ?*wlr_virtual_pointer_manager_v1;
+pub extern "c" fn miozu_virtual_keyboard_mgr_new(mgr: *wlr_virtual_keyboard_manager_v1) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_virtual_pointer_mgr_new(mgr: *wlr_virtual_pointer_manager_v1) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_virtual_keyboard_input_device(vkbd: *wlr_virtual_keyboard_v1) callconv(.c) *wlr_input_device;
+pub extern "c" fn miozu_virtual_pointer_new_pointer(event: *wlr_virtual_pointer_v1_new_pointer_event) callconv(.c) *wlr_input_device;
+
 // Glue — signal accessors and list_length helper.
 pub extern "c" fn miozu_idle_inhibit_new_inhibitor(mgr: *wlr_idle_inhibit_manager_v1) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_idle_inhibitor_destroy(inhibitor: *wlr_idle_inhibitor_v1) callconv(.c) *wl_signal;
