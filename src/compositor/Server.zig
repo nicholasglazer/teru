@@ -295,6 +295,42 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     // kanshi, wlr-randr, etc.
     _ = wlr.wlr_xdg_output_manager_v1_create(display, output_layout);
 
+    // ── Chromium-engine requirement pack ──────────────────────
+    //
+    // wp_viewporter is the *smoking gun* for chromium-family browsers
+    // (chromium, vivaldi, opera, brave, edge) stalling at their splash
+    // on minimal wlroots compositors. Chromium's Viz/WebRender commits
+    // page-content tiles as wl_subsurfaces clipped via viewporter;
+    // absent this global the renderer can't commit those buffers and
+    // the browser sits on its welcome screen forever. Firefox's
+    // Gecko renderer is pure wl_shm and doesn't touch any of these.
+    // Confirmed via Mozilla bugzilla 1617498 + chromium Ozone source
+    // at ui/ozone/platform/wayland/host/wayland_connection.cc:877-883.
+    _ = wlr.wlr_viewporter_create(display);
+
+    // zwp_linux_dmabuf_v1 — GPU process buffer transport. Chromium
+    // falls back to wl_shm without this, which is slow and triggers
+    // the FD-mode mismatch tracked in swaywm/wlroots#3168 on some
+    // chromium versions.
+    _ = wlr.wlr_linux_dmabuf_v1_create_with_renderer(display, 4, renderer);
+
+    // wp_single_pixel_buffer_v1 — solid-color fills without allocating
+    // a full-size wl_shm buffer. Chromium uses it for background fills.
+    _ = wlr.wlr_single_pixel_buffer_manager_v1_create(display);
+
+    // wp_fractional_scale_v1 — HiDPI at non-integer scales (1.25, 1.5).
+    // Without it chromium falls back to integer scaling — blurry text
+    // on HiDPI but renders.
+    _ = wlr.wlr_fractional_scale_manager_v1_create(display, 1);
+
+    // wp_presentation — accurate frame timing for VRR + smooth
+    // animations. Falls back to wl_frame_callback; functional.
+    _ = wlr.wlr_presentation_create(display);
+
+    // wp_cursor_shape_v1 — preferred cursor path for chromium M111+,
+    // foot, GTK4. Otherwise clients use client-side xcursor themes.
+    _ = wlr.wlr_cursor_shape_manager_v1_create(display, 1);
+
     // XDG shell
     const xdg_shell = wlr.wlr_xdg_shell_create(display, 3) orelse
         return error.XdgShellCreateFailed;
