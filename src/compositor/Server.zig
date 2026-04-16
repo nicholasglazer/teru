@@ -956,14 +956,7 @@ pub fn processCursorButton(server: *Server, button: u32, state: u32, time: u32, 
                     server.nodes.applyRect(slot, fx, fy, float_w, float_h);
                     // Resize terminal pane framebuffer to match new rect
                     if (server.nodes.kind[slot] == .terminal) {
-                        for (server.terminal_panes) |maybe_tp| {
-                            if (maybe_tp) |tp| {
-                                if (tp.node_id == id) {
-                                    tp.resize(float_w, float_h);
-                                    break;
-                                }
-                            }
-                        }
+                        if (server.terminalPaneById(id)) |tp| tp.resize(float_w, float_h);
                     }
                     // Re-tile remaining siblings
                     server.arrangeworkspace(server.layout_engine.active_workspace);
@@ -1552,14 +1545,7 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
                 }
                 // Update terminal pane position
                 if (self.nodes.kind[slot] == .terminal) {
-                    for (self.terminal_panes) |maybe_tp| {
-                        if (maybe_tp) |tp| {
-                            if (tp.node_id == id) {
-                                tp.setPosition(new_x, new_y);
-                                break;
-                            }
-                        }
-                    }
+                    if (self.terminalPaneById(id)) |tp| tp.setPosition(new_x, new_y);
                 }
             }
         }
@@ -2250,18 +2236,13 @@ pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
 
             // Resize terminal panes to match their assigned rect
             if (self.nodes.kind[slot] == .terminal) {
-                for (self.terminal_panes) |maybe_tp| {
-                    if (maybe_tp) |tp| {
-                        if (tp.node_id == nid) {
-                            tp.resize(rw, rh);
-                            tp.setPosition(rx, ry);
-                            // Force repaint so smart-border state (count changed,
-                            // solo → shared or vice versa) gets reflected even
-                            // when the rect didn't change.
-                            tp.pane.grid.dirty = true;
-                            break;
-                        }
-                    }
+                if (self.terminalPaneById(nid)) |tp| {
+                    tp.resize(rw, rh);
+                    tp.setPosition(rx, ry);
+                    // Force repaint so smart-border state (count changed,
+                    // solo → shared or vice versa) gets reflected even
+                    // when the rect didn't change.
+                    tp.pane.grid.dirty = true;
                 }
             }
         }
@@ -2290,15 +2271,10 @@ pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
         const rh: u16 = if (rects[i].height > gu16) rects[i].height - gu16 else rects[i].height;
 
         // Only reposition + scale — don't resize grid/PTY
-        for (self.terminal_panes) |maybe_tp| {
-            if (maybe_tp) |tp| {
-                if (tp.node_id == nid) {
-                    tp.setPosition(rx, ry);
-                    // Scale existing pixels to new size (no re-render)
-                    wlr.wlr_scene_buffer_set_dest_size(tp.scene_buffer, @intCast(rw), @intCast(rh));
-                    break;
-                }
-            }
+        if (self.terminalPaneById(nid)) |tp| {
+            tp.setPosition(rx, ry);
+            // Scale existing pixels to new size (no re-render)
+            wlr.wlr_scene_buffer_set_dest_size(tp.scene_buffer, @intCast(rw), @intCast(rh));
         }
 
         if (self.nodes.findById(nid)) |slot| {
@@ -2529,11 +2505,7 @@ pub fn setWorkspaceVisibility(self: *Server, ws: u8, visible: bool) void {
     const ws_nodes = self.layout_engine.workspaces[ws].node_ids.items;
     for (ws_nodes) |nid| {
         // Terminal panes
-        for (self.terminal_panes) |maybe_tp| {
-            if (maybe_tp) |tp| {
-                if (tp.node_id == nid) tp.setVisible(visible);
-            }
-        }
+        if (self.terminalPaneById(nid)) |tp| tp.setVisible(visible);
         // External views: handled by the scene tree (XdgView nodes)
         if (self.nodes.findById(nid)) |slot| {
             if (self.nodes.kind[slot] == .wayland_surface) {
@@ -2897,6 +2869,19 @@ pub fn nodeAtPoint(self: *const Server, x: f64, y: f64) ?u64 {
         }
     }
     return best_floating orelse best_tiled;
+}
+
+/// Find the TerminalPane with the given node_id. Still O(n) over the
+/// fixed-size array, but keeps the lookup in one place — callers that
+/// only need a node_id → *TerminalPane mapping shouldn't hand-roll the
+/// nested slot/tp scan.
+pub fn terminalPaneById(self: *const Server, node_id: u64) ?*TerminalPane {
+    for (self.terminal_panes) |maybe_tp| {
+        if (maybe_tp) |tp| {
+            if (tp.node_id == node_id) return tp;
+        }
+    }
+    return null;
 }
 
 /// Null every Server pointer that references the node being torn down.
