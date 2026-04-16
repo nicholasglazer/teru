@@ -340,7 +340,7 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
         return error.CursorCreateFailed;
     wlr.wlr_cursor_attach_output_layout(cursor, output_layout);
 
-    const cursor_mgr = wlr.wlr_xcursor_manager_create(null, 24) orelse
+    const cursor_mgr = wlr.wlr_xcursor_manager_create(null, WmConfig.default_cursor_size) orelse
         return error.CursorMgrCreateFailed;
 
     // Seat
@@ -946,8 +946,8 @@ pub fn processCursorButton(server: *Server, button: u32, state: u32, time: u32, 
                 if (!server.nodes.floating[slot]) {
                     const cur_w = server.nodes.width[slot];
                     const cur_h = server.nodes.height[slot];
-                    const float_w: u32 = if (cur_w > 0) cur_w else 640;
-                    const float_h: u32 = if (cur_h > 0) cur_h else 480;
+                    const float_w: u32 = if (cur_w > 0) cur_w else server.wm_config.float_default_w;
+                    const float_h: u32 = if (cur_h > 0) cur_h else server.wm_config.float_default_h;
                     const fx: i32 = @intFromFloat(cx - @as(f64, @floatFromInt(float_w)) / 2.0);
                     const fy: i32 = @intFromFloat(cy - @as(f64, @floatFromInt(float_h)) / 2.0);
 
@@ -994,8 +994,10 @@ pub fn processCursorButton(server: *Server, button: u32, state: u32, time: u32, 
                         const pw: i32 = @intCast(server.nodes.width[slot]);
                         const right_edge = px + pw;
                         const cursor_x: i32 = @intFromFloat(wlr.miozu_cursor_x(server.cursor));
-                        // Within 8px of a right edge = on border
-                        if (cursor_x >= right_edge - 2 and cursor_x <= right_edge + 8) {
+                        // Hit-test the gap area around the right edge.
+                        const ins = server.wm_config.border_drag_insensitive_px;
+                        const zone = server.wm_config.border_drag_zone_px;
+                        if (cursor_x >= right_edge - ins and cursor_x <= right_edge + zone) {
                             on_border = true;
                             break;
                         }
@@ -1562,8 +1564,9 @@ pub fn processCursorMotion(self: *Server, time: u32) void {
             if (self.nodes.findById(id)) |slot| {
                 const dx = cx - self.grab_x;
                 const dy = cy - self.grab_y;
-                const new_w: u32 = @intCast(@max(100, @as(i64, self.grab_w) + @as(i64, @intFromFloat(dx))));
-                const new_h: u32 = @intCast(@max(100, @as(i64, self.grab_h) + @as(i64, @intFromFloat(dy))));
+                const min: i64 = @intCast(self.wm_config.resize_min_px);
+                const new_w: u32 = @intCast(@max(min, @as(i64, self.grab_w) + @as(i64, @intFromFloat(dx))));
+                const new_h: u32 = @intCast(@max(min, @as(i64, self.grab_h) + @as(i64, @intFromFloat(dy))));
                 self.nodes.width[slot] = new_w;
                 self.nodes.height[slot] = new_h;
 
@@ -2817,8 +2820,8 @@ const ScratchRect = struct { x: i32, y: i32, w: u32, h: u32 };
 fn defaultScratchpadRect(self: *const Server) ScratchRect {
     const out_w: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_width(self.output_layout)));
     const out_h: u32 = @intCast(@max(1, wlr.miozu_output_layout_first_height(self.output_layout)));
-    const w: u32 = out_w * 35 / 100;
-    const h: u32 = out_h * 40 / 100;
+    const w: u32 = out_w * self.wm_config.scratchpad_width_pct / 100;
+    const h: u32 = out_h * self.wm_config.scratchpad_height_pct / 100;
     return .{
         .x = @intCast((out_w - w) / 2),
         .y = @intCast((out_h - h) / 2),

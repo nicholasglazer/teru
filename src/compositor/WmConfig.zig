@@ -85,6 +85,10 @@ pub const SpawnChord = struct {
 
 pub const max_name_rules = 32;
 
+/// Compile-time default that Server.init references before WmConfig is
+/// loaded. Keep in lockstep with the cursor_size field default below.
+pub const default_cursor_size: u32 = 24;
+
 pub const NameRule = struct {
     class: [64]u8 = undefined,
     class_len: u8 = 0,
@@ -116,6 +120,34 @@ bg_color: u32 = 0xFF1a1d24,
 /// (since v0.4.16). Range [0.0, 1.0]; 1.0 = no fade. wlroots blends
 /// on composite — CPU renderer cost is unchanged.
 unfocused_opacity: f32 = 1.0,
+
+// ── Cursor / input ──────────────────────────────────────────────
+
+/// Logical cursor size in px (xcursor loads a bitmap at this size).
+/// Not yet reloadable at runtime — xcursor_manager is created during
+/// Server init before config applies; changing this requires restart.
+cursor_size: u32 = default_cursor_size,
+
+/// Pixel width of the border-drag hit zone inside each pane. Clicks
+/// within this distance of a pane's edge start a border-resize drag
+/// instead of focusing the pane. 2 is the outer insensitive ring,
+/// 8 is the wider draggable zone past the insensitive ring.
+border_drag_insensitive_px: i32 = 2,
+border_drag_zone_px: i32 = 8,
+
+// ── Floating / scratchpad defaults ──────────────────────────────
+
+/// Default size of a newly-floated window (pre-xdg-toplevel-configure
+/// dimensions). Clients override via set_size; this is the fallback.
+float_default_w: u32 = 640,
+float_default_h: u32 = 480,
+
+/// Minimum pane dimension allowed during interactive resize drag.
+resize_min_px: i32 = 100,
+
+/// Named-scratchpad geometry (% of output). Rect is centered.
+scratchpad_width_pct: u8 = 35,
+scratchpad_height_pct: u8 = 40,
 
 // ── Bar widget color thresholds ────────────────────────────────
 // Low/high boundaries for each numeric widget. Values below `_low` are
@@ -377,6 +409,22 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         const parsed = std.fmt.parseInt(u32, v, 16) catch return;
         // If user gave 6 hex chars (RRGGBB), add full alpha
         self.bg_color = if (v.len <= 6) 0xFF000000 | parsed else parsed;
+    } else if (std.mem.eql(u8, key, "cursor_size")) {
+        self.cursor_size = std.fmt.parseInt(u32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "float_default_w")) {
+        self.float_default_w = std.fmt.parseInt(u32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "float_default_h")) {
+        self.float_default_h = std.fmt.parseInt(u32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "resize_min_px")) {
+        self.resize_min_px = std.fmt.parseInt(i32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "border_drag_insensitive_px")) {
+        self.border_drag_insensitive_px = std.fmt.parseInt(i32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "border_drag_zone_px")) {
+        self.border_drag_zone_px = std.fmt.parseInt(i32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "scratchpad_width_pct")) {
+        self.scratchpad_width_pct = std.fmt.parseInt(u8, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "scratchpad_height_pct")) {
+        self.scratchpad_height_pct = std.fmt.parseInt(u8, value, 10) catch return;
     }
 }
 
