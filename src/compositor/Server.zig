@@ -99,6 +99,15 @@ keyboards: std.ArrayListUnmanaged(*Keyboard) = .empty,
 // of every motion event. Not authoritative.
 last_pointer_surface: ?*wlr.wlr_surface = null,
 
+/// FixedBufferAllocator-backed scratch for layout_engine.calculate.
+/// LayoutEngine allocates a []Rect per call (masterStackN / grid /
+/// etc. all end with a `try self.allocator.alloc(Rect, count)`). On
+/// border-drag that's 60 heap allocs/sec; during Mod+drag float it's
+/// more. With a 16 KiB FBA we cover up to 1024 panes of Rect and
+/// arrangeworkspace's outer ArrayListUnmanaged still falls back to
+/// the general allocator for tree layouts / edge cases.
+arrange_scratch_buf: [16 * 1024]u8 = undefined,
+
 /// Push widgets registered via MCP. Referenced by bar format strings
 /// with `{widget:name}`. Fixed-size array; slot 0..N with `.used=false`
 /// are empty. No heap allocation. Not persisted across hot-restart.
@@ -2456,8 +2465,9 @@ pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
     const hg = geom.hg;
     const g = geom.g;
 
-    const rects = self.layout_engine.calculate(ws_index, geom.rect) catch return;
-    defer self.zig_allocator.free(rects);
+    var fba = std.heap.FixedBufferAllocator.init(&self.arrange_scratch_buf);
+    const rects = self.layout_engine.calculateWith(ws_index, geom.rect, fba.allocator()) catch return;
+    // no free — FBA resets on next call
 
     const ws = &self.layout_engine.workspaces[ws_index];
     const node_ids = ws.node_ids.items;
@@ -2496,8 +2506,8 @@ pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
     const hg = geom.hg;
     const g = geom.g;
 
-    const rects = self.layout_engine.calculate(ws_index, geom.rect) catch return;
-    defer self.zig_allocator.free(rects);
+    var fba = std.heap.FixedBufferAllocator.init(&self.arrange_scratch_buf);
+    const rects = self.layout_engine.calculateWith(ws_index, geom.rect, fba.allocator()) catch return;
 
     const ws = &self.layout_engine.workspaces[ws_index];
     const node_ids = ws.node_ids.items;

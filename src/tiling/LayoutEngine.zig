@@ -59,27 +59,34 @@ pub fn deinit(self: *LayoutEngine) void {
 /// to the flat-list layout algorithm selected by ws.layout.
 /// Caller owns the returned slice and must free it with the same allocator.
 pub fn calculate(self: *LayoutEngine, workspace_index: u8, screen: Rect) ![]Rect {
+    return calculateWith(self, workspace_index, screen, self.allocator);
+}
+
+/// Variant with an explicit allocator. Callers on a hot path (e.g.
+/// compositor border-drag) pass a FixedBufferAllocator so no heap
+/// allocation happens per vsync.
+pub fn calculateWith(self: *LayoutEngine, workspace_index: u8, screen: Rect, alloc: std.mem.Allocator) ![]Rect {
     if (workspace_index >= 10) return error.InvalidWorkspace;
     const ws = &self.workspaces[workspace_index];
 
     if (ws.split_root != null) {
-        return ws.calculateFromTree(self.allocator, screen);
+        return ws.calculateFromTree(alloc, screen);
     }
 
     const count = ws.node_ids.items.len;
     if (count == 0) {
-        return try self.allocator.alloc(Rect, 0);
+        return try alloc.alloc(Rect, 0);
     }
 
     return switch (ws.layout) {
-        .master_stack => try layouts.masterStackN(self.allocator, count, screen, ws.master_ratio, ws.master_count),
-        .grid => try layouts.grid(self.allocator, count, screen),
-        .monocle => try layouts.monocle(self.allocator, count, screen, ws.active_index),
-        .dishes => try layouts.dishes(self.allocator, count, screen, ws.master_ratio),
-        .spiral => try layouts.spiral(self.allocator, count, screen),
-        .three_col => try layouts.threeCol(self.allocator, count, screen, ws.master_ratio),
-        .columns => try layouts.columns(self.allocator, count, screen),
-        .accordion => try layouts.accordion(self.allocator, count, screen, ws.active_index),
+        .master_stack => try layouts.masterStackN(alloc, count, screen, ws.master_ratio, ws.master_count),
+        .grid => try layouts.grid(alloc, count, screen),
+        .monocle => try layouts.monocle(alloc, count, screen, ws.active_index),
+        .dishes => try layouts.dishes(alloc, count, screen, ws.master_ratio),
+        .spiral => try layouts.spiral(alloc, count, screen),
+        .three_col => try layouts.threeCol(alloc, count, screen, ws.master_ratio),
+        .columns => try layouts.columns(alloc, count, screen),
+        .accordion => try layouts.accordion(alloc, count, screen, ws.active_index),
     };
 }
 
