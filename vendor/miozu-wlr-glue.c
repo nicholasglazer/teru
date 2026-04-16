@@ -21,6 +21,8 @@
 #include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wlr/types/wlr_output_power_management_v1.h>
+#include <wlr/types/wlr_virtual_keyboard_v1.h>
+#include <wlr/types/wlr_virtual_pointer_v1.h>
 #include <wayland-server-core.h>
 
 /* ── Backend signals ─────────────────────────────────────────── */
@@ -558,4 +560,27 @@ int miozu_output_commit_enabled(struct wlr_output *output, int enabled) {
  * protection). */
 int miozu_output_enabled(struct wlr_output *output) {
     return output->enabled ? 1 : 0;
+}
+
+/* ── virtual_keyboard / virtual_pointer ──────────────────────── */
+
+struct wl_signal *miozu_virtual_keyboard_mgr_new(struct wlr_virtual_keyboard_manager_v1 *m) {
+    return &m->events.new_virtual_keyboard;
+}
+
+struct wl_signal *miozu_virtual_pointer_mgr_new(struct wlr_virtual_pointer_manager_v1 *m) {
+    return &m->events.new_virtual_pointer;
+}
+
+/* Virtual keyboard embeds wlr_keyboard{.base: wlr_input_device} — return the
+ * embedded input device so setupKeyboard() in Server.zig works unchanged. */
+struct wlr_input_device *miozu_virtual_keyboard_input_device(struct wlr_virtual_keyboard_v1 *vkbd) {
+    return &vkbd->keyboard.base;
+}
+
+/* Virtual pointer embeds wlr_pointer, and wlr_pointer embeds wlr_input_device
+ * at .base. The new-pointer event hands us the wlr_virtual_pointer_v1*; we
+ * resolve to the input device suitable for wlr_cursor_attach_input_device. */
+struct wlr_input_device *miozu_virtual_pointer_new_pointer(struct wlr_virtual_pointer_v1_new_pointer_event *e) {
+    return &e->new_pointer->pointer.base;
 }
