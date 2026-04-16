@@ -130,6 +130,16 @@ fn handleUnmap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         server.cursor_mode = .normal;
     };
 
+    // Null last_pointer_surface if it points at this view's wlr_surface.
+    // Raw *wlr_surface stored in Server; without this, the next motion
+    // frame's focus check reads freed memory when the client crashes
+    // between a motion and a button event.
+    if (wlr.miozu_xdg_toplevel_base(view.toplevel)) |xdg_surface| {
+        if (wlr.miozu_xdg_surface_surface(xdg_surface)) |s| {
+            if (server.last_pointer_surface == s) server.last_pointer_surface = null;
+        }
+    }
+
     // Remove from node registry and tiling engine
     _ = server.nodes.remove(view.node_id);
     for (&server.layout_engine.workspaces) |*ws| {
@@ -152,6 +162,14 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         server.grab_node_id = null;
         server.cursor_mode = .normal;
     };
+
+    // Same invalidation as handleUnmap — toplevel_destroy can arrive
+    // without a prior surface_unmap on a hard client crash.
+    if (wlr.miozu_xdg_toplevel_base(view.toplevel)) |xdg_surface| {
+        if (wlr.miozu_xdg_surface_surface(xdg_surface)) |s| {
+            if (server.last_pointer_surface == s) server.last_pointer_surface = null;
+        }
+    }
 
     // Clean up node registry
     _ = server.nodes.remove(view.node_id);
