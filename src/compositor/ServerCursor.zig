@@ -30,6 +30,7 @@ const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 const XdgView = @import("XdgView.zig");
 const NodeRegistry = @import("Node.zig");
+const Focus = @import("ServerFocus.zig");
 
 // ── Signal handlers ──────────────────────────────────────────
 
@@ -358,9 +359,14 @@ fn focusTerminalByNode(server: *Server, nid: u64) void {
     if (server.focused_view) |prev_view| {
         _ = wlr.wlr_xdg_toplevel_set_activated(prev_view.toplevel, false);
     }
+    if (server.focused_xwayland) |prev_xw| {
+        wlr.wlr_xwayland_surface_activate(prev_xw, false);
+    }
     const prev_focused = server.focused_terminal;
     server.focused_terminal = tp;
     server.focused_view = null;
+    server.focused_xwayland = null;
+    Focus.refreshAllBorders(server);
     syncWsActiveIndex(server.layout_engine.getActiveWorkspace(), nid);
     // Only the two panes whose focus flipped need a border repaint —
     // full tp.render() on N panes was ~N×300 µs of pointless SIMD.
@@ -562,17 +568,32 @@ fn fallbackPointerToTiledView(server: *Server, cx: f64, cy: f64, time: u32) bool
         if (ix < px or ix >= px + pw) continue;
         if (iy < py or iy >= py + ph) continue;
 
-        const opaque_view = server.nodes.xdg_view[i] orelse continue;
-        const view: *XdgView = @ptrCast(@alignCast(opaque_view));
-        const surface = wlr.miozu_xdg_surface_surface(
-            wlr.miozu_xdg_toplevel_base(view.toplevel) orelse continue,
-        ) orelse continue;
+        // Resolve the root surface. XDG: xdg_toplevel.base.surface.
+        // XWayland: wlr_xwayland_surface->surface. Electron apps like
+        // figma-linux route everything through a child subsurface that
+        // rejects input via empty region; the toplevel root's region
+        // defaults to infinite so enter-events there are accepted.
+        const surface: *wlr.wlr_surface = blk: {
+            if (server.nodes.xdg_view[i]) |opaque_view| {
+                const view: *XdgView = @ptrCast(@alignCast(opaque_view));
+                const s = wlr.miozu_xdg_surface_surface(
+                    wlr.miozu_xdg_toplevel_base(view.toplevel) orelse continue,
+                ) orelse continue;
+                break :blk s;
+            }
+            if (server.nodes.xwayland_surface[i]) |xw| {
+                const s = wlr.miozu_xwayland_surface_surface(xw) orelse continue;
+                break :blk s;
+            }
+            continue;
+        };
         if (wlr.miozu_surface_is_live(surface) == 0) continue;
 
-        // Clamp surface-local coords to (0, 0) — the surface's actual
-        // buffer doesn't extend to (cx, cy), but the protocol still
-        // requires we deliver coords. (0, 0) is harmless and lets
-        // chromium's mousedown handler fire on its content area.
+        // Surface-local coords. When the client's buffer covers the
+        // full tile we can pass (cx-px, cy-py); mid-resize the buffer
+        // is smaller than the tile and delivered coords are just a
+        // "best effort" — chromium/electron accept the position and
+        // fire their own hit-testing internally.
         const sx_local: f64 = @max(0, cx - @as(f64, @floatFromInt(px)));
         const sy_local: f64 = @max(0, cy - @as(f64, @floatFromInt(py)));
         server.last_pointer_surface = surface;

@@ -86,9 +86,36 @@ pub fn arrangeWorkspace(server: *Server, ws_index: u8) void {
                     // the border colour applies to every row's edge.
                     tp.pane.grid.markAllDirty();
                 }
+            } else if (server.nodes.kind[slot] == .wayland_surface) {
+                // Redraw the scene-rect border frame around wayland +
+                // xwayland surfaces. Size tracks the window's current
+                // geometry; colour tracks focus.
+                const focused = isSlotFocused(server, slot);
+                const color = if (focused)
+                    server.wm_config.border_color_focused
+                else
+                    server.wm_config.border_color_unfocused;
+                server.nodes.setBorder(slot, server.wm_config.border_width, color);
             }
         }
     }
+}
+
+/// True if `slot` corresponds to the currently-focused window (xdg or
+/// xwayland). Used by the border-paint path to pick focused vs
+/// unfocused colour.
+fn isSlotFocused(server: *Server, slot: u16) bool {
+    if (server.focused_view) |view| {
+        if (server.nodes.xdg_view[slot]) |opaque_view| {
+            if (@intFromPtr(view) == @intFromPtr(opaque_view)) return true;
+        }
+    }
+    if (server.focused_xwayland) |xw| {
+        if (server.nodes.xwayland_surface[slot]) |slot_xw| {
+            if (@intFromPtr(xw) == @intFromPtr(slot_xw)) return true;
+        }
+    }
+    return false;
 }
 
 /// Drag-feedback arrange: reposition + scale scene buffers WITHOUT

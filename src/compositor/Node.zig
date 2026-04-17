@@ -58,6 +58,14 @@ xdg_toplevel: [max_nodes]?*wlr.wlr_xdg_toplevel = [_]?*wlr.wlr_xdg_toplevel{null
 // (usually a single pixel in the top-left corner) no matter how the
 // tiling engine lays them out.
 xwayland_surface: [max_nodes]?*wlr.wlr_xwayland_surface = [_]?*wlr.wlr_xwayland_surface{null} ** max_nodes,
+
+// Four scene_rect nodes that draw a border frame around wayland /
+// xwayland surfaces. Terminal panes draw their border inside their
+// own pixel buffer (for crisp SIMD paint); these rects give xdg +
+// xwayland clients the same visual. Index 0..3 = top, right, bottom,
+// left. Null entries mean no border (border_width = 0 or
+// allocation failed at create time).
+border_rects: [max_nodes][4]?*wlr.wlr_scene_rect = [_][4]?*wlr.wlr_scene_rect{[_]?*wlr.wlr_scene_rect{null} ** 4} ** max_nodes,
 // Back-pointer to the XdgView owning this slot. Stored as *anyopaque
 // to avoid a Node↔XdgView import cycle (XdgView imports Server imports
 // Node). Click-to-focus + Win+X need this to resolve the node_id under
@@ -165,6 +173,11 @@ pub fn remove(self: *Node, id: u64) bool {
         const ws = self.workspace[i];
         if (ws < self.urgent_count_per_ws.len) self.urgent_count_per_ws[ws] -|= 1;
     }
+    // Scene rects are owned by the node — wlroots keeps them alive
+    // until explicit destroy even if the parent tree goes away, which
+    // in turn prevents leaked rects from showing up as ghost borders
+    // on other surfaces.
+    self.destroyBorderRects(@intCast(i));
     self.kind[i] = .empty;
     self.node_id[i] = 0;
     self.scene_tree[i] = null;
@@ -326,6 +339,82 @@ pub fn applyRect(self: *Node, slot: u16, x: i32, y: i32, w: u32, h: u32) void {
             wlr.wlr_xwayland_surface_configure(xw, xx, yy, ww, hh);
         }
     }
+}
+
+/// Ensure the 4 border scene_rects exist for `slot` with the given
+/// width + colour (ARGB u32). Rects are children of the slot's own
+/// scene_tree so they inherit position translations. Size 0 means no
+/// border — existing rects are destroyed to keep the scene sparse.
+pub fn setBorder(self: *Node, slot: u16, bw: u16, argb: u32) void {
+    if (self.kind[slot] != .wayland_surface) return;
+    const tree = self.scene_tree[slot] orelse return;
+
+    if (bw == 0) {
+        for (&self.border_rects[slot]) |*slot_ptr| {
+            if (slot_ptr.*) |rect| {
+                wlr.wlr_scene_node_destroy(wlr.miozu_scene_rect_node(rect));
+                slot_ptr.* = null;
+            }
+        }
+        return;
+    }
+
+    const color = argbToFloats(argb);
+    const w: c_int = @intCast(self.width[slot]);
+    const h: c_int = @intCast(self.height[slot]);
+    const bw_i: c_int = @intCast(bw);
+
+    // One rect per side. Sizes/positions are tree-local.
+    const specs: [4]struct { x: c_int, y: c_int, w: c_int, h: c_int } = .{
+        .{ .x = -bw_i, .y = -bw_i, .w = w + 2 * bw_i, .h = bw_i }, // top
+        .{ .x = w, .y = -bw_i, .w = bw_i, .h = h + 2 * bw_i }, // right
+        .{ .x = -bw_i, .y = h, .w = w + 2 * bw_i, .h = bw_i }, // bottom
+        .{ .x = -bw_i, .y = 0, .w = bw_i, .h = h }, // left
+    };
+
+    for (specs, 0..) |spec, i| {
+        if (self.border_rects[slot][i]) |rect| {
+            wlr.wlr_scene_rect_set_size(rect, spec.w, spec.h);
+            wlr.wlr_scene_rect_set_color(rect, &color);
+            wlr.wlr_scene_node_set_position(wlr.miozu_scene_rect_node(rect), spec.x, spec.y);
+        } else {
+            if (wlr.wlr_scene_rect_create(tree, spec.w, spec.h, &color)) |rect| {
+                self.border_rects[slot][i] = rect;
+                wlr.wlr_scene_node_set_position(wlr.miozu_scene_rect_node(rect), spec.x, spec.y);
+            }
+        }
+    }
+}
+
+/// Update colour only — used on focus flip without a geometry change.
+pub fn setBorderColor(self: *Node, slot: u16, argb: u32) void {
+    if (self.kind[slot] != .wayland_surface) return;
+    const color = argbToFloats(argb);
+    for (self.border_rects[slot]) |maybe_rect| {
+        if (maybe_rect) |rect| wlr.wlr_scene_rect_set_color(rect, &color);
+    }
+}
+
+/// Destroy border rects for `slot` — called from remove() so the scene
+/// graph doesn't keep dangling rects after a window closes.
+fn destroyBorderRects(self: *Node, slot: u16) void {
+    for (&self.border_rects[slot]) |*slot_ptr| {
+        if (slot_ptr.*) |rect| {
+            wlr.wlr_scene_node_destroy(wlr.miozu_scene_rect_node(rect));
+            slot_ptr.* = null;
+        }
+    }
+}
+
+/// ARGB u32 → [4]f32 (R, G, B, A) in wlroots' scene_rect colour
+/// format. Pre-multiplies alpha so translucent borders composite
+/// correctly over whatever is below them.
+fn argbToFloats(argb: u32) [4]f32 {
+    const a: f32 = @as(f32, @floatFromInt((argb >> 24) & 0xFF)) / 255.0;
+    const r: f32 = @as(f32, @floatFromInt((argb >> 16) & 0xFF)) / 255.0;
+    const g: f32 = @as(f32, @floatFromInt((argb >> 8) & 0xFF)) / 255.0;
+    const b: f32 = @as(f32, @floatFromInt(argb & 0xFF)) / 255.0;
+    return .{ r * a, g * a, b * a, a };
 }
 
 /// Count nodes in a specific workspace.

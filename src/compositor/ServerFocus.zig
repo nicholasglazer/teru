@@ -51,8 +51,12 @@ pub fn focusView(server: *Server, view: *XdgView) void {
     _ = wlr.wlr_xdg_toplevel_set_activated(view.toplevel, true);
     if (view.ftl_handle) |h| wlr.wlr_foreign_toplevel_handle_v1_set_activated(h, true);
     const was_focused = (server.focused_view == view and server.focused_terminal == null);
+    // Deactivate any xwayland view that previously held focus.
+    if (server.focused_xwayland) |prev_xw| wlr.wlr_xwayland_surface_activate(prev_xw, false);
+    server.focused_xwayland = null;
     server.focused_view = view;
     server.focused_terminal = null;
+    refreshAllBorders(server);
     if (!was_focused) {
         std.debug.print("teruwm: focusView ran node={d} focused_terminal->null\n", .{view.node_id});
     }
@@ -174,14 +178,41 @@ pub fn cycleFocusAll(server: *Server, forward: bool) void {
         }
     }
 
-    // Dispatch by node kind. updateFocusedTerminal routes through the
-    // right focusView / focused_terminal code paths, and it already
-    // knows how to consult active_index for tiled targets.
+    // Dispatch by actual target id, NOT by workspace.active_index.
+    // A floating terminal isn't in ws.node_ids so
+    // updateFocusedTerminal (which reads active_index) would bounce
+    // focus back to the last-tiled pane and Win+J/K would appear to
+    // skip the float entirely. Resolve the TerminalPane*/XdgView*/
+    // xwayland_surface* directly from the Node slot instead.
     if (server.nodes.findById(target_nid)) |slot| {
         switch (server.nodes.kind[slot]) {
             .terminal => {
-                server.focused_view = null;
-                updateFocusedTerminal(server);
+                for (server.terminal_panes) |maybe_tp| {
+                    if (maybe_tp) |tp| {
+                        if (tp.node_id == target_nid) {
+                            if (server.focused_view) |prev| {
+                                _ = wlr.wlr_xdg_toplevel_set_activated(prev.toplevel, false);
+                            }
+                            if (server.focused_xwayland) |prev_xw| {
+                                wlr.wlr_xwayland_surface_activate(prev_xw, false);
+                            }
+                            const prev_focused = server.focused_terminal;
+                            server.focused_terminal = tp;
+                            server.focused_view = null;
+                            server.focused_xwayland = null;
+                            if (prev_focused) |p| {
+                                if (p != tp) p.repaintBorderOnly();
+                            }
+                            tp.repaintBorderOnly();
+                            refreshAllBorders(server);
+                            if (server.bar) |b| {
+                                b.dirty = true;
+                                b.render(server);
+                            }
+                            break;
+                        }
+                    }
+                }
             },
             .wayland_surface => {
                 if (server.nodes.xdg_view[slot]) |opaque_view| {
@@ -193,6 +224,33 @@ pub fn cycleFocusAll(server: *Server, forward: bool) void {
             },
             .empty => {},
         }
+    }
+}
+
+/// Recolour every wayland/xwayland border rect based on current focus.
+/// Terminals handle their own borders via tp.repaintBorderOnly — this
+/// only touches xdg / xwayland slots. Cheap enough to call on every
+/// focus flip (N surfaces, no allocations).
+pub fn refreshAllBorders(server: *Server) void {
+    var i: u16 = 0;
+    while (i < NodeRegistry.max_nodes) : (i += 1) {
+        if (server.nodes.kind[i] != .wayland_surface) continue;
+        var focused = false;
+        if (server.focused_view) |view| {
+            if (server.nodes.xdg_view[i]) |opaque_view| {
+                if (@intFromPtr(view) == @intFromPtr(opaque_view)) focused = true;
+            }
+        }
+        if (server.focused_xwayland) |xw| {
+            if (server.nodes.xwayland_surface[i]) |slot_xw| {
+                if (@intFromPtr(xw) == @intFromPtr(slot_xw)) focused = true;
+            }
+        }
+        const color = if (focused)
+            server.wm_config.border_color_focused
+        else
+            server.wm_config.border_color_unfocused;
+        server.nodes.setBorderColor(i, color);
     }
 }
 
@@ -210,8 +268,14 @@ pub fn focusXwaylandSurface(server: *Server, xw: *wlr.wlr_xwayland_surface) void
         _ = wlr.wlr_xdg_toplevel_set_activated(prev.toplevel, false);
     }
     wlr.wlr_xwayland_surface_activate(xw, true);
+    // XOR invariant: only one of the three focus pointers is set.
+    if (server.focused_xwayland) |prev_xw| {
+        if (prev_xw != xw) wlr.wlr_xwayland_surface_activate(prev_xw, false);
+    }
+    server.focused_xwayland = xw;
     server.focused_view = null;
     server.focused_terminal = null;
+    refreshAllBorders(server);
 
     const kb_opt = wlr.miozu_seat_get_keyboard(server.seat);
     const modifiers: ?*anyopaque = if (kb_opt) |kb| wlr.miozu_keyboard_modifiers_ptr(kb) else null;
@@ -236,8 +300,13 @@ pub fn updateFocusedTerminal(server: *Server) void {
                 if (server.focused_view) |prev_view| {
                     _ = wlr.wlr_xdg_toplevel_set_activated(prev_view.toplevel, false);
                 }
+                if (server.focused_xwayland) |prev_xw| {
+                    wlr.wlr_xwayland_surface_activate(prev_xw, false);
+                }
                 server.focused_terminal = tp;
                 server.focused_view = null;
+                server.focused_xwayland = null;
+                refreshAllBorders(server);
                 found = true;
                 break;
             }
