@@ -64,6 +64,12 @@ focused_view: ?*XdgView = null,
 focused_terminal: ?*TerminalPane = null,
 terminal_panes: [NodeRegistry.max_nodes]?*TerminalPane = [_]?*TerminalPane{null} ** NodeRegistry.max_nodes,
 terminal_count: u16 = 0,
+/// node_id → *TerminalPane index. Rebuilt by spawn/close; read by
+/// terminalPaneById + setSlotVisible so visibility recomputation
+/// doesn't scan 256 slots per node. Empty pane_index entries are
+/// fine — ghostly stale entries are prevented by every close path
+/// routing through the unset path here.
+pane_index: std.AutoHashMapUnmanaged(u64, *TerminalPane) = .empty,
 bar: ?*Bar = null,
 /// Legacy single-output pointer — kept alive because many helpers read
 /// from it (cursor warping, screencopy, screenshot). In the multi-
@@ -797,6 +803,7 @@ pub fn deinit(self: *Server) void {
     // wl_display tears down; we only free our pointer arrays here.
     self.outputs.deinit(self.zig_allocator);
     self.keyboards.deinit(self.zig_allocator);
+    self.pane_index.deinit(self.zig_allocator);
 
     wlr.xkb_context_unref(self.xkb_ctx);
 }
@@ -997,6 +1004,7 @@ pub fn spawnTerminal(self: *Server, ws: u8) void {
             break;
         }
     }
+    self.pane_index.put(self.zig_allocator, tp.node_id, tp) catch {};
 
     // NOW arrange — all panes including the new one are findable
     self.arrangeworkspace(ws);
@@ -1354,12 +1362,7 @@ pub fn activeOutputDims(self: *const Server) struct { w: u32, h: u32 } {
 /// only need a node_id → *TerminalPane mapping shouldn't hand-roll the
 /// nested slot/tp scan.
 pub fn terminalPaneById(self: *const Server, node_id: u64) ?*TerminalPane {
-    for (self.terminal_panes) |maybe_tp| {
-        if (maybe_tp) |tp| {
-            if (tp.node_id == node_id) return tp;
-        }
-    }
-    return null;
+    return self.pane_index.get(node_id);
 }
 
 /// Null every Server pointer that references the node being torn down.
@@ -1476,6 +1479,7 @@ pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
             break;
         }
     }
+    _ = self.pane_index.remove(tp.node_id);
 
     // Clear focus if this was focused
     if (self.focused_terminal == tp) {
@@ -1607,17 +1611,12 @@ pub fn recomputeVisibility(self: *Server) void {
 }
 
 fn setSlotVisible(self: *Server, slot: u16, visible: bool) void {
-    // Terminal panes: iterate terminal_panes array by node_id match.
+    // Terminal panes: O(1) index lookup (see pane_index).
     if (self.nodes.kind[slot] == .terminal) {
-        const nid = self.nodes.node_id[slot];
-        for (self.terminal_panes) |maybe_tp| {
-            if (maybe_tp) |tp| {
-                if (tp.node_id == nid) {
-                    tp.setVisible(visible);
-                    return;
-                }
-            }
+        if (self.terminalPaneById(self.nodes.node_id[slot])) |tp| {
+            tp.setVisible(visible);
         }
+        return;
     }
     if (self.nodes.kind[slot] == .wayland_surface) {
         if (self.nodes.scene_tree[slot]) |tree| {

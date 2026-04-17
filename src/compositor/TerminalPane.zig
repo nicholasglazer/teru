@@ -224,6 +224,7 @@ pub fn createRestored(server: *Server, ws: u8, pane: *Pane) ?*TerminalPane {
             break;
         }
     }
+    server.pane_index.put(server.zig_allocator, tp.node_id, tp) catch {};
 
     tp.render();
     return tp;
