@@ -1593,6 +1593,14 @@ pub fn moveNodeToWorkspace(self: *Server, nid: u64, target: u8) void {
         }
     }
     self.emitMcpEventKind("node_moved", ",\"node_id\":{d},\"from\":{d},\"to\":{d}", .{ nid, from, target });
+
+    // Repaint the bar immediately. Otherwise the workspace-occupancy
+    // pills only update when the next frame callback happens to detect
+    // a signature change — felt like a noticeable lag after Mod+Shift+N.
+    if (self.bar) |b| {
+        b.dirty = true;
+        b.render(self);
+    }
 }
 
 /// Rule 3: a node renders iff some output currently shows its
