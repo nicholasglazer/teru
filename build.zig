@@ -197,6 +197,34 @@ pub fn build(b: *std.Build) void {
         }
         const miozu_run_step = b.step("run-wm", "Run teruwm compositor");
         miozu_run_step.dependOn(&miozu_run.step);
+
+        // Compositor tests — mirrors miozu_mod's link setup because
+        // Node.zig / Bar.zig pull in wlr.zig types even in pure-math
+        // code paths. Barrel is src/compositor/tests.zig; add files
+        // there as their tests warrant it.
+        const wm_test_mod = b.createModule(.{
+            .root_source_file = b.path("src/compositor/tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        wm_test_mod.addImport("teru", lib_mod);
+        wm_test_mod.linkSystemLibrary("wlroots-0.18", .{});
+        wm_test_mod.linkSystemLibrary("wayland-server", .{});
+        wm_test_mod.linkSystemLibrary("xkbcommon", .{});
+        wm_test_mod.addCSourceFile(.{
+            .file = b.path("vendor/stb_truetype.c"),
+            .flags = &.{"-DSTB_TRUETYPE_IMPLEMENTATION"},
+        });
+        wm_test_mod.addIncludePath(b.path("vendor"));
+        wm_test_mod.addCSourceFile(.{
+            .file = b.path("vendor/miozu-wlr-glue.c"),
+            .flags = &.{"-DWLR_USE_UNSTABLE"},
+        });
+
+        const wm_tests = b.addTest(.{ .root_module = wm_test_mod });
+        const run_wm_tests = b.addRunArtifact(wm_tests);
+        test_step.dependOn(&run_wm_tests.step);
     }
 
     // ── check step (compile lib only, no linking/frameworks needed) ──
