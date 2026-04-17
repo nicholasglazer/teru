@@ -315,8 +315,9 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
             switch (event) {
                 .close => running = false,
                 .expose => {
-                    // Force full redraw to prevent black fragments after uncover / scratchpad.
-                    for (mux.panes.items) |*pane| pane.grid.dirty = true;
+                    // Window was uncovered (scratchpad toggle, compositor
+                    // restore, etc.) — every pixel needs to be repainted.
+                    for (mux.panes.items) |*pane| pane.grid.markAllDirty();
                 },
                 .focus_in => {
                     if (Keyboard != void) {
