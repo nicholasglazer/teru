@@ -142,7 +142,7 @@ pub fn autoStartDaemon() bool {
 ///   2. ~/.config/teru/templates/NAME.tsess
 ///   3. ./examples/NAME.tsess
 /// Returns null if not found.
-pub fn resolveTemplatePath(name: []const u8, buf: *[512]u8) ?[]const u8 {
+pub fn resolveTemplatePath(io: std.Io, name: []const u8, buf: *[512]u8) ?[]const u8 {
     if (std.mem.indexOf(u8, name, "/") != null or std.mem.endsWith(u8, name, ".tsess")) {
         if (name.len < buf.len) {
             @memcpy(buf[0..name.len], name);
@@ -151,31 +151,25 @@ pub fn resolveTemplatePath(name: []const u8, buf: *[512]u8) ?[]const u8 {
         return null;
     }
 
+    const Dir = std.Io.Dir;
     const home = compat.getenv("HOME") orelse "/tmp";
+
+    // Existence check via openFile + immediate close. Zig 0.16's
+    // Dir.access has overlapping error sets (NotFound vs perm) that
+    // don't help here — an open-and-close round-trip is simpler and
+    // a few µs either way for a startup-time path resolver.
     if (std.fmt.bufPrint(buf, "{s}/.config/teru/templates/{s}.tsess", .{ home, name })) |path| {
-        var path_z: [513]u8 = undefined;
-        if (path.len < path_z.len) {
-            @memcpy(path_z[0..path.len], path);
-            path_z[path.len] = 0;
-            const f = std.c.fopen(@ptrCast(path_z[0..path.len :0]), "r");
-            if (f != null) {
-                _ = std.c.fclose(f.?);
-                return path;
-            }
-        }
+        if (Dir.cwd().openFile(io, path, .{})) |file| {
+            file.close(io);
+            return path;
+        } else |_| {}
     } else |_| {}
 
     if (std.fmt.bufPrint(buf, "examples/{s}.tsess", .{name})) |path| {
-        var path_z: [513]u8 = undefined;
-        if (path.len < path_z.len) {
-            @memcpy(path_z[0..path.len], path);
-            path_z[path.len] = 0;
-            const f = std.c.fopen(@ptrCast(path_z[0..path.len :0]), "r");
-            if (f != null) {
-                _ = std.c.fclose(f.?);
-                return path;
-            }
-        }
+        if (Dir.cwd().openFile(io, path, .{})) |file| {
+            file.close(io);
+            return path;
+        } else |_| {}
     } else |_| {}
 
     return null;
@@ -185,7 +179,7 @@ pub fn resolveTemplatePath(name: []const u8, buf: *[512]u8) ?[]const u8 {
 /// as defined.
 pub fn applyTemplate(allocator: std.mem.Allocator, mux: *Multiplexer, graph: *ProcessGraph, template: []const u8, io: std.Io) void {
     var path_buf: [512]u8 = undefined;
-    const path = resolveTemplatePath(template, &path_buf) orelse {
+    const path = resolveTemplatePath(io, template, &path_buf) orelse {
         var msg: [128]u8 = undefined;
         outFmt(&msg, "[teru] Template '{s}' not found\n", .{template});
         return;
