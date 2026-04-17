@@ -463,23 +463,35 @@ pub fn processCursorMotion(server: *Server, time: u32) void {
             if (wlr.wlr_scene_buffer_from_node(scene_node)) |buffer| {
                 if (wlr.wlr_scene_surface_try_from_buffer(buffer)) |scene_surface| {
                     if (wlr.miozu_scene_surface_get_surface(scene_surface)) |surface| {
-                        if (wlr.miozu_surface_is_live(surface) != 0) {
+                        // Chromium (Ozone) + some GTK4 apps paint
+                        // content tiles as wl_subsurfaces with an
+                        // EMPTY wl_surface.input_region. Wayland spec
+                        // says an empty input region rejects pointer
+                        // events and they must route via the parent.
+                        // A bare scene hit-test cheerfully returned
+                        // the subsurface, so enter/motion landed on a
+                        // surface that never fires button handlers —
+                        // and every click was silently dropped. This
+                        // was the user-visible "can't click chromium"
+                        // bug (2026-04-16 research, stash triaged
+                        // 2026-04-17). Fix: require the surface to
+                        // accept pointer input at (sx, sy); otherwise
+                        // fall through to fallbackPointerToTiledView,
+                        // which targets the toplevel root (whose
+                        // input-region default is infinite).
+                        if (wlr.miozu_surface_is_live(surface) != 0 and
+                            wlr.wlr_surface_point_accepts_input(surface, sx, sy))
+                        {
                             // ALWAYS latch last_pointer_surface (not
-                            // just on change). focusView reads this
-                            // to target the leaf surface for
-                            // keyboard_enter — must be set by every
-                            // motion that reaches a live surface, not
-                            // just the first. Without this, click-to-
-                            // focus right after a synthetic warp+motion
-                            // saw leaf=null.
+                            // just on change). focusView reads this to
+                            // target the leaf surface for keyboard_enter.
                             server.last_pointer_surface = surface;
                             wlr.wlr_seat_pointer_notify_enter(server.seat, surface, sx, sy);
                             wlr.wlr_seat_pointer_notify_motion(server.seat, time, sx, sy);
-                            // Chromium and GTK batch events until
-                            // frame; libinput auto-flushes via
-                            // cursor_frame, but synthetic MCP
-                            // test_move bypasses that. Always
-                            // flushing here is cheap and correct.
+                            // Chromium + GTK batch events until frame;
+                            // libinput auto-flushes via cursor_frame,
+                            // but synthetic MCP test_move bypasses
+                            // that. Always flushing here is cheap.
                             wlr.wlr_seat_pointer_notify_frame(server.seat);
                             return;
                         }

@@ -641,6 +641,14 @@ pub extern "wlroots-0.18" fn wlr_scene_buffer_set_opacity(scene_buffer: *wlr_sce
 pub extern "wlroots-0.18" fn wlr_buffer_drop(buffer: *wlr_buffer) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_scene_node_destroy(node: *wlr_scene_node) callconv(.c) void;
 
+/// Input-region test: does the wl_surface accept pointer input at
+/// (sx, sy)? Returns false when the surface has an explicitly
+/// empty input region — e.g. chromium's content-tile subsurfaces,
+/// which expect pointer events to route through the parent toplevel.
+/// Without this check, clients that paint-as-multiple-subsurfaces
+/// silently drop clicks.
+pub extern "wlroots-0.18" fn wlr_surface_point_accepts_input(surface: *wlr_surface, sx: f64, sy: f64) callconv(.c) bool;
+
 /// Pass dirty_y0 = -1 (or dirty_y1 <= dirty_y0) for full-buffer damage.
 /// border_thickness = 0 when the pane has no focus border drawn.
 pub extern "c" fn miozu_scene_buffer_commit_dirty(
