@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.6.2 (2026-04-17)
+
+Patch release — Wayland client robustness.
+
+### Fixes
+
+- **platform/wayland**: coalesce consecutive mouse_motion events in
+  teru's Wayland event queue and drop motion preferentially when the
+  queue is full. The 32-slot ring buffer dropped new events on
+  saturation, so running teru inside teruwm (or any compositor that
+  fires notify_motion on every cursor packet) buried the following
+  button press under 32 motion packets — user-visible symptom: text
+  selection in teru failed to start while dragging. Button / key /
+  resize / close events now always find a slot even under high motion
+  load.
+
 ## 0.6.1 (2026-04-17)
 
 Patch release — one bug.
