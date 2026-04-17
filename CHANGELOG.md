@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.6.1 (2026-04-17)
+
+Patch release — one bug.
+
+### Fixes
+
+- **teruwm**: TerminalPane honours DEC private mode 2026 (synchronized
+  output). Regressed during the Server.zig module split that shipped in
+  0.6.0's refactor batch — apps that batch their paints between
+  `ESC[?2026h` / `ESC[?2026l` (Claude Code, Ink, fzf, ratatui) no
+  longer flicker as the compositor painted every intermediate write.
+  Adds a 150 ms fall-through timeout so a buggy client that never
+  closes the batch can't freeze the pane (matches Alacritty).
+
 ## 0.6.0 (2026-04-17)
 
 The protocol-completion milestone. 80+ commits since v0.5.0 land a fully
