@@ -639,6 +639,7 @@ pub extern "wlroots-0.18" fn wlr_scene_buffer_set_buffer_with_damage(scene_buffe
 pub extern "wlroots-0.18" fn wlr_scene_buffer_set_dest_size(scene_buffer: *wlr_scene_buffer, width: c_int, height: c_int) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_scene_buffer_set_opacity(scene_buffer: *wlr_scene_buffer, opacity: f32) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_buffer_drop(buffer: *wlr_buffer) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_scene_node_destroy(node: *wlr_scene_node) callconv(.c) void;
 
 // ── Utility: container-of pattern ──────────────────────────────
 
