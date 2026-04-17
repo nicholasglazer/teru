@@ -245,11 +245,12 @@ pub fn getScratchpad(self: *const Node, slot: u16) []const u8 {
 
 /// Find the slot tagged with this scratchpad name, if any.
 pub fn findByScratchpad(self: *const Node, name: []const u8) ?u16 {
-    for (0..max_nodes) |i| {
-        if (self.kind[i] == .empty) continue;
+    var it = self.by_id.valueIterator();
+    while (it.next()) |slot_ptr| {
+        const i: usize = slot_ptr.*;
         const n = self.scratchpad_name_len[i];
         if (n == 0 or n != name.len) continue;
-        if (std.mem.eql(u8, self.scratchpad_name[i][0..n], name)) return @intCast(i);
+        if (std.mem.eql(u8, self.scratchpad_name[i][0..n], name)) return slot_ptr.*;
     }
     return null;
 }
@@ -270,11 +271,15 @@ pub fn deinitIndex(self: *Node, allocator: std.mem.Allocator) void {
     self.by_id.deinit(allocator);
 }
 
-/// Find a node's slot index by its xdg_toplevel pointer (fast surface lookup on events).
+/// Find a node's slot index by its xdg_toplevel pointer. Called on
+/// xdg-activation events — infrequent enough that a linear scan over
+/// active slots (via by_id iterator) beats maintaining a second index.
 pub fn findByToplevel(self: *const Node, toplevel: *wlr.wlr_xdg_toplevel) ?u16 {
-    for (0..max_nodes) |i| {
+    var it = self.by_id.valueIterator();
+    while (it.next()) |slot_ptr| {
+        const i: usize = slot_ptr.*;
         if (self.kind[i] == .wayland_surface and self.xdg_toplevel[i] == toplevel) {
-            return @intCast(i);
+            return slot_ptr.*;
         }
     }
     return null;
@@ -307,8 +312,9 @@ pub fn applyRect(self: *Node, slot: u16, x: i32, y: i32, w: u32, h: u32) void {
 /// Count nodes in a specific workspace.
 pub fn countInWorkspace(self: *const Node, ws: u8) u16 {
     var n: u16 = 0;
-    for (0..max_nodes) |i| {
-        if (self.kind[i] != .empty and self.workspace[i] == ws) n += 1;
+    var it = self.by_id.valueIterator();
+    while (it.next()) |slot_ptr| {
+        if (self.workspace[slot_ptr.*] == ws) n += 1;
     }
     return n;
 }
@@ -344,11 +350,12 @@ pub fn getAppId(self: *const Node, slot: u16) []const u8 {
 /// Find a node by name. If workspace is non-null, only search that workspace.
 pub fn findByName(self: *const Node, n: []const u8, ws: ?u8) ?u16 {
     if (n.len == 0) return null;
-    for (0..max_nodes) |i| {
-        if (self.kind[i] == .empty) continue;
+    var it = self.by_id.valueIterator();
+    while (it.next()) |slot_ptr| {
+        const i: usize = slot_ptr.*;
         if (ws) |w| { if (self.workspace[i] != w) continue; }
         if (self.name_len[i] == n.len and std.mem.eql(u8, self.name[i][0..self.name_len[i]], n)) {
-            return @intCast(i);
+            return slot_ptr.*;
         }
     }
     return null;
