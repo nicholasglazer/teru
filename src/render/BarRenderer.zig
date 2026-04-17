@@ -94,6 +94,17 @@ pub const BarData = struct {
     push_widgets: []const PushWidget = &.{},
 };
 
+/// Linear scan over the ≤32-slot push widget array. Short-circuits on
+/// empty slice. Hot-path-shared between renderWidgets and measureWidgets
+/// so the two stay in lockstep.
+inline fn findPushWidget(data: *const BarData, name: []const u8) ?*const PushWidget {
+    if (data.push_widgets.len == 0) return null;
+    for (data.push_widgets) |*pw| {
+        if (pw.used and std.mem.eql(u8, pw.name(), name)) return pw;
+    }
+    return null;
+}
+
 /// Render a section (left/center/right) of widgets into the framebuffer.
 pub fn renderWidgets(
     cpu: *SoftwareRenderer,
@@ -236,16 +247,9 @@ pub fn renderWidgets(
                 }
             },
             .push_widget => {
-                // Linear scan over the ≤32-slot array. Missing widget
-                // renders empty (no placeholder) so users can conditionally
-                // hide a widget by unregistering it.
-                const found: ?*const PushWidget = blk: {
-                    for (data.push_widgets) |*pw| {
-                        if (pw.used and std.mem.eql(u8, pw.name(), w.arg)) break :blk pw;
-                    }
-                    break :blk null;
-                };
-                if (found) |pw| {
+                // Missing widget renders empty (no placeholder) so users
+                // can conditionally hide a widget by unregistering it.
+                if (findPushWidget(data, w.arg)) |pw| {
                     const color = classColor(pw.class, s);
                     for (pw.text()) |ch| {
                         if (ch < 32 or ch > 126) continue;
@@ -292,14 +296,7 @@ pub fn measureWidgets(widgets: []BarWidget.Widget, data: *const BarData, cw: usi
             .keymap => @max(data.keymap.len, 2) * cw,
             .perf => 12 * cw,
             .exec => @as(usize, w.cache_len) * cw,
-            .push_widget => blk: {
-                // Same linear scan as in render; worst case 32 comparisons.
-                for (data.push_widgets) |*pw| {
-                    if (pw.used and std.mem.eql(u8, pw.name(), w.arg))
-                        break :blk pw.text_len * cw;
-                }
-                break :blk 0;
-            },
+            .push_widget => if (findPushWidget(data, w.arg)) |pw| pw.text_len * cw else 0,
             .text => w.arg.len * cw,
         };
     }
