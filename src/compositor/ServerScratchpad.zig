@@ -121,7 +121,7 @@ fn spawn(server: *Server, name: []const u8, ws: u8) ?u16 {
 
     const tp = TerminalPane.createFloating(server, rows, cols) orelse return null;
 
-    const slot = server.nodes.addTerminal(tp.node_id, ws) orelse {
+    const slot = server.nodes.addTerminal(server.zig_allocator, tp.node_id, ws) orelse {
         tp.deinit(server.zig_allocator);
         server.zig_allocator.destroy(tp);
         return null;

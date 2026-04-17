@@ -804,6 +804,7 @@ pub fn deinit(self: *Server) void {
     self.outputs.deinit(self.zig_allocator);
     self.keyboards.deinit(self.zig_allocator);
     self.pane_index.deinit(self.zig_allocator);
+    self.nodes.deinitIndex(self.zig_allocator);
 
     wlr.xkb_context_unref(self.xkb_ctx);
 }

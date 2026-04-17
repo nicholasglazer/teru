@@ -127,7 +127,7 @@ pub fn create(server: *Server, ws: u8, rows: u16, cols: u16) ?*TerminalPane {
 pub fn createWithSpawn(server: *Server, ws: u8, rows: u16, cols: u16, spawn_config: Pane.SpawnConfig) ?*TerminalPane {
     const tp = initWithSpawn(server, rows, cols, spawn_config) orelse return null;
 
-    const slot = server.nodes.addTerminal(tp.node_id, ws);
+    const slot = server.nodes.addTerminal(server.zig_allocator, tp.node_id, ws);
     server.layout_engine.workspaces[ws].addNode(server.zig_allocator, tp.node_id) catch return null;
 
     // Auto-name: "term-{ws}-{id}"
@@ -206,7 +206,7 @@ pub fn createRestored(server: *Server, ws: u8, pane: *Pane) ?*TerminalPane {
     }
 
     // Register with node registry and workspace
-    const slot = server.nodes.addTerminal(tp.node_id, ws);
+    const slot = server.nodes.addTerminal(server.zig_allocator, tp.node_id, ws);
     server.layout_engine.workspaces[ws].addNode(server.zig_allocator, tp.node_id) catch {};
 
     // Auto-name restored pane

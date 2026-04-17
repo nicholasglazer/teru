@@ -81,7 +81,7 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         server.next_node_id += 1;
 
         if (view.scene_tree) |tree| {
-            _ = server.nodes.addSurface(view.node_id, ws, null, tree, null);
+            _ = server.nodes.addSurface(server.zig_allocator, view.node_id, ws, null, tree, null);
         }
         server.layout_engine.workspaces[ws].addNode(server.zig_allocator, view.node_id) catch return;
 
