@@ -641,6 +641,18 @@ pub extern "wlroots-0.18" fn wlr_scene_buffer_set_opacity(scene_buffer: *wlr_sce
 pub extern "wlroots-0.18" fn wlr_buffer_drop(buffer: *wlr_buffer) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_scene_node_destroy(node: *wlr_scene_node) callconv(.c) void;
 
+/// Pass dirty_y0 = -1 (or dirty_y1 <= dirty_y0) for full-buffer damage.
+/// border_thickness = 0 when the pane has no focus border drawn.
+pub extern "c" fn miozu_scene_buffer_commit_dirty(
+    sb: *wlr_scene_buffer,
+    buf: *wlr_buffer,
+    fb_w: c_int,
+    fb_h: c_int,
+    dirty_y0: c_int,
+    dirty_y1: c_int,
+    border_thickness: c_int,
+) callconv(.c) void;
+
 // ── Utility: container-of pattern ──────────────────────────────
 
 /// Helper to get the container struct from a wl_listener pointer.

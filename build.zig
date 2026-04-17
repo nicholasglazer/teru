@@ -169,6 +169,7 @@ pub fn build(b: *std.Build) void {
         miozu_mod.linkSystemLibrary("wlroots-0.18", .{});
         miozu_mod.linkSystemLibrary("wayland-server", .{});
         miozu_mod.linkSystemLibrary("xkbcommon", .{});
+        miozu_mod.linkSystemLibrary("pixman-1", .{});
 
         // stb_truetype for terminal pane rendering
         miozu_mod.addCSourceFile(.{
@@ -212,6 +213,7 @@ pub fn build(b: *std.Build) void {
         wm_test_mod.linkSystemLibrary("wlroots-0.18", .{});
         wm_test_mod.linkSystemLibrary("wayland-server", .{});
         wm_test_mod.linkSystemLibrary("xkbcommon", .{});
+        wm_test_mod.linkSystemLibrary("pixman-1", .{});
         wm_test_mod.addCSourceFile(.{
             .file = b.path("vendor/stb_truetype.c"),
             .flags = &.{"-DSTB_TRUETYPE_IMPLEMENTATION"},
