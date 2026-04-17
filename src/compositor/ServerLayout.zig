@@ -27,8 +27,15 @@ pub fn computeTilingScreen(server: *Server) struct { rect: LayoutEngine.Rect, hg
     const dims = server.activeOutputDims();
     const w: u16 = @intCast(dims.w);
     const full_h: u32 = dims.h;
-    const bar_h: u32 = if (server.bar) |b| b.totalHeight() else 0;
-    const bar_y_offset: i32 = if (server.bar) |b| @intCast(b.tilingOffsetY()) else 0;
+    // Single bar-null check covers both the tiling-area height deduction
+    // and the top-bar Y offset. Cheap, but this runs on every resize and
+    // border drag — no reason to unwrap the optional twice.
+    var bar_h: u32 = 0;
+    var bar_y_offset: i32 = 0;
+    if (server.bar) |b| {
+        bar_h = b.totalHeight();
+        bar_y_offset = @intCast(b.tilingOffsetY());
+    }
     const h: u16 = @intCast(@max(1, full_h - bar_h));
 
     const g: i32 = @intCast(server.wm_config.gap);
