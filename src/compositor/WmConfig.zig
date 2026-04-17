@@ -108,8 +108,19 @@ pub const NameRule = struct {
 /// Uniform gap in pixels — same between panes and between panes and screen edges/bars.
 gap: u16 = 4,
 
-/// Border width in pixels around focused/unfocused windows.
+/// Border width in pixels around focused/unfocused windows. 0 hides
+/// borders completely. Applied uniformly to terminals, xdg clients,
+/// and XWayland clients.
 border_width: u16 = 2,
+
+/// Border colour for the currently-focused window. ARGB u32 — high
+/// byte is alpha so users can make borders translucent (e.g.
+/// 0x80FF7733 = 50 %-alpha orange). Accepts 0xAARRGGBB or #AARRGGBB.
+border_color_focused: u32 = 0xFFFF7733,
+
+/// Border colour for unfocused windows. Dimmer by default so the
+/// focused window is easy to spot in a dense tiling layout.
+border_color_unfocused: u32 = 0xFF3a3d44,
 
 /// Compositor background color (ARGB u32). Visible through gaps between
 /// panes/bars. Config accepts `bg = 0x1a1d24` or `bg = #1a1d24`.
@@ -425,6 +436,10 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         const parsed = std.fmt.parseInt(u32, v, 16) catch return;
         // If user gave 6 hex chars (RRGGBB), add full alpha
         self.bg_color = if (v.len <= 6) 0xFF000000 | parsed else parsed;
+    } else if (std.mem.eql(u8, key, "border_color_focused")) {
+        if (parseArgb(value)) |c| self.border_color_focused = c;
+    } else if (std.mem.eql(u8, key, "border_color_unfocused")) {
+        if (parseArgb(value)) |c| self.border_color_unfocused = c;
     } else if (std.mem.eql(u8, key, "cursor_size")) {
         self.cursor_size = std.fmt.parseInt(u32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "float_default_w")) {
@@ -634,6 +649,18 @@ pub fn hasXkbOverrides(self: *const WmConfig) bool {
     return self.xkb_layout_len != 0 or self.xkb_variant_len != 0 or
         self.xkb_options_len != 0 or self.xkb_model_len != 0 or
         self.xkb_rules_len != 0;
+}
+
+/// Parse an ARGB / RGB hex string. Accepts "#rrggbb", "0xrrggbb",
+/// "rrggbb", "#aarrggbb", "0xaarrggbb", "aarrggbb". Returns null on
+/// parse failure so callers can leave the current value untouched.
+fn parseArgb(value: []const u8) ?u32 {
+    var v = value;
+    if (v.len > 0 and v[0] == '#') v = v[1..];
+    if (v.len > 2 and v[0] == '0' and (v[1] == 'x' or v[1] == 'X')) v = v[2..];
+    if (v.len == 0) return null;
+    const parsed = std.fmt.parseInt(u32, v, 16) catch return null;
+    return if (v.len <= 6) 0xFF000000 | parsed else parsed;
 }
 
 /// Populate `[workspace.N]` fields (cwd, startup). Ignores `name`,

@@ -67,6 +67,12 @@ font_atlas: ?*teru.render.FontAtlas = null, // shared across all terminal panes
 next_node_id: u64 = 1,
 focused_view: ?*XdgView = null,
 focused_terminal: ?*TerminalPane = null,
+// XWayland (Emacs, Steam, GIMP) focus target. Lives alongside
+// focused_view because an xwayland_surface isn't an XdgView and we
+// don't want to fake one just to fit the existing XOR invariant.
+// Exactly one of focused_terminal, focused_view, focused_xwayland is
+// non-null at any time — focus helpers null the other two.
+focused_xwayland: ?*wlr.wlr_xwayland_surface = null,
 terminal_panes: [NodeRegistry.max_nodes]?*TerminalPane = [_]?*TerminalPane{null} ** NodeRegistry.max_nodes,
 terminal_count: u16 = 0,
 /// node_id → *TerminalPane index. Rebuilt by spawn/close; read by
@@ -1431,6 +1437,13 @@ pub fn closeFocused(self: *Server) void {
         self.clearFocusRefs(view.node_id);
         std.debug.print("teruwm: closeFocused → xdg view node={d}\n", .{view.node_id});
         wlr.wlr_xdg_toplevel_send_close(view.toplevel);
+        return;
+    }
+    if (self.focused_xwayland) |xw| {
+        // X11 client: wlr_xwayland_surface_close sends WM_DELETE_WINDOW
+        // which most XWayland apps (Emacs, GIMP, Steam) listen for.
+        std.debug.print("teruwm: closeFocused → xwayland surface\n", .{});
+        wlr.wlr_xwayland_surface_close(xw);
         return;
     }
     if (self.focused_terminal) |tp| {

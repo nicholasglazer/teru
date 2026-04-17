@@ -110,6 +110,12 @@ fn handleUnmap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     view.mapped = false;
 
     server.clearFocusRefs(view.node_id);
+    // If this xwayland surface currently held keyboard focus, clear
+    // the pointer. closeFocused would otherwise dereference a dead
+    // surface on the next Win+Shift+C press.
+    if (server.focused_xwayland == view.surface) {
+        server.focused_xwayland = null;
+    }
 
     // Raw *wlr_surface — keyed off the surface itself, not node_id.
     if (wlr.miozu_xwayland_surface_surface(view.surface)) |s| {
@@ -130,6 +136,9 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const server = view.server;
 
     server.clearFocusRefs(view.node_id);
+    if (server.focused_xwayland == view.surface) {
+        server.focused_xwayland = null;
+    }
     if (wlr.miozu_xwayland_surface_surface(view.surface)) |s| {
         if (server.last_pointer_surface == s) server.last_pointer_surface = null;
     }
