@@ -1591,21 +1591,25 @@ pub fn moveNodeToWorkspace(self: *Server, nid: u64, target: u8) void {
 /// workspace. Called after any R1 or R2 mutation. Single-output
 /// case: identical to the legacy setWorkspaceVisibility toggle.
 pub fn recomputeVisibility(self: *Server) void {
-    for (0..NodeRegistry.max_nodes) |i| {
-        if (self.nodes.kind[i] == .empty) continue;
-        const ws = self.nodes.workspace[i];
+    // Iterate active slots only — Node.by_id has exactly `nodes.count`
+    // entries, so on realistic workloads (<20 panes) this is ~13x
+    // fewer iterations than scanning all 256.
+    var it = self.nodes.by_id.valueIterator();
+    while (it.next()) |slot_ptr| {
+        const slot = slot_ptr.*;
+        const ws = self.nodes.workspace[slot];
         if (ws == NodeRegistry.HIDDEN_WS) {
-            self.setSlotVisible(@intCast(i), false);
+            self.setSlotVisible(slot, false);
             continue;
         }
         // Fullscreen takes precedence: every node but the fullscreened
         // one is hidden, regardless of which output shows its workspace.
         if (self.fullscreen_node) |fs_nid| {
-            self.setSlotVisible(@intCast(i), self.nodes.node_id[i] == fs_nid);
+            self.setSlotVisible(slot, self.nodes.node_id[slot] == fs_nid);
             continue;
         }
         const visible = self.outputShowing(ws) != null;
-        self.setSlotVisible(@intCast(i), visible);
+        self.setSlotVisible(slot, visible);
     }
 }
 
