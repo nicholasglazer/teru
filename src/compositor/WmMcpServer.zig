@@ -234,129 +234,86 @@ pub fn emitEventKind(self: *WmMcpServer, kind: []const u8, comptime fmt: []const
     self.emitEvent(buf[0 .. end + 1]);
 }
 
-// ── HTTP / JSON-RPC handling ──────────────────────────────────
+// ── MCP framework wiring ──────────────────────────────────────
+//
+// handleRequest, dispatch, initialize / tools_list / tools_call, and
+// the notifications ack all live in teru.McpFramework now. This
+// server supplies: framing choice, tool_table, tools_list_body,
+// server identity. Everything else is the framework's job.
+
+const F = teru.McpFramework.Framework(WmMcpServer);
+
+/// Array body of tools/list — comptime string that the framework
+/// wraps in the jsonrpc envelope. Adding a new tool: entry here +
+/// entry in tool_table + the thunk further down.
+const tools_list_body: []const u8 =
+    \\[
+    \\{"name":"teruwm_list_windows","description":"List all managed windows (terminals + external apps) with node ID, workspace, kind, title, position, size","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"teruwm_spawn_terminal","description":"Spawn a new terminal pane on a workspace","inputSchema":{"type":"object","properties":{"workspace":{"type":"integer","default":0}},"required":[]}},
+    \\{"name":"teruwm_close_window","description":"Close a window by node ID","inputSchema":{"type":"object","properties":{"node_id":{"type":"integer"}},"required":["node_id"]}},
+    \\{"name":"teruwm_focus_window","description":"Focus a window by node ID","inputSchema":{"type":"object","properties":{"node_id":{"type":"integer"}},"required":["node_id"]}},
+    \\{"name":"teruwm_move_to_workspace","description":"Move a window to a different workspace","inputSchema":{"type":"object","properties":{"node_id":{"type":"integer"},"workspace":{"type":"integer"}},"required":["node_id","workspace"]}},
+    \\{"name":"teruwm_list_workspaces","description":"List workspaces with layout, window count, active status","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"teruwm_switch_workspace","description":"Switch active workspace (0-9)","inputSchema":{"type":"object","properties":{"workspace":{"type":"integer"}},"required":["workspace"]}},
+    \\{"name":"teruwm_set_layout","description":"Set layout for a workspace","inputSchema":{"type":"object","properties":{"workspace":{"type":"integer","default":0},"layout":{"type":"string","enum":["master-stack","grid","monocle","dishes","spiral","three-col","columns","accordion"]}},"required":["layout"]}},
+    \\{"name":"teruwm_get_config","description":"Get compositor config (gap, border_width, bar settings)","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"teruwm_set_config","description":"Set a compositor config value live. Keys: gap (int), border_width (int), bg_color (hex #rrggbb or 0xaarrggbb).","inputSchema":{"type":"object","properties":{"key":{"type":"string","enum":["gap","border_width","bg_color"]},"value":{"type":"string"}},"required":["key","value"]}},
+    \\{"name":"teruwm_screenshot","description":"Capture the full compositor output as PNG. Uses grim if available, otherwise returns error.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Output path (default: /tmp/teruwm-screenshot.png)"}},"required":[]}},
+    \\{"name":"teruwm_notify","description":"Show a notification overlay on the compositor","inputSchema":{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}},
+    \\{"name":"teruwm_reload_config","description":"Reload compositor config from ~/.config/teruwm/config. Re-applies gap, border, bar settings live.","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"teruwm_screenshot_pane","description":"Capture a single pane as PNG by name or node_id. Works for terminal panes.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Pane name (e.g. term-0-1, editor)"},"node_id":{"type":"integer"},"path":{"type":"string","description":"Output path (default: /tmp/teruwm-pane-NAME.png)"}},"required":[]}},
+    \\{"name":"teruwm_set_name","description":"Assign a human-readable name to a window/pane.","inputSchema":{"type":"object","properties":{"node_id":{"type":"integer"},"name":{"type":"string"},"new_name":{"type":"string"}},"required":["new_name"]}},
+    \\{"name":"teruwm_perf","description":"Get compositor performance stats: frame timing (avg/max us), PTY throughput, terminal count","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"teruwm_restart","description":"Hot-restart the compositor: serializes PTY state, exec()s new binary. Terminal sessions survive. Use after rebuild.","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"teruwm_toggle_bar","description":"Toggle top or bottom status bar visibility. Triggers a re-arrange of all workspaces.","inputSchema":{"type":"object","properties":{"which":{"type":"string","enum":["top","bottom"]}},"required":["which"]}},
+    \\{"name":"teruwm_set_bar","description":"Set the enabled state of the top or bottom status bar explicitly.","inputSchema":{"type":"object","properties":{"which":{"type":"string","enum":["top","bottom"]},"enabled":{"type":"boolean"}},"required":["which","enabled"]}},
+    \\{"name":"teruwm_set_widget","description":"Register or update a push widget shown in a bar via {widget:name}. Upsert semantics — idempotent.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"widget name, ≤32 chars"},"text":{"type":"string","description":"text to display, ≤128 chars"},"class":{"type":"string","enum":["none","muted","info","success","warning","critical","accent"],"description":"semantic color class (defaults to fg)"}},"required":["name","text"]}},
+    \\{"name":"teruwm_delete_widget","description":"Remove a push widget by name.","inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
+    \\{"name":"teruwm_list_widgets","description":"List registered push widgets with their current text, class, and last update timestamp.","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"teruwm_test_drag","description":"TEST ONLY: synthesize a pointer drag from (from_x,from_y) to (to_x,to_y). Optional super=true simulates Mod-held drag (tiling → floating). Used by E2E suites; not normally invoked by users.","inputSchema":{"type":"object","properties":{"from_x":{"type":"integer"},"from_y":{"type":"integer"},"to_x":{"type":"integer"},"to_y":{"type":"integer"},"super":{"type":"boolean"},"button":{"type":"integer","description":"linux input-event code; 272=left (default), 274=right"}},"required":["from_x","from_y","to_x","to_y"]}},
+    \\{"name":"teruwm_click","description":"AI-first physical click. Warps the cursor to (x, y) and synthesizes a real left-click at the compositor seat (same wlroots path as a touchpad click). Use this to drive any Wayland client (Chromium, Firefox, GIMP, …) from an agent. Output: {cx,cy,hit:node_id|null,kind:'wayland'|'terminal'|'none'}.","inputSchema":{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"button":{"type":"string","enum":["left","right","middle"],"description":"default left"}},"required":["x","y"]}},
+    \\{"name":"teruwm_type","description":"AI-first physical typing. Sends key press+release events for each character of the text through the compositor seat (same wlroots path as a real keyboard). ASCII-only today (US QWERTY); maps each char to evdev keycode + Shift modifier as needed. Use after teruwm_click on a focusable element to type into it.","inputSchema":{"type":"object","properties":{"text":{"type":"string","description":"text to type — ASCII printable + space; non-ASCII is silently dropped"}},"required":["text"]}},
+    \\{"name":"teruwm_press","description":"AI-first single key press. Useful for special keys like Enter, Tab, Escape, Backspace, ArrowDown that teruwm_type doesn't cover. Mods supported: ctrl, shift, alt, super.","inputSchema":{"type":"object","properties":{"key":{"type":"string","description":"key name: 'Return', 'Tab', 'Escape', 'BackSpace', 'Up', 'Down', 'Left', 'Right', 'Home', 'End', 'PageUp', 'PageDown', or single ASCII char"},"ctrl":{"type":"boolean"},"shift":{"type":"boolean"},"alt":{"type":"boolean"},"super":{"type":"boolean"}},"required":["key"]}},
+    \\{"name":"teruwm_scroll","description":"AI-first scroll wheel. Synthesizes a vertical scroll axis event at (x, y) on the focused surface (or whatever's under the cursor at that point).","inputSchema":{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"dy":{"type":"number","description":"positive scrolls down, negative scrolls up; magnitude in libinput axis units (15 ≈ one detent)"}},"required":["x","y","dy"]}},
+    \\{"name":"teruwm_test_key","description":"TEST ONLY: dispatch a keybind action by name, bypassing xkb. Use for E2E tests of keybind-triggered compositor actions.","inputSchema":{"type":"object","properties":{"action":{"type":"string","description":"action name e.g. 'layout_cycle', 'bar_toggle_top'"}},"required":["action"]}},
+    \\{"name":"teruwm_test_move","description":"TEST ONLY: warp the cursor to (x, y) and fire a motion event, no button. Useful for tests that verify hover focus, scroll mode, etc.","inputSchema":{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"}},"required":["x","y"]}},
+    \\{"name":"teruwm_mouse_path","description":"Move the cursor from (from_x, from_y) to (to_x, to_y) along a smooth humanised path (Bezier + tremor + ease-in-out) over duration_ms milliseconds. Optional button is pressed partway through and released at the end — the synthetic click looks like a real person moved the mouse. Use this instead of teruwm_test_drag when driving client apps that care about bot-like straight-line warps (anti-bot browsing automation, UI smoke tests against protected pages).","inputSchema":{"type":"object","properties":{"from_x":{"type":"integer"},"from_y":{"type":"integer"},"to_x":{"type":"integer"},"to_y":{"type":"integer"},"duration_ms":{"type":"integer","description":"wall-clock path duration; default from wm_config.mouse_path_default_ms (250)"},"humanize":{"type":"boolean","description":"if false, teleport (skip Bezier/tremor). Default: honour wm_config.mouse_humanize"},"button":{"type":"integer","description":"linux input-event code; 272=left, 274=right. Omit for pointer-move only"},"super":{"type":"boolean","description":"simulate Mod-held drag (tiling → floating)"}},"required":["from_x","from_y","to_x","to_y"]}},
+    \\{"name":"teruwm_toggle_scratchpad","description":"Toggle numbered scratchpad N (0..8). Compat shim since v0.4.18 — delegates to teruwm_scratchpad name=padN+1. Prefer teruwm_scratchpad for new code.","inputSchema":{"type":"object","properties":{"index":{"type":"integer","description":"scratchpad index 0..8"}},"required":["index"]}},
+    \\{"name":"teruwm_scratchpad","description":"Toggle a named scratchpad (xmonad NamedScratchpad model). First call spawns a floating terminal tagged with the given name; subsequent calls toggle its visibility on the focused workspace. Scratchpads live in the node registry with a hidden-workspace sentinel when parked — visible via teruwm_list_windows.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"scratchpad identifier (e.g. 'term', 'music'). Max 15 chars."},"cmd":{"type":"string","description":"Reserved for future per-scratchpad spawn commands; ignored today — scratchpads spawn the user shell."}},"required":["name"]}},
+    \\{"name":"teruwm_subscribe_events","description":"Get the Unix-socket path for the event push channel. Connect a raw client to that path to read newline-delimited JSON events: urgent, focus_changed, workspace_switched, window_mapped. One subscriber at a time (last-connect wins); best-effort (slow subscribers drop events).","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"teruwm_session_save","description":"Snapshot the compositor's live state to ~/.config/teru/sessions/<name>.tsess. Captures workspace layouts, master ratios, pane roles, and per-pane cwd + running cmd (from /proc). Scope: tiled terminal panes only — no XDG clients, no floats, no scratchpads, no scrollback.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"session name (default: 'default')"}},"required":[]}},
+    \\{"name":"teruwm_session_restore","description":"Restore a .tsess file into the compositor. Idempotent by role: panes whose role matches an existing pane are not duplicated. Each spawned pane resumes in its saved cwd running its saved cmd. Layouts and master_ratio are restored.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"session name (default: 'default')"}},"required":[]}}
+    \\]
+;
+
+const framework_config: F.Config = .{
+    .server_name = "teruwm",
+    .server_version = version,
+    .framing = .http,
+    .capabilities_json = "\"tools\":{}",
+    .tool_table = &tool_table,
+    .tools_list_body = tools_list_body,
+};
 
 fn handleRequest(self: *WmMcpServer, conn_fd: posix.fd_t) void {
-    var req_buf: [max_request]u8 = undefined;
-    var total: usize = 0;
-
-    while (total < req_buf.len) {
-        const rc = std.c.read(conn_fd, req_buf[total..].ptr, req_buf.len - total);
-        if (rc <= 0) break;
-        total += @intCast(rc);
-
-        if (findBody(req_buf[0..total])) |body_start| {
-            if (parseContentLength(req_buf[0..total])) |content_len| {
-                if (total >= body_start + content_len) break;
-            } else break;
-        }
-    }
-
-    if (total == 0) return;
-
-    const body = if (findBody(req_buf[0..total])) |start|
-        req_buf[start..total]
-    else
-        req_buf[0..total];
-
-    var resp_buf: [max_response]u8 = undefined;
-    const json_response = self.dispatch(body, &resp_buf);
-
-    var http_header: [256]u8 = undefined;
-    const header = std.fmt.bufPrint(&http_header, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{json_response.len}) catch return;
-
-    _ = std.c.write(conn_fd, header.ptr, header.len);
-    _ = std.c.write(conn_fd, json_response.ptr, json_response.len);
+    F.handleRequestFd(self, conn_fd, &framework_config);
 }
 
-/// Route a JSON-RPC body through the method/tool dispatch. Public for
-/// symmetry with McpServer.dispatch (teru side) — any transport
-/// (HTTP socket, future line-JSON, future in-band forwarding) can
-/// share this one path without re-implementing framing + routing.
+/// Route a JSON-RPC body through the framework. Public so the
+/// in-band OSC 9999 path (teru side) can reach the compositor
+/// without constructing a socket connection.
 pub fn dispatch(self: *WmMcpServer, body: []const u8, resp_buf: []u8) []const u8 {
-    const method = extractJsonString(body, "method") orelse
-        return jsonRpcError(resp_buf, null, -32600, "Invalid Request");
-    const id = extractJsonId(body);
-
-    if (std.mem.eql(u8, method, "initialize")) {
-        return self.handleInitialize(resp_buf, id);
-    } else if (std.mem.eql(u8, method, "tools/list")) {
-        return self.handleToolsList(resp_buf, id);
-    } else if (std.mem.eql(u8, method, "tools/call")) {
-        return self.handleToolsCall(body, resp_buf, id);
-    } else if (std.mem.startsWith(u8, method, "notifications/")) {
-        return std.fmt.bufPrint(resp_buf,
-            \\{{"jsonrpc":"2.0","result":{{}},"id":{s}}}
-        , .{id orelse "null"}) catch "{}";
-    } else {
-        return jsonRpcError(resp_buf, id, -32601, "Method not found");
-    }
-}
-
-// ── MCP handlers ──────────────────────────────────────────────
-
-fn handleInitialize(_: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"protocolVersion":"2025-03-26","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"teruwm","version":"{s}"}}}},"id":{s}}}
-    , .{ version, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
-}
-
-fn handleToolsList(_: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"tools":[
-        \\{{"name":"teruwm_list_windows","description":"List all managed windows (terminals + external apps) with node ID, workspace, kind, title, position, size","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
-        \\{{"name":"teruwm_spawn_terminal","description":"Spawn a new terminal pane on a workspace","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer","default":0}}}},"required":[]}}}},
-        \\{{"name":"teruwm_close_window","description":"Close a window by node ID","inputSchema":{{"type":"object","properties":{{"node_id":{{"type":"integer"}}}},"required":["node_id"]}}}},
-        \\{{"name":"teruwm_focus_window","description":"Focus a window by node ID","inputSchema":{{"type":"object","properties":{{"node_id":{{"type":"integer"}}}},"required":["node_id"]}}}},
-        \\{{"name":"teruwm_move_to_workspace","description":"Move a window to a different workspace","inputSchema":{{"type":"object","properties":{{"node_id":{{"type":"integer"}},"workspace":{{"type":"integer"}}}},"required":["node_id","workspace"]}}}},
-        \\{{"name":"teruwm_list_workspaces","description":"List workspaces with layout, window count, active status","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
-        \\{{"name":"teruwm_switch_workspace","description":"Switch active workspace (0-9)","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer"}}}},"required":["workspace"]}}}},
-        \\{{"name":"teruwm_set_layout","description":"Set layout for a workspace","inputSchema":{{"type":"object","properties":{{"workspace":{{"type":"integer","default":0}},"layout":{{"type":"string","enum":["master-stack","grid","monocle","dishes","spiral","three-col","columns","accordion"]}}}},"required":["layout"]}}}},
-        \\{{"name":"teruwm_get_config","description":"Get compositor config (gap, border_width, bar settings)","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
-        \\{{"name":"teruwm_set_config","description":"Set a compositor config value live. Keys: gap (int), border_width (int), bg_color (hex #rrggbb or 0xaarrggbb).","inputSchema":{{"type":"object","properties":{{"key":{{"type":"string","enum":["gap","border_width","bg_color"]}},"value":{{"type":"string"}}}},"required":["key","value"]}}}},
-        \\{{"name":"teruwm_screenshot","description":"Capture the full compositor output as PNG. Uses grim if available, otherwise returns error.","inputSchema":{{"type":"object","properties":{{"path":{{"type":"string","description":"Output path (default: /tmp/teruwm-screenshot.png)"}}}},"required":[]}}}},
-        \\{{"name":"teruwm_notify","description":"Show a notification overlay on the compositor","inputSchema":{{"type":"object","properties":{{"message":{{"type":"string"}}}},"required":["message"]}}}},
-        \\{{"name":"teruwm_reload_config","description":"Reload compositor config from ~/.config/teruwm/config. Re-applies gap, border, bar settings live.","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
-        \\{{"name":"teruwm_screenshot_pane","description":"Capture a single pane as PNG by name or node_id. Works for terminal panes.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"Pane name (e.g. term-0-1, editor)"}},"node_id":{{"type":"integer"}},"path":{{"type":"string","description":"Output path (default: /tmp/teruwm-pane-NAME.png)"}}}},"required":[]}}}},
-        \\{{"name":"teruwm_set_name","description":"Assign a human-readable name to a window/pane.","inputSchema":{{"type":"object","properties":{{"node_id":{{"type":"integer"}},"name":{{"type":"string"}},"new_name":{{"type":"string"}}}},"required":["new_name"]}}}},
-        \\{{"name":"teruwm_perf","description":"Get compositor performance stats: frame timing (avg/max us), PTY throughput, terminal count","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
-        \\{{"name":"teruwm_restart","description":"Hot-restart the compositor: serializes PTY state, exec()s new binary. Terminal sessions survive. Use after rebuild.","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
-        \\{{"name":"teruwm_toggle_bar","description":"Toggle top or bottom status bar visibility. Triggers a re-arrange of all workspaces.","inputSchema":{{"type":"object","properties":{{"which":{{"type":"string","enum":["top","bottom"]}}}},"required":["which"]}}}},
-        \\{{"name":"teruwm_set_bar","description":"Set the enabled state of the top or bottom status bar explicitly.","inputSchema":{{"type":"object","properties":{{"which":{{"type":"string","enum":["top","bottom"]}},"enabled":{{"type":"boolean"}}}},"required":["which","enabled"]}}}},
-        \\{{"name":"teruwm_set_widget","description":"Register or update a push widget shown in a bar via {{widget:name}}. Upsert semantics — idempotent.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"widget name, ≤32 chars"}},"text":{{"type":"string","description":"text to display, ≤128 chars"}},"class":{{"type":"string","enum":["none","muted","info","success","warning","critical","accent"],"description":"semantic color class (defaults to fg)"}}}},"required":["name","text"]}}}},
-        \\{{"name":"teruwm_delete_widget","description":"Remove a push widget by name.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string"}}}},"required":["name"]}}}},
-        \\{{"name":"teruwm_list_widgets","description":"List registered push widgets with their current text, class, and last update timestamp.","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
-        \\{{"name":"teruwm_test_drag","description":"TEST ONLY: synthesize a pointer drag from (from_x,from_y) to (to_x,to_y). Optional super=true simulates Mod-held drag (tiling → floating). Used by E2E suites; not normally invoked by users.","inputSchema":{{"type":"object","properties":{{"from_x":{{"type":"integer"}},"from_y":{{"type":"integer"}},"to_x":{{"type":"integer"}},"to_y":{{"type":"integer"}},"super":{{"type":"boolean"}},"button":{{"type":"integer","description":"linux input-event code; 272=left (default), 274=right"}}}},"required":["from_x","from_y","to_x","to_y"]}}}},
-        \\{{"name":"teruwm_click","description":"AI-first physical click. Warps the cursor to (x, y) and synthesizes a real left-click at the compositor seat (same wlroots path as a touchpad click). Use this to drive any Wayland client (Chromium, Firefox, GIMP, …) from an agent. Output: {{cx,cy,hit:node_id|null,kind:'wayland'|'terminal'|'none'}}.","inputSchema":{{"type":"object","properties":{{"x":{{"type":"integer"}},"y":{{"type":"integer"}},"button":{{"type":"string","enum":["left","right","middle"],"description":"default left"}}}},"required":["x","y"]}}}},
-        \\{{"name":"teruwm_type","description":"AI-first physical typing. Sends key press+release events for each character of the text through the compositor seat (same wlroots path as a real keyboard). ASCII-only today (US QWERTY); maps each char to evdev keycode + Shift modifier as needed. Use after teruwm_click on a focusable element to type into it.","inputSchema":{{"type":"object","properties":{{"text":{{"type":"string","description":"text to type — ASCII printable + space; non-ASCII is silently dropped"}}}},"required":["text"]}}}},
-        \\{{"name":"teruwm_press","description":"AI-first single key press. Useful for special keys like Enter, Tab, Escape, Backspace, ArrowDown that teruwm_type doesn't cover. Mods supported: ctrl, shift, alt, super.","inputSchema":{{"type":"object","properties":{{"key":{{"type":"string","description":"key name: 'Return', 'Tab', 'Escape', 'BackSpace', 'Up', 'Down', 'Left', 'Right', 'Home', 'End', 'PageUp', 'PageDown', or single ASCII char"}},"ctrl":{{"type":"boolean"}},"shift":{{"type":"boolean"}},"alt":{{"type":"boolean"}},"super":{{"type":"boolean"}}}},"required":["key"]}}}},
-        \\{{"name":"teruwm_scroll","description":"AI-first scroll wheel. Synthesizes a vertical scroll axis event at (x, y) on the focused surface (or whatever's under the cursor at that point).","inputSchema":{{"type":"object","properties":{{"x":{{"type":"integer"}},"y":{{"type":"integer"}},"dy":{{"type":"number","description":"positive scrolls down, negative scrolls up; magnitude in libinput axis units (15 ≈ one detent)"}}}},"required":["x","y","dy"]}}}},
-        \\{{"name":"teruwm_test_key","description":"TEST ONLY: dispatch a keybind action by name, bypassing xkb. Use for E2E tests of keybind-triggered compositor actions.","inputSchema":{{"type":"object","properties":{{"action":{{"type":"string","description":"action name e.g. 'layout_cycle', 'bar_toggle_top'"}}}},"required":["action"]}}}},
-        \\{{"name":"teruwm_test_move","description":"TEST ONLY: warp the cursor to (x, y) and fire a motion event, no button. Useful for tests that verify hover focus, scroll mode, etc.","inputSchema":{{"type":"object","properties":{{"x":{{"type":"integer"}},"y":{{"type":"integer"}}}},"required":["x","y"]}}}},
-        \\{{"name":"teruwm_mouse_path","description":"Move the cursor from (from_x, from_y) to (to_x, to_y) along a smooth humanised path (Bezier + tremor + ease-in-out) over duration_ms milliseconds. Optional button is pressed partway through and released at the end — the synthetic click looks like a real person moved the mouse. Use this instead of teruwm_test_drag when driving client apps that care about bot-like straight-line warps (anti-bot browsing automation, UI smoke tests against protected pages).","inputSchema":{{"type":"object","properties":{{"from_x":{{"type":"integer"}},"from_y":{{"type":"integer"}},"to_x":{{"type":"integer"}},"to_y":{{"type":"integer"}},"duration_ms":{{"type":"integer","description":"wall-clock path duration; default from wm_config.mouse_path_default_ms (250)"}},"humanize":{{"type":"boolean","description":"if false, teleport (skip Bezier/tremor). Default: honour wm_config.mouse_humanize"}},"button":{{"type":"integer","description":"linux input-event code; 272=left, 274=right. Omit for pointer-move only"}},"super":{{"type":"boolean","description":"simulate Mod-held drag (tiling → floating)"}}}},"required":["from_x","from_y","to_x","to_y"]}}}},
-        \\{{"name":"teruwm_toggle_scratchpad","description":"Toggle numbered scratchpad N (0..8). Compat shim since v0.4.18 — delegates to teruwm_scratchpad name=padN+1. Prefer teruwm_scratchpad for new code.","inputSchema":{{"type":"object","properties":{{"index":{{"type":"integer","description":"scratchpad index 0..8"}}}},"required":["index"]}}}},
-        \\{{"name":"teruwm_scratchpad","description":"Toggle a named scratchpad (xmonad NamedScratchpad model). First call spawns a floating terminal tagged with the given name; subsequent calls toggle its visibility on the focused workspace. Scratchpads live in the node registry with a hidden-workspace sentinel when parked — visible via teruwm_list_windows.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"scratchpad identifier (e.g. 'term', 'music'). Max 15 chars."}},"cmd":{{"type":"string","description":"Reserved for future per-scratchpad spawn commands; ignored today — scratchpads spawn the user shell."}}}},"required":["name"]}}}},
-        \\{{"name":"teruwm_subscribe_events","description":"Get the Unix-socket path for the event push channel. Connect a raw client to that path to read newline-delimited JSON events: urgent, focus_changed, workspace_switched, window_mapped. One subscriber at a time (last-connect wins); best-effort (slow subscribers drop events).","inputSchema":{{"type":"object","properties":{{}},"required":[]}}}},
-        \\{{"name":"teruwm_session_save","description":"Snapshot the compositor's live state to ~/.config/teru/sessions/<name>.tsess. Captures workspace layouts, master ratios, pane roles, and per-pane cwd + running cmd (from /proc). Scope: tiled terminal panes only — no XDG clients, no floats, no scratchpads, no scrollback.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"session name (default: 'default')"}}}},"required":[]}}}},
-        \\{{"name":"teruwm_session_restore","description":"Restore a .tsess file into the compositor. Idempotent by role: panes whose role matches an existing pane are not duplicated. Each spawned pane resumes in its saved cwd running its saved cmd. Layouts and master_ratio are restored.","inputSchema":{{"type":"object","properties":{{"name":{{"type":"string","description":"session name (default: 'default')"}}}},"required":[]}}}}
-        \\]}},"id":{s}}}
-    , .{id_str}) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+    return F.dispatch(self, body, resp_buf, &framework_config);
 }
 
 // ── Tool dispatch table ────────────────────────────────────────
 //
 // Each entry owns its arg-extraction — the thunks unpack
 // `params_body` (already stripped to the RPC "params" object) and
-// call the underlying tool method. StaticStringMap gives O(1)
-// hashed lookup instead of a 28-way std.mem.eql chain; adding a
-// tool is one map entry + one thunk, no edits to the dispatcher.
-const ToolThunk = *const fn (*WmMcpServer, []const u8, []u8, ?[]const u8) []const u8;
-
-const tool_table = std.StaticStringMap(ToolThunk).initComptime(.{
+// call the underlying tool method. The framework routes by name
+// via StaticStringMap hash; no edits to the framework when adding
+// a tool — just an entry here plus the thunk further down.
+const tool_table = std.StaticStringMap(F.Thunk).initComptime(.{
     .{ "teruwm_list_windows", thunkListWindows },
     .{ "teruwm_spawn_terminal", thunkSpawnTerminal },
     .{ "teruwm_close_window", thunkCloseWindow },
@@ -393,15 +350,6 @@ const tool_table = std.StaticStringMap(ToolThunk).initComptime(.{
     .{ "teruwm_session_save", thunkSessionSave },
     .{ "teruwm_session_restore", thunkSessionRestore },
 });
-
-fn handleToolsCall(self: *WmMcpServer, body: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const params_body = extractJsonObject(body, "params") orelse
-        return jsonRpcError(buf, id, -32602, "Missing params");
-    const tool_name = extractJsonString(params_body, "name") orelse
-        return jsonRpcError(buf, id, -32602, "Missing tool name");
-    if (tool_table.get(tool_name)) |thunk| return thunk(self, params_body, buf, id);
-    return jsonRpcError(buf, id, -32602, "Unknown tool");
-}
 
 // ── Thunks (arg unpacking; uniform signature) ──────────────────
 
