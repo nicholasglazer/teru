@@ -48,56 +48,38 @@ const HookHandler = @import("agent/HookHandler.zig");
 const SignalManager = @import("core/SignalManager.zig");
 const Daemon = @import("server/daemon.zig");
 const daemon_proto = @import("server/protocol.zig");
+const common = @import("modes/common.zig");
+const raw_mode = @import("modes/raw.zig");
 
-const setenv = if (builtin.os.tag == .windows) struct {
-    fn f(_: [*:0]const u8, _: [*:0]const u8, _: c_int) c_int { return 0; }
-}.f else struct {
-    extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-}.setenv;
-
-const version = build_options.version;
-
-const session_path = "/tmp/teru-session.bin";
-
-// Default PTY/grid dimensions
-const DEFAULT_ROWS: u16 = 24;
-const DEFAULT_COLS: u16 = 80;
-
-// Master ratio clamps for mouse drag resize
-const MASTER_RATIO_MIN: f32 = 0.15;
-const MASTER_RATIO_MAX: f32 = 0.85;
-
-// Timing constants (nanoseconds)
-const DOUBLE_CLICK_NS: i128 = 300_000_000; // 300ms
-const CURSOR_BLINK_NS: i128 = 530_000_000; // 530ms on/off cycle
-const PERSIST_DEBOUNCE_NS: i128 = 100_000_000; // 100ms
-
-// Daemon connection retry parameters
-const DAEMON_RETRY_ATTEMPTS: u32 = 20;
-const DAEMON_RETRY_DELAY_MS: u32 = 100;
-
-// CLI flag: --no-bar (start with status bar hidden)
-var cli_no_bar: bool = false;
-
-// CLI flag: -e / -- exec argv (run command instead of shell)
-var cli_exec_argv_buf: [64]?[*:0]const u8 = .{null} ** 64;
-var cli_exec_argv: ?[*:null]const ?[*:0]const u8 = null;
-
-fn out(msg: []const u8) void {
-    if (builtin.os.tag == .windows) {
-        const k = struct {
-            extern "kernel32" fn GetStdHandle(n: u32) callconv(.c) *anyopaque;
-        };
-        _ = std.c.write(k.GetStdHandle(@bitCast(@as(i32, -11))), msg.ptr, msg.len);
-    } else {
-        _ = std.c.write(posix.STDOUT_FILENO, msg.ptr, msg.len);
-    }
-}
-
-fn outFmt(buf: []u8, comptime fmt: []const u8, args: anytype) void {
-    const msg = std.fmt.bufPrint(buf, fmt, args) catch return;
-    out(msg);
-}
+// Re-exports so the rest of main.zig keeps the short names it used
+// when these lived here. Mode-file migration (daemon/tui/windowed)
+// will drop this layer once all callers are moved.
+const setenv = common.setenv;
+const version = common.version;
+const session_path = common.session_path;
+const DEFAULT_ROWS = common.DEFAULT_ROWS;
+const DEFAULT_COLS = common.DEFAULT_COLS;
+const MASTER_RATIO_MIN = common.MASTER_RATIO_MIN;
+const MASTER_RATIO_MAX = common.MASTER_RATIO_MAX;
+const DOUBLE_CLICK_NS = common.DOUBLE_CLICK_NS;
+const CURSOR_BLINK_NS = common.CURSOR_BLINK_NS;
+const PERSIST_DEBOUNCE_NS = common.PERSIST_DEBOUNCE_NS;
+const DAEMON_RETRY_ATTEMPTS = common.DAEMON_RETRY_ATTEMPTS;
+const DAEMON_RETRY_DELAY_MS = common.DAEMON_RETRY_DELAY_MS;
+const RestoreInfo = common.RestoreInfo;
+const out = common.out;
+const outFmt = common.outFmt;
+const autoStartDaemon = common.autoStartDaemon;
+const autoStartNamedDaemon = common.autoStartNamedDaemon;
+const resolveTemplatePath = common.resolveTemplatePath;
+const applyTemplate = common.applyTemplate;
+const persistSave = common.persistSave;
+const loadHooks = common.loadHooks;
+const autoAssignAgentWorkspace = common.autoAssignAgentWorkspace;
+const markAgentFinished = common.markAgentFinished;
+const updateAgentStatusByName = common.updateAgentStatusByName;
+const updateLatestAgentTask = common.updateLatestAgentTask;
+const processHookEvent = common.processHookEvent;
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -164,7 +146,7 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, arg, "--raw")) { mode_raw = true; continue; }
-        if (std.mem.eql(u8, arg, "--no-bar")) { cli_no_bar = true; continue; }
+        if (std.mem.eql(u8, arg, "--no-bar")) { common.cli_no_bar = true; continue; }
         if (std.mem.eql(u8, arg, "--attach")) { mode_attach = true; continue; }
         if (std.mem.eql(u8, arg, "--mcp-server") or std.mem.eql(u8, arg, "--mcp-bridge")) {
             mode_mcp_bridge = true;
@@ -180,14 +162,14 @@ pub fn main(init: std.process.Init) !void {
             // Collect remaining args as exec argv
             var n: usize = 0;
             while (args_iter.next()) |ea| {
-                if (n < cli_exec_argv_buf.len - 1) {
-                    cli_exec_argv_buf[n] = ea.ptr;
+                if (n < common.cli_exec_argv_buf.len - 1) {
+                    common.cli_exec_argv_buf[n] = ea.ptr;
                     n += 1;
                 }
             }
             if (n > 0) {
-                cli_exec_argv_buf[n] = null; // sentinel
-                cli_exec_argv = @ptrCast(&cli_exec_argv_buf);
+                common.cli_exec_argv_buf[n] = null; // sentinel
+                common.cli_exec_argv = @ptrCast(&common.cli_exec_argv_buf);
             }
             break;
         }
@@ -244,21 +226,13 @@ pub fn main(init: std.process.Init) !void {
     // Detect rendering tier
     const tier = render.detectTier();
     if (tier == .tty or mode_raw) {
-        return runRawMode(allocator, io);
+        return raw_mode.run(allocator, io);
     }
     return runWindowedMode(allocator, io, null, wm_class_override);
 }
 
 /// Session restore info passed from --attach to runWindowedMode.
 const LayoutEngine = @import("tiling/LayoutEngine.zig");
-
-const RestoreInfo = struct {
-    pane_count: u16,
-    workspace_panes: [10]u16 = .{0} ** 10,
-    workspace_layouts: [10]u8 = .{0} ** 10,
-    workspace_ratios: [10]f32 = .{0.55} ** 10,
-    active_workspace: u8 = 0,
-};
 
 fn runAttachMode(allocator: std.mem.Allocator, io: std.Io, wm_class: ?[]const u8) !void {
     var sess = Session.loadFromFile(session_path, allocator, io) catch {
@@ -326,42 +300,6 @@ fn runNamedSession(allocator: std.mem.Allocator, io: std.Io, name: []const u8, t
     return runWindowedMode(allocator, io, null, wm_class);
 }
 
-/// Fork a daemon with a specific session name.
-fn autoStartNamedDaemon(name: []const u8, template: ?[]const u8) bool {
-    const exe_path = "/proc/self/exe";
-    var name_buf: [128:0]u8 = undefined;
-    if (name.len >= name_buf.len) return false;
-    @memcpy(name_buf[0..name.len], name);
-    name_buf[name.len] = 0;
-
-    // Build argv: teru --daemon NAME [--template TMPL]
-    var tmpl_buf: [256:0]u8 = undefined;
-    const has_tmpl = if (template) |t| blk: {
-        if (t.len >= tmpl_buf.len) break :blk false;
-        @memcpy(tmpl_buf[0..t.len], t);
-        tmpl_buf[t.len] = 0;
-        break :blk true;
-    } else false;
-
-    var argv: [6:null]?[*:0]const u8 = .{ null, null, null, null, null, null };
-    argv[0] = @ptrCast(exe_path);
-    argv[1] = @ptrCast("--daemon");
-    argv[2] = @ptrCast(name_buf[0..name.len :0]);
-    if (has_tmpl) {
-        argv[3] = @ptrCast("--template");
-        argv[4] = @ptrCast(tmpl_buf[0..template.?.len :0]);
-    }
-
-    const fork_pid = compat.posixFork();
-    if (fork_pid < 0) return false;
-    if (fork_pid == 0) {
-        const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
-        _ = std.c.execve(exe_path, @ptrCast(&argv), envp);
-        compat.posixExit(1);
-    }
-    return true;
-}
-
 /// persist_session = true: full daemon persistence.
 /// Auto-starts daemon, connects windowed UI. Processes survive window close.
 fn runPersistentMode(allocator: std.mem.Allocator, io: std.Io, wm_class: ?[]const u8) !void {
@@ -424,10 +362,6 @@ fn runRestoreMode(allocator: std.mem.Allocator, io: std.Io, wm_class: ?[]const u
 }
 
 /// Fork a teru daemon process in the background. Returns true if fork succeeded.
-fn autoStartDaemon() bool {
-    return autoStartNamedDaemon("default", null);
-}
-
 
 /// Start a headless daemon session. PTYs persist after this process forks.
 fn runDaemonMode(allocator: std.mem.Allocator, io: std.Io, session_name: []const u8, template: ?[]const u8) !void {
@@ -951,7 +885,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
         .tty => {},
     }
 
-    if (cli_no_bar) config.show_status_bar = false;
+    if (common.cli_no_bar) config.show_status_bar = false;
     const padding: u32 = config.padding;
     var status_bar_h: u32 = if (config.show_status_bar) atlas.cell_height + 4 else 0;
     var grid_cols: u16 = @intCast((config.initial_width -| padding * 2) / atlas.cell_width);
@@ -978,7 +912,7 @@ fn runWindowedModeImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?Resto
         .cursor_shape = config.cursor_shape,
     };
     // exec_argv is consumed by the first pane spawn only
-    mux.spawn_config.exec_argv = cli_exec_argv;
+    mux.spawn_config.exec_argv = common.cli_exec_argv;
     mux.notification_duration_ns = @as(i128, config.notification_duration_ms) * 1_000_000;
     mux.persist_session_name = "default";
 
@@ -2324,294 +2258,6 @@ fn sendDaemonCommand(fd: posix.fd_t, cmd: daemon_proto.Command, arg: ?u8) void {
 /// Send keyboard input to daemon's active pane.
 fn sendDaemonInput(fd: posix.fd_t, data: []const u8) void {
     _ = daemon_proto.sendMessage(fd, .active_input, data);
-}
-
-/// Save session state to the persist directory (best-effort, errors silently ignored).
-/// Resolve a template name to a file path. Search order:
-/// 1. Exact path (contains '/' or ends with '.tsess')
-/// 2. ~/.config/teru/templates/<name>.tsess
-/// 3. ./examples/<name>.tsess
-fn resolveTemplatePath(name: []const u8, buf: *[512]u8) ?[]const u8 {
-    // Exact path
-    if (std.mem.indexOf(u8, name, "/") != null or std.mem.endsWith(u8, name, ".tsess")) {
-        if (name.len < buf.len) {
-            @memcpy(buf[0..name.len], name);
-            return buf[0..name.len];
-        }
-        return null;
-    }
-
-    // ~/.config/teru/templates/<name>.tsess
-    const home = compat.getenv("HOME") orelse "/tmp";
-    if (std.fmt.bufPrint(buf, "{s}/.config/teru/templates/{s}.tsess", .{ home, name })) |path| {
-        // Check if file exists using C fopen
-        var path_z: [513]u8 = undefined;
-        if (path.len < path_z.len) {
-            @memcpy(path_z[0..path.len], path);
-            path_z[path.len] = 0;
-            const f = std.c.fopen(@ptrCast(path_z[0..path.len :0]), "r");
-            if (f != null) {
-                _ = std.c.fclose(f.?);
-                return path;
-            }
-        }
-    } else |_| {}
-
-    // ./examples/<name>.tsess
-    if (std.fmt.bufPrint(buf, "examples/{s}.tsess", .{name})) |path| {
-        var path_z: [513]u8 = undefined;
-        if (path.len < path_z.len) {
-            @memcpy(path_z[0..path.len], path);
-            path_z[path.len] = 0;
-            const f = std.c.fopen(@ptrCast(path_z[0..path.len :0]), "r");
-            if (f != null) {
-                _ = std.c.fclose(f.?);
-                return path;
-            }
-        }
-    } else |_| {}
-
-    return null;
-}
-
-/// Apply a .tsess template: parse it, create workspaces and panes as defined.
-fn applyTemplate(allocator: std.mem.Allocator, mux: *Multiplexer, graph: *ProcessGraph, template: []const u8, _: std.Io) void {
-    var path_buf: [512]u8 = undefined;
-    const path = resolveTemplatePath(template, &path_buf) orelse {
-        var msg: [128]u8 = undefined;
-        outFmt(&msg, "[teru] Template '{s}' not found\n", .{template});
-        return;
-    };
-
-    // Read template file
-    const SessionConfig = @import("config/SessionDef.zig");
-    var file_path_z: [513:0]u8 = undefined;
-    if (path.len >= file_path_z.len) return;
-    @memcpy(file_path_z[0..path.len], path);
-    file_path_z[path.len] = 0;
-
-    var file_buf: [SessionConfig.max_file_size]u8 = undefined;
-    var file_len: usize = 0;
-    {
-        const f = std.c.fopen(@ptrCast(file_path_z[0..path.len :0]), "r");
-        if (f == null) {
-            var msg: [128]u8 = undefined;
-            outFmt(&msg, "[teru] Cannot read template: {s}\n", .{path});
-            return;
-        }
-        file_len = std.c.fread(&file_buf, 1, file_buf.len, f.?);
-        _ = std.c.fclose(f.?);
-    }
-    if (file_len == 0) return;
-
-    var def = SessionConfig.parse(allocator, file_buf[0..file_len]) catch {
-        var msg: [128]u8 = undefined;
-        outFmt(&msg, "[teru] Failed to parse template: {s}\n", .{path});
-        return;
-    };
-    defer def.deinit();
-
-    // Restore: creates panes in workspaces as defined by the template
-    SessionConfig.restore(&def, mux, graph, DEFAULT_ROWS, DEFAULT_COLS);
-
-    var msg: [128]u8 = undefined;
-    outFmt(&msg, "[teru] Applied template '{s}' ({d} workspaces)\n", .{ template, def.workspace_count });
-}
-
-fn persistSave(mux: *Multiplexer, graph: *const ProcessGraph, allocator: std.mem.Allocator, io: std.Io) void {
-    const sess_dir = Session.getSessionDir(allocator) catch return;
-    defer allocator.free(sess_dir);
-    compat.ensureDirC(sess_dir);
-    var path_buf: [512]u8 = undefined;
-    const path = std.fmt.bufPrint(&path_buf, "{s}/{s}.bin", .{ sess_dir, mux.persist_session_name }) catch return;
-    mux.saveSession(graph, path, io) catch |err| {
-        var ebuf: [128]u8 = undefined;
-        outFmt(&ebuf, "[teru] session save failed: {s}\n", .{@errorName(err)});
-    };
-}
-
-/// Fill the grid with scrollback + saved screen content for browsing mode.
-/// The virtual viewport is: [scrollback lines] ++ [saved screen lines].
-/// Transfer hook commands from Config into the Hooks struct.
-fn loadHooks(config: *const Config, hooks: *Hooks) void {
-    if (config.hook_on_spawn) |cmd| hooks.setHook(.spawn, cmd);
-    if (config.hook_on_close) |cmd| hooks.setHook(.close, cmd);
-    if (config.hook_on_agent_start) |cmd| hooks.setHook(.agent_start, cmd);
-    if (config.hook_on_session_save) |cmd| hooks.setHook(.session_save, cmd);
-}
-
-// ── Agent lifecycle helpers ────────────────────────────────────
-
-/// Assign an agent node to a workspace matching its group name.
-/// Uses a simple hash of the group name to pick workspace 1-8.
-fn autoAssignAgentWorkspace(mux: *Multiplexer, node_id: u64, group: []const u8) void {
-    // Hash group name to a workspace index (1-8, workspace 0 is the default shell workspace)
-    var hash: u32 = 0;
-    for (group) |c| {
-        hash = hash *% 31 +% c;
-    }
-    const ws: u8 = @truncate((hash % 8) + 1);
-
-    // Ensure the pane is in the layout engine's workspace
-    const ws_engine = &mux.layout_engine.workspaces[ws];
-    ws_engine.addNode(mux.allocator, node_id) catch {
-        // Layout tracking failure — agent runs but won't appear in workspace view
-        return;
-    };
-
-    // Update the graph node's workspace
-    if (mux.graph) |g| {
-        g.moveToWorkspace(node_id, ws);
-    }
-}
-
-/// Mark an agent as finished by looking it up by name.
-fn markAgentFinished(graph: *ProcessGraph, name: []const u8, exit_status: ?[]const u8) void {
-    const node_id = graph.findAgentByName(name) orelse return;
-    const exit_code: u8 = if (exit_status) |status| blk: {
-        if (std.mem.eql(u8, status, "success") or std.mem.eql(u8, status, "0")) {
-            break :blk 0;
-        }
-        break :blk 1;
-    } else 1;
-    graph.markFinished(node_id, exit_code);
-}
-
-/// Update an agent's task description and progress by name.
-fn updateAgentStatusByName(graph: *ProcessGraph, name: []const u8, task: ?[]const u8, progress: ?f32) void {
-    const node_id = graph.findAgentByName(name) orelse return;
-    graph.updateAgentStatus(node_id, task, progress);
-}
-
-/// Process a Claude Code hook event: update ProcessGraph and fire hooks.
-fn processHookEvent(
-    graph: *ProcessGraph,
-    hooks: *Hooks,
-    ev: HookListener.QueuedEvent,
-    allocator: std.mem.Allocator,
-) void {
-    defer {
-        var event = ev.event;
-        HookHandler.freeHookEvent(&event, allocator);
-        if (ev.session_id) |s| allocator.free(s);
-        if (ev.tool_name) |s| allocator.free(s);
-        if (ev.tool_input) |s| allocator.free(s);
-    }
-
-    switch (ev.event) {
-        .subagent_start => |e| {
-            _ = graph.spawn(.{
-                .name = e.agent_type,
-                .kind = .agent,
-                .pid = null,
-                .agent = .{
-                    .group = "claude-code",
-                    .role = e.agent_type,
-                },
-            }) catch return;
-            hooks.fire(.agent_start);
-        },
-        .subagent_stop => |e| {
-            markAgentFinished(graph, e.agent_id, null);
-        },
-        .teammate_idle => |e| {
-            // Mark agent as paused (idle)
-            if (graph.findAgentByName(e.agent_id)) |node_id| {
-                if (graph.nodes.getPtr(node_id)) |node| {
-                    node.state = .paused;
-                }
-            }
-        },
-        .task_created => |e| {
-            // Find the most recent agent and update its task description
-            updateLatestAgentTask(graph, e.description);
-        },
-        .task_completed => {
-            // Task done — no graph update needed (agent stop handles lifecycle)
-        },
-        .pre_tool_use => |e| {
-            // Update the most recent running agent's task to show tool activity
-            updateLatestAgentTask(graph, e.tool_name);
-        },
-        .post_tool_use => {
-            // Clear tool activity (agent returns to default task)
-        },
-        .post_tool_use_failure => {
-            // Could mark agent border red briefly — for now, just clear
-        },
-        .session_start => {
-            // Could show session indicator in status bar
-        },
-        .session_end => {
-            // Could clean up session-related graph nodes
-        },
-        .stop => {
-            // Agent finished a turn — mark as paused (waiting for input)
-        },
-        .stop_failure => {
-            // Rate limit or billing error — could show in status bar
-        },
-        .notification => {
-            // Permission prompt or idle notification — future: inline approval widget
-        },
-        .pre_compact, .post_compact => {
-            // Future: context gauge in status bar
-        },
-        .unknown => {},
-    }
-}
-
-/// Update the most recently spawned running agent's task description.
-fn updateLatestAgentTask(graph: *ProcessGraph, task: []const u8) void {
-    var latest_id: ?ProcessGraph.NodeId = null;
-    var latest_time: i128 = 0;
-    var it = graph.nodes.iterator();
-    while (it.next()) |entry| {
-        const node = entry.value_ptr;
-        if (node.kind == .agent and node.state == .running and node.started_at > latest_time) {
-            latest_time = node.started_at;
-            latest_id = node.id;
-        }
-    }
-    if (latest_id) |id| {
-        graph.updateAgentStatus(id, task, null);
-    }
-}
-
-fn runRawMode(allocator: std.mem.Allocator, io: std.Io) !void {
-    _ = io;
-    var graph = ProcessGraph.init(allocator);
-    defer graph.deinit();
-
-    var terminal = Terminal.init();
-    defer terminal.deinit();
-
-    const size = terminal.getSize() catch Terminal.TermSize{ .rows = DEFAULT_ROWS, .cols = DEFAULT_COLS };
-
-    var buf: [256]u8 = undefined;
-    outFmt(&buf, "\x1b[38;5;208m[teru {s}]\x1b[0m AI-first terminal · {d}x{d}\n", .{ version, size.cols, size.rows });
-
-    var pty_inst = try Pty.spawn(.{ .rows = size.rows, .cols = size.cols });
-    defer pty_inst.deinit();
-
-    const node_id = try graph.spawn(.{ .name = "shell", .kind = .shell, .pid = if (builtin.os.tag == .windows) null else pty_inst.child_pid });
-
-    var sig = SignalManager.init(pty_inst.master, terminal.hostFd());
-    sig.registerWinch();
-
-    try terminal.enterRawMode();
-    out("\x1b[2J\x1b[H");
-    terminal.runLoop(&pty_inst) catch |err| {
-        var ebuf: [128]u8 = undefined;
-        outFmt(&ebuf, "[teru] terminal loop error: {s}\n", .{@errorName(err)});
-    };
-    terminal.exitRawMode();
-
-    if (pty_inst.child_pid != null) {
-        const status = pty_inst.waitForExit() catch 0;
-        graph.markFinished(node_id, @truncate(status >> 8));
-    }
-    outFmt(&buf, "\n\x1b[38;5;208m[teru]\x1b[0m session ended · {d} node(s)\n", .{graph.nodeCount()});
 }
 
 
