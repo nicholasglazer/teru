@@ -2384,7 +2384,7 @@ fn applyTemplate(allocator: std.mem.Allocator, mux: *Multiplexer, graph: *Proces
     };
 
     // Read template file
-    const SessionConfig = @import("config/Session.zig");
+    const SessionConfig = @import("config/SessionDef.zig");
     var file_path_z: [513:0]u8 = undefined;
     if (path.len >= file_path_z.len) return;
     @memcpy(file_path_z[0..path.len], path);

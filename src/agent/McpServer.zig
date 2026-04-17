@@ -1030,7 +1030,7 @@ fn toolGetConfig(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
 
 fn toolSessionSave(self: *McpServer, name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
-    const SessionConfig = @import("../config/Session.zig");
+    const SessionConfig = @import("../config/SessionDef.zig");
 
     // Generate .tsess content from live state
     const content = SessionConfig.saveFromLive(self.allocator, self.multiplexer, self.graph) catch
@@ -1068,7 +1068,7 @@ fn toolSessionSave(self: *McpServer, name: []const u8, buf: []u8, id: ?[]const u
 
 fn toolSessionRestore(self: *McpServer, name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
-    const SessionConfig = @import("../config/Session.zig");
+    const SessionConfig = @import("../config/SessionDef.zig");
 
     // Build path and read file
     const path = SessionConfig.getSessionPath(self.allocator, name) catch
