@@ -22,6 +22,14 @@ const Allocator = std.mem.Allocator;
 const Multiplexer = @import("../core/Multiplexer.zig");
 const ProcessGraph = @import("../graph/ProcessGraph.zig");
 const Grid = @import("../core/Grid.zig");
+const tools = @import("McpTools.zig");
+
+// Shared helpers; definitions live in McpTools.
+const extractJsonString = tools.extractJsonString;
+const extractJsonInt = tools.extractJsonInt;
+const extractJsonId = tools.extractJsonId;
+const jsonEscapeString = tools.jsonEscapeString;
+const jsonRpcError = tools.jsonRpcError;
 
 const PaneBackend = @This();
 
@@ -510,129 +518,6 @@ fn findContext(self: *PaneBackend, context_id: u64) ?*const Context {
         }
     }
     return null;
-}
-
-// ── JSON parsing (minimal, no library) ───────────────────────────
-
-fn extractJsonString(json: []const u8, key: []const u8) ?[]const u8 {
-    var needle_buf: [128]u8 = undefined;
-    const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\":", .{key}) catch return null;
-
-    const key_pos = std.mem.indexOf(u8, json, needle) orelse return null;
-    const after_key = key_pos + needle.len;
-
-    var i = after_key;
-    while (i < json.len and (json[i] == ' ' or json[i] == '\t')) : (i += 1) {}
-
-    if (i >= json.len or json[i] != '"') return null;
-    i += 1;
-
-    const start = i;
-    while (i < json.len and json[i] != '"') : (i += 1) {
-        if (json[i] == '\\') i += 1;
-    }
-    if (i >= json.len) return null;
-
-    return json[start..i];
-}
-
-fn extractJsonInt(json: []const u8, key: []const u8) ?u64 {
-    var needle_buf: [128]u8 = undefined;
-    const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\":", .{key}) catch return null;
-
-    const key_pos = std.mem.indexOf(u8, json, needle) orelse return null;
-    const after_key = key_pos + needle.len;
-
-    var i = after_key;
-    while (i < json.len and (json[i] == ' ' or json[i] == '\t')) : (i += 1) {}
-
-    if (i >= json.len) return null;
-
-    const start = i;
-    while (i < json.len and json[i] >= '0' and json[i] <= '9') : (i += 1) {}
-    if (i == start) return null;
-
-    return std.fmt.parseInt(u64, json[start..i], 10) catch null;
-}
-
-fn extractJsonId(json: []const u8) ?[]const u8 {
-    const needle = "\"id\":";
-    const pos = std.mem.indexOf(u8, json, needle) orelse return null;
-    const after = pos + needle.len;
-
-    var i = after;
-    while (i < json.len and (json[i] == ' ' or json[i] == '\t')) : (i += 1) {}
-
-    if (i >= json.len) return null;
-
-    if (json[i] == '"') {
-        i += 1;
-        const start = i;
-        while (i < json.len and json[i] != '"') : (i += 1) {}
-        if (i >= json.len) return null;
-        return json[start - 1 .. i + 1];
-    } else if (json[i] == 'n') {
-        return "null";
-    } else {
-        const start = i;
-        while (i < json.len and json[i] >= '0' and json[i] <= '9') : (i += 1) {}
-        if (i == start) return null;
-        return json[start..i];
-    }
-}
-
-fn jsonEscapeString(input: []const u8, output: []u8) []const u8 {
-    var out_pos: usize = 0;
-    for (input) |c| {
-        if (out_pos + 2 > output.len) break;
-        switch (c) {
-            '"' => {
-                output[out_pos] = '\\';
-                out_pos += 1;
-                output[out_pos] = '"';
-                out_pos += 1;
-            },
-            '\\' => {
-                output[out_pos] = '\\';
-                out_pos += 1;
-                output[out_pos] = '\\';
-                out_pos += 1;
-            },
-            '\n' => {
-                output[out_pos] = '\\';
-                out_pos += 1;
-                output[out_pos] = 'n';
-                out_pos += 1;
-            },
-            '\r' => {
-                output[out_pos] = '\\';
-                out_pos += 1;
-                output[out_pos] = 'r';
-                out_pos += 1;
-            },
-            '\t' => {
-                output[out_pos] = '\\';
-                out_pos += 1;
-                output[out_pos] = 't';
-                out_pos += 1;
-            },
-            else => {
-                if (c >= 0x20) {
-                    output[out_pos] = c;
-                    out_pos += 1;
-                }
-            },
-        }
-    }
-    return output[0..out_pos];
-}
-
-fn jsonRpcError(buf: []u8, id: ?[]const u8, code: i32, message: []const u8) []const u8 {
-    const id_str = id orelse "null";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","error":{{"code":{d},"message":"{s}"}},"id":{s}}}
-    , .{ code, message, id_str }) catch
-        "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}";
 }
 
 // ── Tests ────────────────────────────────────────────────────────

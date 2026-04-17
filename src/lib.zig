@@ -20,6 +20,7 @@ pub const HookHandler = @import("agent/HookHandler.zig");
 pub const McpServer = @import("agent/McpServer.zig");
 pub const McpDispatch = @import("agent/McpDispatch.zig");
 pub const McpBridge = @import("agent/McpBridge.zig");
+pub const McpTools = @import("agent/McpTools.zig");
 pub const in_band = @import("agent/in_band.zig");
 pub const forward = @import("agent/forward.zig");
 pub const PaneBackend = @import("agent/PaneBackend.zig");

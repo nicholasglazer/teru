@@ -23,6 +23,7 @@ const posix = std.posix;
 const HookHandler = @import("HookHandler.zig");
 const compat = @import("../compat.zig");
 const ipc = @import("../server/ipc.zig");
+const tools = @import("McpTools.zig");
 
 const HookListener = @This();
 
@@ -124,11 +125,11 @@ pub fn poll(self: *HookListener) void {
     var session_id: ?[]const u8 = null;
     var tool_name: ?[]const u8 = null;
     var tool_input: ?[]const u8 = null;
-    if (extractJsonString(body, "session_id", self.allocator)) |s| session_id = s;
-    if (extractJsonString(body, "tool_name", self.allocator)) |s| tool_name = s;
+    if (tools.extractJsonStringOwned(body, "session_id", self.allocator)) |s| session_id = s;
+    if (tools.extractJsonStringOwned(body, "tool_name", self.allocator)) |s| tool_name = s;
 
     // For PreToolUse, extract tool_input as raw JSON string
-    if (extractJsonString(body, "tool_input", self.allocator)) |s| tool_input = s;
+    if (tools.extractJsonStringOwned(body, "tool_input", self.allocator)) |s| tool_input = s;
 
     // Queue the event
     self.enqueue(.{
@@ -181,29 +182,3 @@ fn extractHttpBody(data: []const u8) ?[]const u8 {
     return null;
 }
 
-/// Quick extraction of a string field from JSON (avoids full parse).
-fn extractJsonString(json: []const u8, key: []const u8, allocator: std.mem.Allocator) ?[]const u8 {
-    // Search for "key":"value" pattern
-    var i: usize = 0;
-    while (i + key.len + 4 < json.len) : (i += 1) {
-        if (json[i] == '"' and i + 1 + key.len + 1 < json.len) {
-            if (std.mem.eql(u8, json[i + 1 ..][0..key.len], key) and json[i + 1 + key.len] == '"') {
-                // Found key — skip to value
-                var j = i + 1 + key.len + 1;
-                // Skip ":"
-                while (j < json.len and (json[j] == ':' or json[j] == ' ')) : (j += 1) {}
-                if (j >= json.len or json[j] != '"') return null;
-                j += 1; // skip opening quote
-                const start = j;
-                while (j < json.len and json[j] != '"') : (j += 1) {
-                    if (json[j] == '\\') j += 1; // skip escaped char
-                }
-                if (j > start) {
-                    return allocator.dupe(u8, json[start..j]) catch null;
-                }
-                return null;
-            }
-        }
-    }
-    return null;
-}
