@@ -78,8 +78,15 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
             const scroll_lines: i32 = if (delta > 0) 3 else -3;
             const pixel_delta: i32 = scroll_lines * @as(i32, @intCast(cell_h));
 
+            // Scroll-offset math runs in i32 so the carry-over loops
+            // can decrement below zero before clamping. u32→i32 on
+            // scroll_offset is safe: grid.rows × scrollback_lines is
+            // bounded at ~O(10^6), well under i32::MAX. Clamp the
+            // maximum (u32) explicitly to i32::MAX before the
+            // comparison so nothing silently wraps.
             var new_pixel = tp.pane.scroll_pixel + pixel_delta;
-            var new_offset: i32 = @intCast(tp.pane.scroll_offset);
+            var new_offset: i32 = @intCast(@min(tp.pane.scroll_offset, @as(u32, std.math.maxInt(i32))));
+            const max_offset_i32: i32 = @intCast(@min(max_offset, @as(u32, std.math.maxInt(i32))));
             const ch: i32 = @intCast(cell_h);
 
             while (new_pixel >= ch) {
@@ -95,8 +102,8 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
                 new_offset = 0;
                 new_pixel = 0;
             }
-            if (new_offset > @as(i32, @intCast(max_offset))) {
-                new_offset = @intCast(max_offset);
+            if (new_offset > max_offset_i32) {
+                new_offset = max_offset_i32;
                 new_pixel = 0;
             }
 
