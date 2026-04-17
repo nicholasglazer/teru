@@ -340,10 +340,14 @@ fn handleCommand(self: *Daemon, payload: []const u8) void {
         .focus_next => self.mux.focusNext(),
         .focus_prev => self.mux.focusPrev(),
         .split_vertical => {
-            _ = self.mux.spawnPane(24, 80) catch {};
+            _ = self.mux.spawnPane(24, 80) catch |err| {
+                std.debug.print("teru-daemon: split_vertical spawn failed: {s}\n", .{@errorName(err)});
+            };
         },
         .split_horizontal => {
-            _ = self.mux.spawnPane(24, 80) catch {};
+            _ = self.mux.spawnPane(24, 80) catch |err| {
+                std.debug.print("teru-daemon: split_horizontal spawn failed: {s}\n", .{@errorName(err)});
+            };
         },
         .close_pane => {
             if (self.mux.getActivePane()) |pane| {
