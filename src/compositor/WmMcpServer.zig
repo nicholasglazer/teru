@@ -874,7 +874,11 @@ fn toolScreenshot(self: *WmMcpServer, path: []const u8, buf: []u8, id: ?[]const 
 
 fn toolNotify(_: *WmMcpServer, message: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
-    // TODO: wire up Notification overlay when integrated into Server
+    // No overlay surface in teruwm yet — the notification goes to stderr
+    // so any tail -F of the compositor log sees it. A proper on-screen
+    // toast would need a scene_rect + a libteru text renderer anchored
+    // to the focused output; worth doing when session_lock_v1 lands
+    // (shared scene-tree plumbing).
     std.debug.print("teruwm: notify: {s}\n", .{message});
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"notification logged"}}]}},"id":{s}}}
