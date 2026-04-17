@@ -1,5 +1,82 @@
 # Changelog
 
+## Unreleased
+
+## 0.6.0 (2026-04-17)
+
+The protocol-completion milestone. 80+ commits since v0.5.0 land a fully
+functional desktop-grade compositor experience: every protocol Chromium,
+Vivaldi, Emacs, GIMP, and figma-linux need is now implemented, all
+live-hardware crash clusters from the v0.5.0 era are resolved, and the MCP
+surface gains physical-input primitives for AI-driven GUI automation.
+
+### Features — teruwm compositor protocols
+
+- **foreign_toplevel_management_v1** — waybar taskbar MVP; toplevels published and closeable from external clients.
+- **wlr_output_management_v1** — full kanshi, wlr-randr, and wdisplays support.
+- **virtual_keyboard_v1 + virtual_pointer_v1** — synthetic keyboard and pointer input.
+- **output_power_management_v1** — DPMS on/off/standby via wlopm and swayidle.
+- **cursor_shape_v1** — correct pointer/text/grab/resize cursors over browsers and Electron apps.
+- **presentation-time frame callbacks** — fixes Chromium/Vivaldi "stuck on splash screen".
+- **wp_viewporter + 5 chromium/vivaldi protocols (pack #1 + #2)** — completes the set required for GPU-composited clients to render correctly.
+- **data_control_v1 clipboard, tearing protocol, idle_inhibit (pack #2)**.
+- **zxdg_output_manager_v1** — enables grim and wlr-screencopy to work correctly.
+- **[keyboard] config section + 3 protocol globals** — tap-to-click, natural-scroll, disable-while-typing, clickfinger defaults applied per libinput device.
+
+### Features — teruwm UX
+
+- **Scene-rect borders on all windows** — xdg + xwayland (not just teru terminals); `border_color_focused`, `border_color_unfocused`, `border_width` config knobs; `border_width = 0` disables; ARGB alpha supported for translucent borders.
+- **Key repeat for held keybinds** — resize, focus/swap cycle, master count, zoom; 40 ms rate / 400 ms delay (sway-style).
+- **Touchpad defaults** — tap-to-click, drag, natural-scroll, disable-while-typing, clickfinger applied automatically per libinput device.
+- **Floating window focus** — `Mod+J/K` now cycles through floating windows in addition to tiled ones.
+- **Shifted digit keybinds** — `Mod+Shift+1..0` works on number-row shifted symbols (`!@#$%^&*()`); un-shifted back to digit before keybind lookup.
+- **Emacs/Steam/X11 close** — `Mod+Shift+C` now closes any X11 client via `wlr_xwayland_surface_close`.
+- **Float/tile semantics clarified** — `Mod+S` is unfloat-only; tile→float is `Mod+drag` (xmonad/bspwm semantics).
+- **Menu keybind** — moved from `Mod+D` to `Mod+M`.
+- **Launcher repaint fix** — Esc-from-launcher now correctly repaints the bar (forced dirty flag past signature dedupe).
+- **Close-last-terminal** — no longer leaves a ghost image on the output.
+
+### Features — AI-first MCP
+
+- **Unified McpFramework** — comptime-generic over `Impl` type; single codebase shared by teru agent server and teruwm compositor server.
+- **teruwm_mouse_path** — humanised cursor trajectory tool for browser/GUI automation.
+- **teruwm_click / teruwm_type / teruwm_press / teruwm_scroll** — physical input primitives for AI-driven GUI control.
+
+### Bug fixes
+
+- **Chromium/Vivaldi clicks land** — input-region filter + distinct button timestamps prevent duplicate events.
+- **Vivaldi loading splash** — `wlr_scene_output_send_frame_done` call added; no more freeze on splash.
+- **Emacs/Steam/GIMP XWayland keyboard focus** — `wlr_seat_keyboard_notify_enter` on the xwayland `wlr_surface` (not the parent).
+- **Emacs maps at correct size** — `Node.applyRect` dispatches to `wlr_xwayland_surface_configure` for xwayland slots; no more 1×1 square.
+- **4 shutdown crashes** — defer order, `wl_display_destroy_clients` before `wl_display_destroy`, `shutting_down` guard in `Output.handleDestroy`, gentler scene-buffer teardown.
+- **figma-linux + Electron clicks** — fallback pointer to toplevel root when every subsurface rejects the input region.
+- **Scroll offset wrap** — `u32→i32` cast guarded against silent overflow.
+- **8 silent `catch {}` sites** — now log real failures instead of swallowing them.
+- **XdgView handleDestroy** — no longer pre-removes FTL links before the toplevel is fully torn down.
+- **Server.deinit** — properly unregisters all listeners and frees collections.
+- **execRestart** — buffer sizing corrected; `FD_CLOEXEC` restored on exec failure.
+- **scheduleRender** — iterates all outputs, not just primary.
+
+### Refactors (non-breaking)
+
+- **Server.zig split** — decomposed into 8 focused modules: `ServerListeners`, `ServerInput`, `ServerCursor`, `ServerFocus`, `ServerLayout`, `ServerScratchpad`, `ServerRestart`, `ServerScreenshot`.
+- **main.zig split** — decomposed into `modes/` subdirectory: `common`, `raw`, `tui`, `windowed`, `daemon`.
+- **McpFramework** — comptime-generic unification; one codebase, two server instantiations.
+- **FontSynth** — box-drawing synthesis extracted from `FontAtlas`.
+- **Retire `miozu_output_layout_first_*`** — replaced by `activeOutputDims`.
+- **stbtt externs** — hand-declared; `@cImport` dropped.
+
+### Performance
+
+- **O(1) `Node.findById` + `terminalPaneById`** — `AutoHashMap` indices replace linear scans.
+- **Bar render dedupe** — signature-based short-circuit skips SIMD blit on unchanged frames.
+- **FBA arrange scratch** — zero heap allocation per vsync in layout engine.
+- **pixman damage regions** — scene buffer commits carry precise damage, reducing GPU blit cost.
+- **`barSignature`** — reads `urgent_count` and push counter in O(1).
+- **Border-only focus repaint** — saves N×300 µs per focus flip by repainting only border rects.
+
+No breaking config changes. No breaking MCP API changes. All additions are purely additive — upgrade is drop-in.
+
 ## 0.5.0 (2026-04-13)
 
 The xmonad-parity milestone. 25 patches since 0.4.1 landed a tiling Wayland
