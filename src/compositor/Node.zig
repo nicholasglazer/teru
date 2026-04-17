@@ -70,6 +70,14 @@ app_id_len: [max_nodes]u8 = [_]u8{0} ** max_nodes,
 // on workspaces containing any urgent node.
 urgent: [max_nodes]bool = [_]bool{false} ** max_nodes,
 
+// Per-workspace urgent count. Maintained incrementally by
+// markUrgent / clearUrgent / moveSlotToWorkspace / remove so
+// `anyUrgentOnWorkspace` is O(1) instead of scanning 256 slots
+// once per pill × 10 pills × 60 Hz on the bar render path. Index
+// in [0..10); HIDDEN_WS (0xFF) doesn't participate — hidden
+// scratchpads are not shown in bar pills.
+urgent_count_per_ws: [10]u16 = [_]u16{0} ** 10,
+
 // Scratchpad name — non-empty iff this node is a scratchpad managed
 // by the xmonad NamedScratchpad pattern. Toggling a scratchpad flips
 // its `workspace` between HIDDEN_WS and the currently-focused real
@@ -132,6 +140,13 @@ pub fn addTerminal(self: *Node, id: u64, ws: u8) ?u16 {
 pub fn remove(self: *Node, id: u64) bool {
     for (0..max_nodes) |i| {
         if (self.kind[i] != .empty and self.node_id[i] == id) {
+            // Keep urgent-count coherent: a removed urgent node
+            // means the workspace no longer has this particular
+            // reason to show the pill indicator.
+            if (self.urgent[i]) {
+                const ws = self.workspace[i];
+                if (ws < self.urgent_count_per_ws.len) self.urgent_count_per_ws[ws] -|= 1;
+            }
             self.kind[i] = .empty;
             self.node_id[i] = 0;
             self.scene_tree[i] = null;
@@ -158,6 +173,8 @@ pub fn markUrgent(self: *Node, slot: u16) bool {
     if (slot >= max_nodes or self.kind[slot] == .empty) return false;
     if (self.urgent[slot]) return false;
     self.urgent[slot] = true;
+    const ws = self.workspace[slot];
+    if (ws < self.urgent_count_per_ws.len) self.urgent_count_per_ws[ws] += 1;
     return true;
 }
 
@@ -166,15 +183,29 @@ pub fn clearUrgent(self: *Node, slot: u16) bool {
     if (slot >= max_nodes) return false;
     if (!self.urgent[slot]) return false;
     self.urgent[slot] = false;
+    const ws = self.workspace[slot];
+    if (ws < self.urgent_count_per_ws.len) self.urgent_count_per_ws[ws] -|= 1;
     return true;
 }
 
-/// Any urgent node on workspace `ws`? Bar uses this for pill rendering.
-pub fn anyUrgentOnWorkspace(self: *const Node, ws: u8) bool {
-    for (0..max_nodes) |i| {
-        if (self.kind[i] != .empty and self.workspace[i] == ws and self.urgent[i]) return true;
+/// Move a slot to a new workspace, keeping urgent-count in sync.
+/// All external mutations of `workspace[slot]` should go through
+/// this so the bitfield stays coherent.
+pub fn moveSlotToWorkspace(self: *Node, slot: u16, new_ws: u8) void {
+    if (slot >= max_nodes or self.kind[slot] == .empty) return;
+    const old_ws = self.workspace[slot];
+    if (old_ws == new_ws) return;
+    if (self.urgent[slot]) {
+        if (old_ws < self.urgent_count_per_ws.len) self.urgent_count_per_ws[old_ws] -|= 1;
+        if (new_ws < self.urgent_count_per_ws.len) self.urgent_count_per_ws[new_ws] += 1;
     }
-    return false;
+    self.workspace[slot] = new_ws;
+}
+
+/// Any urgent node on workspace `ws`? O(1) via the per-ws counter.
+pub fn anyUrgentOnWorkspace(self: *const Node, ws: u8) bool {
+    if (ws >= self.urgent_count_per_ws.len) return false;
+    return self.urgent_count_per_ws[ws] > 0;
 }
 
 // ── Scratchpad identity (xmonad NamedScratchpad model) ─────────
@@ -448,4 +479,42 @@ test "scratchpad — truncates long names" {
     // 15-char truncation (16 bytes w/ null).
     try std.testing.expectEqual(@as(u8, max_scratchpad_name - 1), reg.scratchpad_name_len[s]);
     try std.testing.expect(reg.findByScratchpad(too_long[0 .. max_scratchpad_name - 1]) != null);
+}
+
+test "urgent — per-ws count stays coherent under mark/clear/move/remove" {
+    var reg = Node{};
+    const a = reg.addTerminal(1, 3).?;
+    const b = reg.addTerminal(2, 3).?;
+    const c = reg.addTerminal(3, 5).?;
+    try std.testing.expect(!reg.anyUrgentOnWorkspace(3));
+    try std.testing.expect(!reg.anyUrgentOnWorkspace(5));
+
+    // markUrgent: per-ws counter tracks transitions only.
+    try std.testing.expect(reg.markUrgent(a));
+    try std.testing.expect(reg.anyUrgentOnWorkspace(3));
+    try std.testing.expect(!reg.anyUrgentOnWorkspace(5));
+    // Repeat marks return false and don't double-count.
+    try std.testing.expect(!reg.markUrgent(a));
+
+    // Second urgent on same workspace — still O(1) answer.
+    try std.testing.expect(reg.markUrgent(b));
+
+    // Clear one of two, workspace still urgent because of the other.
+    try std.testing.expect(reg.clearUrgent(a));
+    try std.testing.expect(reg.anyUrgentOnWorkspace(3));
+
+    // Move the remaining urgent node to a new workspace — both ws
+    // counters update in lockstep.
+    reg.moveSlotToWorkspace(b, 5);
+    try std.testing.expect(!reg.anyUrgentOnWorkspace(3));
+    try std.testing.expect(reg.anyUrgentOnWorkspace(5));
+
+    // Removing an urgent node decrements the counter for its ws.
+    _ = reg.remove(2);
+    try std.testing.expect(!reg.anyUrgentOnWorkspace(5));
+
+    // Non-urgent node on ws=5 — counter was at 0, markUrgent brings
+    // it to 1 and flips the predicate.
+    try std.testing.expect(reg.markUrgent(c));
+    try std.testing.expect(reg.anyUrgentOnWorkspace(5));
 }

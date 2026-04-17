@@ -1573,10 +1573,12 @@ pub fn moveNodeToWorkspace(self: *Server, nid: u64, target: u8) void {
 
     // Update node identity. Workspace list bookkeeping: remove from old
     // node_ids (if it was tiled there), add to new.
-    self.nodes.workspace[slot] = target;
+    self.nodes.moveSlotToWorkspace(slot, target);
     self.layout_engine.workspaces[from].removeNode(nid);
     if (!self.nodes.floating[slot]) {
-        self.layout_engine.workspaces[target].addNode(self.zig_allocator, nid) catch {};
+        self.layout_engine.workspaces[target].addNode(self.zig_allocator, nid) catch |e| {
+            std.debug.print("teruwm: moveNodeToWorkspace addNode failed: {s}\n", .{@errorName(e)});
+        };
     }
 
     // Re-arrange every output showing either ws (cheap: N ≤ 4).
