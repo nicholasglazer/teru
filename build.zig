@@ -170,6 +170,11 @@ pub fn build(b: *std.Build) void {
         miozu_mod.linkSystemLibrary("wayland-server", .{});
         miozu_mod.linkSystemLibrary("xkbcommon", .{});
         miozu_mod.linkSystemLibrary("pixman-1", .{});
+        // libinput for per-device tap-to-click / natural-scroll / DWT
+        // config. wlroots' DRM+libinput backend already transitively
+        // pulls this in at runtime; we link explicitly so the
+        // libinput_device_config_* symbols resolve at link time.
+        miozu_mod.linkSystemLibrary("input", .{});
 
         // stb_truetype for terminal pane rendering
         miozu_mod.addCSourceFile(.{

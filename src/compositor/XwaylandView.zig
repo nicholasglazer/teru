@@ -81,7 +81,14 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         server.next_node_id += 1;
 
         if (view.scene_tree) |tree| {
-            _ = server.nodes.addSurface(server.zig_allocator, view.node_id, ws, null, tree, null);
+            if (server.nodes.addSurface(server.zig_allocator, view.node_id, ws, null, tree, null)) |slot| {
+                // Distinguishes this node from XDG toplevels so applyRect
+                // dispatches to wlr_xwayland_surface_configure — without
+                // this, Emacs / Steam etc. never receive geometry and
+                // stay at whatever pre-map size X assigned them (a 1x1
+                // square in the top-left is the usual outcome).
+                server.nodes.xwayland_surface[slot] = view.surface;
+            }
         }
         server.layout_engine.workspaces[ws].addNode(server.zig_allocator, view.node_id) catch return;
 

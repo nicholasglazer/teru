@@ -660,7 +660,7 @@ pub const Keybinds = struct {
         _ = self.add(n, M, 'z', .zoom_toggle);
         _ = self.add(n, M, 'f', .fullscreen_toggle);
         _ = self.add(n, M, 's', .float_toggle);
-        _ = self.add(n, M, 'd', .launcher_toggle);
+        _ = self.add(n, M, 'm', .launcher_toggle);
 
         // Modes + UI
         _ = self.add(n, M, '/', .mode_search);
