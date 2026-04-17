@@ -347,193 +347,312 @@ fn handleToolsList(_: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
         jsonRpcError(buf, id, -32603, "Internal error");
 }
 
+// ── Tool dispatch table ────────────────────────────────────────
+//
+// Each entry owns its arg-extraction — the thunks unpack
+// `params_body` (already stripped to the RPC "params" object) and
+// call the underlying tool method. StaticStringMap gives O(1)
+// hashed lookup instead of a 28-way std.mem.eql chain; adding a
+// tool is one map entry + one thunk, no edits to the dispatcher.
+const ToolThunk = *const fn (*WmMcpServer, []const u8, []u8, ?[]const u8) []const u8;
+
+const tool_table = std.StaticStringMap(ToolThunk).initComptime(.{
+    .{ "teruwm_list_windows", thunkListWindows },
+    .{ "teruwm_spawn_terminal", thunkSpawnTerminal },
+    .{ "teruwm_close_window", thunkCloseWindow },
+    .{ "teruwm_focus_window", thunkFocusWindow },
+    .{ "teruwm_move_to_workspace", thunkMoveToWorkspace },
+    .{ "teruwm_list_workspaces", thunkListWorkspaces },
+    .{ "teruwm_switch_workspace", thunkSwitchWorkspace },
+    .{ "teruwm_set_layout", thunkSetLayout },
+    .{ "teruwm_get_config", thunkGetConfig },
+    .{ "teruwm_set_config", thunkSetConfig },
+    .{ "teruwm_screenshot", thunkScreenshot },
+    .{ "teruwm_notify", thunkNotify },
+    .{ "teruwm_reload_config", thunkReloadConfig },
+    .{ "teruwm_screenshot_pane", thunkScreenshotPane },
+    .{ "teruwm_set_name", thunkSetName },
+    .{ "teruwm_perf", thunkPerf },
+    .{ "teruwm_restart", thunkRestart },
+    .{ "teruwm_toggle_bar", thunkToggleBar },
+    .{ "teruwm_set_bar", thunkSetBar },
+    .{ "teruwm_set_widget", thunkSetWidget },
+    .{ "teruwm_delete_widget", thunkDeleteWidget },
+    .{ "teruwm_list_widgets", thunkListWidgets },
+    .{ "teruwm_test_drag", thunkTestDrag },
+    .{ "teruwm_test_key", thunkTestKey },
+    .{ "teruwm_test_move", thunkTestMove },
+    .{ "teruwm_mouse_path", thunkMousePath },
+    .{ "teruwm_click", thunkClick },
+    .{ "teruwm_type", thunkType },
+    .{ "teruwm_press", thunkPress },
+    .{ "teruwm_scroll", thunkScroll },
+    .{ "teruwm_toggle_scratchpad", thunkToggleScratchpad },
+    .{ "teruwm_scratchpad", thunkScratchpad },
+    .{ "teruwm_subscribe_events", thunkSubscribeEvents },
+    .{ "teruwm_session_save", thunkSessionSave },
+    .{ "teruwm_session_restore", thunkSessionRestore },
+});
+
 fn handleToolsCall(self: *WmMcpServer, body: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const params_body = extractJsonObject(body, "params") orelse
         return jsonRpcError(buf, id, -32602, "Missing params");
-    // "name" is a sibling of "arguments" in params, not nested inside it
     const tool_name = extractJsonString(params_body, "name") orelse
         return jsonRpcError(buf, id, -32602, "Missing tool name");
+    if (tool_table.get(tool_name)) |thunk| return thunk(self, params_body, buf, id);
+    return jsonRpcError(buf, id, -32602, "Unknown tool");
+}
 
-    if (std.mem.eql(u8, tool_name, "teruwm_list_windows")) {
-        return self.toolListWindows(buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_spawn_terminal")) {
-        const ws = extractNestedJsonInt(params_body, "workspace") orelse 0;
-        return self.toolSpawnTerminal(@intCast(ws), buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_close_window")) {
-        const nid = extractNestedJsonInt(params_body, "node_id") orelse
-            return jsonRpcError(buf, id, -32602, "Missing node_id");
-        return self.toolCloseWindow(@intCast(nid), buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_focus_window")) {
-        const nid = extractNestedJsonInt(params_body, "node_id") orelse
-            return jsonRpcError(buf, id, -32602, "Missing node_id");
-        return self.toolFocusWindow(@intCast(nid), buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_move_to_workspace")) {
-        const nid = extractNestedJsonInt(params_body, "node_id") orelse
-            return jsonRpcError(buf, id, -32602, "Missing node_id");
-        const ws = extractNestedJsonInt(params_body, "workspace") orelse
-            return jsonRpcError(buf, id, -32602, "Missing workspace");
-        return self.toolMoveToWorkspace(@intCast(nid), @intCast(ws), buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_list_workspaces")) {
-        return self.toolListWorkspaces(buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_switch_workspace")) {
-        const ws = extractNestedJsonInt(params_body, "workspace") orelse
-            return jsonRpcError(buf, id, -32602, "Missing workspace");
-        return self.toolSwitchWorkspace(@intCast(ws), buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_set_layout")) {
-        const layout_str = extractNestedJsonString(params_body, "layout") orelse
-            return jsonRpcError(buf, id, -32602, "Missing layout");
-        const ws = extractNestedJsonInt(params_body, "workspace") orelse 0;
-        return self.toolSetLayout(@intCast(ws), layout_str, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_get_config")) {
-        return self.toolGetConfig(buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_set_config")) {
-        const key = extractNestedJsonString(params_body, "key") orelse
-            return jsonRpcError(buf, id, -32602, "Missing key");
-        const value = extractNestedJsonString(params_body, "value") orelse
-            return jsonRpcError(buf, id, -32602, "Missing value");
-        return self.toolSetConfig(key, value, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_screenshot")) {
-        const path = extractNestedJsonString(params_body, "path") orelse "/tmp/teruwm-screenshot.png";
-        return self.toolScreenshot(path, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_notify")) {
-        const message = extractNestedJsonString(params_body, "message") orelse
-            return jsonRpcError(buf, id, -32602, "Missing message");
-        return self.toolNotify(message, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_reload_config")) {
-        return self.toolReloadConfig(buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_screenshot_pane")) {
-        const path = extractNestedJsonString(params_body, "path");
-        return self.toolScreenshotPane(params_body, path, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_set_name")) {
-        const new_name = extractNestedJsonString(params_body, "new_name") orelse
-            return jsonRpcError(buf, id, -32602, "Missing new_name");
-        return self.toolSetName(params_body, new_name, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_perf")) {
-        return self.toolPerf(buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_restart")) {
-        return self.toolRestart(buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_toggle_bar")) {
-        const which = extractNestedJsonString(params_body, "which") orelse
-            return jsonRpcError(buf, id, -32602, "Missing which (top|bottom)");
-        return self.toolToggleBar(which, null, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_set_bar")) {
-        const which = extractNestedJsonString(params_body, "which") orelse
-            return jsonRpcError(buf, id, -32602, "Missing which (top|bottom)");
-        // Bool extraction: look for "enabled":true / "enabled":false
-        const args = extractJsonObject(params_body, "arguments") orelse params_body;
-        const enabled: bool = std.mem.indexOf(u8, args, "\"enabled\":true") != null;
-        return self.toolToggleBar(which, enabled, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_set_widget")) {
-        const w_name = extractNestedJsonString(params_body, "name") orelse
-            return jsonRpcError(buf, id, -32602, "Missing name");
-        const w_text = extractNestedJsonString(params_body, "text") orelse
-            return jsonRpcError(buf, id, -32602, "Missing text");
-        const w_class = extractNestedJsonString(params_body, "class") orelse "";
-        return self.toolSetWidget(w_name, w_text, w_class, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_delete_widget")) {
-        const w_name = extractNestedJsonString(params_body, "name") orelse
-            return jsonRpcError(buf, id, -32602, "Missing name");
-        return self.toolDeleteWidget(w_name, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_list_widgets")) {
-        return self.toolListWidgets(buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_test_drag")) {
-        const fx = extractNestedJsonInt(params_body, "from_x") orelse
-            return jsonRpcError(buf, id, -32602, "Missing from_x");
-        const fy = extractNestedJsonInt(params_body, "from_y") orelse
-            return jsonRpcError(buf, id, -32602, "Missing from_y");
-        const tx = extractNestedJsonInt(params_body, "to_x") orelse
-            return jsonRpcError(buf, id, -32602, "Missing to_x");
-        const ty = extractNestedJsonInt(params_body, "to_y") orelse
-            return jsonRpcError(buf, id, -32602, "Missing to_y");
-        const args = extractJsonObject(params_body, "arguments") orelse params_body;
-        const super_held = std.mem.indexOf(u8, args, "\"super\":true") != null;
-        const button: u32 = blk: {
-            const b = extractNestedJsonInt(params_body, "button") orelse break :blk 272;
-            break :blk @intCast(b);
-        };
-        return self.toolTestDrag(@intCast(fx), @intCast(fy), @intCast(tx), @intCast(ty), super_held, button, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_test_key")) {
-        const action = extractNestedJsonString(params_body, "action") orelse
-            return jsonRpcError(buf, id, -32602, "Missing action");
-        return self.toolTestKey(action, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_test_move")) {
-        const x = extractNestedJsonInt(params_body, "x") orelse
-            return jsonRpcError(buf, id, -32602, "Missing x");
-        const y = extractNestedJsonInt(params_body, "y") orelse
-            return jsonRpcError(buf, id, -32602, "Missing y");
-        return self.toolTestMove(@intCast(x), @intCast(y), buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_mouse_path")) {
-        const fx = extractNestedJsonInt(params_body, "from_x") orelse
-            return jsonRpcError(buf, id, -32602, "Missing from_x");
-        const fy = extractNestedJsonInt(params_body, "from_y") orelse
-            return jsonRpcError(buf, id, -32602, "Missing from_y");
-        const tx = extractNestedJsonInt(params_body, "to_x") orelse
-            return jsonRpcError(buf, id, -32602, "Missing to_x");
-        const ty = extractNestedJsonInt(params_body, "to_y") orelse
-            return jsonRpcError(buf, id, -32602, "Missing to_y");
-        // Defaults from wm_config; explicit args override
-        const dur_raw = extractNestedJsonInt(params_body, "duration_ms");
-        const dur: u32 = if (dur_raw) |d| @intCast(@max(0, d)) else self.server.wm_config.mouse_path_default_ms;
-        const humanize_true = std.mem.indexOf(u8, params_body, "\"humanize\":true") != null;
-        const humanize_false = std.mem.indexOf(u8, params_body, "\"humanize\":false") != null;
-        const humanize: bool = if (humanize_true) true else if (humanize_false) false else self.server.wm_config.mouse_humanize;
-        const btn_raw = extractNestedJsonInt(params_body, "button");
-        const btn: ?u32 = if (btn_raw) |b| @intCast(@max(0, b)) else null;
-        const super_held = std.mem.indexOf(u8, params_body, "\"super\":true") != null;
-        return self.toolMousePath(@intCast(fx), @intCast(fy), @intCast(tx), @intCast(ty), dur, humanize, btn, super_held, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_click")) {
-        const x = extractNestedJsonInt(params_body, "x") orelse
-            return jsonRpcError(buf, id, -32602, "Missing x");
-        const y = extractNestedJsonInt(params_body, "y") orelse
-            return jsonRpcError(buf, id, -32602, "Missing y");
-        const args_obj = extractJsonObject(params_body, "arguments") orelse params_body;
-        const button_str = extractJsonString(args_obj, "button") orelse "left";
-        const button: u32 = if (std.mem.eql(u8, button_str, "right")) 274
-            else if (std.mem.eql(u8, button_str, "middle")) 273
-            else 272; // left default
-        return self.toolClick(@intCast(x), @intCast(y), button, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_type")) {
-        const text = extractNestedJsonString(params_body, "text") orelse
-            return jsonRpcError(buf, id, -32602, "Missing text");
-        return self.toolType(text, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_press")) {
-        const key = extractNestedJsonString(params_body, "key") orelse
-            return jsonRpcError(buf, id, -32602, "Missing key");
-        const args_obj = extractJsonObject(params_body, "arguments") orelse params_body;
-        const ctrl = std.mem.indexOf(u8, args_obj, "\"ctrl\":true") != null;
-        const shift = std.mem.indexOf(u8, args_obj, "\"shift\":true") != null;
-        const alt = std.mem.indexOf(u8, args_obj, "\"alt\":true") != null;
-        const sup = std.mem.indexOf(u8, args_obj, "\"super\":true") != null;
-        return self.toolPress(key, ctrl, shift, alt, sup, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_scroll")) {
-        const x = extractNestedJsonInt(params_body, "x") orelse
-            return jsonRpcError(buf, id, -32602, "Missing x");
-        const y = extractNestedJsonInt(params_body, "y") orelse
-            return jsonRpcError(buf, id, -32602, "Missing y");
-        const dy = extractNestedJsonInt(params_body, "dy") orelse 15;
-        return self.toolScroll(@intCast(x), @intCast(y), @intCast(dy), buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_toggle_scratchpad")) {
-        const idx = extractNestedJsonInt(params_body, "index") orelse
-            return jsonRpcError(buf, id, -32602, "Missing index");
-        if (idx < 0 or idx > 8)
-            return jsonRpcError(buf, id, -32602, "index must be 0..8");
-        return self.toolToggleScratchpad(@intCast(idx), buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_scratchpad")) {
-        const name = extractNestedJsonString(params_body, "name") orelse
-            return jsonRpcError(buf, id, -32602, "Missing name");
-        const cmd = extractNestedJsonString(params_body, "cmd");
-        return self.toolScratchpad(name, cmd, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_subscribe_events")) {
-        return self.toolSubscribeEvents(buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_session_save")) {
-        const name = extractNestedJsonString(params_body, "name") orelse "default";
-        return self.toolSessionSave(name, buf, id);
-    } else if (std.mem.eql(u8, tool_name, "teruwm_session_restore")) {
-        const name = extractNestedJsonString(params_body, "name") orelse "default";
-        return self.toolSessionRestore(name, buf, id);
-    } else {
-        return jsonRpcError(buf, id, -32602, "Unknown tool");
-    }
+// ── Thunks (arg unpacking; uniform signature) ──────────────────
+
+fn thunkListWindows(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    _ = p;
+    return self.toolListWindows(buf, id);
+}
+
+fn thunkSpawnTerminal(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const ws = extractNestedJsonInt(p, "workspace") orelse 0;
+    return self.toolSpawnTerminal(@intCast(ws), buf, id);
+}
+
+fn thunkCloseWindow(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const nid = extractNestedJsonInt(p, "node_id") orelse
+        return jsonRpcError(buf, id, -32602, "Missing node_id");
+    return self.toolCloseWindow(@intCast(nid), buf, id);
+}
+
+fn thunkFocusWindow(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const nid = extractNestedJsonInt(p, "node_id") orelse
+        return jsonRpcError(buf, id, -32602, "Missing node_id");
+    return self.toolFocusWindow(@intCast(nid), buf, id);
+}
+
+fn thunkMoveToWorkspace(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const nid = extractNestedJsonInt(p, "node_id") orelse
+        return jsonRpcError(buf, id, -32602, "Missing node_id");
+    const ws = extractNestedJsonInt(p, "workspace") orelse
+        return jsonRpcError(buf, id, -32602, "Missing workspace");
+    return self.toolMoveToWorkspace(@intCast(nid), @intCast(ws), buf, id);
+}
+
+fn thunkListWorkspaces(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    _ = p;
+    return self.toolListWorkspaces(buf, id);
+}
+
+fn thunkSwitchWorkspace(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const ws = extractNestedJsonInt(p, "workspace") orelse
+        return jsonRpcError(buf, id, -32602, "Missing workspace");
+    return self.toolSwitchWorkspace(@intCast(ws), buf, id);
+}
+
+fn thunkSetLayout(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const layout_str = extractNestedJsonString(p, "layout") orelse
+        return jsonRpcError(buf, id, -32602, "Missing layout");
+    const ws = extractNestedJsonInt(p, "workspace") orelse 0;
+    return self.toolSetLayout(@intCast(ws), layout_str, buf, id);
+}
+
+fn thunkGetConfig(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    _ = p;
+    return self.toolGetConfig(buf, id);
+}
+
+fn thunkSetConfig(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const key = extractNestedJsonString(p, "key") orelse
+        return jsonRpcError(buf, id, -32602, "Missing key");
+    const value = extractNestedJsonString(p, "value") orelse
+        return jsonRpcError(buf, id, -32602, "Missing value");
+    return self.toolSetConfig(key, value, buf, id);
+}
+
+fn thunkScreenshot(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const path = extractNestedJsonString(p, "path") orelse "/tmp/teruwm-screenshot.png";
+    return self.toolScreenshot(path, buf, id);
+}
+
+fn thunkNotify(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const message = extractNestedJsonString(p, "message") orelse
+        return jsonRpcError(buf, id, -32602, "Missing message");
+    return self.toolNotify(message, buf, id);
+}
+
+fn thunkReloadConfig(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    _ = p;
+    return self.toolReloadConfig(buf, id);
+}
+
+fn thunkScreenshotPane(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const path = extractNestedJsonString(p, "path");
+    return self.toolScreenshotPane(p, path, buf, id);
+}
+
+fn thunkSetName(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const new_name = extractNestedJsonString(p, "new_name") orelse
+        return jsonRpcError(buf, id, -32602, "Missing new_name");
+    return self.toolSetName(p, new_name, buf, id);
+}
+
+fn thunkPerf(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    _ = p;
+    return self.toolPerf(buf, id);
+}
+
+fn thunkRestart(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    _ = p;
+    return self.toolRestart(buf, id);
+}
+
+fn thunkToggleBar(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const which = extractNestedJsonString(p, "which") orelse
+        return jsonRpcError(buf, id, -32602, "Missing which (top|bottom)");
+    return self.toolToggleBar(which, null, buf, id);
+}
+
+fn thunkSetBar(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const which = extractNestedJsonString(p, "which") orelse
+        return jsonRpcError(buf, id, -32602, "Missing which (top|bottom)");
+    const args = extractJsonObject(p, "arguments") orelse p;
+    const enabled: bool = std.mem.indexOf(u8, args, "\"enabled\":true") != null;
+    return self.toolToggleBar(which, enabled, buf, id);
+}
+
+fn thunkSetWidget(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const w_name = extractNestedJsonString(p, "name") orelse
+        return jsonRpcError(buf, id, -32602, "Missing name");
+    const w_text = extractNestedJsonString(p, "text") orelse
+        return jsonRpcError(buf, id, -32602, "Missing text");
+    const w_class = extractNestedJsonString(p, "class") orelse "";
+    return self.toolSetWidget(w_name, w_text, w_class, buf, id);
+}
+
+fn thunkDeleteWidget(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const w_name = extractNestedJsonString(p, "name") orelse
+        return jsonRpcError(buf, id, -32602, "Missing name");
+    return self.toolDeleteWidget(w_name, buf, id);
+}
+
+fn thunkListWidgets(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    _ = p;
+    return self.toolListWidgets(buf, id);
+}
+
+fn thunkTestDrag(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const fx = extractNestedJsonInt(p, "from_x") orelse
+        return jsonRpcError(buf, id, -32602, "Missing from_x");
+    const fy = extractNestedJsonInt(p, "from_y") orelse
+        return jsonRpcError(buf, id, -32602, "Missing from_y");
+    const tx = extractNestedJsonInt(p, "to_x") orelse
+        return jsonRpcError(buf, id, -32602, "Missing to_x");
+    const ty = extractNestedJsonInt(p, "to_y") orelse
+        return jsonRpcError(buf, id, -32602, "Missing to_y");
+    const args = extractJsonObject(p, "arguments") orelse p;
+    const super_held = std.mem.indexOf(u8, args, "\"super\":true") != null;
+    const button: u32 = blk: {
+        const b = extractNestedJsonInt(p, "button") orelse break :blk 272;
+        break :blk @intCast(b);
+    };
+    return self.toolTestDrag(@intCast(fx), @intCast(fy), @intCast(tx), @intCast(ty), super_held, button, buf, id);
+}
+
+fn thunkTestKey(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const action = extractNestedJsonString(p, "action") orelse
+        return jsonRpcError(buf, id, -32602, "Missing action");
+    return self.toolTestKey(action, buf, id);
+}
+
+fn thunkTestMove(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const x = extractNestedJsonInt(p, "x") orelse
+        return jsonRpcError(buf, id, -32602, "Missing x");
+    const y = extractNestedJsonInt(p, "y") orelse
+        return jsonRpcError(buf, id, -32602, "Missing y");
+    return self.toolTestMove(@intCast(x), @intCast(y), buf, id);
+}
+
+fn thunkMousePath(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const fx = extractNestedJsonInt(p, "from_x") orelse
+        return jsonRpcError(buf, id, -32602, "Missing from_x");
+    const fy = extractNestedJsonInt(p, "from_y") orelse
+        return jsonRpcError(buf, id, -32602, "Missing from_y");
+    const tx = extractNestedJsonInt(p, "to_x") orelse
+        return jsonRpcError(buf, id, -32602, "Missing to_x");
+    const ty = extractNestedJsonInt(p, "to_y") orelse
+        return jsonRpcError(buf, id, -32602, "Missing to_y");
+    const dur_raw = extractNestedJsonInt(p, "duration_ms");
+    const dur: u32 = if (dur_raw) |d| @intCast(@max(0, d)) else self.server.wm_config.mouse_path_default_ms;
+    const humanize_true = std.mem.indexOf(u8, p, "\"humanize\":true") != null;
+    const humanize_false = std.mem.indexOf(u8, p, "\"humanize\":false") != null;
+    const humanize: bool = if (humanize_true) true else if (humanize_false) false else self.server.wm_config.mouse_humanize;
+    const btn_raw = extractNestedJsonInt(p, "button");
+    const btn: ?u32 = if (btn_raw) |b| @intCast(@max(0, b)) else null;
+    const super_held = std.mem.indexOf(u8, p, "\"super\":true") != null;
+    return self.toolMousePath(@intCast(fx), @intCast(fy), @intCast(tx), @intCast(ty), dur, humanize, btn, super_held, buf, id);
+}
+
+fn thunkClick(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const x = extractNestedJsonInt(p, "x") orelse
+        return jsonRpcError(buf, id, -32602, "Missing x");
+    const y = extractNestedJsonInt(p, "y") orelse
+        return jsonRpcError(buf, id, -32602, "Missing y");
+    const args_obj = extractJsonObject(p, "arguments") orelse p;
+    const button_str = extractJsonString(args_obj, "button") orelse "left";
+    const button: u32 = if (std.mem.eql(u8, button_str, "right")) 274 else if (std.mem.eql(u8, button_str, "middle")) 273 else 272;
+    return self.toolClick(@intCast(x), @intCast(y), button, buf, id);
+}
+
+fn thunkType(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const text = extractNestedJsonString(p, "text") orelse
+        return jsonRpcError(buf, id, -32602, "Missing text");
+    return self.toolType(text, buf, id);
+}
+
+fn thunkPress(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const key = extractNestedJsonString(p, "key") orelse
+        return jsonRpcError(buf, id, -32602, "Missing key");
+    const args_obj = extractJsonObject(p, "arguments") orelse p;
+    const ctrl = std.mem.indexOf(u8, args_obj, "\"ctrl\":true") != null;
+    const shift = std.mem.indexOf(u8, args_obj, "\"shift\":true") != null;
+    const alt = std.mem.indexOf(u8, args_obj, "\"alt\":true") != null;
+    const sup = std.mem.indexOf(u8, args_obj, "\"super\":true") != null;
+    return self.toolPress(key, ctrl, shift, alt, sup, buf, id);
+}
+
+fn thunkScroll(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const x = extractNestedJsonInt(p, "x") orelse
+        return jsonRpcError(buf, id, -32602, "Missing x");
+    const y = extractNestedJsonInt(p, "y") orelse
+        return jsonRpcError(buf, id, -32602, "Missing y");
+    const dy = extractNestedJsonInt(p, "dy") orelse 15;
+    return self.toolScroll(@intCast(x), @intCast(y), @intCast(dy), buf, id);
+}
+
+fn thunkToggleScratchpad(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const idx = extractNestedJsonInt(p, "index") orelse
+        return jsonRpcError(buf, id, -32602, "Missing index");
+    if (idx < 0 or idx > 8) return jsonRpcError(buf, id, -32602, "index must be 0..8");
+    return self.toolToggleScratchpad(@intCast(idx), buf, id);
+}
+
+fn thunkScratchpad(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const name = extractNestedJsonString(p, "name") orelse
+        return jsonRpcError(buf, id, -32602, "Missing name");
+    const cmd = extractNestedJsonString(p, "cmd");
+    return self.toolScratchpad(name, cmd, buf, id);
+}
+
+fn thunkSubscribeEvents(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    _ = p;
+    return self.toolSubscribeEvents(buf, id);
+}
+
+fn thunkSessionSave(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const name = extractNestedJsonString(p, "name") orelse "default";
+    return self.toolSessionSave(name, buf, id);
+}
+
+fn thunkSessionRestore(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const name = extractNestedJsonString(p, "name") orelse "default";
+    return self.toolSessionRestore(name, buf, id);
 }
 
 fn toolSessionSave(self: *WmMcpServer, name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
