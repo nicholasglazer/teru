@@ -554,8 +554,7 @@ fn expandEnvVars(input: []const u8, buf: []u8) ?[]const u8 {
             } else {
                 @memcpy(name_buf[0..var_name.len], var_name);
                 name_buf[var_name.len] = 0;
-                if (std.c.getenv(@ptrCast(name_buf[0..var_name.len :0]))) |env_val| {
-                    const val = std.mem.sliceTo(env_val, 0);
+                if (compat.getenv(@ptrCast(name_buf[0..var_name.len :0]))) |val| {
                     if (out_pos + val.len > buf.len) break;
                     @memcpy(buf[out_pos..][0..val.len], val);
                     out_pos += val.len;
