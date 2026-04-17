@@ -1,6 +1,6 @@
 .{
     .name = .teru,
-    .version = "0.5.0",
+    .version = "0.6.0",
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0xb6637fdb179e7a3c,
 

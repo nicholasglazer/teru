@@ -63,7 +63,7 @@ bash tools/run-bench.sh               # reproduce benchmarks from docs/BENCHMARK
 
 ## Version
 
-Current: **0.5.0** — see `build.zig` line 10 (`const version`).
+Current: **0.6.0** — see `build.zig` line 10 (`const version`).
 Propagated via `build_options.version` to `main.zig`, `McpServer.zig`,
 `WmMcpServer.zig`. Bump with `make bump-version V=x.y.z`.
 
