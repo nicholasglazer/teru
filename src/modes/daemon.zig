@@ -174,11 +174,15 @@ pub fn runHeadless(allocator: std.mem.Allocator, io: std.Io, session_name: []con
         common.applyTemplate(allocator, &mux, &graph, tmpl, io);
     } else {
         const pid = try mux.spawnPane(common.DEFAULT_ROWS, common.DEFAULT_COLS);
-        _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = if (mux.getPaneById(pid)) |p| p.childPid() else null }) catch {};
+        _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = if (mux.getPaneById(pid)) |p| p.childPid() else null }) catch |e| {
+            std.debug.print("teru-daemon: graph.spawn failed: {s}\n", .{@errorName(e)});
+        };
     }
     if (mux.panes.items.len == 0) {
         const pid = try mux.spawnPane(common.DEFAULT_ROWS, common.DEFAULT_COLS);
-        _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = if (mux.getPaneById(pid)) |p| p.childPid() else null }) catch {};
+        _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = if (mux.getPaneById(pid)) |p| p.childPid() else null }) catch |e| {
+            std.debug.print("teru-daemon: graph.spawn failed: {s}\n", .{@errorName(e)});
+        };
     }
 
     var mcp = McpServer.init(allocator, &mux, &graph) catch null;
