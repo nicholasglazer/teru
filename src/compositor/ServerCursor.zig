@@ -30,7 +30,6 @@ const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 const XdgView = @import("XdgView.zig");
 const NodeRegistry = @import("Node.zig");
-const Input = @import("ServerInput.zig");
 
 // ── Signal handlers ──────────────────────────────────────────
 
@@ -38,7 +37,7 @@ pub fn handleCursorMotion(listener: *wlr.wl_listener, data: ?*anyopaque) callcon
     const server = wlr.listenerParent(Server, "cursor_motion", listener);
     const event: *wlr.wlr_pointer_motion_event = @ptrCast(@alignCast(data orelse return));
     wlr.wlr_cursor_move(server.cursor, null, wlr.miozu_pointer_motion_dx(event), wlr.miozu_pointer_motion_dy(event));
-    Input.notifyActivity(server);
+    server.notifyActivity();
     processCursorMotion(server, wlr.miozu_pointer_motion_time(event));
 }
 
@@ -46,14 +45,14 @@ pub fn handleCursorMotionAbsolute(listener: *wlr.wl_listener, data: ?*anyopaque)
     const server = wlr.listenerParent(Server, "cursor_motion_absolute", listener);
     const event: *wlr.wlr_pointer_motion_absolute_event = @ptrCast(@alignCast(data orelse return));
     wlr.wlr_cursor_warp_absolute(server.cursor, null, wlr.miozu_pointer_motion_abs_x(event), wlr.miozu_pointer_motion_abs_y(event));
-    Input.notifyActivity(server);
+    server.notifyActivity();
     processCursorMotion(server, wlr.miozu_pointer_motion_abs_time(event));
 }
 
 pub fn handleCursorButton(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const server = wlr.listenerParent(Server, "cursor_button", listener);
     const event: *wlr.wlr_pointer_button_event = @ptrCast(@alignCast(data orelse return));
-    Input.notifyActivity(server);
+    server.notifyActivity();
     processCursorButton(
         server,
         wlr.miozu_pointer_button_button(event),
@@ -66,7 +65,7 @@ pub fn handleCursorButton(listener: *wlr.wl_listener, data: ?*anyopaque) callcon
 pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const server = wlr.listenerParent(Server, "cursor_axis", listener);
     const event: *wlr.wlr_pointer_axis_event = @ptrCast(@alignCast(data orelse return));
-    Input.notifyActivity(server);
+    server.notifyActivity();
 
     const orientation = wlr.miozu_pointer_axis_orientation(event);
     const delta = wlr.miozu_pointer_axis_delta(event);
