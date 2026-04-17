@@ -61,15 +61,21 @@ pub fn main(init: std.process.Init) !void {
         return err;
     };
     // Defer order matters. LIFO unwind means the LAST defer registered
-    // runs FIRST. We want wl_display_destroy to fire BEFORE server.deinit
-    // so that xdg/xwayland destroy listeners — which call into
-    // server.nodes.remove() etc. — still see a valid Server. Registering
-    // server.deinit first makes it run LAST, after every client listener
-    // has fired. Pre-fix: Emacs-under-XWayland at shutdown triggered
-    // `by_id.get()` on a HashMap whose backing was already freed →
-    // "incorrect alignment" panic.
+    // runs FIRST. We want:
+    //   1. wl_display_destroy_clients — tears down every client
+    //      connection (Chromium, Emacs, etc.) and fires each surface's
+    //      destroy listeners while Server state is still alive.
+    //   2. wl_display_destroy — tears down globals + the event loop.
+    //      Without step 1, scene nodes and per-surface listeners for
+    //      still-mapped clients get walked with dangling notify
+    //      pointers → "Segmentation fault at address 0xXXXX" inside
+    //      libwayland-server's wl_signal_emit.
+    //   3. server.deinit — frees Server-owned heap memory last.
+    // Registered LAST runs FIRST, so we register in reverse of the
+    // desired run order.
     defer server.deinit();
     defer wlr.wl_display_destroy(display);
+    defer wlr.wl_display_destroy_clients(display);
 
     // ── Apply config to server ──────────────────────────────────
     server.applyConfig(&config, allocator, io);

@@ -1649,6 +1649,10 @@ pub fn cycleFocusAll(self: *Server, forward: bool) void {
     Focus.cycleFocusAll(self, forward);
 }
 
+pub fn focusXwaylandSurface(self: *Server, xw: *wlr.wlr_xwayland_surface) void {
+    Focus.focusXwaylandSurface(self, xw);
+}
+
 /// True if holding the keybind should keep firing the action. Excludes
 /// toggles / one-shots — repeating those either does nothing or (worse)
 /// bounces state back and forth (float_toggle, launcher_toggle). The

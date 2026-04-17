@@ -82,6 +82,12 @@ pub extern "wayland-server" fn wl_display_add_socket_auto(display: *wl_display) 
 pub const wl_event_source = opaque {};
 pub extern "wayland-server" fn wl_event_loop_add_fd(loop: *wl_event_loop, fd: c_int, mask: u32, func: *const fn (c_int, u32, ?*anyopaque) callconv(.c) c_int, data: ?*anyopaque) callconv(.c) ?*wl_event_source;
 pub extern "wayland-server" fn wl_event_source_remove(source: *wl_event_source) callconv(.c) c_int;
+// Force every Wayland client connection closed and run their destroy
+// listeners. Called before wl_display_destroy at shutdown so the
+// per-surface/per-client destroy chain runs while Server state is
+// still alive — without it, dangling listeners in wlroots' own
+// teardown segfaulted the process at Mod+Shift+Q when Emacs was mapped.
+pub extern "wayland-server" fn wl_display_destroy_clients(display: *wl_display) callconv(.c) void;
 // Timer event source — wl_event_loop_add_timer creates a disarmed timer;
 // wl_event_source_timer_update arms it for `ms_delay` from now (0 = disarm).
 pub extern "wayland-server" fn wl_event_loop_add_timer(
