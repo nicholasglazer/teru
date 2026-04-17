@@ -43,6 +43,11 @@ pub fn handleNewInput(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c
         setupKeyboard(server, device);
     } else if (device_type == wlr.WLR_INPUT_DEVICE_POINTER) {
         wlr.wlr_cursor_attach_input_device(server.cursor, device);
+        // Turn on the laptop-touchpad defaults (tap-to-click + natural
+        // scroll + disable-while-typing). libinput ships with every
+        // useful option OFF; without this the touchpad feels broken
+        // even when clicks-via-physical-button still work.
+        wlr.miozu_configure_libinput_pointer(device);
     }
 
     var caps: u32 = wlr.WL_SEAT_CAPABILITY_POINTER;
@@ -76,6 +81,13 @@ pub const Keyboard = struct {
         const xkb_st = wlr.miozu_keyboard_xkb_state(kb.wlr_keyboard) orelse return;
 
         kb.server.notifyActivity();
+
+        // Release of the currently-repeating key disarms the timer.
+        // Done before dispatch so a press of a different key can re-arm
+        // cleanly in the same event.
+        if (key_state == 0 and keycode == kb.server.keybind_repeat_keycode) {
+            kb.server.cancelKeybindRepeat();
+        }
 
         if (key_state == 1) {
             if (handleKey(kb.server, keycode, xkb_st)) return;
@@ -119,6 +131,10 @@ pub const Keyboard = struct {
         wlr.wlr_seat_set_keyboard(kb.server.seat, kb.wlr_keyboard);
         wlr.wlr_seat_keyboard_notify_modifiers(kb.server.seat, wlr.miozu_keyboard_modifiers_ptr(kb.wlr_keyboard));
         refreshActiveKeymap(kb.server, kb.wlr_keyboard);
+        // Letting Super go mid-repeat should stop growing the master —
+        // otherwise the timer keeps firing Mod+L actions even though
+        // the user only meant to press Mod+L once then release Super.
+        kb.server.cancelKeybindRepeat();
     }
 
     /// Device went away (unplug, runtime disable). Unhook listeners
@@ -309,8 +325,16 @@ pub fn handleKey(server: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) b
         return true;
     }
 
-    const action = server.keybinds.lookup(.normal, mods, key) orelse return false;
-    return executeAction(server, action);
+    const action = server.keybinds.lookup(.normal, mods, key) orelse {
+        // An unbound key press breaks the current repeat — ensures that
+        // typing into a terminal while Mod+L was held doesn't keep
+        // resizing the master area.
+        server.cancelKeybindRepeat();
+        return false;
+    };
+    const consumed = executeAction(server, action);
+    if (consumed) server.armKeybindRepeat(action, keycode);
+    return consumed;
 }
 
 /// One of the XF86 media/brightness/volume shell-spawn actions.
@@ -373,8 +397,18 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
     }
 
     if (action.moveToIndex()) |ws| {
-        const active_ws = server.layout_engine.getActiveWorkspace();
-        if (active_ws.getActiveNodeId()) |nid| server.moveNodeToWorkspace(nid, ws);
+        // Resolve from the actually-focused thing, not from the active
+        // workspace's tiled-only `node_ids`. A floating window or a
+        // browser (xdg toplevel) isn't in `node_ids`, so the old path
+        // silently grabbed the master tile instead of the focused
+        // window — user symptom was "Win+Shift+N does nothing on my
+        // floating window / Chromium". Prefer focused_view (last-touched
+        // xdg client) then focused_terminal; fall back to the tiled
+        // active id only if neither is set.
+        const nid: ?u64 = if (server.focused_view) |v| v.node_id
+        else if (server.focused_terminal) |tp| tp.node_id
+        else server.layout_engine.getActiveWorkspace().getActiveNodeId();
+        if (nid) |id| server.moveNodeToWorkspace(id, ws);
         return true;
     }
 
@@ -407,13 +441,14 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
             return true;
         },
         .pane_focus_next => {
-            server.layout_engine.getActiveWorkspace().focusNext();
-            server.updateFocusedTerminal();
+            // Includes floating windows in the cycle — workspace.focusNext
+            // alone walks the tiled list only, so Win+J would skip any
+            // float.
+            server.cycleFocusAll(true);
             return true;
         },
         .pane_focus_prev => {
-            server.layout_engine.getActiveWorkspace().focusPrev();
-            server.updateFocusedTerminal();
+            server.cycleFocusAll(false);
             return true;
         },
         .pane_swap_next => {
@@ -594,7 +629,13 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
         .launcher_toggle => {
             if (server.launcher.active) {
                 server.launcher.deactivate();
-                if (server.bar) |b| b.render(server);
+                // bar.render() signature-skips when nothing the bar
+                // cares about has changed — force it since the pixels
+                // we need to overwrite are the launcher's leftovers.
+                if (server.bar) |b| {
+                    b.dirty = true;
+                    b.render(server);
+                }
             } else {
                 server.launcher.activate();
                 server.renderLauncherBar();

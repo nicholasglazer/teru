@@ -187,6 +187,21 @@ perf: PerfStats = .{},
 // Restart flag — set by MCP, executed in frame callback (after response is sent)
 restart_pending: bool = false,
 
+// Keybind repeat state. Wayland delivers one key-press event per press,
+// so holding Mod+L — which in xmonad-land grows the master area one
+// tick per repeat — does nothing unless we implement repeat ourselves.
+// We arm `keybind_repeat_src` on press of a matched keybind, fire the
+// same action every `keybind_repeat_rate_ms`, and disarm on release /
+// modifier change / different key. Rate + delay defaults borrowed from
+// sway (25 Hz after a 400 ms delay); libinput-reported rates override
+// when a keyboard surfaces them.
+keybind_repeat_src: ?*wlr.wl_event_source = null,
+keybind_repeat_keycode: u32 = 0,
+keybind_repeat_action: ?KBAction = null,
+keybind_repeat_rate_ms: c_int = 40,
+keybind_repeat_delay_ms: c_int = 400,
+event_loop: ?*wlr.wl_event_loop = null,
+
 // ── Listeners ──────────────────────────────────────────────────
 
 new_output: wlr.wl_listener = makeListener(Listeners.handleNewOutput),
@@ -198,6 +213,11 @@ cursor_button: wlr.wl_listener = makeListener(Cursor.handleCursorButton),
 cursor_axis: wlr.wl_listener = makeListener(Cursor.handleCursorAxis),
 cursor_frame: wlr.wl_listener = makeListener(Cursor.handleCursorFrame),
 request_set_cursor: wlr.wl_listener = makeListener(Cursor.handleRequestSetCursor),
+// wp_cursor_shape_v1 — Chromium M111+, GTK 4.14+, modern Qt. Without
+// this listener hover state (pointer / text / grab / resize) is frozen
+// on the default arrow over browsers.
+cursor_shape_mgr: ?*wlr.wlr_cursor_shape_manager_v1 = null,
+request_set_shape: wlr.wl_listener = makeListener(Cursor.handleRequestSetShape),
 new_xwayland_surface: wlr.wl_listener = makeListener(Listeners.handleNewXwaylandSurface),
 
 // xdg_activation_v1 — clients asking for focus (v0.4.17).
@@ -389,7 +409,7 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
 
     // wp_cursor_shape_v1 — preferred cursor path for chromium M111+,
     // foot, GTK4. Otherwise clients use client-side xcursor themes.
-    _ = wlr.wlr_cursor_shape_manager_v1_create(display, 1);
+    const cursor_shape_mgr = wlr.wlr_cursor_shape_manager_v1_create(display, 1);
 
     // ── Protocol pack #2 — clipboard + tearing + idle inhibit ─────
     //
@@ -494,6 +514,8 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
         .virtual_pointer_mgr = virtual_pointer_mgr,
         .output_manager = output_manager,
         .foreign_toplevel_mgr = foreign_toplevel_mgr,
+        .cursor_shape_mgr = cursor_shape_mgr,
+        .event_loop = event_loop,
     };
 }
 
@@ -546,6 +568,9 @@ fn registerListeners(self: *Server) void {
     wlr.wl_signal_add(wlr.miozu_cursor_axis(self.cursor), &self.cursor_axis);
     wlr.wl_signal_add(wlr.miozu_cursor_frame(self.cursor), &self.cursor_frame);
     wlr.wl_signal_add(wlr.miozu_seat_request_set_cursor(self.seat), &self.request_set_cursor);
+    if (self.cursor_shape_mgr) |mgr| {
+        wlr.wl_signal_add(wlr.miozu_cursor_shape_request_set_shape(mgr), &self.request_set_shape);
+    }
 
     // XWayland (lazy start — only spawns Xwayland process when an X11 client connects)
     if (self.wlr_compositor) |comp| {
@@ -769,6 +794,13 @@ pub fn deinit(self: *Server) void {
     // the server deref path.
     self.shutting_down = true;
 
+    // Tear down the keybind-repeat timer first so a late tick can't
+    // fire against torn-down Server state.
+    if (self.keybind_repeat_src) |src| {
+        _ = wlr.wl_event_source_remove(src);
+        self.keybind_repeat_src = null;
+    }
+
     // Free every InhibitorTracker before wl_display_destroy fires
     // inhibitor destroy signals on what would then be stale state.
     // Each tracker unhooks its own listener + drops itself.
@@ -799,6 +831,7 @@ pub fn deinit(self: *Server) void {
     safeRemoveListener(&self.cursor_axis);
     safeRemoveListener(&self.cursor_frame);
     safeRemoveListener(&self.request_set_cursor);
+    safeRemoveListener(&self.request_set_shape);
     safeRemoveListener(&self.new_xwayland_surface);
     safeRemoveListener(&self.new_inhibitor);
     safeRemoveListener(&self.output_power_set_mode);
@@ -1138,10 +1171,12 @@ pub fn setWorkspaceVisibility(self: *Server, ws: u8, visible: bool) void {
 
 // ── Float toggle ────────────────────────────────────────────
 
-/// Toggle the focused node between floating and tiled.
-/// Floating nodes are removed from the LayoutEngine workspace (not tiled)
-/// but remain in the NodeRegistry for rendering. Tiling nodes are added
-/// back to the workspace and re-arranged.
+/// Snap the focused node back into the tiling layout if it was floating.
+/// Tile → floating is NOT the keybind's job; floats are created by
+/// Mod+drag with the mouse (a grab in ServerCursor). That rule matches
+/// xmonad / bspwm: keyboard-only users never accidentally escape the
+/// layout, mouse users get a dedicated physical gesture for floats.
+/// No-op if the focused node is already tiled.
 pub fn toggleFloat(self: *Server) void {
     // Determine the focused node ID
     const nid: u64 = if (self.focused_terminal) |tp|
@@ -1154,39 +1189,12 @@ pub fn toggleFloat(self: *Server) void {
     const slot = self.nodes.findById(nid) orelse return;
     const ws = self.layout_engine.active_workspace;
 
-    if (self.nodes.floating[slot]) {
-        // ── Unfloat: add back to tiling ──
-        self.nodes.floating[slot] = false;
-        self.layout_engine.workspaces[ws].addNode(self.zig_allocator, nid) catch {};
-        self.arrangeworkspace(ws);
-        std.debug.print("teruwm: unfloat node={d}\n", .{nid});
-    } else {
-        // ── Float: remove from tiling, keep in registry ──
-        self.nodes.floating[slot] = true;
-        self.layout_engine.workspaces[ws].removeNode(nid);
-        self.arrangeworkspace(ws);
+    if (!self.nodes.floating[slot]) return; // already tiled — nothing to do
 
-        // Center the floating window at 50% of output size
-        const dims_c = self.activeOutputDims();
-        const out_w: u32 = dims_c.w;
-        const out_h: u32 = dims_c.h;
-        const float_w: u32 = out_w / 2;
-        const float_h: u32 = out_h / 2;
-        const float_x: i32 = @intCast(out_w / 4);
-        const float_y: i32 = @intCast(out_h / 4);
-
-        self.nodes.applyRect(slot, float_x, float_y, float_w, float_h);
-
-        // Also resize terminal pane if applicable
-        if (self.nodes.kind[slot] == .terminal) {
-            if (self.focused_terminal) |tp| {
-                tp.resize(float_w, float_h);
-                tp.setPosition(float_x, float_y);
-            }
-        }
-
-        std.debug.print("teruwm: float node={d}\n", .{nid});
-    }
+    self.nodes.floating[slot] = false;
+    self.layout_engine.workspaces[ws].addNode(self.zig_allocator, nid) catch {};
+    self.arrangeworkspace(ws);
+    std.debug.print("teruwm: unfloat node={d}\n", .{nid});
 
     if (self.bar) |b| b.render(self);
 }
@@ -1633,6 +1641,77 @@ fn setSlotVisible(self: *Server, slot: u16, visible: bool) void {
 /// Cycle focus to the next connected output (keybind action).
 pub fn focusNextOutput(self: *Server) void {
     Focus.focusNextOutput(self);
+}
+
+/// Cycle focus across every node on the current workspace (including
+/// floating). Win+J = forward, Win+K = backward.
+pub fn cycleFocusAll(self: *Server, forward: bool) void {
+    Focus.cycleFocusAll(self, forward);
+}
+
+/// True if holding the keybind should keep firing the action. Excludes
+/// toggles / one-shots — repeating those either does nothing or (worse)
+/// bounces state back and forth (float_toggle, launcher_toggle). The
+/// whitelist is what an xmonad/sway user holds to tune the layout:
+/// resize, focus/swap cycle, master-count, zoom, workspace step.
+fn isRepeatableAction(action: KBAction) bool {
+    return switch (action) {
+        .resize_shrink_w, .resize_grow_w, .resize_shrink_h, .resize_grow_h,
+        .pane_focus_next, .pane_focus_prev,
+        .pane_swap_next, .pane_swap_prev,
+        .pane_rotate_slaves_up, .pane_rotate_slaves_down,
+        .master_count_inc, .master_count_dec,
+        .zoom_in, .zoom_out,
+        .workspace_next_nonempty, .workspace_toggle_last,
+        => true,
+        else => false,
+    };
+}
+
+/// Timer callback that re-dispatches the armed keybind action. Returns
+/// 0 from wayland-server's callback ABI; the timer stays armed with
+/// whatever `update(ms)` set last.
+fn keybindRepeatTick(data: ?*anyopaque) callconv(.c) c_int {
+    const self: *Server = @ptrCast(@alignCast(data orelse return 0));
+    const action = self.keybind_repeat_action orelse return 0;
+    // Dispatch through the same path a fresh press would. executeAction
+    // is in ServerInput; we go through a Server method to keep the
+    // cross-module boundary clean.
+    _ = self.executeAction(action);
+    if (self.keybind_repeat_src) |src| {
+        _ = wlr.wl_event_source_timer_update(src, self.keybind_repeat_rate_ms);
+    }
+    return 0;
+}
+
+/// Arm the repeat timer for an action attached to `keycode`. Cancels
+/// any prior repeat first — pressing a new keybind while holding the
+/// old one replaces the target.
+pub fn armKeybindRepeat(self: *Server, action: KBAction, keycode: u32) void {
+    if (!isRepeatableAction(action)) {
+        self.cancelKeybindRepeat();
+        return;
+    }
+    if (self.keybind_repeat_src == null) {
+        const loop = self.event_loop orelse return;
+        self.keybind_repeat_src = wlr.wl_event_loop_add_timer(loop, keybindRepeatTick, @ptrCast(self));
+        if (self.keybind_repeat_src == null) return;
+    }
+    self.keybind_repeat_keycode = keycode;
+    self.keybind_repeat_action = action;
+    if (self.keybind_repeat_src) |src| {
+        _ = wlr.wl_event_source_timer_update(src, self.keybind_repeat_delay_ms);
+    }
+}
+
+/// Disarm the repeat timer. Called on key release (matching keycode),
+/// modifier-state change, or different key press.
+pub fn cancelKeybindRepeat(self: *Server) void {
+    if (self.keybind_repeat_src) |src| {
+        _ = wlr.wl_event_source_timer_update(src, 0);
+    }
+    self.keybind_repeat_keycode = 0;
+    self.keybind_repeat_action = null;
 }
 
 /// Move the focused node to the next output's current workspace.

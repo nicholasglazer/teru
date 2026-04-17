@@ -52,6 +52,12 @@ floating: [max_nodes]bool = [_]bool{false} ** max_nodes,
 // Cold path: touched only on render or surface interaction
 scene_tree: [max_nodes]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** max_nodes,
 xdg_toplevel: [max_nodes]?*wlr.wlr_xdg_toplevel = [_]?*wlr.wlr_xdg_toplevel{null} ** max_nodes,
+// Populated for XWayland-backed nodes. When non-null, applyRect drives
+// wlr_xwayland_surface_configure instead of xdg_toplevel_set_size —
+// without this, Emacs / Steam / GIMP stay at their default pre-map size
+// (usually a single pixel in the top-left corner) no matter how the
+// tiling engine lays them out.
+xwayland_surface: [max_nodes]?*wlr.wlr_xwayland_surface = [_]?*wlr.wlr_xwayland_surface{null} ** max_nodes,
 // Back-pointer to the XdgView owning this slot. Stored as *anyopaque
 // to avoid a Node↔XdgView import cycle (XdgView imports Server imports
 // Node). Click-to-focus + Win+X need this to resolve the node_id under
@@ -105,6 +111,7 @@ pub fn addSurface(self: *Node, allocator: std.mem.Allocator, id: u64, ws: u8, to
     self.node_id[slot] = id;
     self.workspace[slot] = ws;
     self.xdg_toplevel[slot] = toplevel;
+    self.xwayland_surface[slot] = null;
     self.scene_tree[slot] = tree;
     self.xdg_view[slot] = view;
     self.pos_x[slot] = 0;
@@ -162,6 +169,7 @@ pub fn remove(self: *Node, id: u64) bool {
     self.node_id[i] = 0;
     self.scene_tree[i] = null;
     self.xdg_toplevel[i] = null;
+    self.xwayland_surface[i] = null;
     self.xdg_view[i] = null;
     self.floating[i] = false;
     self.name_len[i] = 0;
@@ -301,10 +309,21 @@ pub fn applyRect(self: *Node, slot: u16, x: i32, y: i32, w: u32, h: u32) void {
         }
     }
 
-    // Resize the xdg toplevel (if it's a Wayland surface)
+    // Resize the wayland client. XDG and XWayland take different calls;
+    // we dispatch on whichever pointer was populated by addSurface.
     if (self.kind[slot] == .wayland_surface) {
         if (self.xdg_toplevel[slot]) |toplevel| {
             _ = wlr.wlr_xdg_toplevel_set_size(toplevel, w, h);
+        } else if (self.xwayland_surface[slot]) |xw| {
+            // XWayland takes absolute screen coordinates, not
+            // workspace-relative — wlr_scene_node_set_position handles
+            // compositing position; xwayland_surface_configure only
+            // informs the X11 client of its geometry.
+            const ww: u16 = if (w > 0xFFFF) 0xFFFF else @intCast(w);
+            const hh: u16 = if (h > 0xFFFF) 0xFFFF else @intCast(h);
+            const xx: i16 = @truncate(x);
+            const yy: i16 = @truncate(y);
+            wlr.wlr_xwayland_surface_configure(xw, xx, yy, ww, hh);
         }
     }
 }

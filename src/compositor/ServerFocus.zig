@@ -110,6 +110,96 @@ pub fn clearFocusRefs(server: *Server, node_id: u64) void {
 
 /// Reconcile focused_terminal/focused_view with the layout engine's
 /// active node. Called after workspace switches, close, move, restore.
+/// Cycle focus across every node on the current workspace — both
+/// tiled and floating. Workspace.focusNext/Prev alone iterates only
+/// Workspace.node_ids (tiled), so floating windows were invisible to
+/// Win+J/K. This walker builds a ring out of the tiled list followed by
+/// every floating node whose workspace matches, finds the currently
+/// focused id in that ring, and advances to the neighbour. When the
+/// target is tiled, we sync Workspace.active_index so subsequent layout
+/// operations (swap, promote, resize) operate on the right slot.
+pub fn cycleFocusAll(server: *Server, forward: bool) void {
+    const ws_index = server.layout_engine.active_workspace;
+    const ws = &server.layout_engine.workspaces[ws_index];
+
+    // Ring: tiled first (preserves layout order), then floating.
+    var ring: [NodeRegistry.max_nodes]u64 = undefined;
+    var count: usize = 0;
+    for (ws.node_ids.items) |nid| {
+        if (count >= ring.len) break;
+        ring[count] = nid;
+        count += 1;
+    }
+    // Append floating nodes on this workspace. Node storage is SoA so
+    // a single pass over max_nodes is cheap.
+    for (0..NodeRegistry.max_nodes) |i| {
+        if (count >= ring.len) break;
+        if (server.nodes.kind[i] == .empty) continue;
+        if (server.nodes.workspace[i] != ws_index) continue;
+        if (!server.nodes.floating[i]) continue;
+        ring[count] = server.nodes.node_id[i];
+        count += 1;
+    }
+    if (count == 0) return;
+
+    // Current focus id — prefer xdg view (may be floating), then
+    // terminal. Falls back to the tiled active_index so the first
+    // press still has a sensible anchor even if nothing was focused.
+    const current_id: u64 = blk: {
+        if (server.focused_view) |v| break :blk v.node_id;
+        if (server.focused_terminal) |tp| break :blk tp.node_id;
+        if (ws.getActiveNodeId()) |nid| break :blk nid;
+        break :blk 0;
+    };
+
+    var idx: usize = 0;
+    for (ring[0..count], 0..) |nid, i| {
+        if (nid == current_id) {
+            idx = i;
+            break;
+        }
+    }
+    const next_idx = if (forward)
+        (idx + 1) % count
+    else if (idx == 0) count - 1 else idx - 1;
+    const target_nid = ring[next_idx];
+
+    // Sync workspace.active_index when target is tiled so later
+    // layout keybinds (swap_next/prev, promote) see the same anchor.
+    for (ws.node_ids.items, 0..) |nid, i| {
+        if (nid == target_nid) {
+            ws.active_index = @intCast(i);
+            ws.active_node = null;
+            break;
+        }
+    }
+
+    // Dispatch by node kind. updateFocusedTerminal routes through the
+    // right focusView / focused_terminal code paths, and it already
+    // knows how to consult active_index for tiled targets.
+    if (server.nodes.findById(target_nid)) |slot| {
+        switch (server.nodes.kind[slot]) {
+            .terminal => {
+                server.focused_view = null;
+                updateFocusedTerminal(server);
+            },
+            .wayland_surface => {
+                if (server.nodes.xdg_view[slot]) |opaque_view| {
+                    const view: *XdgView = @ptrCast(@alignCast(opaque_view));
+                    focusView(server, view);
+                } else {
+                    // XWayland view — updateFocusedTerminal's XDG-view
+                    // fallback walks xdg_view[] which is null for xwl,
+                    // so we can't focus it generically here. Accept the
+                    // limitation: xwayland windows are reachable via
+                    // click; Win+J/K will skip them.
+                }
+            },
+            .empty => {},
+        }
+    }
+}
+
 pub fn updateFocusedTerminal(server: *Server) void {
     const ws = server.layout_engine.getActiveWorkspace();
     const active_id = ws.active_node orelse ws.getActiveNodeId() orelse return;

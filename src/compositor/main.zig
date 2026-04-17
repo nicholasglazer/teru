@@ -47,19 +47,29 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("teruwm: failed to create wl_display\n", .{});
         return error.DisplayCreateFailed;
     };
-    defer wlr.wl_display_destroy(display);
 
     const event_loop = wlr.wl_display_get_event_loop(display) orelse {
+        wlr.wl_display_destroy(display);
         std.debug.print("teruwm: failed to get event loop\n", .{});
         return error.EventLoopFailed;
     };
 
     // ── Initialize compositor server ────────────────────────────
     const server = Server.initOnHeap(display, event_loop, allocator) catch |err| {
+        wlr.wl_display_destroy(display);
         std.debug.print("teruwm: server init failed: {}\n", .{err});
         return err;
     };
+    // Defer order matters. LIFO unwind means the LAST defer registered
+    // runs FIRST. We want wl_display_destroy to fire BEFORE server.deinit
+    // so that xdg/xwayland destroy listeners — which call into
+    // server.nodes.remove() etc. — still see a valid Server. Registering
+    // server.deinit first makes it run LAST, after every client listener
+    // has fired. Pre-fix: Emacs-under-XWayland at shutdown triggered
+    // `by_id.get()` on a HashMap whose backing was already freed →
+    // "incorrect alignment" panic.
     defer server.deinit();
+    defer wlr.wl_display_destroy(display);
 
     // ── Apply config to server ──────────────────────────────────
     server.applyConfig(&config, allocator, io);

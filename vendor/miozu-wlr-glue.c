@@ -7,6 +7,8 @@
  */
 
 #include <wlr/backend.h>
+#include <wlr/backend/libinput.h>
+#include <libinput.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/render/allocator.h>
 #include <wlr/types/wlr_compositor.h>
@@ -26,6 +28,12 @@
 #include <wlr/types/wlr_output_management_v1.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
+/* wlr_cursor_shape_v1.h #includes "cursor-shape-v1-protocol.h" which normally
+ * comes from wayland-protocols + wayland-scanner. To avoid adding a build-time
+ * dependency we ship a vendored minimal shim (vendor/cursor-shape-v1-protocol.h)
+ * that declares only the wp_cursor_shape_device_v1_shape enum wlroots actually
+ * reads. vendor/ is already on the -I path for build.zig. */
+#include <wlr/types/wlr_cursor_shape_v1.h>
 #include <wayland-server-core.h>
 
 /* ── Backend signals ─────────────────────────────────────────── */
@@ -285,6 +293,103 @@ int miozu_set_cursor_event_from_focused(
     struct wlr_seat *seat) {
     return (e && seat && e->seat_client &&
             e->seat_client == seat->pointer_state.focused_client) ? 1 : 0;
+}
+
+/* ── cursor-shape-v1 accessors (Chromium / GTK / Qt pointer shape) ──
+ *
+ * Chromium since M111 and most modern toolkits use wp_cursor_shape_device_v1
+ * rather than the legacy wl_pointer.set_cursor(surface) path. Without
+ * wiring request_set_shape, hovering over a link, text field, or resize
+ * edge inside a browser leaves the default arrow — there's no "pointer",
+ * "text", or "grab" feedback. Symptom looks like the whole browser chrome
+ * is un-interactive even when clicks actually land. */
+
+struct wl_signal *miozu_cursor_shape_request_set_shape(
+    struct wlr_cursor_shape_manager_v1 *mgr) {
+    return &mgr->events.request_set_shape;
+}
+
+struct wlr_seat_client *miozu_cursor_shape_event_seat_client(
+    struct wlr_cursor_shape_manager_v1_request_set_shape_event *e) {
+    return e->seat_client;
+}
+
+int miozu_cursor_shape_event_device_type(
+    struct wlr_cursor_shape_manager_v1_request_set_shape_event *e) {
+    return (int)e->device_type;
+}
+
+int miozu_cursor_shape_event_shape(
+    struct wlr_cursor_shape_manager_v1_request_set_shape_event *e) {
+    return (int)e->shape;
+}
+
+/* Returns the xcursor theme name ("default", "text", "pointer", etc.) for
+ * the given wp_cursor_shape_device_v1 shape enum. Forwarded to
+ * wlr_cursor_set_xcursor on the compositor's xcursor_manager. */
+const char *miozu_cursor_shape_name(int shape) {
+    return wlr_cursor_shape_v1_name((enum wp_cursor_shape_device_v1_shape)shape);
+}
+
+/* Only the seat-client that currently owns pointer focus may change the
+ * shape — same invariant as request_set_cursor. */
+int miozu_cursor_shape_event_from_focused(
+    struct wlr_cursor_shape_manager_v1_request_set_shape_event *e,
+    struct wlr_seat *seat) {
+    return (e && seat && e->seat_client &&
+            e->seat_client == seat->pointer_state.focused_client) ? 1 : 0;
+}
+
+/* ── libinput device configuration ───────────────────────────────
+ *
+ * libinput ships with tap-to-click OFF, natural-scroll OFF, and no
+ * secondary-click via two-finger tap. That's fine for dedicated mice but
+ * terrible for laptop touchpads — every xmonad / sway / Hyprland config
+ * I've seen turns these on unconditionally for any device that supports
+ * them. Applied per-device at new_input time. If the device isn't
+ * libinput-backed (headless backend, virtual pointer) the handle lookup
+ * returns NULL and we silently skip — no-op is the correct behavior. */
+
+void miozu_configure_libinput_pointer(struct wlr_input_device *dev) {
+    if (!dev) return;
+    if (!wlr_input_device_is_libinput(dev)) return;
+
+    struct libinput_device *h = wlr_libinput_get_device_handle(dev);
+    if (!h) return;
+
+    /* Tap-to-click: tap registers as left-click, two-finger tap as right,
+     * three-finger as middle. Only enabled on devices that report the
+     * capability (true touchpads, not plain mice). */
+    if (libinput_device_config_tap_get_finger_count(h) > 0) {
+        libinput_device_config_tap_set_enabled(h, LIBINPUT_CONFIG_TAP_ENABLED);
+        libinput_device_config_tap_set_drag_enabled(h,
+            LIBINPUT_CONFIG_DRAG_ENABLED);
+        libinput_device_config_tap_set_drag_lock_enabled(h,
+            LIBINPUT_CONFIG_DRAG_LOCK_DISABLED);
+        /* Button map: 1f→left, 2f→right, 3f→middle. Matches GNOME/KDE
+         * defaults and what users migrating from xmonad expect. */
+        libinput_device_config_tap_set_button_map(h,
+            LIBINPUT_CONFIG_TAP_MAP_LRM);
+    }
+
+    /* Natural scrolling ON for touchpads (macOS-style). Users who want
+     * the old behavior can override via config later. */
+    if (libinput_device_config_scroll_has_natural_scroll(h)) {
+        libinput_device_config_scroll_set_natural_scroll_enabled(h, 1);
+    }
+
+    /* Disable-while-typing: prevents palm hits while writing code. */
+    if (libinput_device_config_dwt_is_available(h)) {
+        libinput_device_config_dwt_set_enabled(h,
+            LIBINPUT_CONFIG_DWT_ENABLED);
+    }
+
+    /* Click method: clickfinger (same gesture as tap buttons above). */
+    uint32_t click_methods = libinput_device_config_click_get_methods(h);
+    if (click_methods & LIBINPUT_CONFIG_CLICK_METHOD_CLICKFINGER) {
+        libinput_device_config_click_set_method(h,
+            LIBINPUT_CONFIG_CLICK_METHOD_CLICKFINGER);
+    }
 }
 
 /* ── Custom pixel buffer for terminal pane rendering ──────────── */

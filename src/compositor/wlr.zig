@@ -4,6 +4,8 @@
 //! Zig 0.16 conventions: callconv(.c), opaque {}, extern struct.
 //! Only declares what miozu actually uses.
 
+const std = @import("std");
+
 // ── Opaque types (forward-declared C structs) ──────────────────
 
 pub const wl_display = opaque {};
@@ -80,6 +82,17 @@ pub extern "wayland-server" fn wl_display_add_socket_auto(display: *wl_display) 
 pub const wl_event_source = opaque {};
 pub extern "wayland-server" fn wl_event_loop_add_fd(loop: *wl_event_loop, fd: c_int, mask: u32, func: *const fn (c_int, u32, ?*anyopaque) callconv(.c) c_int, data: ?*anyopaque) callconv(.c) ?*wl_event_source;
 pub extern "wayland-server" fn wl_event_source_remove(source: *wl_event_source) callconv(.c) c_int;
+// Timer event source — wl_event_loop_add_timer creates a disarmed timer;
+// wl_event_source_timer_update arms it for `ms_delay` from now (0 = disarm).
+pub extern "wayland-server" fn wl_event_loop_add_timer(
+    loop: *wl_event_loop,
+    func: *const fn (?*anyopaque) callconv(.c) c_int,
+    data: ?*anyopaque,
+) callconv(.c) ?*wl_event_source;
+pub extern "wayland-server" fn wl_event_source_timer_update(
+    source: *wl_event_source,
+    ms_delay: c_int,
+) callconv(.c) c_int;
 pub const WL_EVENT_READABLE: u32 = 0x01;
 
 /// wl_signal_add is static inline in wayland headers — implement in Zig.
@@ -256,7 +269,17 @@ pub const wlr_presentation = opaque {};
 pub extern "wlroots-0.18" fn wlr_presentation_create(display: *wl_display) callconv(.c) ?*wlr_presentation;
 
 pub const wlr_cursor_shape_manager_v1 = opaque {};
+pub const wlr_cursor_shape_manager_v1_request_set_shape_event = opaque {};
 pub extern "wlroots-0.18" fn wlr_cursor_shape_manager_v1_create(display: *wl_display, version: u32) callconv(.c) ?*wlr_cursor_shape_manager_v1;
+
+pub extern "c" fn miozu_cursor_shape_request_set_shape(mgr: *wlr_cursor_shape_manager_v1) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_cursor_shape_event_from_focused(event: *wlr_cursor_shape_manager_v1_request_set_shape_event, seat: *wlr_seat) callconv(.c) c_int;
+pub extern "c" fn miozu_cursor_shape_event_shape(event: *wlr_cursor_shape_manager_v1_request_set_shape_event) callconv(.c) c_int;
+pub extern "c" fn miozu_cursor_shape_name(shape: c_int) callconv(.c) ?[*:0]const u8;
+
+// libinput touchpad config — enables tap-to-click + natural scroll + DWT
+// for any libinput-backed pointer device. No-op on non-libinput devices.
+pub extern "c" fn miozu_configure_libinput_pointer(device: *wlr_input_device) callconv(.c) void;
 
 // ── Protocol pack #2 — clipboard managers + tearing opt-in ─────
 //
@@ -448,6 +471,12 @@ pub extern "wlroots-0.18" fn wlr_output_state_set_enabled(state: *wlr_output_sta
 
 pub extern "wlroots-0.18" fn wlr_scene_get_scene_output(scene: *wlr_scene, output: *wlr_output) callconv(.c) ?*wlr_scene_output;
 pub extern "wlroots-0.18" fn wlr_scene_output_commit(scene_output: *wlr_scene_output, options: ?*anyopaque) callconv(.c) bool;
+// Fires wl_surface.frame callbacks for every surface rendered by the last
+// scene_output_commit. Without this, Chromium/Ozone throttles itself after
+// the first commit waiting for a callback that never arrives — which
+// manifests as Vivaldi freezing on its loading splash and Chromium only
+// ever painting the initial frame.
+pub extern "wlroots-0.18" fn wlr_scene_output_send_frame_done(scene_output: *wlr_scene_output, now: *const std.c.timespec) callconv(.c) void;
 
 pub extern "wlroots-0.18" fn wlr_keyboard_set_keymap(keyboard: *wlr_keyboard, keymap: *xkb_keymap) callconv(.c) bool;
 pub extern "wlroots-0.18" fn wlr_keyboard_set_repeat_info(keyboard: *wlr_keyboard, rate: i32, delay: i32) callconv(.c) void;

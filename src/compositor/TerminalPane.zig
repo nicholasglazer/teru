@@ -470,6 +470,19 @@ pub fn deinit(self: *TerminalPane, allocator: std.mem.Allocator) void {
         _ = wlr.wl_event_source_remove(es);
         self.event_source = null;
     }
+    // Hide the scene node without destroying it. Disabling stops the
+    // last-painted "ghost" frame from rendering on an otherwise empty
+    // workspace, but leaves the scene_buffer in the tree so wlroots'
+    // own shutdown walker (wl_display_destroy → scene destroy) is the
+    // one to free it. An explicit wlr_scene_node_destroy here triggered
+    // a segfault at shutdown — a listener attached to the buffer's
+    // internal signals still fired after the Zig pane memory was gone.
+    // wlroots handles full teardown correctly; we just need the node
+    // invisible between close and display-destroy.
+    if (wlr.miozu_scene_buffer_node(self.scene_buffer)) |node| {
+        wlr.wlr_scene_node_set_enabled(node, false);
+        wlr.wlr_scene_buffer_set_buffer(self.scene_buffer, null);
+    }
     self.pane.deinit(allocator);
     wlr.wlr_buffer_drop(self.pixel_buffer);
 }

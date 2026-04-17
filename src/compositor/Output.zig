@@ -169,6 +169,16 @@ fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const scene_output = wlr.wlr_scene_get_scene_output(server.scene, output.wlr_output) orelse return;
     _ = wlr.wlr_scene_output_commit(scene_output, null);
 
+    // Fire wl_surface.frame callbacks so Wayland clients know the frame
+    // landed and can submit their next buffer. Chromium/Ozone — and
+    // anything else using wp_presentation-style throttling — blocks on
+    // this callback: without it, the renderer produces one frame and then
+    // waits forever, which manifests as Vivaldi stuck on its splash and
+    // Chromium freezing after the initial paint.
+    var now: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &now);
+    wlr.wlr_scene_output_send_frame_done(scene_output, &now);
+
     if (is_canonical) {
         // MCP-triggered restart — ordered after commit so the response
         // reaches the client before we exec().

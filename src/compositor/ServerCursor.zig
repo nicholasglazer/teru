@@ -159,6 +159,26 @@ pub fn handleRequestSetCursor(listener: *wlr.wl_listener, data: ?*anyopaque) cal
     }
 }
 
+/// wp_cursor_shape_v1.request_set_shape — the modern alternative to
+/// wl_pointer.set_cursor(surface). Chromium/GTK send the requested shape
+/// as an enum (default, text, pointer, grab, resize_*, etc.) and we map
+/// that to an xcursor theme name so wlr_cursor can draw it. Without this
+/// path hovering over links / text inputs / resize edges in a browser
+/// leaves the default arrow — looks broken even when clicks land.
+pub fn handleRequestSetShape(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const server = wlr.listenerParent(Server, "request_set_shape", listener);
+    const event_ptr: *wlr.wlr_cursor_shape_manager_v1_request_set_shape_event =
+        @ptrCast(@alignCast(data orelse return));
+
+    // Same focused-client gate as request_set_cursor — a stale client
+    // pushing a shape after losing focus mustn't override the live one.
+    if (wlr.miozu_cursor_shape_event_from_focused(event_ptr, server.seat) == 0) return;
+
+    const shape = wlr.miozu_cursor_shape_event_shape(event_ptr);
+    const name_ptr = wlr.miozu_cursor_shape_name(shape) orelse return;
+    wlr.wlr_cursor_set_xcursor(server.cursor, server.cursor_mgr, name_ptr);
+}
+
 // ── Button dispatch ──────────────────────────────────────────
 
 /// Pointer button dispatch. Shared by wlroots and MCP test tools.

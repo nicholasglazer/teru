@@ -128,6 +128,16 @@ pub fn handleKey(self: *Launcher, keysym: u32, server: *Server) bool {
     switch (keysym) {
         0xFF1B => { // Escape
             self.deactivate();
+            // deactivate() only flips the active flag — the bar still
+            // holds the last-painted launcher pixels. bar.render() has a
+            // signature-based skip, and deactivating doesn't change any
+            // of the fields that feed the signature (same workspace,
+            // same windows, same mode text). Force a repaint by flipping
+            // the dirty flag so render() bypasses the signature check.
+            if (server.bar) |b| {
+                b.dirty = true;
+                b.render(server);
+            }
             return true;
         },
         0xFF0D => { // Return — launch selected
@@ -137,6 +147,10 @@ pub fn handleKey(self: *Launcher, keysym: u32, server: *Server) bool {
                 self.launchProgram(name, server);
             }
             self.deactivate();
+            if (server.bar) |b| {
+                b.dirty = true;
+                b.render(server);
+            }
             return true;
         },
         0xFF09 => { // Tab — cycle selection
