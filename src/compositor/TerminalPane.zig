@@ -13,6 +13,7 @@ const teru = @import("teru");
 const Pane = teru.Pane;
 const Grid = teru.Grid;
 const SoftwareRenderer = teru.render.SoftwareRenderer;
+const compat = teru.compat;
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 
@@ -26,6 +27,12 @@ scene_buffer: *wlr.wlr_scene_buffer,
 node_id: u64,
 event_source: ?*wlr.wl_event_source = null,
 read_buf: [8192]u8 = undefined,
+// Monotonic ns when the pane first observed pane.vt.sync_output = true
+// for the current DEC-2026 batch. 0 means "not currently in a batch".
+// Used to timeout pathological apps that open a sync batch and never
+// close it — the renderer falls through after 150 ms to avoid a
+// frozen-pane look.
+sync_started_ns: i128 = 0,
 
 // ── Construction ───────────────────────────────────────────────
 
@@ -259,6 +266,29 @@ pub fn poll(self: *TerminalPane) bool {
 /// Only re-renders dirty rows + cursor rows, not the entire grid.
 pub fn renderIfDirty(self: *TerminalPane) bool {
     if (!self.pane.grid.dirty) return false;
+
+    // DEC private mode 2026 — synchronized output batch. When the
+    // application has opened a batch (ESC[?2026h) and hasn't closed it
+    // yet (ESC[?2026l), hold the render. Claude Code + Ink apps +
+    // fzf + ratatui rely on this: they paint the next screen state in
+    // multiple writes and expect terminals to commit atomically.
+    // Without this skip, every intermediate paint lands on screen and
+    // the user sees a rapid scroll from top to bottom as the app's UI
+    // rebuilds row-by-row. windowed.zig honours this already; the
+    // compositor path had regressed since the module split.
+    //
+    // Safety valve: if an app enters the sync batch and never exits
+    // (buggy client, crashed), fall through after ~150 ms so the
+    // pane isn't frozen forever. Matches Alacritty's timeout.
+    if (self.pane.vt.sync_output) {
+        const now = compat.monotonicNow();
+        if (self.sync_started_ns == 0) self.sync_started_ns = now;
+        if (now - self.sync_started_ns < 150 * std.time.ns_per_ms) return false;
+        // Timed out — let the frame render below and reset tracker.
+        self.sync_started_ns = 0;
+    } else {
+        self.sync_started_ns = 0;
+    }
 
     // Capture dirty range BEFORE renderDirty resets it. Convert
     // grid rows → pixel Y via cell_height. If the range is empty
