@@ -1168,32 +1168,35 @@ fn toolListWidgets(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
 fn toolTestDrag(self: *WmMcpServer, from_x: i32, from_y: i32, to_x: i32, to_y: i32, super_held: bool, button: u32, buf: []u8, id: ?[]const u8) []const u8 {
     const srv = self.server;
 
-    // Real monotonic timestamps (ms) for each phase — chromium / GTK
-    // compute click-vs-drag by checking the delta between press and
-    // release time. When both are time=0 (epoch), some input pipelines
-    // drop the click as "too old". Use a monotonic source with a small
-    // non-zero offset between phases.
-    const ns_per_ms: i128 = 1_000_000;
-    const t0_ns: i128 = @import("teru").compat.monotonicNow();
-    const t0: u32 = @intCast(@mod(@divTrunc(t0_ns, ns_per_ms), 0xFFFFFFFF));
+    // Four strictly-increasing monotonic timestamps. Chromium's
+    // Ozone and GTK track (serial, time) per pointer event; when a
+    // press shares the preceding motion's timestamp, their "defer
+    // in-flight press" path drops the press, and the later release
+    // arrives after Chromium has ack'd the activate-configure —
+    // looking like a spurious up. Spacing each phase ≥5 ms avoids
+    // that. Same hazard applies to same-time press + release
+    // (toolkits read it as "drag-without-motion" noise). Source:
+    // 2026-04-16 deep research, Hyprland #7519 style.
+    const base = monotonicMs();
+    const t_motion: u32 = base;
+    const t_press: u32 = base +% 5;
+    const t_drag: u32 = base +% 10;
+    const t_release: u32 = base +% 20;
 
-    // Phase 1: warp cursor to start, fire motion so focus follows
+    // Phase 1: warp cursor to start, fire motion so focus follows.
     wlr.wlr_cursor_warp_closest(srv.cursor, null, @floatFromInt(from_x), @floatFromInt(from_y));
-    srv.processCursorMotion(t0);
+    srv.processCursorMotion(t_motion);
 
-    // Phase 2: button press. Brief sleep so release carries a different
-    // timestamp — many toolkits distinguish "click" vs "drag-without-
-    // motion" by duration, and same-time press+release can be treated
-    // as noise.
-    srv.processCursorButton(button, 1, t0, super_held);
+    // Phase 2: button press — distinct ts from motion (prevents the
+    // Ozone "deferred press" drop).
+    srv.processCursorButton(button, 1, t_press, super_held);
 
-    // Phase 3: warp cursor to destination, fire motion so drag tracks
+    // Phase 3: warp to destination, fire motion so drag tracks.
     wlr.wlr_cursor_warp_closest(srv.cursor, null, @floatFromInt(to_x), @floatFromInt(to_y));
-    srv.processCursorMotion(t0 + 10);
+    srv.processCursorMotion(t_drag);
 
-    // Phase 4: button release at t0 + 20ms — gives chromium's click
-    // dispatcher a realistic down-up interval.
-    srv.processCursorButton(button, 0, t0 + 20, super_held);
+    // Phase 4: button release at t_release — realistic down-up interval.
+    srv.processCursorButton(button, 0, t_release, super_held);
 
     const id_str = id orelse "null";
     return std.fmt.bufPrint(buf,
@@ -1205,7 +1208,11 @@ fn toolTestDrag(self: *WmMcpServer, from_x: i32, from_y: i32, to_x: i32, to_y: i
 fn toolTestMove(self: *WmMcpServer, x: i32, y: i32, buf: []u8, id: ?[]const u8) []const u8 {
     const srv = self.server;
     wlr.wlr_cursor_warp_closest(srv.cursor, null, @floatFromInt(x), @floatFromInt(y));
-    srv.processCursorMotion(0);
+    // Real monotonic timestamp, not 0. Chromium's Ozone tracks
+    // (serial, time) pairs per pointer.enter; a time=0 motion poisons
+    // the enter-serial cache so any subsequent click on the same
+    // surface is dropped as "not associated with a valid enter".
+    srv.processCursorMotion(monotonicMs());
     const id_str = id orelse "null";
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"cursor at ({d},{d})"}}]}},"id":{s}}}
@@ -1310,10 +1317,12 @@ fn toolClick(self: *WmMcpServer, x: i32, y: i32, button: u32, buf: []u8, id: ?[]
         }
     }
 
-    // Press, brief delta, release. Real touchpads have ~10-30ms hold;
-    // we use 15ms which Chromium / GTK treat as a click.
-    srv.processCursorButton(button, 1, ms_now, false);
-    srv.processCursorButton(button, 0, ms_now + 15, false);
+    // Press + release with distinct timestamps from the preceding
+    // motion. Same-ts motion+press triggers Chromium's Ozone
+    // "deferred press" drop. +5ms press, +20ms release mirrors a
+    // real touchpad tap (10-30 ms hold).
+    srv.processCursorButton(button, 1, ms_now +% 5, false);
+    srv.processCursorButton(button, 0, ms_now +% 20, false);
 
     const id_str = id orelse "null";
     return std.fmt.bufPrint(buf,
