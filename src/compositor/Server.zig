@@ -127,6 +127,10 @@ arrange_scratch_buf: [16 * 1024]u8 = undefined,
 /// are empty. No heap allocation. Not persisted across hot-restart.
 push_widgets: [teru.render.PushWidget.max_widgets]teru.render.PushWidget.PushWidget =
     [_]teru.render.PushWidget.PushWidget{.{}} ** teru.render.PushWidget.max_widgets,
+/// Count of `push_widgets[i].used == true`. Maintained incrementally
+/// by setPushWidget / deletePushWidget so barSignature and
+/// countPushWidgets are O(1).
+push_widget_count: u8 = 0,
 
 // Fullscreen state: tracks which node is fullscreen (null = none)
 fullscreen_node: ?u64 = null,
@@ -893,6 +897,7 @@ pub fn setPushWidget(self: *Server, name: []const u8, text: []const u8, class: t
     @memcpy(slot.name_buf[0..n_n], name[0..n_n]);
     slot.name_len = @intCast(n_n);
     slot.used = true;
+    self.push_widget_count += 1;
     writeWidgetText(slot, text, class);
     self.scheduleRender();
     return true;
@@ -913,6 +918,7 @@ pub fn deletePushWidget(self: *Server, name: []const u8) bool {
             pw.used = false;
             pw.name_len = 0;
             pw.text_len = 0;
+            self.push_widget_count -|= 1;
             self.scheduleRender();
             return true;
         }
@@ -920,11 +926,9 @@ pub fn deletePushWidget(self: *Server, name: []const u8) bool {
     return false;
 }
 
-/// Count currently-registered widgets. Used by teruwm_list_widgets.
+/// Count currently-registered widgets. O(1) via the maintained counter.
 pub fn countPushWidgets(self: *const Server) usize {
-    var n: usize = 0;
-    for (&self.push_widgets) |*pw| if (pw.used) { n += 1; };
-    return n;
+    return self.push_widget_count;
 }
 
 /// Ask wlroots to fire a frame callback on the primary output. Used after

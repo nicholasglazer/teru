@@ -164,39 +164,53 @@ pub fn render(self: *Bar, server: *Server) void {
 /// microstats so sub-µs frame jitter doesn't cause sustained redraw.
 fn barSignature(self: *Bar, server: *Server) u64 {
     _ = self;
-    var h: u64 = 0x9e3779b97f4a7c15; // splitmix64 golden ratio seed
+    const prime: u64 = 0x9e3779b97f4a7c15;
+    var h: u64 = prime;
     h ^= @intCast(server.layout_engine.active_workspace);
-    h *%= 0x9e3779b97f4a7c15;
-    // Workspace occupancy + urgency bitfield
+    h *%= prime;
+
+    // Workspace occupancy + urgency bitfield, one pass. Urgency reads
+    // the pre-maintained per-ws counter (O(1)) instead of rescanning
+    // 256 slots.
     var ws_bits: u64 = 0;
     for (0..10) |wi| {
-        if (server.layout_engine.workspaces[wi].node_ids.items.len > 0) ws_bits |= (@as(u64, 1) << @intCast(wi));
-        if (server.nodes.anyUrgentOnWorkspace(@intCast(wi))) ws_bits |= (@as(u64, 1) << @intCast(wi + 16));
+        if (server.layout_engine.workspaces[wi].node_ids.items.len > 0)
+            ws_bits |= (@as(u64, 1) << @intCast(wi));
+        if (server.nodes.urgent_count_per_ws[wi] > 0)
+            ws_bits |= (@as(u64, 1) << @intCast(wi + 16));
     }
-    h ^= ws_bits; h *%= 0x9e3779b97f4a7c15;
-    // Layout char + pane count + title pointer (cheap identity check
-    // — when a client retitles, the buffer address typically changes,
-    // and even false collisions on the pointer mean "same title")
+    h ^= ws_bits;
+    h *%= prime;
+
+    // Layout char + pane count + title (pointer-identity check — when
+    // a client retitles, the buffer address typically changes, and
+    // even false collisions on the pointer mean "same title").
     const active_ws = server.layout_engine.getActiveWorkspace();
     h ^= @intFromEnum(active_ws.layout);
-    h *%= 0x9e3779b97f4a7c15;
+    h *%= prime;
     h ^= server.nodes.countInWorkspace(server.layout_engine.active_workspace);
-    h *%= 0x9e3779b97f4a7c15;
+    h *%= prime;
     if (server.focused_terminal) |tp| {
         h ^= @intFromPtr(&tp.pane.vt.title);
         h ^= tp.pane.vt.title_len;
     }
-    h *%= 0x9e3779b97f4a7c15;
-    // Keymap name pointer — changes on layout switch
+    h *%= prime;
+
+    // Keymap name — changes on layout switch.
     h ^= @intFromPtr(server.active_keymap_name.ptr);
     h ^= server.active_keymap_name.len;
-    h *%= 0x9e3779b97f4a7c15;
-    // Push widget slot used-mask — any MCP widget update flips a bit
-    var pw_mask: u64 = 0;
-    for (server.push_widgets, 0..) |w, i| {
-        if (w.used) pw_mask |= (@as(u64, 1) << @intCast(i % 64));
+    h *%= prime;
+
+    // Push widget used-mask, with a cheap short-circuit: if the first
+    // slot's unused and the internal push_widget_count (maintained by
+    // set/deletePushWidget) is zero, skip the 32-slot iteration.
+    if (server.countPushWidgets() > 0) {
+        var pw_mask: u64 = 0;
+        for (server.push_widgets, 0..) |w, i| {
+            if (w.used) pw_mask |= (@as(u64, 1) << @intCast(i % 64));
+        }
+        h ^= pw_mask;
     }
-    h ^= pw_mask;
     return h;
 }
 
