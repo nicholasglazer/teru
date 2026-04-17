@@ -78,6 +78,13 @@ urgent: [max_nodes]bool = [_]bool{false} ** max_nodes,
 // scratchpads are not shown in bar pills.
 urgent_count_per_ws: [10]u16 = [_]u16{0} ** 10,
 
+/// node_id → slot index. Maintained by addSurface / addTerminal /
+/// remove; findById answers in O(1) rather than scanning 256 slots
+/// on every cursor-motion + focus + screenshot + MCP call (32+
+/// callers across the compositor). Allocator comes in through the
+/// add/remove functions that already take one.
+by_id: std.AutoHashMapUnmanaged(u64, u16) = .empty,
+
 // Scratchpad name — non-empty iff this node is a scratchpad managed
 // by the xmonad NamedScratchpad pattern. Toggling a scratchpad flips
 // its `workspace` between HIDDEN_WS and the currently-focused real
@@ -92,7 +99,7 @@ count: u16 = 0,
 
 /// Register a new Wayland surface node. Returns the slot index.
 /// `view` is the opaque XdgView back-pointer (see `xdg_view` field).
-pub fn addSurface(self: *Node, id: u64, ws: u8, toplevel: ?*wlr.wlr_xdg_toplevel, tree: *wlr.wlr_scene_tree, view: ?*anyopaque) ?u16 {
+pub fn addSurface(self: *Node, allocator: std.mem.Allocator, id: u64, ws: u8, toplevel: ?*wlr.wlr_xdg_toplevel, tree: *wlr.wlr_scene_tree, view: ?*anyopaque) ?u16 {
     const slot = self.findEmptySlot() orelse return null;
     self.kind[slot] = .wayland_surface;
     self.node_id[slot] = id;
@@ -110,12 +117,13 @@ pub fn addSurface(self: *Node, id: u64, ws: u8, toplevel: ?*wlr.wlr_xdg_toplevel
     self.app_id_len[slot] = 0;
     self.urgent[slot] = false;
     self.scratchpad_name_len[slot] = 0;
+    self.by_id.put(allocator, id, slot) catch {};
     self.count += 1;
     return slot;
 }
 
 /// Register a terminal pane node. Returns the slot index.
-pub fn addTerminal(self: *Node, id: u64, ws: u8) ?u16 {
+pub fn addTerminal(self: *Node, allocator: std.mem.Allocator, id: u64, ws: u8) ?u16 {
     const slot = self.findEmptySlot() orelse return null;
     self.kind[slot] = .terminal;
     self.node_id[slot] = id;
@@ -132,37 +140,38 @@ pub fn addTerminal(self: *Node, id: u64, ws: u8) ?u16 {
     self.app_id_len[slot] = 0;
     self.urgent[slot] = false;
     self.scratchpad_name_len[slot] = 0;
+    self.by_id.put(allocator, id, slot) catch {};
     self.count += 1;
     return slot;
 }
 
 /// Remove a node by its ID. Returns true if found and removed.
 pub fn remove(self: *Node, id: u64) bool {
-    for (0..max_nodes) |i| {
-        if (self.kind[i] != .empty and self.node_id[i] == id) {
-            // Keep urgent-count coherent: a removed urgent node
-            // means the workspace no longer has this particular
-            // reason to show the pill indicator.
-            if (self.urgent[i]) {
-                const ws = self.workspace[i];
-                if (ws < self.urgent_count_per_ws.len) self.urgent_count_per_ws[ws] -|= 1;
-            }
-            self.kind[i] = .empty;
-            self.node_id[i] = 0;
-            self.scene_tree[i] = null;
-            self.xdg_toplevel[i] = null;
-            self.xdg_view[i] = null;
-            self.floating[i] = false;
-            self.name_len[i] = 0;
-            self.group_id[i] = 0;
-            self.app_id_len[i] = 0;
-            self.urgent[i] = false;
-            self.scratchpad_name_len[i] = 0;
-            self.count -= 1;
-            return true;
-        }
+    const slot = self.by_id.get(id) orelse return false;
+    const i: usize = slot;
+    if (self.kind[i] == .empty or self.node_id[i] != id) return false;
+
+    // Keep urgent-count coherent: a removed urgent node means the
+    // workspace no longer has this particular reason to show the
+    // pill indicator.
+    if (self.urgent[i]) {
+        const ws = self.workspace[i];
+        if (ws < self.urgent_count_per_ws.len) self.urgent_count_per_ws[ws] -|= 1;
     }
-    return false;
+    self.kind[i] = .empty;
+    self.node_id[i] = 0;
+    self.scene_tree[i] = null;
+    self.xdg_toplevel[i] = null;
+    self.xdg_view[i] = null;
+    self.floating[i] = false;
+    self.name_len[i] = 0;
+    self.group_id[i] = 0;
+    self.app_id_len[i] = 0;
+    self.urgent[i] = false;
+    self.scratchpad_name_len[i] = 0;
+    _ = self.by_id.remove(id);
+    self.count -= 1;
+    return true;
 }
 
 // ── Urgency ────────────────────────────────────────────────────
@@ -253,12 +262,12 @@ pub fn isHidden(self: *const Node, slot: u16) bool {
 
 /// Find a node's slot index by its ID.
 pub fn findById(self: *const Node, id: u64) ?u16 {
-    for (0..max_nodes) |i| {
-        if (self.kind[i] != .empty and self.node_id[i] == id) {
-            return @intCast(i);
-        }
-    }
-    return null;
+    return self.by_id.get(id);
+}
+
+/// Free the node_id → slot index. Server.deinit calls this.
+pub fn deinitIndex(self: *Node, allocator: std.mem.Allocator) void {
+    self.by_id.deinit(allocator);
 }
 
 /// Find a node's slot index by its xdg_toplevel pointer (fast surface lookup on events).
@@ -358,14 +367,15 @@ fn findEmptySlot(self: *const Node) ?u16 {
 
 test "add and remove nodes" {
     var reg = Node{};
+    defer reg.deinitIndex(std.testing.allocator);
     try std.testing.expectEqual(@as(u16, 0), reg.count);
 
-    const s1 = reg.addTerminal(100, 0).?;
+    const s1 = reg.addTerminal(std.testing.allocator, 100, 0).?;
     try std.testing.expectEqual(@as(u16, 1), reg.count);
     try std.testing.expectEqual(Kind.terminal, reg.kind[s1]);
     try std.testing.expectEqual(@as(u64, 100), reg.node_id[s1]);
 
-    const s2 = reg.addTerminal(200, 1).?;
+    const s2 = reg.addTerminal(std.testing.allocator, 200, 1).?;
     try std.testing.expectEqual(@as(u16, 2), reg.count);
 
     try std.testing.expect(reg.remove(100));
@@ -373,15 +383,16 @@ test "add and remove nodes" {
     try std.testing.expectEqual(Kind.empty, reg.kind[s1]);
 
     // Slot reuse
-    const s3 = reg.addTerminal(300, 0).?;
+    const s3 = reg.addTerminal(std.testing.allocator, 300, 0).?;
     try std.testing.expectEqual(s1, s3); // reuses freed slot
     _ = s2;
 }
 
 test "findById and findByToplevel" {
     var reg = Node{};
-    _ = reg.addTerminal(42, 0);
-    _ = reg.addTerminal(99, 1);
+    defer reg.deinitIndex(std.testing.allocator);
+    _ = reg.addTerminal(std.testing.allocator, 42, 0);
+    _ = reg.addTerminal(std.testing.allocator, 99, 1);
 
     try std.testing.expectEqual(@as(?u16, 0), reg.findById(42));
     try std.testing.expectEqual(@as(?u16, 1), reg.findById(99));
@@ -390,7 +401,8 @@ test "findById and findByToplevel" {
 
 test "applyRect stores position and size" {
     var reg = Node{};
-    const slot = reg.addTerminal(1, 0).?;
+    defer reg.deinitIndex(std.testing.allocator);
+    const slot = reg.addTerminal(std.testing.allocator, 1, 0).?;
     reg.applyRect(slot, 100, 200, 960, 540);
 
     try std.testing.expectEqual(@as(i32, 100), reg.pos_x[slot]);
@@ -401,9 +413,10 @@ test "applyRect stores position and size" {
 
 test "countInWorkspace" {
     var reg = Node{};
-    _ = reg.addTerminal(1, 0);
-    _ = reg.addTerminal(2, 0);
-    _ = reg.addTerminal(3, 1);
+    defer reg.deinitIndex(std.testing.allocator);
+    _ = reg.addTerminal(std.testing.allocator, 1, 0);
+    _ = reg.addTerminal(std.testing.allocator, 2, 0);
+    _ = reg.addTerminal(std.testing.allocator, 3, 1);
 
     try std.testing.expectEqual(@as(u16, 2), reg.countInWorkspace(0));
     try std.testing.expectEqual(@as(u16, 1), reg.countInWorkspace(1));
@@ -412,9 +425,10 @@ test "countInWorkspace" {
 
 test "setName and findByName" {
     var reg = Node{};
-    const s1 = reg.addTerminal(1, 0).?;
-    const s2 = reg.addTerminal(2, 0).?;
-    const s3 = reg.addTerminal(3, 1).?;
+    defer reg.deinitIndex(std.testing.allocator);
+    const s1 = reg.addTerminal(std.testing.allocator, 1, 0).?;
+    const s2 = reg.addTerminal(std.testing.allocator, 2, 0).?;
+    const s3 = reg.addTerminal(std.testing.allocator, 3, 1).?;
 
     reg.setName(s1, "editor");
     reg.setName(s2, "terminal");
@@ -440,17 +454,19 @@ test "setName and findByName" {
 
 test "max capacity" {
     var reg = Node{};
+    defer reg.deinitIndex(std.testing.allocator);
     for (0..max_nodes) |i| {
-        try std.testing.expect(reg.addTerminal(@intCast(i), 0) != null);
+        try std.testing.expect(reg.addTerminal(std.testing.allocator, @intCast(i), 0) != null);
     }
     try std.testing.expectEqual(@as(u16, max_nodes), reg.count);
-    try std.testing.expectEqual(@as(?u16, null), reg.addTerminal(999, 0));
+    try std.testing.expectEqual(@as(?u16, null), reg.addTerminal(std.testing.allocator, 999, 0));
 }
 
 test "scratchpad — setScratchpad / findByScratchpad / isHidden" {
     var reg = Node{};
-    const s1 = reg.addTerminal(1, 0).?;
-    const s2 = reg.addTerminal(2, 0).?;
+    defer reg.deinitIndex(std.testing.allocator);
+    const s1 = reg.addTerminal(std.testing.allocator, 1, 0).?;
+    const s2 = reg.addTerminal(std.testing.allocator, 2, 0).?;
     _ = s2;
 
     // Untagged slot — not findable as a scratchpad.
@@ -473,7 +489,8 @@ test "scratchpad — setScratchpad / findByScratchpad / isHidden" {
 
 test "scratchpad — truncates long names" {
     var reg = Node{};
-    const s = reg.addTerminal(1, 0).?;
+    defer reg.deinitIndex(std.testing.allocator);
+    const s = reg.addTerminal(std.testing.allocator, 1, 0).?;
     const too_long = "abcdefghijklmnopqrstuvwxyz";
     reg.setScratchpad(s, too_long);
     // 15-char truncation (16 bytes w/ null).
@@ -483,9 +500,10 @@ test "scratchpad — truncates long names" {
 
 test "urgent — per-ws count stays coherent under mark/clear/move/remove" {
     var reg = Node{};
-    const a = reg.addTerminal(1, 3).?;
-    const b = reg.addTerminal(2, 3).?;
-    const c = reg.addTerminal(3, 5).?;
+    defer reg.deinitIndex(std.testing.allocator);
+    const a = reg.addTerminal(std.testing.allocator, 1, 3).?;
+    const b = reg.addTerminal(std.testing.allocator, 2, 3).?;
+    const c = reg.addTerminal(std.testing.allocator, 3, 5).?;
     try std.testing.expect(!reg.anyUrgentOnWorkspace(3));
     try std.testing.expect(!reg.anyUrgentOnWorkspace(5));
 

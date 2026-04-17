@@ -90,7 +90,7 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         server.layout_engine.active_workspace;
 
     // Register in the node registry on the target workspace
-    const slot = server.nodes.addSurface(view.node_id, ws, view.toplevel, view.scene_tree, @ptrCast(view));
+    const slot = server.nodes.addSurface(server.zig_allocator, view.node_id, ws, view.toplevel, view.scene_tree, @ptrCast(view));
 
     // Store app_id and assign name
     if (slot) |s| {
