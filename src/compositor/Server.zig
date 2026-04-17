@@ -13,6 +13,7 @@ const Bar = @import("Bar.zig");
 const WmConfig = @import("WmConfig.zig");
 const WmMcpServer = @import("WmMcpServer.zig");
 const NodeRegistry = @import("Node.zig");
+const Listeners = @import("ServerListeners.zig");
 const teru = @import("teru");
 const LayoutEngine = teru.LayoutEngine;
 const Keybinds = teru.Keybinds;
@@ -171,26 +172,26 @@ restart_pending: bool = false,
 
 // ── Listeners ──────────────────────────────────────────────────
 
-new_output: wlr.wl_listener = makeListener(handleNewOutput),
+new_output: wlr.wl_listener = makeListener(Listeners.handleNewOutput),
 new_input: wlr.wl_listener = makeListener(handleNewInput),
-new_xdg_toplevel: wlr.wl_listener = makeListener(handleNewXdgToplevel),
+new_xdg_toplevel: wlr.wl_listener = makeListener(Listeners.handleNewXdgToplevel),
 cursor_motion: wlr.wl_listener = makeListener(handleCursorMotion),
 cursor_motion_absolute: wlr.wl_listener = makeListener(handleCursorMotionAbsolute),
 cursor_button: wlr.wl_listener = makeListener(handleCursorButton),
 cursor_axis: wlr.wl_listener = makeListener(handleCursorAxis),
 cursor_frame: wlr.wl_listener = makeListener(handleCursorFrame),
 request_set_cursor: wlr.wl_listener = makeListener(handleRequestSetCursor),
-new_xwayland_surface: wlr.wl_listener = makeListener(handleNewXwaylandSurface),
+new_xwayland_surface: wlr.wl_listener = makeListener(Listeners.handleNewXwaylandSurface),
 
 // xdg_activation_v1 — clients asking for focus (v0.4.17).
-xdg_activate: wlr.wl_listener = makeListener(handleXdgActivation),
+xdg_activate: wlr.wl_listener = makeListener(Listeners.handleXdgActivation),
 xdg_activation: ?*wlr.wlr_xdg_activation_v1 = null,
 
 // xdg-decoration-v1 — for every new toplevel decoration we force the
 // server-side mode (tiling WM: no wasted titlebar). Listener lives here;
 // the manager itself has no long-lived state we need.
 xdg_decoration_mgr: ?*wlr.wlr_xdg_decoration_manager_v1 = null,
-new_xdg_decoration: wlr.wl_listener = makeListener(handleNewXdgDecoration),
+new_xdg_decoration: wlr.wl_listener = makeListener(Listeners.handleNewXdgDecoration),
 
 // idle-notify-v1 — swayidle/gammastep subscribers get activity pings
 // on every real input event (keyboard, pointer motion/button/axis).
@@ -202,15 +203,15 @@ idle_notifier: ?*wlr.wlr_idle_notifier_v1 = null,
 // idle_notifier's inhibited flag accordingly.
 idle_inhibit_mgr: ?*wlr.wlr_idle_inhibit_manager_v1 = null,
 idle_inhibitor_count: u16 = 0,
-new_inhibitor: wlr.wl_listener = makeListener(handleNewInhibitor),
-inhibitor_trackers: std.ArrayListUnmanaged(*InhibitorTracker) = .empty,
+new_inhibitor: wlr.wl_listener = makeListener(Listeners.handleNewInhibitor),
+inhibitor_trackers: std.ArrayListUnmanaged(*Listeners.InhibitorTracker) = .empty,
 shutting_down: bool = false,
 
 // wlr_output_power_management_v1 — wlopm / swayidle dpms hook.
 // Clients call set_mode with ON/OFF per output; we commit the
 // corresponding wlr_output_state.enabled.
 output_power_mgr: ?*wlr.wlr_output_power_manager_v1 = null,
-output_power_set_mode: wlr.wl_listener = makeListener(handleOutputPowerSetMode),
+output_power_set_mode: wlr.wl_listener = makeListener(Listeners.handleOutputPowerSetMode),
 
 // wlr_virtual_keyboard_v1 / wlr_virtual_pointer_v1 — synthetic input
 // for wtype / ydotool / wlrctl / accessibility. Each new object
@@ -219,15 +220,15 @@ output_power_set_mode: wlr.wl_listener = makeListener(handleOutputPowerSetMode),
 // if you need to harden a shared host.
 virtual_keyboard_mgr: ?*wlr.wlr_virtual_keyboard_manager_v1 = null,
 virtual_pointer_mgr: ?*wlr.wlr_virtual_pointer_manager_v1 = null,
-new_virtual_keyboard: wlr.wl_listener = makeListener(handleNewVirtualKeyboard),
-new_virtual_pointer: wlr.wl_listener = makeListener(handleNewVirtualPointer),
+new_virtual_keyboard: wlr.wl_listener = makeListener(Listeners.handleNewVirtualKeyboard),
+new_virtual_pointer: wlr.wl_listener = makeListener(Listeners.handleNewVirtualPointer),
 
 // wlr_output_management_v1 — kanshi, wlr-randr, wdisplays.
 // Clients post configurations; we apply/test and push current state
 // back on any output add/remove/mode change.
 output_manager: ?*wlr.wlr_output_manager_v1 = null,
-output_manager_apply: wlr.wl_listener = makeListener(handleOutputManagerApply),
-output_manager_test: wlr.wl_listener = makeListener(handleOutputManagerTest),
+output_manager_apply: wlr.wl_listener = makeListener(Listeners.handleOutputManagerApply),
+output_manager_test: wlr.wl_listener = makeListener(Listeners.handleOutputManagerTest),
 
 // wlr_foreign_toplevel_management_v1 — zwlr. waybar / nwg-panel /
 // wlrctl list our mapped xdg toplevels and can activate/close them.
@@ -805,38 +806,19 @@ fn safeRemoveListener(listener: *wlr.wl_listener) void {
 }
 
 // ── Signal handlers ────────────────────────────────────────────
+//
+// Output attach, xdg-shell, xdg-activation, xdg-decoration,
+// idle-inhibit, output-power, virtual input, output-management
+// and xwayland-surface handlers live in ServerListeners.zig; the
+// field defaults above reference them through the Listeners alias.
+// The input device + cursor + keyboard handlers stay in this file
+// (pending the ServerInput / ServerCursor splits) because they
+// call private helpers here.
 
-fn handleNewOutput(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
-    const server = wlr.listenerParent(Server, "new_output", listener);
-    const wlr_output: *wlr.wlr_output = @ptrCast(@alignCast(data orelse return));
-
-    _ = Output.create(server, wlr_output, server.zig_allocator) catch {
-        std.debug.print("teruwm: failed to create output\n", .{});
-        return;
-    };
-    const first = (server.primary_output == null);
-    if (first) server.primary_output = wlr_output;
-
-    if (first and !server.autostart_fired) {
-        server.autostart_fired = true;
-        server.runAutostart();
-    }
-
-    // Announce the new head to wlr-output-management listeners
-    // (kanshi refreshes its DB; waybar's output module resyncs).
-    server.pushOutputManagerState();
-}
-
-/// Run each command in `wm_config.autostart` via /bin/sh, inheriting env
-/// so children see WAYLAND_DISPLAY. Window placement is handled by the
-/// `[rules]` table on WM_CLASS match — autostart just launches.
-fn runAutostart(self: *Server) void {
-    if (self.wm_config.autostart_count == 0) return;
-    for (self.wm_config.autostart[0..self.wm_config.autostart_count]) |*entry| {
-        const cmd = entry.getCmd();
-        std.debug.print("teruwm: autostart → {s}\n", .{cmd});
-        self.spawnShell(cmd);
-    }
+/// Broadcast current output state. Thin delegator — see
+/// ServerListeners.pushOutputManagerState for the real work.
+pub fn pushOutputManagerState(self: *Server) void {
+    Listeners.pushOutputManagerState(self);
 }
 
 fn handleNewInput(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
@@ -855,201 +837,6 @@ fn handleNewInput(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) vo
     var caps: u32 = wlr.WL_SEAT_CAPABILITY_POINTER;
     caps |= wlr.WL_SEAT_CAPABILITY_KEYBOARD;
     wlr.wlr_seat_set_capabilities(server.seat, caps);
-}
-
-fn handleNewXdgToplevel(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
-    const server = wlr.listenerParent(Server, "new_xdg_toplevel", listener);
-    const toplevel: *wlr.wlr_xdg_toplevel = @ptrCast(@alignCast(data orelse return));
-
-    _ = XdgView.create(server, toplevel);
-}
-
-/// Client requested focus via xdg_activation_v1. We don't steal focus —
-/// mark the node urgent so the bar indicator flips and agents polling
-/// `teruwm_list_windows` see the flag. Focus-steal-prevention is on
-/// by default; no auto-raise on activation.
-fn handleXdgActivation(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
-    const server = wlr.listenerParent(Server, "xdg_activate", listener);
-    const ev: *wlr.wlr_xdg_activation_v1_request_activate_event = @ptrCast(@alignCast(data orelse return));
-    const surface = wlr.miozu_xdg_activation_event_surface(ev) orelse return;
-    const toplevel = wlr.miozu_xdg_toplevel_from_surface(surface) orelse return;
-    const slot = server.nodes.findByToplevel(toplevel) orelse return;
-
-    // If this window is already focused, nothing urgent about it.
-    if (server.focused_view) |v| {
-        if (v.toplevel == toplevel) return;
-    }
-
-    if (server.nodes.markUrgent(slot)) {
-        const nid = server.nodes.node_id[slot];
-        const ws = server.nodes.workspace[slot];
-        std.debug.print("teruwm: urgent node={d} ws={d}\n", .{ nid, ws });
-        server.emitMcpEventKind("urgent", ",\"node_id\":{d},\"workspace\":{d}", .{ nid, ws });
-        if (server.bar) |b| b.render(server);
-        server.scheduleRender();
-    }
-}
-
-/// xdg-decoration-v1 new_toplevel_decoration handler. Tiling WMs always
-/// want server-side decoration (no titlebar). wlroots sends the configure
-/// on the next commit; we don't need to hold per-decoration state. If
-/// the client later sends set_mode asking for client-side we ignore it —
-/// the most recent mode we set stays in effect.
-fn handleNewXdgDecoration(_: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
-    const dec: *wlr.wlr_xdg_toplevel_decoration_v1 = @ptrCast(@alignCast(data orelse return));
-    _ = wlr.wlr_xdg_toplevel_decoration_v1_set_mode(dec, wlr.XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
-}
-
-// ── idle_inhibit_v1 tracking ──────────────────────────────────
-//
-// wlroots stores inhibitors in a list we don't own. Rather than walk
-// that list on every update, we bump a local counter on new/destroy
-// and flip the idle_notifier flag when it crosses 0↔1. Each inhibitor
-// gets a tiny heap-alloc wrapper so we can register a destroy listener
-// without pulling InhibitorDestroy into the inhibitor itself.
-
-const InhibitorTracker = struct {
-    server: *Server,
-    destroy_listener: wlr.wl_listener,
-};
-
-fn handleNewInhibitor(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
-    const server = wlr.listenerParent(Server, "new_inhibitor", listener);
-    const inhibitor: *wlr.wlr_idle_inhibitor_v1 = @ptrCast(@alignCast(data orelse return));
-
-    const tracker = server.zig_allocator.create(InhibitorTracker) catch return;
-    tracker.* = .{
-        .server = server,
-        .destroy_listener = makeListener(handleInhibitorDestroy),
-    };
-    wlr.wl_signal_add(wlr.miozu_idle_inhibitor_destroy(inhibitor), &tracker.destroy_listener);
-
-    // Track the tracker so Server.deinit can free it before
-    // wl_display_destroy fires inhibitor destroy signals on a stale
-    // Server.
-    server.inhibitor_trackers.append(server.zig_allocator, tracker) catch {
-        // Append failed — drop the listener + tracker rather than
-        // leave an orphan.
-        wlr.wl_list_remove(&tracker.destroy_listener.link);
-        server.zig_allocator.destroy(tracker);
-        return;
-    };
-
-    server.idle_inhibitor_count += 1;
-    server.refreshIdleInhibited();
-}
-
-fn handleInhibitorDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
-    const tracker: *InhibitorTracker = @fieldParentPtr("destroy_listener", listener);
-    const server = tracker.server;
-
-    // Server.deinit already freed us — skip to avoid dereferencing
-    // torn-down wlr_idle_notifier during wl_display_destroy.
-    if (server.shutting_down) return;
-
-    server.idle_inhibitor_count -|= 1;
-    server.refreshIdleInhibited();
-
-    // Remove ourselves from the tracker list before freeing.
-    for (server.inhibitor_trackers.items, 0..) |t, i| {
-        if (t == tracker) {
-            _ = server.inhibitor_trackers.swapRemove(i);
-            break;
-        }
-    }
-
-    wlr.wl_list_remove(&tracker.destroy_listener.link);
-    server.zig_allocator.destroy(tracker);
-}
-
-fn refreshIdleInhibited(self: *Server) void {
-    if (self.idle_notifier) |n| {
-        wlr.wlr_idle_notifier_v1_set_inhibited(n, self.idle_inhibitor_count > 0);
-    }
-}
-
-// ── output_power_management_v1 ────────────────────────────────
-//
-// Client asks us to toggle an output's power state. We map the
-// request to wlr_output enabled; backend handles the actual DRM
-// blank/resume. Rate-limit equal-state commits to avoid DRM thrash
-// from wlopm / swayidle timers firing on already-off outputs.
-
-fn handleOutputPowerSetMode(_: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
-    const event: *wlr.wlr_output_power_v1_set_mode_event = @ptrCast(@alignCast(data orelse return));
-    const output = wlr.miozu_output_power_event_output(event);
-    const want_on = wlr.miozu_output_power_event_mode_on(event) != 0;
-    const currently_on = wlr.miozu_output_enabled(output) != 0;
-    if (want_on == currently_on) return;
-    _ = wlr.miozu_output_commit_enabled(output, if (want_on) 1 else 0);
-}
-
-// ── virtual_keyboard_v1 / virtual_pointer_v1 ─────────────────
-//
-// wlroots embeds a real wlr_keyboard / wlr_pointer inside each virtual
-// object, so we just pass the embedded input_device into the same
-// setup paths used for physical devices (setupKeyboard attaches to
-// the seat + registers key/modifiers listeners; wlr_cursor_attach_
-// input_device fans pointer events into our cursor signals).
-
-fn handleNewVirtualKeyboard(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
-    const server = wlr.listenerParent(Server, "new_virtual_keyboard", listener);
-    const vkbd: *wlr.wlr_virtual_keyboard_v1 = @ptrCast(@alignCast(data orelse return));
-    const device = wlr.miozu_virtual_keyboard_input_device(vkbd);
-    server.setupKeyboard(device);
-}
-
-fn handleNewVirtualPointer(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
-    const server = wlr.listenerParent(Server, "new_virtual_pointer", listener);
-    const event: *wlr.wlr_virtual_pointer_v1_new_pointer_event = @ptrCast(@alignCast(data orelse return));
-    const device = wlr.miozu_virtual_pointer_new_pointer(event);
-    wlr.wlr_cursor_attach_input_device(server.cursor, device);
-}
-
-// ── output_management_v1 ────────────────────────────────────
-//
-// Two-phase: clients (kanshi / wdisplays / wlr-randr) send a config,
-// we test it without committing, they see OK and send apply, we
-// commit for real. Both events hand us ownership of the cfg — the
-// send_succeeded/send_failed helpers destroy it.
-//
-// After any successful apply (and on output connect/disconnect) we
-// push the current state via miozu_output_push_state so clients
-// observing the manager resync. Kanshi listens to this.
-
-fn handleOutputManagerApply(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
-    const server = wlr.listenerParent(Server, "output_manager_apply", listener);
-    const cfg: *wlr.wlr_output_configuration_v1 = @ptrCast(@alignCast(data orelse return));
-    const ok = wlr.miozu_output_apply_config(server.output_layout, cfg, 0) != 0;
-    if (ok) {
-        wlr.miozu_output_config_send_succeeded(cfg);
-        server.pushOutputManagerState();
-    } else {
-        wlr.miozu_output_config_send_failed(cfg);
-    }
-}
-
-fn handleOutputManagerTest(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
-    const server = wlr.listenerParent(Server, "output_manager_test", listener);
-    const cfg: *wlr.wlr_output_configuration_v1 = @ptrCast(@alignCast(data orelse return));
-    const ok = wlr.miozu_output_apply_config(server.output_layout, cfg, 1) != 0;
-    if (ok) {
-        wlr.miozu_output_config_send_succeeded(cfg);
-    } else {
-        wlr.miozu_output_config_send_failed(cfg);
-    }
-}
-
-/// Broadcast current output state to wlr_output_management_v1 clients.
-/// Call after any output add, destroy, mode-change, or successful apply.
-pub fn pushOutputManagerState(self: *Server) void {
-    const mgr = self.output_manager orelse return;
-
-    // Build a compact array of wlr_output pointers for the glue helper.
-    var buf: [16]*wlr.wlr_output = undefined;
-    const n = @min(self.outputs.items.len, buf.len);
-    for (0..n) |i| buf[i] = self.outputs.items[i].wlr_output;
-    wlr.miozu_output_push_state(mgr, self.output_layout, &buf, @intCast(n));
 }
 
 /// Tiny inline: push a "user is active" ping to idle-notify subscribers.
@@ -1335,12 +1122,6 @@ fn handleCursorFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) vo
     wlr.wlr_seat_pointer_notify_frame(server.seat);
 }
 
-fn handleNewXwaylandSurface(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
-    const server = wlr.listenerParent(Server, "new_xwayland_surface", listener);
-    const surface: *wlr.wlr_xwayland_surface = @ptrCast(@alignCast(data orelse return));
-    _ = XwaylandView.create(server, surface);
-}
-
 fn handleRequestSetCursor(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const server = wlr.listenerParent(Server, "request_set_cursor", listener);
     const event_ptr = data orelse return;
@@ -1535,7 +1316,7 @@ pub fn countPushWidgets(self: *const Server) usize {
 /// class (resize on a pane owned by output #2 otherwise waited for an
 /// unrelated frame). Falls back to primary_output during the init window
 /// before outputs[] populates.
-fn scheduleRender(self: *Server) void {
+pub fn scheduleRender(self: *Server) void {
     if (self.outputs.items.len > 0) {
         for (self.outputs.items) |o| {
             wlr.wlr_output_schedule_frame(o.wlr_output);
@@ -1614,7 +1395,7 @@ fn extractLayoutCode(keymap: *wlr.xkb_keymap, target_idx: u32) []const u8 {
 // free() — the caller copies it into Server.active_keymap_name_buf.
 var keymap_raw_buf: [32]u8 = undefined;
 
-fn setupKeyboard(self: *Server, device: *wlr.wlr_input_device) void {
+pub fn setupKeyboard(self: *Server, device: *wlr.wlr_input_device) void {
     const keyboard = wlr.miozu_input_device_keyboard(device) orelse return;
 
     // Resolve keymap using three-layer fallback (idiomatic Sway pattern):
