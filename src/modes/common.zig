@@ -21,6 +21,7 @@ const Config = @import("../config/Config.zig");
 const Hooks = @import("../config/Hooks.zig");
 const HookHandler = @import("../agent/HookHandler.zig");
 const HookListener = @import("../agent/HookListener.zig");
+const daemon_proto = @import("../server/protocol.zig");
 const build_options = @import("build_options");
 
 pub const version = build_options.version;
@@ -290,6 +291,133 @@ pub fn updateLatestAgentTask(graph: *ProcessGraph, task: []const u8) void {
         }
     }
     if (latest_id) |id| graph.updateAgentStatus(id, task, null);
+}
+
+// ── Daemon wire helpers ───────────────────────────────────────
+//
+// Both runTuiDaemonMode and runWindowedDaemonMode talk to a daemon
+// over a Unix socket using the daemon_proto format. These live here
+// because both modes need them.
+
+/// Poll daemon IPC socket for tagged PTY output and feed to each
+/// pane's VtParser. Returns true if anything was processed.
+pub fn pollDaemonOutput(fd: posix.fd_t, mux: *Multiplexer, buf: []u8) bool {
+    var any = false;
+    var hdr: daemon_proto.Header = undefined;
+    var recv_buf: [daemon_proto.max_payload]u8 = undefined;
+    _ = buf;
+
+    while (daemon_proto.recvMessage(fd, &hdr, &recv_buf)) |payload| {
+        switch (hdr.tag) {
+            .output => {
+                if (daemon_proto.decodePanePayload(payload)) |pp| {
+                    if (mux.getPaneById(pp.pane_id)) |pane| {
+                        if (pp.data.len > 0) {
+                            pane.vt.feed(pp.data);
+                            pane.grid.dirty = true;
+                            any = true;
+                        }
+                    }
+                }
+            },
+            .state_sync => {
+                parseDaemonStateSync(fd, mux, payload);
+                any = true;
+            },
+            .pane_event => {
+                if (payload.len >= 9) {
+                    const pane_id = std.mem.readInt(u64, payload[0..8], .little);
+                    const event = payload[8];
+                    if (event == 1) mux.closePane(pane_id);
+                    // event == 0 (created) handled via state_sync
+                }
+                any = true;
+            },
+            else => {},
+        }
+    }
+    return any;
+}
+
+/// Parse state_sync from daemon and create/update remote panes.
+/// Restores exact workspace position, active pane, layout, ratio.
+/// Format: [active_ws:1][ws_count:1]
+///   per-ws × N: [layout:1][pane_count:1][ratio_x100:1][reserved:1][active_pane_id:8]
+///   per-pane (ordered by workspace position): [pane_id:8][rows:2][cols:2][ws_idx:1]
+pub fn parseDaemonStateSync(daemon_fd: posix.fd_t, mux: *Multiplexer, payload: []const u8) void {
+    if (payload.len < 2) return;
+    const active_ws = payload[0];
+    const ws_count = @min(payload[1], 10);
+    var pos: usize = 2;
+
+    const LE = @import("../tiling/LayoutEngine.zig");
+
+    for (0..ws_count) |wi| {
+        if (pos + 12 > payload.len) break;
+        const layout_byte = payload[pos];
+        pos += 1;
+        _ = payload[pos]; // pane_count
+        pos += 1;
+        const ratio_x100 = payload[pos];
+        pos += 1;
+        pos += 1; // reserved
+        const active_pane_id = std.mem.readInt(u64, payload[pos..][0..8], .little);
+        pos += 8;
+
+        if (wi < 10) {
+            var ws = &mux.layout_engine.workspaces[wi];
+            ws.layout = @enumFromInt(@min(layout_byte, @intFromEnum(LE.Layout.accordion)));
+            ws.active_node = if (active_pane_id != 0) active_pane_id else null;
+            ws.master_ratio = @as(f32, @floatFromInt(ratio_x100)) / 100.0;
+        }
+    }
+
+    const Pane = @import("../core/Pane.zig");
+    while (pos + 13 <= payload.len) {
+        const pane_id = std.mem.readInt(u64, payload[pos..][0..8], .little);
+        pos += 8;
+        const rows = std.mem.readInt(u16, payload[pos..][0..2], .little);
+        pos += 2;
+        const cols = std.mem.readInt(u16, payload[pos..][0..2], .little);
+        pos += 2;
+        const ws_idx = payload[pos];
+        pos += 1;
+
+        if (mux.getPaneById(pane_id) != null) continue;
+
+        const pane = Pane.initRemote(mux.allocator, rows, cols, pane_id, daemon_fd, mux.spawn_config) catch continue;
+        if (pane_id >= mux.next_pane_id) mux.next_pane_id = pane_id + 1;
+
+        mux.panes.append(mux.allocator, pane) catch continue;
+        const idx = mux.panes.items.len - 1;
+        mux.panes.items[idx].linkVt(mux.allocator);
+
+        if (ws_idx < 10) {
+            mux.layout_engine.workspaces[ws_idx].addNode(mux.allocator, pane_id) catch |err| {
+                var ebuf: [128]u8 = undefined;
+                outFmt(&ebuf, "[teru] layout addNode failed: {s}\n", .{@errorName(err)});
+            };
+        }
+    }
+
+    mux.switchWorkspace(active_ws);
+    for (mux.panes.items) |*p| p.grid.dirty = true;
+}
+
+/// Send a command to the daemon (for windowed-daemon mode).
+pub fn sendDaemonCommand(fd: posix.fd_t, cmd: daemon_proto.Command, arg: ?u8) void {
+    var buf: [2]u8 = undefined;
+    buf[0] = @intFromEnum(cmd);
+    const len: usize = if (arg) |a| blk: {
+        buf[1] = a;
+        break :blk 2;
+    } else 1;
+    _ = daemon_proto.sendMessage(fd, .command, buf[0..len]);
+}
+
+/// Send keyboard input to the daemon's active pane.
+pub fn sendDaemonInput(fd: posix.fd_t, data: []const u8) void {
+    _ = daemon_proto.sendMessage(fd, .active_input, data);
 }
 
 /// Process a Claude Code hook event: update ProcessGraph and fire
