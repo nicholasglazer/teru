@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const compat = @import("../compat.zig");
 
 const WinPty = @This();
 
@@ -207,11 +208,7 @@ pub fn makeCoord(cols: u16, rows: u16) COORD {
 /// Resolve the default Windows shell: %COMSPEC% or fallback to
 /// C:\Windows\System32\cmd.exe.
 pub fn getDefaultShell() []const u8 {
-    const comspec = std.c.getenv("COMSPEC");
-    if (comspec) |ptr| {
-        return std.mem.sliceTo(ptr, 0);
-    }
-    return "C:\\Windows\\System32\\cmd.exe";
+    return compat.getenv("COMSPEC") orelse "C:\\Windows\\System32\\cmd.exe";
 }
 
 /// Encode a UTF-8 string into a null-terminated UTF-16LE buffer for

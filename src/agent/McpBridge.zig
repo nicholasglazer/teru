@@ -19,6 +19,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ipc = @import("../server/ipc.zig");
+const compat = @import("../compat.zig");
 
 const max_line: usize = 65536;
 const max_response: usize = 65536;
@@ -47,8 +48,8 @@ fn stdoutFd() std.posix.fd_t {
 pub fn run(io: std.Io) !void {
     _ = io; // Proxy uses blocking C I/O on stdin/stdout/socket.
 
-    const read_only = if (std.c.getenv("TERU_MCP_READONLY")) |v|
-        std.mem.sliceTo(v, 0).len > 0 and std.mem.sliceTo(v, 0)[0] == '1'
+    const read_only = if (compat.getenv("TERU_MCP_READONLY")) |v|
+        v.len > 0 and v[0] == '1'
     else
         false;
 
@@ -146,7 +147,7 @@ fn readResponse(conn: *ipc.IpcHandle, buf: []u8) []const u8 {
 var discovered_path: [256]u8 = undefined;
 
 fn findSocket() ?[]const u8 {
-    if (std.c.getenv("TERU_MCP_SOCKET")) |env| return std.mem.sliceTo(env, 0);
+    if (compat.getenv("TERU_MCP_SOCKET")) |env| return env;
     return discoverSocket();
 }
 

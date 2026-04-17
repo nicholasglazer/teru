@@ -18,6 +18,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ipc = @import("../server/ipc.zig");
+const compat = @import("../compat.zig");
 
 /// Stable buffer for the discovered teruwm socket path. Single-seat —
 /// if there are multiple teruwm instances on the machine, we pick the
@@ -29,9 +30,7 @@ var discovered_path: [256]u8 = undefined;
 /// teruwm running (no socket matches), in which case the caller should
 /// surface "Unknown tool" to its requester.
 pub fn findTeruwmSocket() ?[]const u8 {
-    if (std.c.getenv("TERU_WMMCP_SOCKET")) |env| {
-        return std.mem.sliceTo(env, 0);
-    }
+    if (compat.getenv("TERU_WMMCP_SOCKET")) |env| return env;
     return scanRuntimeDir();
 }
 
@@ -41,9 +40,7 @@ pub fn findTeruwmSocket() ?[]const u8 {
 /// this one. Returns null when teruwm isn't running.
 var discovered_events_path: [256]u8 = undefined;
 pub fn findTeruwmEventsSocket() ?[]const u8 {
-    if (std.c.getenv("TERU_WMMCP_EVENTS_SOCKET")) |env| {
-        return std.mem.sliceTo(env, 0);
-    }
+    if (compat.getenv("TERU_WMMCP_EVENTS_SOCKET")) |env| return env;
     return scanFor(&discovered_events_path, "teru-wmmcp-events-", null);
 }
 
@@ -62,8 +59,8 @@ fn scanFor(out: *[256]u8, prefix: []const u8, exclude_prefix: ?[]const u8) ?[]co
 
     const uid = std.c.getuid();
     var dir_buf: [128]u8 = undefined;
-    const dir_path: []const u8 = if (std.c.getenv("XDG_RUNTIME_DIR")) |env|
-        std.mem.sliceTo(env, 0)
+    const dir_path: []const u8 = if (compat.getenv("XDG_RUNTIME_DIR")) |env|
+        env
     else
         std.fmt.bufPrint(&dir_buf, "/run/user/{d}", .{uid}) catch return null;
 
