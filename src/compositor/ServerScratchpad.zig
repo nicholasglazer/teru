@@ -39,7 +39,7 @@ pub fn toggleByName(server: *Server, name: []const u8, default_cmd: ?[]const u8)
             hide(server, slot);
         } else {
             // Follow-me migration.
-            server.nodes.workspace[slot] = active_ws;
+            server.nodes.moveSlotToWorkspace(slot, active_ws);
             show(server, slot, active_ws);
         }
         return;
@@ -80,7 +80,7 @@ pub fn defaultRect(server: *const Server) ScratchRect {
 
 /// Promote a parked scratchpad slot onto workspace `ws` and focus it.
 fn show(server: *Server, slot: u16, ws: u8) void {
-    server.nodes.workspace[slot] = ws;
+    server.nodes.moveSlotToWorkspace(slot, ws);
     const rect = defaultRect(server);
     server.nodes.applyRect(slot, rect.x, rect.y, rect.w, rect.h);
 
@@ -99,7 +99,7 @@ fn show(server: *Server, slot: u16, ws: u8) void {
 
 /// Demote a visible scratchpad to HIDDEN_WS.
 fn hide(server: *Server, slot: u16) void {
-    server.nodes.workspace[slot] = NodeRegistry.HIDDEN_WS;
+    server.nodes.moveSlotToWorkspace(slot, NodeRegistry.HIDDEN_WS);
     if (server.nodes.kind[slot] == .terminal) {
         const nid = server.nodes.node_id[slot];
         if (server.terminalPaneById(nid)) |tp| {
