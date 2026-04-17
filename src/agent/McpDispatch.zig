@@ -149,15 +149,18 @@ pub const tools = [_]Tool{
     },
 };
 
-/// The complete `tools/list` JSON array body (everything between the `[`
-/// and `]`), assembled once at compile time.
+/// The complete `tools/list` JSON array (with enclosing brackets),
+/// assembled once at compile time. Ready to splice directly into a
+/// jsonrpc envelope as `"tools":TOOLS_LIST_BODY` by
+/// McpFramework.handleToolsList.
 pub const tools_list_body: []const u8 = blk: {
     @setEvalBranchQuota(20000);
-    var out: []const u8 = "";
+    var out: []const u8 = "[";
     for (tools, 0..) |t, i| {
         if (i > 0) out = out ++ ",";
         out = out ++ "{\"name\":\"" ++ t.name ++ "\"," ++ t.schema_json ++ "}";
     }
+    out = out ++ "]";
     break :blk out;
 };
 
@@ -178,10 +181,10 @@ test "every tool has a lookup entry" {
     }
 }
 
-test "tools_list_body starts with { and parses as non-empty" {
-    try std.testing.expect(tools_list_body.len > 0);
-    try std.testing.expectEqual(@as(u8, '{'), tools_list_body[0]);
-    // Contains every tool's name
+test "tools_list_body is a bracketed array and includes every tool" {
+    try std.testing.expect(tools_list_body.len > 2);
+    try std.testing.expectEqual(@as(u8, '['), tools_list_body[0]);
+    try std.testing.expectEqual(@as(u8, ']'), tools_list_body[tools_list_body.len - 1]);
     for (tools) |t| {
         try std.testing.expect(std.mem.indexOf(u8, tools_list_body, t.name) != null);
     }

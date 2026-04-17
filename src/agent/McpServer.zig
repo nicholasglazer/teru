@@ -205,101 +205,60 @@ pub fn emitEventKind(self: *McpServer, kind: []const u8, comptime fmt: []const u
 // always terminates its reply with `\n` so stdio bridges can read
 // line-at-a-time without buffering heuristics.
 
+// ── MCP framework wiring ──────────────────────────────────────
+//
+// handleRequest, dispatch, method routing, initialize, tools/list,
+// tools/call, prompts/list, notifications all live in
+// teru.McpFramework now. This server supplies: line-JSON framing,
+// tool_table (built from mcp_dispatch.tools × dispatch_table below),
+// prompt handlers, the teruwm forward fallback.
+
+const F = @import("McpFramework.zig").Framework(McpServer);
+
+/// Comptime-built name → thunk map. Pairs every entry in
+/// mcp_dispatch.tools (1:1 with dispatch_table by index) into a
+/// StaticStringMap. Adding a tool: add a `Tool` in McpDispatch AND a
+/// Handler in `dispatch_table` — a length mismatch is a compile error.
+const tool_table = std.StaticStringMap(F.Thunk).initComptime(blk: {
+    var entries: [mcp_dispatch.tools.len]struct { []const u8, F.Thunk } = undefined;
+    for (mcp_dispatch.tools, 0..) |tool, i| entries[i] = .{ tool.name, dispatch_table[i] };
+    break :blk entries;
+});
+
+const prompts_list_body: []const u8 =
+    \\[{"name":"workspace_setup","description":"Set up teru workspaces with panes, layouts, and commands. Describe your desired workspace configuration in natural language.","arguments":[{"name":"description","description":"Natural language description of desired workspace setup (e.g. '4 workspaces, workspace 1 has 1 pane, workspace 2 has 2 panes, each running vim')","required":true}]}]
+;
+
+const framework_config: F.Config = .{
+    .server_name = "teru",
+    .server_version = build_options.version,
+    .framing = .line_json,
+    .capabilities_json = "\"tools\":{},\"prompts\":{}",
+    .tool_table = &tool_table,
+    .tools_list_body = mcp_dispatch.tools_list_body,
+    .prompts = .{
+        .list_body = prompts_list_body,
+        .get_fn = handlePromptsGet,
+    },
+    .forward = .{
+        .prefix = "teruwm_",
+        .fn_ = forward.forwardRequest,
+        .unavailable_msg = "teruwm not running or socket unreachable",
+    },
+};
+
 fn handleRequest(self: *McpServer, conn_fd: posix.fd_t) void {
-    var req_buf: [max_request]u8 = undefined;
-    var total: usize = 0;
-
-    // Read until newline or EOF or buffer full.
-    while (total < req_buf.len) {
-        const rc = std.c.read(conn_fd, req_buf[total..].ptr, req_buf.len - total);
-        if (rc <= 0) break;
-        total += @intCast(rc);
-        if (std.mem.indexOfScalar(u8, req_buf[0..total], '\n') != null) break;
-    }
-    if (total == 0) return;
-
-    // Trim a single trailing newline (and optional \r) if present.
-    var body_len = total;
-    if (body_len > 0 and req_buf[body_len - 1] == '\n') body_len -= 1;
-    if (body_len > 0 and req_buf[body_len - 1] == '\r') body_len -= 1;
-
-    var resp_buf: [max_response + 1]u8 = undefined;
-    const json_response = self.dispatch(req_buf[0..body_len], resp_buf[0..max_response]);
-    // Append newline so line-oriented readers (the bridge, socat, etc.)
-    // can split without heuristics.
-    const resp_end = json_response.len;
-    if (resp_end < resp_buf.len) {
-        resp_buf[resp_end] = '\n';
-        _ = std.c.write(conn_fd, &resp_buf, resp_end + 1);
-    } else {
-        _ = std.c.write(conn_fd, json_response.ptr, json_response.len);
-    }
+    F.handleRequestFd(self, conn_fd, &framework_config);
 }
 
-/// Route a JSON-RPC body through the method/tool dispatch table and
-/// write the response into `resp_buf`. Transport-agnostic — used by
-/// the socket server, the stdio proxy, and the OSC in-band path.
+/// Route a JSON-RPC body through the framework. Public because the
+/// OSC-9999 in-band path reaches dispatch without a socket — agents
+/// inside a local pane call the server directly through their PTY.
 pub fn dispatch(self: *McpServer, body: []const u8, resp_buf: []u8) []const u8 {
-    // Parse JSON-RPC request manually (no JSON library)
-    const method = tools.extractJsonString(body, "method") orelse {
-        return tools.jsonRpcError(resp_buf, null, -32600, "Invalid Request: missing method");
-    };
-    const id = extractJsonId(body);
-
-    if (std.mem.eql(u8, method, "tools/list")) {
-        return self.handleToolsList(resp_buf, id);
-    } else if (std.mem.eql(u8, method, "tools/call")) {
-        return self.handleToolsCall(body, resp_buf, id);
-    } else if (std.mem.eql(u8, method, "prompts/list")) {
-        return self.handlePromptsList(resp_buf, id);
-    } else if (std.mem.eql(u8, method, "prompts/get")) {
-        return self.handlePromptsGet(body, resp_buf, id);
-    } else if (std.mem.eql(u8, method, "initialize")) {
-        return self.handleInitialize(resp_buf, id);
-    } else if (std.mem.startsWith(u8, method, "notifications/")) {
-        // MCP notifications (initialized, progress, cancelled) — acknowledge silently
-        return std.fmt.bufPrint(resp_buf,
-            \\{{"jsonrpc":"2.0","result":{{}},"id":{s}}}
-        , .{id orelse "null"}) catch "{}";
-    } else {
-        return tools.jsonRpcError(resp_buf, id, -32601, "Method not found");
-    }
+    return F.dispatch(self, body, resp_buf, &framework_config);
 }
 
-// ── MCP method handlers ────────────────────────────────────────
-
-fn handleInitialize(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
-    _ = self;
-    const id_str = id orelse "null";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"protocolVersion":"2025-03-26","capabilities":{{"tools":{{}},"prompts":{{}}}},"serverInfo":{{"name":"teru","version":"{s}"}}}},"id":{s}}}
-    , .{ build_options.version, id_str }) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
-}
-
-fn handleToolsList(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
-    _ = self;
-    const id_str = id orelse "null";
-    // Schemas are assembled once at comptime in McpDispatch — this call
-    // is a single bufPrint, no per-request concatenation.
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"tools":[{s}]}},"id":{s}}}
-    , .{ mcp_dispatch.tools_list_body, id_str }) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
-}
-
-// ── MCP Prompts ───────────────────────────────────────────────
-
-fn handlePromptsList(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
-    _ = self;
-    const id_str = id orelse "null";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"prompts":[
-        \\{{"name":"workspace_setup","description":"Set up teru workspaces with panes, layouts, and commands. Describe your desired workspace configuration in natural language.","arguments":[{{"name":"description","description":"Natural language description of desired workspace setup (e.g. '4 workspaces, workspace 1 has 1 pane, workspace 2 has 2 panes, each running vim')","required":true}}]}}
-        \\]}},"id":{s}}}
-    , .{id_str}) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
-}
+// ── Prompts (only prompts/get is server-specific; prompts/list is static) ──
 
 fn handlePromptsGet(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     _ = self;
@@ -321,34 +280,6 @@ fn handlePromptsGet(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const 
     } else {
         return tools.jsonRpcError(buf, id, -32602, "Unknown prompt");
     }
-}
-
-fn handleToolsCall(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const params_start = std.mem.indexOf(u8, body, "\"params\"") orelse
-        return tools.jsonRpcError(buf, id, -32602, "Missing params");
-    const params_body = body[params_start..];
-
-    // Tool name is at params top level, NOT inside arguments — use
-    // extractJsonString (flat) to avoid collision with an `arguments.name`.
-    const tool_name = tools.extractJsonString(params_body, "name") orelse
-        return tools.jsonRpcError(buf, id, -32602, "Missing params.name");
-
-    if (mcp_dispatch.tool_index.get(tool_name)) |idx| {
-        return dispatch_table[idx](self, params_body, buf, id);
-    }
-
-    // Cross-MCP forwarding (v0.4.19): `teruwm_*` tools aren't local —
-    // proxy them to the running teruwm's socket. Agents get a unified
-    // 45-tool surface regardless of which binary they're connected to.
-    if (std.mem.startsWith(u8, tool_name, "teruwm_")) {
-        // `body` is the full JSON-RPC request — the compositor handles
-        // it natively. Only the transport differs (teruwm still HTTP-
-        // framed internally); forward.forwardRequest bridges framings.
-        if (forward.forwardRequest(body, buf)) |resp| return resp;
-        return tools.jsonRpcError(buf, id, -32002, "teruwm not running or socket unreachable");
-    }
-
-    return tools.jsonRpcError(buf, id, -32602, "Unknown tool");
 }
 
 // ── Dispatch table ─────────────────────────────────────────────
@@ -1545,9 +1476,10 @@ test "jsonRpcError" {
     try t.expect(std.mem.indexOf(u8, result, "\"id\":1") != null);
 }
 
-test "handleInitialize returns valid JSON" {
+test "initialize method returns valid JSON via framework" {
     var buf: [max_response]u8 = undefined;
-    const result = McpServer.handleInitialize(undefined, &buf, "1");
+    const req = "{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"id\":1}";
+    const result = F.dispatch(undefined, req, &buf, &framework_config);
     try t.expect(std.mem.indexOf(u8, result, "protocolVersion") != null);
     try t.expect(std.mem.indexOf(u8, result, "teru") != null);
     try t.expect(std.mem.indexOf(u8, result, "\"id\":1") != null);
