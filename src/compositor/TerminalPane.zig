@@ -44,14 +44,31 @@ fn initWithSpawn(server: *Server, rows: u16, cols: u16, spawn_config: Pane.Spawn
     const pixel_w: u32 = @as(u32, cols) * cell_w;
     const pixel_h: u32 = @as(u32, rows) * cell_h;
 
+    // Resources acquired in order: pixel_buffer → scene_buffer → pane →
+    // renderer → tp. Anything that fails after must roll back everything
+    // before it. A plain `orelse return null` leaks; use labelled blocks
+    // so each fallible step frees its predecessors explicitly.
     const pixel_buffer = wlr.miozu_pixel_buffer_create(@intCast(pixel_w), @intCast(pixel_h)) orelse return null;
-    const scene_tree_root = wlr.miozu_scene_tree(server.scene) orelse return null;
-    const scene_buffer = wlr.wlr_scene_buffer_create(scene_tree_root, pixel_buffer) orelse return null;
 
-    var pane = Pane.init(allocator, rows, cols, server.next_node_id, spawn_config) catch return null;
+    const scene_tree_root = wlr.miozu_scene_tree(server.scene) orelse {
+        wlr.wlr_buffer_drop(pixel_buffer);
+        return null;
+    };
+    const scene_buffer = wlr.wlr_scene_buffer_create(scene_tree_root, pixel_buffer) orelse {
+        wlr.wlr_buffer_drop(pixel_buffer);
+        return null;
+    };
+
+    var pane = Pane.init(allocator, rows, cols, server.next_node_id, spawn_config) catch {
+        if (wlr.miozu_scene_buffer_node(scene_buffer)) |node| wlr.wlr_scene_node_destroy(node);
+        wlr.wlr_buffer_drop(pixel_buffer);
+        return null;
+    };
 
     var renderer = SoftwareRenderer.init(allocator, pixel_w, pixel_h, cell_w, cell_h) catch {
         pane.deinit(allocator);
+        if (wlr.miozu_scene_buffer_node(scene_buffer)) |node| wlr.wlr_scene_node_destroy(node);
+        wlr.wlr_buffer_drop(pixel_buffer);
         return null;
     };
     renderer.padding = 0; // compositor fb is exactly cols*cell_w — no room for padding
@@ -68,6 +85,8 @@ fn initWithSpawn(server: *Server, rows: u16, cols: u16, spawn_config: Pane.Spawn
 
     const tp = allocator.create(TerminalPane) catch {
         pane.deinit(allocator);
+        if (wlr.miozu_scene_buffer_node(scene_buffer)) |node| wlr.wlr_scene_node_destroy(node);
+        wlr.wlr_buffer_drop(pixel_buffer);
         return null;
     };
 
@@ -133,11 +152,25 @@ pub fn createRestored(server: *Server, ws: u8, pane: *Pane) ?*TerminalPane {
     const pixel_w: u32 = @as(u32, pane.grid.cols) * cell_w;
     const pixel_h: u32 = @as(u32, pane.grid.rows) * cell_h;
 
+    // Same unwind order as initWithSpawn. Pane is caller-owned, not
+    // freed on failure here — the caller passes us a pre-attached Pane
+    // during hot-restart.
     const pixel_buffer = wlr.miozu_pixel_buffer_create(@intCast(pixel_w), @intCast(pixel_h)) orelse return null;
-    const scene_tree_root = wlr.miozu_scene_tree(server.scene) orelse return null;
-    const scene_buffer = wlr.wlr_scene_buffer_create(scene_tree_root, pixel_buffer) orelse return null;
 
-    var renderer = SoftwareRenderer.init(allocator, pixel_w, pixel_h, cell_w, cell_h) catch return null;
+    const scene_tree_root = wlr.miozu_scene_tree(server.scene) orelse {
+        wlr.wlr_buffer_drop(pixel_buffer);
+        return null;
+    };
+    const scene_buffer = wlr.wlr_scene_buffer_create(scene_tree_root, pixel_buffer) orelse {
+        wlr.wlr_buffer_drop(pixel_buffer);
+        return null;
+    };
+
+    var renderer = SoftwareRenderer.init(allocator, pixel_w, pixel_h, cell_w, cell_h) catch {
+        if (wlr.miozu_scene_buffer_node(scene_buffer)) |node| wlr.wlr_scene_node_destroy(node);
+        wlr.wlr_buffer_drop(pixel_buffer);
+        return null;
+    };
     renderer.padding = 0; // compositor fb is exactly cols*cell_w — no room for padding
     if (wlr.miozu_pixel_buffer_data(pixel_buffer)) |data| {
         const needed = @as(usize, pixel_w) * @as(usize, pixel_h);
@@ -149,7 +182,11 @@ pub fn createRestored(server: *Server, ws: u8, pane: *Pane) ?*TerminalPane {
         renderer.atlas_height = fa.atlas_height;
     }
 
-    const tp = allocator.create(TerminalPane) catch return null;
+    const tp = allocator.create(TerminalPane) catch {
+        if (wlr.miozu_scene_buffer_node(scene_buffer)) |node| wlr.wlr_scene_node_destroy(node);
+        wlr.wlr_buffer_drop(pixel_buffer);
+        return null;
+    };
     tp.* = .{
         .server = server,
         .pane = pane.*,
