@@ -17,7 +17,24 @@ const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 const TerminalPane = @import("TerminalPane.zig");
 const NodeRegistry = @import("Node.zig");
+const tools = teru.McpTools;
 const version = teru.build_options.version;
+
+// ── JSON helper aliases ───────────────────────────────────────
+//
+// The canonical implementations live in src/agent/McpTools.zig;
+// we alias the ones this server calls frequently so the call sites
+// below stay short. Signed coordinates flow through the i64 variant;
+// ids / workspace indexes use the u64 one.
+const extractJsonString = tools.extractJsonString;
+const extractJsonId = tools.extractJsonId;
+const extractJsonObject = tools.extractJsonObject;
+const extractNestedJsonString = tools.extractNestedJsonString;
+const extractNestedJsonInt = tools.extractNestedJsonIntSigned; // i64
+const jsonRpcError = tools.jsonRpcError;
+const jsonEscapeString = tools.jsonEscapeString;
+const findBody = tools.findHttpBody;
+const parseContentLength = tools.parseHttpContentLength;
 
 const WmMcpServer = @This();
 
@@ -1190,112 +1207,6 @@ fn toolTestKey(self: *WmMcpServer, action_name: []const u8, buf: []u8, id: ?[]co
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"action '{s}' handled={any}"}}]}},"id":{s}}}
     , .{ action_name, handled, id_str }) catch
         jsonRpcError(buf, id, -32603, "Internal error");
-}
-
-// ── JSON utilities (self-contained, no external deps) ─────────
-
-fn extractJsonString(json: []const u8, key: []const u8) ?[]const u8 {
-    // Find "key":"value"
-    var search_buf: [64]u8 = undefined;
-    const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":\"", .{key}) catch return null;
-    const start = (std.mem.indexOf(u8, json, needle) orelse return null) + needle.len;
-    const end = std.mem.indexOfPos(u8, json, start, "\"") orelse return null;
-    return json[start..end];
-}
-
-fn extractJsonId(json: []const u8) ?[]const u8 {
-    // Find "id": followed by a number or string
-    const needle = "\"id\":";
-    const start = (std.mem.indexOf(u8, json, needle) orelse return null) + needle.len;
-    var i = start;
-    while (i < json.len and json[i] == ' ') : (i += 1) {}
-    if (i >= json.len) return null;
-
-    if (json[i] == '"') {
-        const end = std.mem.indexOfPos(u8, json, i + 1, "\"") orelse return null;
-        return json[i .. end + 1];
-    }
-    // Numeric id
-    const num_start = i;
-    while (i < json.len and (json[i] >= '0' and json[i] <= '9')) : (i += 1) {}
-    if (i == num_start) return null;
-    return json[num_start..i];
-}
-
-fn extractJsonObject(json: []const u8, key: []const u8) ?[]const u8 {
-    var search_buf: [64]u8 = undefined;
-    const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":", .{key}) catch return null;
-    const start = (std.mem.indexOf(u8, json, needle) orelse return null) + needle.len;
-    var i = start;
-    while (i < json.len and json[i] == ' ') : (i += 1) {}
-    if (i >= json.len or json[i] != '{') return null;
-    var depth: u32 = 0;
-    var j = i;
-    while (j < json.len) : (j += 1) {
-        if (json[j] == '{') depth += 1;
-        if (json[j] == '}') {
-            depth -= 1;
-            if (depth == 0) return json[i .. j + 1];
-        }
-    }
-    return null;
-}
-
-fn extractNestedJsonString(json: []const u8, key: []const u8) ?[]const u8 {
-    // Look inside "arguments":{...} first
-    const args = extractJsonObject(json, "arguments") orelse json;
-    return extractJsonString(args, key);
-}
-
-fn extractNestedJsonInt(json: []const u8, key: []const u8) ?i64 {
-    const args = extractJsonObject(json, "arguments") orelse json;
-    var search_buf: [64]u8 = undefined;
-    const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":", .{key}) catch return null;
-    const start = (std.mem.indexOf(u8, args, needle) orelse return null) + needle.len;
-    var i = start;
-    while (i < args.len and args[i] == ' ') : (i += 1) {}
-    if (i >= args.len) return null;
-    var end = i;
-    if (args[end] == '-') end += 1;
-    while (end < args.len and args[end] >= '0' and args[end] <= '9') : (end += 1) {}
-    return std.fmt.parseInt(i64, args[i..end], 10) catch null;
-}
-
-fn jsonRpcError(buf: []u8, id: ?[]const u8, code: i32, message: []const u8) []const u8 {
-    const id_str = id orelse "null";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","error":{{"code":{d},"message":"{s}"}},"id":{s}}}
-    , .{ code, message, id_str }) catch
-        \\{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal error"},"id":null}
-    ;
-}
-
-fn jsonEscapeString(input: []const u8, output: []u8) []const u8 {
-    var out_pos: usize = 0;
-    for (input) |c| {
-        if (out_pos + 2 > output.len) break;
-        switch (c) {
-            '"' => { output[out_pos] = '\\'; out_pos += 1; output[out_pos] = '"'; out_pos += 1; },
-            '\\' => { output[out_pos] = '\\'; out_pos += 1; output[out_pos] = '\\'; out_pos += 1; },
-            '\n' => { output[out_pos] = '\\'; out_pos += 1; output[out_pos] = 'n'; out_pos += 1; },
-            '\r' => { output[out_pos] = '\\'; out_pos += 1; output[out_pos] = 'r'; out_pos += 1; },
-            else => { if (c >= 0x20) { output[out_pos] = c; out_pos += 1; } },
-        }
-    }
-    return output[0..out_pos];
-}
-
-fn findBody(data: []const u8) ?usize {
-    const sep = "\r\n\r\n";
-    if (std.mem.indexOf(u8, data, sep)) |pos| return pos + sep.len;
-    return null;
-}
-
-fn parseContentLength(data: []const u8) ?usize {
-    const needle = "Content-Length: ";
-    const start = (std.mem.indexOf(u8, data, needle) orelse return null) + needle.len;
-    const end = std.mem.indexOfPos(u8, data, start, "\r\n") orelse return null;
-    return std.fmt.parseInt(usize, data[start..end], 10) catch null;
 }
 
 // ── AI-first physical input MCP tools ──────────────────────────

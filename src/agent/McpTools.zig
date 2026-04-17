@@ -127,6 +127,110 @@ pub fn extractNestedJsonInt(json: []const u8, key: []const u8) ?u64 {
     return std.fmt.parseInt(u64, json[start..i], 10) catch null;
 }
 
+/// Extract a top-level `"key":N` integer (no `arguments` lookup).
+pub fn extractJsonInt(json: []const u8, key: []const u8) ?u64 {
+    var needle_buf: [64]u8 = undefined;
+    const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\":", .{key}) catch return null;
+    const key_pos = std.mem.indexOf(u8, json, needle) orelse return null;
+    var i = key_pos + needle.len;
+    while (i < json.len and (json[i] == ' ' or json[i] == '\t')) : (i += 1) {}
+    if (i >= json.len) return null;
+    const start = i;
+    while (i < json.len and json[i] >= '0' and json[i] <= '9') : (i += 1) {}
+    if (i == start) return null;
+    return std.fmt.parseInt(u64, json[start..i], 10) catch null;
+}
+
+/// Extract the JSON-RPC `"id"` as its raw token:
+/// - quoted string id → slice including the quotes
+/// - numeric id       → the digit run
+/// - literal null     → "null"
+/// Returns null only when no `"id":` key is present.
+pub fn extractJsonId(json: []const u8) ?[]const u8 {
+    const needle = "\"id\":";
+    const pos = std.mem.indexOf(u8, json, needle) orelse return null;
+    var i = pos + needle.len;
+    while (i < json.len and (json[i] == ' ' or json[i] == '\t')) : (i += 1) {}
+    if (i >= json.len) return null;
+
+    if (json[i] == '"') {
+        const end = std.mem.indexOfPos(u8, json, i + 1, "\"") orelse return null;
+        return json[i .. end + 1];
+    }
+    if (json[i] == 'n') return "null";
+    const start = i;
+    while (i < json.len and json[i] >= '0' and json[i] <= '9') : (i += 1) {}
+    if (i == start) return null;
+    return json[start..i];
+}
+
+/// Extract a `"key":{...}` object slice (balanced braces). Returns
+/// the `{...}` slice including both braces, or null if not found.
+pub fn extractJsonObject(json: []const u8, key: []const u8) ?[]const u8 {
+    var search_buf: [64]u8 = undefined;
+    const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":", .{key}) catch return null;
+    const pos = std.mem.indexOf(u8, json, needle) orelse return null;
+    var i = pos + needle.len;
+    while (i < json.len and (json[i] == ' ' or json[i] == '\t')) : (i += 1) {}
+    if (i >= json.len or json[i] != '{') return null;
+    var depth: u32 = 0;
+    var j = i;
+    while (j < json.len) : (j += 1) {
+        if (json[j] == '{') depth += 1;
+        if (json[j] == '}') {
+            depth -= 1;
+            if (depth == 0) return json[i .. j + 1];
+        }
+    }
+    return null;
+}
+
+/// Signed variant of extractNestedJsonInt — handles negative values
+/// (coordinates may go off-screen in cursor tests). Scopes to the
+/// `"arguments":{…}` object via extractJsonObject when present.
+pub fn extractNestedJsonIntSigned(json: []const u8, key: []const u8) ?i64 {
+    const args = extractJsonObject(json, "arguments") orelse json;
+    var search_buf: [64]u8 = undefined;
+    const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":", .{key}) catch return null;
+    const start = (std.mem.indexOf(u8, args, needle) orelse return null) + needle.len;
+    var i = start;
+    while (i < args.len and args[i] == ' ') : (i += 1) {}
+    if (i >= args.len) return null;
+    var end = i;
+    if (args[end] == '-') end += 1;
+    while (end < args.len and args[end] >= '0' and args[end] <= '9') : (end += 1) {}
+    return std.fmt.parseInt(i64, args[i..end], 10) catch null;
+}
+
+/// Allocator-backed variant of extractJsonString. Returns an owned
+/// slice so the caller can enqueue / persist the value past the
+/// JSON buffer's lifetime. Returns null if the key is missing or
+/// allocation fails.
+pub fn extractJsonStringOwned(json: []const u8, key: []const u8, allocator: std.mem.Allocator) ?[]u8 {
+    const slice = extractJsonString(json, key) orelse return null;
+    return allocator.dupe(u8, slice) catch null;
+}
+
+/// Find the start of the JSON body after HTTP-style `Content-Length:
+/// N\r\n\r\n` framing. Returns the index of the first body byte, or
+/// null if the `\r\n\r\n` separator is absent. Used by WmMcpServer's
+/// wire protocol.
+pub fn findHttpBody(data: []const u8) ?usize {
+    const sep = "\r\n\r\n";
+    if (std.mem.indexOf(u8, data, sep)) |pos| return pos + sep.len;
+    return null;
+}
+
+/// Parse the `Content-Length: N` header out of an HTTP-framed MCP
+/// request. Returns the byte count, or null if the header is
+/// missing / malformed.
+pub fn parseHttpContentLength(data: []const u8) ?usize {
+    const needle = "Content-Length: ";
+    const start = (std.mem.indexOf(u8, data, needle) orelse return null) + needle.len;
+    const end = std.mem.indexOfPos(u8, data, start, "\r\n") orelse return null;
+    return std.fmt.parseInt(usize, data[start..end], 10) catch null;
+}
+
 /// Check if a config file line starts with `key` followed by whitespace or `=`.
 pub fn lineMatchesKey(line: []const u8, key: []const u8) bool {
     // Trim leading whitespace
