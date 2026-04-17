@@ -183,7 +183,7 @@ pub fn resolveTemplatePath(name: []const u8, buf: *[512]u8) ?[]const u8 {
 
 /// Apply a .tsess template: parse it, create workspaces and panes
 /// as defined.
-pub fn applyTemplate(allocator: std.mem.Allocator, mux: *Multiplexer, graph: *ProcessGraph, template: []const u8, _: std.Io) void {
+pub fn applyTemplate(allocator: std.mem.Allocator, mux: *Multiplexer, graph: *ProcessGraph, template: []const u8, io: std.Io) void {
     var path_buf: [512]u8 = undefined;
     const path = resolveTemplatePath(template, &path_buf) orelse {
         var msg: [128]u8 = undefined;
@@ -191,23 +191,23 @@ pub fn applyTemplate(allocator: std.mem.Allocator, mux: *Multiplexer, graph: *Pr
         return;
     };
 
-    var file_path_z: [513:0]u8 = undefined;
-    if (path.len >= file_path_z.len) return;
-    @memcpy(file_path_z[0..path.len], path);
-    file_path_z[path.len] = 0;
+    // Was: std.c.fopen + std.c.fread + std.c.fclose. Zig 0.16
+    // prefers Io.Dir / Io.File — same reader, with proper slice
+    // returns and error propagation instead of a stateful FILE*.
+    const Dir = std.Io.Dir;
+    const file = Dir.cwd().openFile(io, path, .{}) catch {
+        var msg: [128]u8 = undefined;
+        outFmt(&msg, "[teru] Cannot read template: {s}\n", .{path});
+        return;
+    };
+    defer file.close(io);
 
     var file_buf: [SessionDef.max_file_size]u8 = undefined;
-    var file_len: usize = 0;
-    {
-        const f = std.c.fopen(@ptrCast(file_path_z[0..path.len :0]), "r");
-        if (f == null) {
-            var msg: [128]u8 = undefined;
-            outFmt(&msg, "[teru] Cannot read template: {s}\n", .{path});
-            return;
-        }
-        file_len = std.c.fread(&file_buf, 1, file_buf.len, f.?);
-        _ = std.c.fclose(f.?);
-    }
+    const file_len = file.readPositionalAll(io, &file_buf, 0) catch |err| {
+        var msg: [128]u8 = undefined;
+        outFmt(&msg, "[teru] Template read failed: {s} ({s})\n", .{ path, @errorName(err) });
+        return;
+    };
     if (file_len == 0) return;
 
     var def = SessionDef.parse(allocator, file_buf[0..file_len]) catch {
