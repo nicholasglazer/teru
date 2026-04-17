@@ -699,3 +699,44 @@ struct wl_signal *miozu_ftl_request_close(struct wlr_foreign_toplevel_handle_v1 
 struct wl_signal *miozu_ftl_handle_destroy_signal(struct wlr_foreign_toplevel_handle_v1 *h) {
     return &h->events.destroy;
 }
+
+/* ── pixman damage regions ───────────────────────────────────── */
+
+#include <pixman-1/pixman.h>
+
+/* Commit a scene buffer with a minimal damage region.
+ *
+ * dirty_y0 / dirty_y1 are pixel-space Y bounds of the rows that
+ * changed (half-open: [y0, y1)). Pass -1 for dirty_y0 to signal
+ * "fall back to full-buffer damage" without a separate code path.
+ *
+ * border_thickness, when > 0, unions in four edge strips so the
+ * ~FFD39A focus border gets recomposited on focus flips. The math
+ * mirrors TerminalPane.drawBorder's 2-px perimeter. */
+void miozu_scene_buffer_commit_dirty(
+    struct wlr_scene_buffer *sb,
+    struct wlr_buffer *buf,
+    int fb_w, int fb_h,
+    int dirty_y0, int dirty_y1,
+    int border_thickness)
+{
+    pixman_region32_t region;
+    pixman_region32_init(&region);
+    if (dirty_y0 < 0 || dirty_y1 <= dirty_y0 || fb_w <= 0 || fb_h <= 0) {
+        /* Fall back to full-buffer damage. */
+        pixman_region32_union_rect(&region, &region, 0, 0, fb_w, fb_h);
+    } else {
+        int y0 = dirty_y0 < 0 ? 0 : dirty_y0;
+        int y1 = dirty_y1 > fb_h ? fb_h : dirty_y1;
+        pixman_region32_union_rect(&region, &region, 0, y0, fb_w, y1 - y0);
+        if (border_thickness > 0 && fb_h > 2 * border_thickness && fb_w > 2 * border_thickness) {
+            int bt = border_thickness;
+            pixman_region32_union_rect(&region, &region, 0, 0, fb_w, bt);
+            pixman_region32_union_rect(&region, &region, 0, fb_h - bt, fb_w, bt);
+            pixman_region32_union_rect(&region, &region, 0, bt, bt, fb_h - 2 * bt);
+            pixman_region32_union_rect(&region, &region, fb_w - bt, bt, bt, fb_h - 2 * bt);
+        }
+    }
+    wlr_scene_buffer_set_buffer_with_damage(sb, buf, &region);
+    pixman_region32_fini(&region);
+}

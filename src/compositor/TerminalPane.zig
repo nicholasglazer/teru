@@ -259,16 +259,40 @@ pub fn poll(self: *TerminalPane) bool {
 /// Only re-renders dirty rows + cursor rows, not the entire grid.
 pub fn renderIfDirty(self: *TerminalPane) bool {
     if (!self.pane.grid.dirty) return false;
-    self.renderer.renderDirty(&self.pane.grid);
 
-    if (self.shouldDrawBorder()) {
+    // Capture dirty range BEFORE renderDirty resets it. Convert
+    // grid rows → pixel Y via cell_height. If the range is empty
+    // (min > max sentinel, see Grid.clearDirty) fall back to full
+    // damage — the renderer treats that as "paint everything".
+    const grid = &self.pane.grid;
+    const ch: c_int = @intCast(self.renderer.cell_height);
+    const dirty_y0: c_int = if (grid.dirty_row_min > grid.dirty_row_max)
+        -1
+    else
+        @as(c_int, grid.dirty_row_min) * ch;
+    const dirty_y1: c_int = if (grid.dirty_row_min > grid.dirty_row_max)
+        -1
+    else
+        (@as(c_int, grid.dirty_row_max) + 1) * ch;
+
+    self.renderer.renderDirty(grid);
+
+    const border: c_int = if (self.shouldDrawBorder()) blk: {
         const is_focused = (self.server.focused_terminal == self);
         const border_color: u32 = if (is_focused) 0xFFFF9837 else 0xFF3E4359;
         self.drawBorder(border_color);
-    }
+        break :blk 2; // drawBorder paints a 2-px perimeter.
+    } else 0;
 
-    // Signal wlroots that buffer content changed
-    wlr.wlr_scene_buffer_set_buffer_with_damage(self.scene_buffer, self.pixel_buffer, null);
+    wlr.miozu_scene_buffer_commit_dirty(
+        self.scene_buffer,
+        self.pixel_buffer,
+        @intCast(self.renderer.width),
+        @intCast(self.renderer.height),
+        dirty_y0,
+        dirty_y1,
+        border,
+    );
     return true;
 }
 
@@ -281,7 +305,18 @@ pub fn repaintBorderOnly(self: *TerminalPane) void {
     const is_focused = (self.server.focused_terminal == self);
     const border_color: u32 = if (is_focused) 0xFFFF9837 else 0xFF3E4359;
     self.drawBorder(border_color);
-    wlr.wlr_scene_buffer_set_buffer_with_damage(self.scene_buffer, self.pixel_buffer, null);
+    // Only the 4 border strips changed — damage region is just those.
+    // Pass dirty_y0=-1 so the helper skips the middle-band and unions
+    // only the border strips.
+    wlr.miozu_scene_buffer_commit_dirty(
+        self.scene_buffer,
+        self.pixel_buffer,
+        @intCast(self.renderer.width),
+        @intCast(self.renderer.height),
+        0, // dirty_y0 = 0
+        0, // dirty_y1 = 0 → middle band is zero-height, skipped
+        2,
+    );
 }
 
 /// Write input to the terminal's PTY.
