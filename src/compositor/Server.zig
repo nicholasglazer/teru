@@ -1248,27 +1248,10 @@ pub fn toggleFullscreen(self: *Server) void {
         }
     }
 
-    // Hide all other panes in the workspace
-    const ws = self.layout_engine.active_workspace;
-    const ws_nodes = self.layout_engine.workspaces[ws].node_ids.items;
-    for (ws_nodes) |nid| {
-        if (nid == target_id) continue;
-        for (self.terminal_panes) |maybe_tp| {
-            if (maybe_tp) |other_tp| {
-                if (other_tp.node_id == nid) other_tp.setVisible(false);
-            }
-        }
-        // Also hide external views
-        if (self.nodes.findById(nid)) |slot| {
-            if (self.nodes.kind[slot] == .wayland_surface) {
-                if (self.nodes.scene_tree[slot]) |tree| {
-                    if (wlr.miozu_scene_tree_node(tree)) |node| {
-                        wlr.wlr_scene_node_set_enabled(node, false);
-                    }
-                }
-            }
-        }
-    }
+    // Hide everything except the fullscreened node. recomputeVisibility
+    // now observes fullscreen_node as an override, so one O(N) pass
+    // covers terminals + xdg views on every output — no double loop.
+    self.recomputeVisibility();
 
     // Expand focused pane to fill entire output (no bar, no gaps).
     // For terminals we also resize the SW renderer framebuffer so the
@@ -1610,6 +1593,12 @@ pub fn recomputeVisibility(self: *Server) void {
         const ws = self.nodes.workspace[i];
         if (ws == NodeRegistry.HIDDEN_WS) {
             self.setSlotVisible(@intCast(i), false);
+            continue;
+        }
+        // Fullscreen takes precedence: every node but the fullscreened
+        // one is hidden, regardless of which output shows its workspace.
+        if (self.fullscreen_node) |fs_nid| {
+            self.setSlotVisible(@intCast(i), self.nodes.node_id[i] == fs_nid);
             continue;
         }
         const visible = self.outputShowing(ws) != null;
