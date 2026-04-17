@@ -281,11 +281,14 @@ pub const X11Window = struct {
             _ = xcb_change_property(connection, XCB_PROP_MODE_REPLACE, win_id, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8, default_class.len, default_class.ptr);
         }
 
-        // _NET_WM_NAME (EWMH)
+        // _NET_WM_NAME (EWMH) — xcb length arg is u32. Title comes
+        // from a PTY OSC 0/2 sequence; the VtParser caps it so the
+        // clamp here is belt-and-braces.
+        const title_len: u32 = @intCast(@min(title.len, std.math.maxInt(u32)));
         const utf8_atom = internAtom(connection, "UTF8_STRING", false);
         const net_wm_name = internAtom(connection, "_NET_WM_NAME", false);
-        _ = xcb_change_property(connection, XCB_PROP_MODE_REPLACE, win_id, net_wm_name, utf8_atom, 8, @intCast(title.len), title.ptr);
-        _ = xcb_change_property(connection, XCB_PROP_MODE_REPLACE, win_id, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8, @intCast(title.len), title.ptr);
+        _ = xcb_change_property(connection, XCB_PROP_MODE_REPLACE, win_id, net_wm_name, utf8_atom, 8, title_len, title.ptr);
+        _ = xcb_change_property(connection, XCB_PROP_MODE_REPLACE, win_id, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8, title_len, title.ptr);
 
         // WM_PROTOCOLS + WM_DELETE_WINDOW
         const wm_protocols = internAtom(connection, "WM_PROTOCOLS", false);
@@ -552,8 +555,9 @@ pub const X11Window = struct {
     pub fn setTitle(self: *X11Window, title: []const u8) void {
         const net_wm_name = internAtom(self.connection, "_NET_WM_NAME", false);
         const utf8_atom = internAtom(self.connection, "UTF8_STRING", false);
-        _ = xcb_change_property(self.connection, XCB_PROP_MODE_REPLACE, self.window, net_wm_name, utf8_atom, 8, @intCast(title.len), title.ptr);
-        _ = xcb_change_property(self.connection, XCB_PROP_MODE_REPLACE, self.window, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8, @intCast(title.len), title.ptr);
+        const title_len: u32 = @intCast(@min(title.len, std.math.maxInt(u32)));
+        _ = xcb_change_property(self.connection, XCB_PROP_MODE_REPLACE, self.window, net_wm_name, utf8_atom, 8, title_len, title.ptr);
+        _ = xcb_change_property(self.connection, XCB_PROP_MODE_REPLACE, self.window, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8, title_len, title.ptr);
         _ = xcb_flush(self.connection);
     }
 
