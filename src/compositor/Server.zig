@@ -833,9 +833,10 @@ pub fn pushOutputManagerState(self: *Server) void {
 
 /// Thin delegators so both WmMcpServer (which holds a *Server) and
 /// ServerListeners's virtual-keyboard handler can keep calling these
-/// as methods. Real logic lives in ServerInput.
+/// as methods. Real logic lives in ServerInput (except for this one —
+/// it's a single wlr call, no module needed).
 pub inline fn notifyActivity(self: *Server) void {
-    Input.notifyActivity(self);
+    if (self.idle_notifier) |n| wlr.wlr_idle_notifier_v1_notify_activity(n, self.seat);
 }
 pub fn setupKeyboard(self: *Server, device: *wlr.wlr_input_device) void {
     Input.setupKeyboard(self, device);

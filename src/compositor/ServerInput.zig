@@ -50,12 +50,9 @@ pub fn handleNewInput(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c
     wlr.wlr_seat_set_capabilities(server.seat, caps);
 }
 
-/// Push a "user is active" ping to idle-notify subscribers. Called
-/// from every real input event. One indirect call, one branch — not
-/// measurable in a profile, and removes the need for a periodic poll.
-pub inline fn notifyActivity(server: *Server) void {
-    if (server.idle_notifier) |n| wlr.wlr_idle_notifier_v1_notify_activity(n, server.seat);
-}
+// notifyActivity lives on Server now — same one-liner, no cross-module
+// hop from ServerCursor. Both ServerInput + ServerCursor call it via
+// `server.notifyActivity()`.
 
 // ── Per-keyboard state ────────────────────────────────────────
 
@@ -78,7 +75,7 @@ pub const Keyboard = struct {
         const time = wlr.miozu_keyboard_key_time(event_ptr);
         const xkb_st = wlr.miozu_keyboard_xkb_state(kb.wlr_keyboard) orelse return;
 
-        notifyActivity(kb.server);
+        kb.server.notifyActivity();
 
         if (key_state == 1) {
             if (handleKey(kb.server, keycode, xkb_st)) return;
