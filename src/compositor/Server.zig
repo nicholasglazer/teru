@@ -16,6 +16,11 @@ const NodeRegistry = @import("Node.zig");
 const Listeners = @import("ServerListeners.zig");
 const Input = @import("ServerInput.zig");
 const Cursor = @import("ServerCursor.zig");
+const Focus = @import("ServerFocus.zig");
+const Layout = @import("ServerLayout.zig");
+const Scratchpad = @import("ServerScratchpad.zig");
+const Restart = @import("ServerRestart.zig");
+const Screenshot = @import("ServerScreenshot.zig");
 const teru = @import("teru");
 const LayoutEngine = teru.LayoutEngine;
 const Keybinds = teru.Keybinds;
@@ -751,7 +756,7 @@ pub fn reloadWmConfig(self: *Server) void {
 /// (serialize + execve + FD_CLOEXEC bookkeeping). Kept as a method on
 /// Server for callers that already dispatch to self.execRestart().
 pub fn execRestart(self: *Server) void {
-    @import("ServerRestart.zig").execRestart(self);
+    Restart.execRestart(self);
 }
 
 pub fn deinit(self: *Server) void {
@@ -942,28 +947,16 @@ pub fn scheduleRender(self: *Server) void {
 }
 
 
-/// Un-float the focused node. Delegates to ServerLayout.zig.
-pub fn sinkFocused(self: *Server) void {
-    @import("ServerLayout.zig").sinkFocused(self);
-}
+// ── Layout facade ──────────────────────────────────────────────
+// Thin forwarders so external callers (Session, Output, WmMcpServer,
+// Xwayland/XdgView) keep a stable Server surface even though the real
+// implementations live in ServerLayout. See that file for the gap
+// math, drag-feedback path, and float-sink semantics.
 
-/// Sink all floating nodes on the active workspace. Delegates.
-pub fn sinkAllOnActiveWorkspace(self: *Server) void {
-    @import("ServerLayout.zig").sinkAllOnActiveWorkspace(self);
-}
-
-// ── Tiling ─────────────────────────────────────────────────────
-
-/// Arrange all nodes on a workspace according to its layout. Delegates.
-pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
-    @import("ServerLayout.zig").arrangeWorkspace(self, ws_index);
-}
-
-/// Drag-feedback arrange — reposition scene buffers without grid
-/// resize. Used during interactive resize drag. Delegates.
-pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
-    @import("ServerLayout.zig").arrangeWorkspaceSmooth(self, ws_index);
-}
+pub fn sinkFocused(self: *Server) void { Layout.sinkFocused(self); }
+pub fn sinkAllOnActiveWorkspace(self: *Server) void { Layout.sinkAllOnActiveWorkspace(self); }
+pub fn arrangeworkspace(self: *Server, ws_index: u8) void { Layout.arrangeWorkspace(self, ws_index); }
+pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void { Layout.arrangeWorkspaceSmooth(self, ws_index); }
 
 /// Focus a view — activate its toplevel and send keyboard focus.
 ///
@@ -985,7 +978,7 @@ pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
 /// Keyboard-enter must also include live modifier state — else Chrome
 /// sees keys with Shift/Ctrl marked up when they're physically held.
 pub fn focusView(self: *Server, view: *XdgView) void {
-    @import("ServerFocus.zig").focusView(self, view);
+    Focus.focusView(self, view);
 }
 
 // ── Terminal pane management ───────────────────────────────────
@@ -1296,12 +1289,12 @@ pub fn toggleFullscreen(self: *Server) void {
 
 /// Toggle a named scratchpad. Delegates to ServerScratchpad.zig.
 pub fn toggleScratchpadByName(self: *Server, name: []const u8, default_cmd: ?[]const u8) void {
-    @import("ServerScratchpad.zig").toggleByName(self, name, default_cmd);
+    Scratchpad.toggleByName(self, name, default_cmd);
 }
 
 /// Numbered compatibility shim — N maps to named scratchpad padN+1.
 pub fn toggleScratchpad(self: *Server, index: u8) void {
-    @import("ServerScratchpad.zig").toggleNumbered(self, index);
+    Scratchpad.toggleNumbered(self, index);
 }
 
 // ── Terminal lifecycle ─────────────────────────────────────────
@@ -1373,7 +1366,7 @@ pub fn terminalPaneById(self: *const Server, node_id: u64) ?*TerminalPane {
 /// otherwise. `last_pointer_surface` is handled by the View's unmap/
 /// destroy handlers since it's keyed on wlr_surface, not node_id.
 pub fn clearFocusRefs(self: *Server, node_id: u64) void {
-    @import("ServerFocus.zig").clearFocusRefs(self, node_id);
+    Focus.clearFocusRefs(self, node_id);
 }
 
 pub fn closeNode(self: *Server, node_id: u64) bool {
@@ -1505,7 +1498,7 @@ pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
 /// target set by `teruwm_focus_window` and friends — it works for both
 /// tiled and floating panes.
 pub fn updateFocusedTerminal(self: *Server) void {
-    @import("ServerFocus.zig").updateFocusedTerminal(self);
+    Focus.updateFocusedTerminal(self);
 }
 
 // ── Multi-output: the 3-rule architecture (v0.4.20) ──────────
@@ -1540,7 +1533,7 @@ pub fn outputShowing(self: *const Server, ws: u8) ?*Output {
 /// output takes the focused output's previous workspace. All four
 /// cases (identity, collision, no-op, first-show) live in one path.
 pub fn focusWorkspace(self: *Server, target: u8) void {
-    @import("ServerFocus.zig").focusWorkspace(self, target);
+    Focus.focusWorkspace(self, target);
 }
 
 /// Move a node (pane or Wayland client) to a different workspace.
@@ -1631,12 +1624,12 @@ fn setSlotVisible(self: *Server, slot: u16, visible: bool) void {
 
 /// Cycle focus to the next connected output (keybind action).
 pub fn focusNextOutput(self: *Server) void {
-    @import("ServerFocus.zig").focusNextOutput(self);
+    Focus.focusNextOutput(self);
 }
 
 /// Move the focused node to the next output's current workspace.
 pub fn moveFocusedToNextOutput(self: *Server) void {
-    @import("ServerFocus.zig").moveFocusedToNextOutput(self);
+    Focus.moveFocusedToNextOutput(self);
 }
 
 // ── MCP event emission (v0.4.18) ─────────────────────────────
@@ -1677,7 +1670,7 @@ pub fn resetWorkspaceStartupIfEmpty(self: *Server, ws: u8) void {
 /// Apply wm_config.unfocused_opacity to every terminal pane's buffer.
 /// Delegates to ServerFocus.zig.
 pub fn applyFocusOpacity(self: *Server) void {
-    @import("ServerFocus.zig").applyFocusOpacity(self);
+    Focus.applyFocusOpacity(self);
 }
 
 // ── Process spawning ───────────────────────────────────────────
@@ -1717,13 +1710,13 @@ pub fn spawnShell(self: *Server, cmd: []const u8) void {
 
 /// Shell-spawn screenshot. Delegates to ServerScreenshot.zig.
 pub fn takeScreenshot(self: *Server) void {
-    @import("ServerScreenshot.zig").takeScreenshot(self);
+    Screenshot.takeScreenshot(self);
 }
 
 /// Named-path screenshot. Public because WmMcpServer.teruwm_screenshot
 /// calls it through self.server.takeScreenshotToPath. Delegates.
 pub fn takeScreenshotToPath(self: *Server, path: []const u8) bool {
-    return @import("ServerScreenshot.zig").takeScreenshotToPath(self, path);
+    return Screenshot.takeScreenshotToPath(self, path);
 }
 
 // ── Helper ─────────────────────────────────────────────────────
