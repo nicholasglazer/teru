@@ -354,8 +354,46 @@ const WaylandState = struct {
     mods_group: u32 = 0,
 
     fn pushEvent(self: *WaylandState, ev: Event) void {
+        // Motion events are stateless — only the latest position matters.
+        // If the previous event in the queue is also a mouse_motion,
+        // overwrite it. Otherwise a burst of motion packets from a
+        // busy compositor (teruwm fires notify_motion on every cursor
+        // position; libinput can queue 50+ events per dispatch) will
+        // saturate the 32-slot ring and the following button event
+        // gets silently dropped — user-visible as "can't select text
+        // in teru running inside teruwm". Coalescing keeps the queue
+        // short so non-motion events always find a slot.
+        if (ev == .mouse_motion and self.key_head != self.key_tail) {
+            const prev_idx = (self.key_head + 32 - 1) % 32;
+            if (self.key_events[prev_idx] == .mouse_motion) {
+                self.key_events[prev_idx] = ev;
+                return;
+            }
+        }
+
         const next = (self.key_head + 1) % 32;
-        if (next == self.key_tail) return; // Full, drop oldest
+        if (next == self.key_tail) {
+            // Queue full — drop motion events preferentially so that
+            // button / key / close / resize events still land. If the
+            // incoming event is itself motion, just drop it silently;
+            // the client will catch up on the next motion packet.
+            if (ev == .mouse_motion) return;
+            // Non-motion event, queue full: scan for the oldest motion
+            // in the buffer and overwrite it so we don't lose the
+            // important event. Worst case no motion found — drop the
+            // oldest slot (tail) to make room.
+            var i: u32 = self.key_tail;
+            while (i != self.key_head) : (i = (i + 1) % 32) {
+                if (self.key_events[i] == .mouse_motion) {
+                    self.key_events[i] = ev;
+                    return;
+                }
+            }
+            // No motion to sacrifice — drop the oldest entry (advance
+            // tail). This is extraordinarily rare (32 consecutive
+            // non-motion events queued without the main loop draining).
+            self.key_tail = (self.key_tail + 1) % 32;
+        }
         self.key_events[self.key_head] = ev;
         self.key_head = next;
     }
