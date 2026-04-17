@@ -103,7 +103,12 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
 
             tp.pane.scroll_offset = @intCast(new_offset);
             tp.pane.scroll_pixel = new_pixel;
-            tp.pane.grid.dirty = true;
+            // Scroll moves the whole viewport — every row's content is
+            // different. markAllDirty keeps the dirty range tracking
+            // consistent with the "range-invalidates full paint"
+            // semantics the renderer already has, without the
+            // implicit-fallback cost.
+            tp.pane.grid.markAllDirty();
             tp.render();
             return;
         }

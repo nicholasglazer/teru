@@ -75,8 +75,9 @@ pub fn arrangeWorkspace(server: *Server, ws_index: u8) void {
                     tp.setPosition(rx, ry);
                     // Force repaint so smart-border state (count change,
                     // solo ↔ shared) gets reflected even when the rect
-                    // didn't change.
-                    tp.pane.grid.dirty = true;
+                    // didn't change. Full-grid dirty is intentional —
+                    // the border colour applies to every row's edge.
+                    tp.pane.grid.markAllDirty();
                 }
             }
         }
