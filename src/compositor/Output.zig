@@ -233,8 +233,14 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     }
     server.recomputeVisibility();
 
-    // Tell wlr-output-management clients the head is gone.
-    server.pushOutputManagerState();
+    // Tell wlr-output-management clients the head is gone — but only
+    // when we're still running normally. During shutdown the manager
+    // is itself being torn down by wl_display_destroy; pushing a new
+    // configuration at that moment crashed with a general-protection
+    // fault inside wlr_output_manager_v1_set_configuration.
+    if (!server.shutting_down) {
+        server.pushOutputManagerState();
+    }
 
     server.zig_allocator.destroy(output);
 }
