@@ -187,17 +187,42 @@ pub fn cycleFocusAll(server: *Server, forward: bool) void {
                 if (server.nodes.xdg_view[slot]) |opaque_view| {
                     const view: *XdgView = @ptrCast(@alignCast(opaque_view));
                     focusView(server, view);
-                } else {
-                    // XWayland view — updateFocusedTerminal's XDG-view
-                    // fallback walks xdg_view[] which is null for xwl,
-                    // so we can't focus it generically here. Accept the
-                    // limitation: xwayland windows are reachable via
-                    // click; Win+J/K will skip them.
+                } else if (server.nodes.xwayland_surface[slot]) |xw| {
+                    focusXwaylandSurface(server, xw);
                 }
             },
             .empty => {},
         }
     }
+}
+
+/// Focus an XWayland surface: activate it, and route the seat keyboard
+/// focus to its wlr_surface so typed keys actually reach the X11 client.
+/// Without this, Emacs / Steam / GIMP under XWayland could be clicked
+/// but never received key events — Spacemacs "SPC SPC" just sat there
+/// because the seat had no keyboard-focused surface.
+pub fn focusXwaylandSurface(server: *Server, xw: *wlr.wlr_xwayland_surface) void {
+    const target = wlr.miozu_xwayland_surface_surface(xw) orelse return;
+
+    // Deactivate prior XDG toplevel, if any — same XOR invariant the
+    // XdgView path preserves.
+    if (server.focused_view) |prev| {
+        _ = wlr.wlr_xdg_toplevel_set_activated(prev.toplevel, false);
+    }
+    wlr.wlr_xwayland_surface_activate(xw, true);
+    server.focused_view = null;
+    server.focused_terminal = null;
+
+    const kb_opt = wlr.miozu_seat_get_keyboard(server.seat);
+    const modifiers: ?*anyopaque = if (kb_opt) |kb| wlr.miozu_keyboard_modifiers_ptr(kb) else null;
+    const keycodes: ?[*]const u32 = if (kb_opt) |kb| wlr.miozu_keyboard_keycodes(kb) else null;
+    const num_keycodes: usize = if (kb_opt) |kb| wlr.miozu_keyboard_num_keycodes(kb) else 0;
+    wlr.wlr_seat_keyboard_notify_enter(server.seat, target, keycodes, num_keycodes, modifiers);
+
+    for (server.terminal_panes) |maybe_tp| {
+        if (maybe_tp) |tp| tp.repaintBorderOnly();
+    }
+    if (server.bar) |b| b.render(server);
 }
 
 pub fn updateFocusedTerminal(server: *Server) void {

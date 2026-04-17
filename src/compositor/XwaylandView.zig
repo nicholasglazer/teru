@@ -95,6 +95,12 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         std.debug.print("teruwm: X11 surface mapped class='{s}' node={d} ws={d}\n", .{ class orelse "none", view.node_id, ws });
 
         server.arrangeworkspace(ws);
+
+        // Give the newly-mapped X11 client keyboard focus. Without
+        // this, Emacs maps and the seat never calls keyboard_enter on
+        // it — typing goes nowhere and the user thinks the window is
+        // frozen. Match the XdgView auto-focus-on-map behaviour.
+        server.focusXwaylandSurface(view.surface);
     }
 }
 

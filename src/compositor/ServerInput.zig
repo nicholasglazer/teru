@@ -295,14 +295,20 @@ pub fn handleKey(server: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) b
     }
 
     // Normalize: uppercase ASCII → lowercase (Shift'd 'J' → 'j'),
+    // Shift+number-row → base digit (!→1, @→2, …) so keybinds defined
+    // against '1' still match when Shift is held — without this,
+    // Mod+Shift+1..0 (move-pane-to-workspace) silently missed because
+    // xkb delivers the shifted symbol, not the unmodified digit.
     // ASCII passes through, common xkb specials → ASCII equivalents,
     // everything else stays as the raw keysym (XF86/media keys).
-    const key: u32 = if (sym >= 'A' and sym <= 'Z') sym + 32 else if (sym >= 0x20 and sym <= 0x7e) sym else switch (sym) {
+    const key: u32 = if (sym >= 'A' and sym <= 'Z') sym + 32 else switch (sym) {
+        '!' => '1', '@' => '2', '#' => '3', '$' => '4', '%' => '5',
+        '^' => '6', '&' => '7', '*' => '8', '(' => '9', ')' => '0',
         0xff0d => '\r',
         0xff1b => 0x1b,
         0xff09 => '\t',
         0xff08 => 0x7f,
-        else => sym,
+        else => if (sym >= 0x20 and sym <= 0x7e) sym else sym,
     };
 
     var mods = KBMods{};

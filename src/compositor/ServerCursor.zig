@@ -328,6 +328,13 @@ fn forwardAndFocus(server: *Server, button: u32, state: u32, time: u32, super_he
                             const view: *XdgView = @ptrCast(@alignCast(opaque_view));
                             server.focusView(view);
                             syncWsActiveIndex(&server.layout_engine.workspaces[server.layout_engine.active_workspace], nid);
+                        } else if (server.nodes.xwayland_surface[slot]) |xw| {
+                            // X11 clients (Emacs, Steam, ...) don't have
+                            // an xdg_view. Route focus through the
+                            // xwayland-specific path so key events
+                            // actually reach the client.
+                            server.focusXwaylandSurface(xw);
+                            syncWsActiveIndex(&server.layout_engine.workspaces[server.layout_engine.active_workspace], nid);
                         }
                     },
                     else => {},
