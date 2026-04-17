@@ -751,6 +751,11 @@ fn loadFile(allocator: std.mem.Allocator, path: []const u8, io: Io) ![]u8 {
     const file = Dir.cwd().openFile(io, path, .{}) catch return error.FileNotFound;
     defer file.close(io);
     const s = file.stat(io) catch return error.StatFailed;
+    // Guard the u64→usize cast: stat.size is u64 but fonts larger than
+    // 16 MiB are implausible (DejaVu Sans is ~700 KB, Noto Sans CJK is
+    // ~20 MB collection file). Refuse something that smells wrong
+    // before the allocator does.
+    if (s.size > 32 * 1024 * 1024) return error.FontTooLarge;
     const size: usize = @intCast(s.size);
     const data = try allocator.alloc(u8, size);
     const n = file.readPositionalAll(io, data, 0) catch {

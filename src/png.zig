@@ -49,6 +49,11 @@ pub fn write(
 }
 
 fn writeChunk(file: *anyopaque, chunk_type: *const [4]u8, data: []const u8) void {
+    // PNG chunk length is u32 big-endian. Screenshots produce pixel
+    // data in the tens-of-MB range; a single chunk >4 GiB is beyond
+    // what we emit, but guard the cast so a future bug doesn't wrap
+    // silently.
+    std.debug.assert(data.len <= std.math.maxInt(u32));
     var len_buf: [4]u8 = undefined;
     std.mem.writeInt(u32, &len_buf, @intCast(data.len), .big);
     fileWrite(file, &len_buf);

@@ -119,7 +119,15 @@ pub fn serializeWithWorkspaces(graph: *const ProcessGraph, writer: anytype, ws_m
     }
 }
 
+/// Node-name / agent-group / agent-role are length-prefixed as u16;
+/// reject anything that would truncate or panic on the cast. 64 KiB
+/// is already an absurd length for any of these — the guard exists
+/// to turn the latent safe-mode panic into a proper error.
+const max_label_len: usize = std.math.maxInt(u16);
+
 fn serializeNode(node: *const ProcessGraph.Node, writer: anytype) !void {
+    if (node.name.len > max_label_len) return error.LabelTooLong;
+
     // id
     try writer.writeInt(u64, node.id, .little);
 
@@ -174,6 +182,7 @@ fn serializeNode(node: *const ProcessGraph.Node, writer: anytype) !void {
 
     // agent metadata (optional)
     if (node.agent) |agent| {
+        if (agent.group.len > max_label_len or agent.role.len > max_label_len) return error.LabelTooLong;
         try writer.writeByte(1);
         // agent_group
         const group_len: u16 = @intCast(agent.group.len);
