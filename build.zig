@@ -118,6 +118,25 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run teru terminal");
     run_step.dependOn(&run_cmd.step);
 
+    // ── teruwmctl (shell CLI + MCP stdio adapter for teruwm) ─────────
+    // Pure client — no wlroots, builds on every platform where teru
+    // builds. Lives at `zig-out/bin/teruwmctl`.
+    if (os_tag == .linux) {
+        const teruwmctl_mod = b.createModule(.{
+            .root_source_file = b.path("src/tools/teruwmctl/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        teruwmctl_mod.addImport("teru", lib_mod);
+        teruwmctl_mod.addOptions("build_options", build_options);
+        const teruwmctl_exe = b.addExecutable(.{
+            .name = "teruwmctl",
+            .root_module = teruwmctl_mod,
+        });
+        b.installArtifact(teruwmctl_exe);
+    }
+
     // ── bench (vtebench-style throughput harness) ────────────────────
     // `zig build bench -- tools/bench-payloads` runs teru's VT pipeline on
     // pre-captured payloads and prints JSON to stdout. See docs/BENCHMARKS.md.
