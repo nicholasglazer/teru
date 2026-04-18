@@ -40,6 +40,7 @@ pub fn main(init: std.process.Init) !void {
     var mode_raw = false;
     var mode_attach = false;
     var mode_mcp_bridge = false;
+    var mcp_target: McpBridge.Target = .teru;
     var daemon_session: ?[]const u8 = null;
     var session_name: ?[]const u8 = null; // -n NAME: persistent named session
     var template_name: ?[]const u8 = null; // -t NAME: apply template on start
@@ -73,7 +74,8 @@ pub fn main(init: std.process.Init) !void {
                 \\  --no-bar                Start with status bar hidden
                 \\  --raw                   Raw TTY mode (no window)
                 \\  --daemon <name>         Start headless daemon (server use)
-                \\  --mcp-server            MCP stdio proxy (alias: --mcp-bridge)
+                \\  --mcp-server            MCP stdio proxy (alias: --mcp-bridge, --mcp-stdio)
+                \\  --target <teru|teruwm>  Target for --mcp-server (default: teru)
                 \\  --class <name>          Set WM_CLASS
                 \\
                 \\Templates:
@@ -95,8 +97,21 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, arg, "--raw")) { mode_raw = true; continue; }
         if (std.mem.eql(u8, arg, "--no-bar")) { common.cli_no_bar = true; continue; }
         if (std.mem.eql(u8, arg, "--attach")) { mode_attach = true; continue; }
-        if (std.mem.eql(u8, arg, "--mcp-server") or std.mem.eql(u8, arg, "--mcp-bridge")) {
+        if (std.mem.eql(u8, arg, "--mcp-server") or std.mem.eql(u8, arg, "--mcp-bridge") or std.mem.eql(u8, arg, "--mcp-stdio")) {
             mode_mcp_bridge = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--target")) {
+            const v = args_iter.next() orelse continue;
+            if (std.mem.eql(u8, v, "teru")) {
+                mcp_target = .teru;
+            } else if (std.mem.eql(u8, v, "teruwm")) {
+                mcp_target = .teruwm;
+            } else {
+                var buf: [128]u8 = undefined;
+                outFmt(&buf, "teru: unknown --target '{s}' (expected teru or teruwm)\n", .{v});
+                std.process.exit(2);
+            }
             continue;
         }
         if (std.mem.eql(u8, arg, "--list") or std.mem.eql(u8, arg, "-l")) { list_sessions = true; continue; }
@@ -167,7 +182,7 @@ pub fn main(init: std.process.Init) !void {
         return daemon_mode.runNamed(allocator, io, name, template_name, wm_class_override);
     }
 
-    if (mode_mcp_bridge) return McpBridge.run(io);
+    if (mode_mcp_bridge) return McpBridge.run(io, mcp_target);
     if (mode_attach) return daemon_mode.runAttach(allocator, io, wm_class_override);
 
     // Detect rendering tier

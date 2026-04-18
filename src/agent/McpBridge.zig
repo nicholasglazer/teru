@@ -1,25 +1,40 @@
-//! MCP stdio proxy — pipes stdin ↔ `teru-mcp-$PID.sock` ↔ stdout.
+//! MCP stdio proxy — pipes stdin ↔ teru / teruwm socket ↔ stdout.
 //!
-//! Usage: `teru --mcp-server`  (alias `teru --mcp-bridge` for legacy
-//! `.mcp.json` files still referring to the previous flag name).
+//! Usage:
+//!   `teru --mcp-server`                         → terminal MCP (default)
+//!   `teru --mcp-server --target teru`           → explicit terminal MCP
+//!   `teru --mcp-server --target teruwm`         → compositor MCP
+//!   aliases: `--mcp-bridge` (legacy), `--mcp-stdio`
 //!
-//! Protocol is line-delimited JSON-RPC 2.0 on both sides: one
-//! `\n`-terminated message per request, one per response. No HTTP,
-//! no Content-Length. The main teru process listens on
-//! `/run/user/$UID/teru-mcp-$PID.sock` and speaks the same framing.
+//! MCP stdio framing is newline-delimited JSON-RPC 2.0 per the MCP
+//! 2024-11-05 spec — one `\n`-terminated message per direction. This
+//! proxy forwards each stdin line to the chosen server and pipes the
+//! response back, one request per connection (both servers close the
+//! socket after each reply).
 //!
-//! Discovery: `$TERU_MCP_SOCKET` if set, otherwise the first
-//! `teru-mcp-*.sock` in the runtime dir. One socket connection per
-//! request (teru's server closes after sending the response), which
-//! keeps the bridge stateless.
+//! Target shapes:
+//!   * teru   — line-JSON over `/run/user/$UID/teru-mcp-$PID.sock`
+//!   * teruwm — HTTP/1.1 + JSON-RPC over `/run/user/$UID/teruwm-mcp-$PID.sock`
+//!
+//! Discovery:
+//!   * teru:   `$TERU_MCP_SOCKET`,   else scan `teru-mcp-*.sock`
+//!   * teruwm: `$TERUWM_MCP_SOCKET`, else scan `teruwm-mcp-*.sock`
+//!              (delegated to `agent/forward.zig::findTeruwmSocket`)
 //!
 //! `$TERU_MCP_READONLY=1` filters write tools out of `tools/list` and
 //! rejects `tools/call` for those tools before hitting the socket.
+//! Only applies to the `teru` target for now — teruwm's write tools
+//! would need a separate list.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const ipc = @import("../server/ipc.zig");
 const compat = @import("../compat.zig");
+const forward = @import("forward.zig");
+
+/// Which MCP server this proxy fronts. Picked from CLI `--target`
+/// (or defaults to `.teru`) before the loop starts.
+pub const Target = enum { teru, teruwm };
 
 const max_line: usize = 65536;
 const max_response: usize = 65536;
@@ -45,24 +60,39 @@ fn stdoutFd() std.posix.fd_t {
 
 // ── Entry point ──────────────────────────────────────────────────
 
-pub fn run(io: std.Io) !void {
+pub fn run(io: std.Io, target: Target) !void {
     _ = io; // Proxy uses blocking C I/O on stdin/stdout/socket.
 
-    const read_only = if (compat.getenv("TERU_MCP_READONLY")) |v|
+    // read_only applies to the `teru` target today; the write-tools
+    // list was hand-curated for terminal tools and doesn't map 1:1 to
+    // teruwm's surface. Future work: teruwm-specific list.
+    const read_only_all = if (compat.getenv("TERU_MCP_READONLY")) |v|
         v.len > 0 and v[0] == '1'
     else
         false;
+    const read_only = read_only_all and (target == .teru);
 
-    const socket_path = findSocket() orelse {
+    // Resolve socket once up front when talking to teru. For teruwm we
+    // rediscover per request via forward.findTeruwmSocket — it handles
+    // the env-var override + prefix scan, and the per-call cost is
+    // negligible (one opendir + readdir).
+    const teru_sock: ?[]const u8 = if (target == .teru) (findSocket() orelse {
         const msg = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"No teru MCP socket found. Set TERU_MCP_SOCKET or run teru first.\"},\"id\":null}\n";
         _ = std.c.write(stdoutFd(), msg.ptr, msg.len);
         return error.NoSocket;
-    };
+    }) else null;
+
+    if (target == .teruwm and forward.findTeruwmSocket() == null) {
+        const msg = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"No teruwm MCP socket found. Set TERUWM_MCP_SOCKET or start teruwm first.\"},\"id\":null}\n";
+        _ = std.c.write(stdoutFd(), msg.ptr, msg.len);
+        return error.NoSocket;
+    }
 
     var line_buf: [max_line]u8 = undefined;
 
     while (true) {
         const line = readLine(&line_buf) orelse return; // EOF
+
         if (line.len == 0) continue;
 
         // Drop notifications (no id field) — server doesn't emit responses.
@@ -82,21 +112,19 @@ pub fn run(io: std.Io) !void {
             continue;
         }
 
-        var conn = ipc.connect(socket_path) catch {
-            const err_msg = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Cannot connect to teru socket\"},\"id\":null}\n";
+        var resp_buf: [max_response]u8 = undefined;
+        const resp: []const u8 = switch (target) {
+            .teru => forwardToTeru(teru_sock.?, line, &resp_buf) orelse "",
+            .teruwm => forwardToTeruwm(line, &resp_buf) orelse "",
+        };
+        if (resp.len == 0) {
+            const err_msg = switch (target) {
+                .teru => "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Cannot connect to teru socket\"},\"id\":null}\n",
+                .teruwm => "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"Cannot reach teruwm socket\"},\"id\":null}\n",
+            };
             _ = std.c.write(stdoutFd(), err_msg.ptr, err_msg.len);
             continue;
-        };
-
-        // Send the request line as-is + newline terminator.
-        _ = conn.write(line) catch {};
-        _ = conn.write("\n") catch {};
-
-        // Read one line of response (server writes json + \n and closes).
-        var resp_buf: [max_response]u8 = undefined;
-        const resp = readResponse(&conn, &resp_buf);
-        conn.close();
-        if (resp.len == 0) continue;
+        }
 
         if (read_only and std.mem.indexOf(u8, line, "\"tools/list\"") != null) {
             var filter_buf: [max_response]u8 = undefined;
@@ -109,6 +137,27 @@ pub fn run(io: std.Io) !void {
         _ = std.c.write(stdoutFd(), resp.ptr, resp.len);
         _ = std.c.write(stdoutFd(), "\n", 1);
     }
+}
+
+/// Forward one line-JSON request to teru's line-JSON socket.
+/// Opens a fresh connection per request (teru closes after replying).
+fn forwardToTeru(sock_path: []const u8, line: []const u8, out: []u8) ?[]const u8 {
+    var conn = ipc.connect(sock_path) catch return null;
+    defer conn.close();
+    _ = conn.write(line) catch return null;
+    _ = conn.write("\n") catch return null;
+    const resp = readResponse(&conn, out);
+    if (resp.len == 0) return null;
+    return resp;
+}
+
+/// Forward one line-JSON request to teruwm's HTTP-framed socket.
+/// Reuses `forward.forwardRequest` (the same code teru's in-process
+/// MCP uses to forward `teruwm_*` tools to the compositor). Each
+/// request opens + closes its own connection — teruwm sends
+/// `Connection: close` so keeping a pool buys nothing.
+fn forwardToTeruwm(line: []const u8, out: []u8) ?[]const u8 {
+    return forward.forwardRequest(line, out);
 }
 
 // ── stdin reading ────────────────────────────────────────────────

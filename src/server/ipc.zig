@@ -113,26 +113,40 @@ pub fn connect(path: []const u8) IpcError!IpcHandle {
     }
 }
 
-/// Build a platform-appropriate IPC path for a teru service.
-/// Examples:
-///   POSIX: /run/user/1000/teru-session-myproject.sock
-///   macOS: /tmp/teru-1000-session-myproject.sock
-///   Windows: \\.\pipe\teru-session-myproject
+/// Build a platform-appropriate IPC path for the teru family.
+/// Equivalent to buildPathFamily(buf, "teru", prefix, name). Used by
+/// every non-compositor service (session daemon, terminal MCP, hook
+/// listener, pane backend).
 pub fn buildPath(buf: *[256]u8, prefix: []const u8, name: []const u8) ?[]const u8 {
+    return buildPathFamily(buf, "teru", prefix, name);
+}
+
+/// Build a platform-appropriate IPC path for an arbitrary family.
+/// Supports the teruwm compositor emitting `teruwm-mcp-$PID.sock`
+/// alongside teru's `teru-mcp-$PID.sock`. Family lets each binary
+/// own its own namespace and still share the same discovery pattern.
+/// Examples:
+///   family="teru",   prefix="session",    name="myproject"
+///     POSIX: /run/user/1000/teru-session-myproject.sock
+///   family="teruwm", prefix="mcp",        name="12345"
+///     POSIX: /run/user/1000/teruwm-mcp-12345.sock
+///   family="teruwm", prefix="mcp-events", name="12345"
+///     POSIX: /run/user/1000/teruwm-mcp-events-12345.sock
+pub fn buildPathFamily(buf: *[256]u8, family: []const u8, prefix: []const u8, name: []const u8) ?[]const u8 {
     if (builtin.os.tag == .windows) {
-        return std.fmt.bufPrint(buf, "\\\\.\\pipe\\teru-{s}-{s}", .{ prefix, name }) catch null;
+        return std.fmt.bufPrint(buf, "\\\\.\\pipe\\{s}-{s}-{s}", .{ family, prefix, name }) catch null;
     } else if (builtin.os.tag == .macos) {
         const uid = compat.getUid();
         const tmpdir = compat.getenv("TMPDIR") orelse "/tmp";
-        return std.fmt.bufPrint(buf, "{s}/teru-{d}-{s}-{s}.sock", .{ tmpdir, uid, prefix, name }) catch null;
+        return std.fmt.bufPrint(buf, "{s}/{s}-{d}-{s}-{s}.sock", .{ tmpdir, family, uid, prefix, name }) catch null;
     } else {
         // Linux: prefer $XDG_RUNTIME_DIR, fallback to /run/user/{uid}
         const uid = compat.getUid();
         const runtime_dir = compat.getenv("XDG_RUNTIME_DIR");
         if (runtime_dir) |dir| {
-            return std.fmt.bufPrint(buf, "{s}/teru-{s}-{s}.sock", .{ dir, prefix, name }) catch null;
+            return std.fmt.bufPrint(buf, "{s}/{s}-{s}-{s}.sock", .{ dir, family, prefix, name }) catch null;
         }
-        return std.fmt.bufPrint(buf, "/run/user/{d}/teru-{s}-{s}.sock", .{ uid, prefix, name }) catch null;
+        return std.fmt.bufPrint(buf, "/run/user/{d}/{s}-{s}-{s}.sock", .{ uid, family, prefix, name }) catch null;
     }
 }
 

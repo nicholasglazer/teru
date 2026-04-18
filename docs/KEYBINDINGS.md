@@ -234,7 +234,7 @@ Action names match the identifiers in `Keybinds.Action` (e.g. `pane_close`,
 ## MCP control (teruwm)
 
 The compositor exposes its window-manager controls over MCP at
-`/run/user/$UID/teru-wmmcp-$PID.sock` — see `teruwm_list_windows`,
+`/run/user/$UID/teruwm-mcp-$PID.sock` — see `teruwm_list_windows`,
 `teruwm_close_window`, `teruwm_switch_workspace`, `teruwm_set_layout`,
 `teruwm_toggle_bar`, `teruwm_set_config`, etc. Any keybind action can be
 scripted from outside.

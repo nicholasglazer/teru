@@ -6,7 +6,7 @@ Both speak JSON-RPC 2.0 over a Unix socket (or Windows named pipe).
 | Server | Socket | Tools | Purpose |
 |---|---|---:|---|
 | **teru agent** | `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock` | 19 | Control any running teru instance — panes, workspaces, scrollback, sessions, broadcast, config live-edit |
-| **teruwm compositor** | `$XDG_RUNTIME_DIR/teru-wmmcp-$PID.sock` | 26 | Control the Wayland compositor — windows (terminal + XDG), workspaces, layouts, bars, push widgets, named scratchpads (v0.4.18), event push stream, hot-restart, E2E test hooks |
+| **teruwm compositor** | `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock` | 26 | Control the Wayland compositor — windows (terminal + XDG), workspaces, layouts, bars, push widgets, named scratchpads (v0.4.18), event push stream, hot-restart, E2E test hooks |
 
 If you write a daemon that needs to push data to the bar, you want the
 compositor server. If you want an AI agent to read another pane's output
@@ -95,7 +95,7 @@ def teruwm_mcp(sock_path, tool, args=None):
         try: return json.loads(text.replace('\\"', '"'))
         except: return text
 
-print(teruwm_mcp("/run/user/1000/teru-wmmcp-12345.sock", "teruwm_list_windows"))
+print(teruwm_mcp("/run/user/1000/teruwm-mcp-12345.sock", "teruwm_list_windows"))
 ```
 
 ### Alternative transport: stdio proxy (`teru --mcp-server`)
@@ -116,7 +116,7 @@ returns just teruwm's path.
 ```sh
 $ teru-query teru_subscribe_events
 {"teru":"/run/user/1000/teru-mcp-events-12345.sock",
- "teruwm":"/run/user/1000/teru-wmmcp-events-67890.sock"}
+ "teruwm":"/run/user/1000/teruwm-mcp-events-67890.sock"}
 ```
 
 Minimum consumer:
@@ -152,7 +152,7 @@ while True:
             handle(ev)
 ```
 
-Override discovery with `TERU_WMMCP_EVENTS_SOCKET`. Events are
+Override discovery with `TERUWM_MCP_EVENTS_SOCKET`. Events are
 best-effort (O_NONBLOCK on the server side); slow consumers drop.
 
 ### Cross-MCP forwarding (v0.4.19)
@@ -167,7 +167,7 @@ agent ──→ teru-mcp-$PID.sock
            ├── teru_list_panes     (local dispatch)
            ├── teru_send_input     (local)
            │     …
-           └── teruwm_list_windows ──forward──→ teru-wmmcp-*.sock
+           └── teruwm_list_windows ──forward──→ teruwm-mcp-*.sock
                                                  │
                                                  └── compositor handles
 ```
@@ -175,7 +175,7 @@ agent ──→ teru-mcp-$PID.sock
 The forwarding is transparent at every transport: the line-JSON
 socket, the `--mcp-server` stdio proxy, and the in-band OSC 9999
 path (below) all get the same unified surface. Set
-`TERU_WMMCP_SOCKET=/path/to/sock` to pin a specific teruwm instance
+`TERUWM_MCP_SOCKET=/path/to/sock` to pin a specific teruwm instance
 when multiple run on the same host.
 
 `tools/list` today returns only teru's 19 tools — the forwarded
@@ -270,7 +270,7 @@ Layouts: `master-stack`, `grid`, `monocle`, `dishes`, `spiral`, `three-col`,
 
 ## teruwm (compositor) MCP — 28 tools
 
-Socket: `$XDG_RUNTIME_DIR/teru-wmmcp-$PID.sock`. Implementation: `src/compositor/WmMcpServer.zig`.
+Socket: `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock`. Implementation: `src/compositor/WmMcpServer.zig`.
 
 ### Windows
 
@@ -385,7 +385,7 @@ changes.
 import dbus, dbus.mainloop.glib, glib, json, socket
 
 SOCK = "/run/user/1000/" + next(f for f in os.listdir("/run/user/1000")
-                                if f.startswith("teru-wmmcp-"))
+                                if f.startswith("teruwm-mcp-"))
 
 def push(name, text, cls="none"):
     body = json.dumps({"jsonrpc":"2.0","method":"tools/call","params":{
@@ -453,7 +453,7 @@ wins = mcp(SOCK, "teruwm_list_windows")
     },
     "teruwm": {
       "command": "socat",
-      "args": ["UNIX-CONNECT:/run/user/1000/teru-wmmcp-PID.sock", "STDIO"]
+      "args": ["UNIX-CONNECT:/run/user/1000/teruwm-mcp-PID.sock", "STDIO"]
     }
   }
 }

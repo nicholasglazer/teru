@@ -124,7 +124,7 @@ def mcp_call(
 
 
 def _wait_socket(pid: int, timeout: float = 10.0) -> Optional[str]:
-    path = f"{SOCK_DIR}/teru-wmmcp-{pid}.sock"
+    path = f"{SOCK_DIR}/teruwm-mcp-{pid}.sock"
     deadline = time.time() + timeout
     while time.time() < deadline:
         if os.path.exists(path):
@@ -188,7 +188,7 @@ class Wm:
 
 
 def _cleanup_stale_sockets() -> None:
-    for p in glob.glob(f"{SOCK_DIR}/teru-wmmcp-*.sock"):
+    for p in glob.glob(f"{SOCK_DIR}/teruwm-mcp-*.sock"):
         # Only unlink sockets whose pids are dead.
         try:
             pid = int(p.rsplit("-", 1)[-1].split(".", 1)[0])

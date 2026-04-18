@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Breaking
+
+- **Socket rename** — `teru-wmmcp-$PID.sock` is now `teruwm-mcp-$PID.sock`
+  (and the events channel `teru-wmmcp-events-` → `teruwm-mcp-events-`).
+  The `teruwm-` prefix matches the binary name; the family namespace
+  stays glob-addressable. Env vars renamed to match:
+  `TERU_WMMCP_SOCKET` → `TERUWM_MCP_SOCKET`,
+  `TERU_WMMCP_EVENTS_SOCKET` → `TERUWM_MCP_EVENTS_SOCKET`.
+  No compat fallback — update any scripts / `.mcp.json` entries that
+  reference the old paths. teru terminal's `teru-mcp-*` sockets are
+  unchanged.
+
+### Features
+
+- **`teru --mcp-server --target teruwm`** — the existing MCP stdio
+  bridge now routes to the compositor when invoked with
+  `--target teruwm` (default stays `teru`). `--mcp-stdio` alias added
+  alongside `--mcp-server` / `--mcp-bridge`. Fronts teruwm's HTTP
+  MCP socket via the existing `agent/forward.zig` client. Register
+  with Claude Code / Cursor:
+  ```json
+  {"mcpServers": {"teruwm": {
+    "command": "teru",
+    "args": ["--mcp-server", "--target", "teruwm"]
+  }}}
+  ```
+  No new binary; `teruwmctl` was scoped down to a `--target` flag on
+  the existing bridge (see `docs/.internal/teruwmctl-plan.md`).
+- **`ipc.buildPathFamily(family, prefix, name)`** — new helper so
+  binaries can own their own socket family (`teruwm-*` vs `teru-*`)
+  instead of sharing the single hardcoded `teru-` prefix.
+
 ## 0.6.3 (2026-04-18)
 
 Patch release — windowed-mode power draw + Wayland-client crash + drag-select efficiency.
