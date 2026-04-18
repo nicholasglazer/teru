@@ -20,16 +20,28 @@
   bridge now routes to the compositor when invoked with
   `--target teruwm` (default stays `teru`). `--mcp-stdio` alias added
   alongside `--mcp-server` / `--mcp-bridge`. Fronts teruwm's HTTP
-  MCP socket via the existing `agent/forward.zig` client. Register
-  with Claude Code / Cursor:
+  MCP socket via the existing `agent/forward.zig` client.
+- **`teruwmctl` binary** — new shell CLI + MCP stdio adapter for
+  teruwm, installed at `zig-out/bin/teruwmctl` (Linux only; pure
+  client — no wlroots). Verb form maps `teruwmctl list-windows`
+  → `teruwm_list_windows`, generic form `teruwmctl call <tool>
+  '{…}'`, `--mcp-stdio` alias for MCP-aware clients. Examples:
+  ```sh
+  teruwmctl list-windows
+  teruwmctl spawn-terminal
+  teruwmctl switch-workspace '{"workspace":2}'
+  teruwmctl screenshot '{"path":"/tmp/s.png"}'
+  teruwmctl call teruwm_set_layout '{"layout":"grid"}'
+  ```
+  Claude Code / Cursor registration:
   ```json
   {"mcpServers": {"teruwm": {
-    "command": "teru",
-    "args": ["--mcp-server", "--target", "teruwm"]
+    "command": "teruwmctl",
+    "args": ["--mcp-stdio"]
   }}}
   ```
-  No new binary; `teruwmctl` was scoped down to a `--target` flag on
-  the existing bridge (see `docs/.internal/teruwmctl-plan.md`).
+  Internally the stdio path delegates to `McpBridge.run(io, .teruwm)`
+  — same transport as `teru --mcp-server --target teruwm`.
 - **`ipc.buildPathFamily(family, prefix, name)`** — new helper so
   binaries can own their own socket family (`teruwm-*` vs `teru-*`)
   instead of sharing the single hardcoded `teru-` prefix.
