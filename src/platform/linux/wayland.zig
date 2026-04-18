@@ -675,6 +675,15 @@ pub const WaylandWindow = struct {
         return .{ .width = self.width, .height = self.height };
     }
 
+    /// Display connection fd for poll() integration. The main loop can
+    /// block on this plus the PTY fds so we wake on real events instead
+    /// of a fixed 16 ms timer — drops the windowed-mode idle wake rate
+    /// from ~60 Hz to ~0 Hz and lets the CPU enter deep sleep states.
+    /// Wayland events become readable on this fd; drain via pollEvents.
+    pub fn displayFd(self: *const WaylandWindow) c_int {
+        return wl_display_get_fd(self.display);
+    }
+
     // ── SHM buffer management ──────────────────────────────────────────
 
     fn createShmBuffer(self: *WaylandWindow, w: u32, h: u32) !void {

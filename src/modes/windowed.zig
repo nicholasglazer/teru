@@ -1,5 +1,17 @@
 //! Windowed mode — teru running in a local window (X11 or Wayland).
 //!
+//! Main-loop power model: the loop used to sleep on a fixed 8/16 ms
+//! timer regardless of whether anything was happening. That pinned the
+//! CPU at ~60–125 wakeups/s even when truly idle, so the package never
+//! reached C6/C7 and battery drain on laptops was meaningfully higher
+//! than it should be. `waitForInput` below collects every fd the loop
+//! cares about (the Wayland/X11 display fd, each PTY master, the
+//! daemon / hook listener / config watcher fds) and blocks on `poll()`
+//! with a timeout that matches the next scheduled wake (60 fps frame
+//! cap, cursor-blink deadline, prefix-mode timeout, persist debounce,
+//! or a 500 ms hard cap). Idle cost drops to whatever the kernel
+//! charges for a sleeping process, which is approximately nothing.
+//!
 //! The 1300-LoC event loop: window creation, font/atlas setup, CPU
 //! renderer init, pane spawn/restore, keyboard / mouse / PTY polling,
 //! MCP + hook plumbing, config hot-reload, frame pacing.
@@ -50,6 +62,78 @@ const Keyboard = switch (builtin.os.tag) {
 };
 
 const RestoreInfo = common.RestoreInfo;
+
+/// Block until any fd we care about becomes readable or the timeout
+/// expires. Replacing the fixed-timer io.sleep cut idle wake rate from
+/// ~60 Hz to whatever events actually demand. poll() returns EINTR on
+/// signal delivery — that's harmless; the caller just loops.
+fn waitForInput(
+    display_fd: posix.fd_t,
+    mux: *Multiplexer,
+    daemon_fd: ?posix.fd_t,
+    hook_fd: ?posix.fd_t,
+    watcher_fd: ?posix.fd_t,
+    timeout_ms: i32,
+) void {
+    var fds: [32]posix.pollfd = undefined;
+    var n: usize = 0;
+
+    fds[n] = .{ .fd = display_fd, .events = posix.POLL.IN, .revents = 0 };
+    n += 1;
+
+    // Every PTY master — child output wakes the loop instantly.
+    for (mux.panes.items) |*pane| {
+        if (n >= fds.len) break;
+        const pty_fd = pane.ptyMasterFd();
+        if (pty_fd < 0) continue;
+        fds[n] = .{ .fd = pty_fd, .events = posix.POLL.IN, .revents = 0 };
+        n += 1;
+    }
+
+    if (daemon_fd) |fd| { if (n < fds.len) { fds[n] = .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }; n += 1; } }
+    if (hook_fd) |fd| { if (n < fds.len) { fds[n] = .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }; n += 1; } }
+    if (watcher_fd) |fd| { if (n < fds.len) { fds[n] = .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }; n += 1; } }
+
+    _ = posix.poll(fds[0..n], timeout_ms) catch {};
+}
+
+/// Next scheduled wake deadline in ms. Picks the tightest of:
+///   - the hard idle cap (lets maintenance polls run periodically)
+///   - cursor-blink flip (when enabled + window focused)
+///   - frame-rate cap (when a render is pending but throttled)
+///   - persist debounce (layout save fires after quiescent period)
+/// Prefix-mode timeout is intentionally skipped — its 500 ms default
+/// already matches the hard cap, and PrefixState.timestamp_ns uses
+/// the realtime clock which would mix badly with our monotonic now.
+fn computeIdleTimeoutMs(
+    now_ns: i128,
+    last_blink_ns: i128,
+    blink_enabled: bool,
+    frame_cap_deadline_ns: i128,
+    have_pending_render: bool,
+    persist_dirty: bool,
+    persist_dirty_since_ns: i128,
+    cap_ms: i32,
+) i32 {
+    var t: i32 = cap_ms;
+    const one_ms: i128 = 1_000_000;
+    if (blink_enabled) {
+        const wait = (last_blink_ns + common.CURSOR_BLINK_NS) - now_ns;
+        const wait_ms: i32 = @intCast(@max(@as(i128, 0), @divTrunc(wait, one_ms)));
+        if (wait_ms < t) t = wait_ms;
+    }
+    if (have_pending_render) {
+        const wait = frame_cap_deadline_ns - now_ns;
+        const wait_ms: i32 = @intCast(@max(@as(i128, 0), @divTrunc(wait, one_ms)));
+        if (wait_ms < t) t = wait_ms;
+    }
+    if (persist_dirty) {
+        const wait = (persist_dirty_since_ns + common.PERSIST_DEBOUNCE_NS) - now_ns;
+        const wait_ms: i32 = @intCast(@max(@as(i128, 0), @divTrunc(wait, one_ms)));
+        if (wait_ms < t) t = wait_ms;
+    }
+    return t;
+}
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, wm_class: ?[]const u8) !void {
     return runImpl(allocator, io, restore, null, wm_class);
@@ -296,6 +380,13 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
     var running = true;
     var last_blink_time: i128 = compat.monotonicNow();
     var cursor_blink_visible: bool = true;
+    // Window focus tracking. Used to gate the cursor-blink timer —
+    // when the window isn't focused there's nobody watching, so
+    // continuing to toggle every 530 ms just wakes the CPU and
+    // dirties the cursor row for no benefit. Also drives the idle
+    // sleep path (see waitForInput below).
+    var window_focused: bool = true;
+    var last_render_ns: i128 = 0;
 
     // Search mode state (Feature 9)
     var search_mode = false;
@@ -320,6 +411,15 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                     for (mux.panes.items) |*pane| pane.grid.markAllDirty();
                 },
                 .focus_in => {
+                    window_focused = true;
+                    // Resume the cursor-blink phase fresh so the
+                    // cursor isn't caught half-blinked on refocus.
+                    cursor_blink_visible = true;
+                    last_blink_time = compat.monotonicNow();
+                    switch (renderer) {
+                        .cpu => |*cpu| cpu.cursor_blink_on = true,
+                        .tty => {},
+                    }
                     if (Keyboard != void) {
                         if (keyboard) |*kb| kb.resetState();
                     }
@@ -329,6 +429,17 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                     }
                 },
                 .focus_out => {
+                    window_focused = false;
+                    // Stop the blink timer while unfocused — paint the
+                    // cursor solid ON so the defocused state still has
+                    // a visible caret, just static. The user isn't
+                    // watching the blink anyway.
+                    cursor_blink_visible = true;
+                    switch (renderer) {
+                        .cpu => |*cpu| cpu.cursor_blink_on = true,
+                        .tty => {},
+                    }
+                    if (mux.getActivePane()) |pane| pane.grid.markRowDirty(pane.grid.cursor_row);
                     if (mux.getActivePaneMut()) |pane| {
                         _ = pane.ptyWrite("\x1b[O") catch {};
                     }
@@ -1148,12 +1259,21 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
             }
         }
 
-        // Cursor blink timer
-        if (config.cursor_blink) {
+        // Cursor blink timer. Gated on window focus: no point waking
+        // the CPU every 530 ms to toggle a caret the user isn't
+        // looking at. When blink does flip, mark only the cursor row
+        // dirty — `grid.dirty = true` would have triggered a full
+        // SIMD repaint of the entire screen every half-second just
+        // to flip 8x16 pixels of caret. On a 2560x1600 framebuffer
+        // that's ~16 MB of needless write bandwidth per blink.
+        if (config.cursor_blink and window_focused) {
             const now_blink = compat.monotonicNow();
             if (now_blink - last_blink_time >= common.CURSOR_BLINK_NS) {
                 cursor_blink_visible = !cursor_blink_visible;
                 last_blink_time = now_blink;
+                if (mux.getActivePane()) |pane| {
+                    pane.grid.markRowDirty(pane.grid.cursor_row);
+                }
                 any_dirty = true;
             }
             switch (renderer) {
@@ -1272,12 +1392,36 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                 pane.grid.dirty = false;
             }
 
-            // Frame rate limiter: cap at ~120fps to prevent CPU spin.
-            io.sleep(.fromMilliseconds(8), .awake) catch {};
-        } else {
-            // Idle: sleep longer when nothing to render.
-            io.sleep(.fromMilliseconds(16), .awake) catch {};
+            last_render_ns = compat.monotonicNow();
         }
+
+        // Compute the next wake deadline — we wake either when an fd
+        // becomes readable (new input, PTY output, hook event, etc.)
+        // or when the nearest scheduled deadline arrives. 500 ms is
+        // the default hard cap so we still periodically run
+        // maintenance paths (MCP server poll, pane-backend, agent
+        // event drain) that aren't fd-driven.
+        const now_ns = compat.monotonicNow();
+        const frame_min_ns: i128 = 16_666_667; // ~60 fps
+        const frame_cap_deadline = last_render_ns + frame_min_ns;
+        var any_grid_dirty = false;
+        for (mux.panes.items) |*pane| {
+            if (pane.grid.dirty) { any_grid_dirty = true; break; }
+        }
+        const pending_render = any_grid_dirty and (frame_cap_deadline > now_ns);
+        const timeout_ms = computeIdleTimeoutMs(
+            now_ns,
+            last_blink_time,
+            config.cursor_blink and window_focused,
+            frame_cap_deadline,
+            pending_render,
+            mux.persist_dirty,
+            mux.persist_dirty_since,
+            500,
+        );
+        const hook_fd: ?posix.fd_t = if (hook_listener) |*hl| hl.server_fd else null;
+        const watcher_fd: ?posix.fd_t = if (config_watcher) |*w| w.fd else null;
+        waitForInput(win.displayFd(), &mux, daemon_fd, hook_fd, watcher_fd, timeout_ms);
     }
 
     if (config.restore_layout or config.persist_session) {
