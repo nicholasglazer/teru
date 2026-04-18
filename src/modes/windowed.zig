@@ -67,14 +67,18 @@ const RestoreInfo = common.RestoreInfo;
 /// expires. Replacing the fixed-timer io.sleep cut idle wake rate from
 /// ~60 Hz to whatever events actually demand. poll() returns EINTR on
 /// signal delivery — that's harmless; the caller just loops.
+/// Linux-only: on non-Linux, fd types and poll semantics differ enough
+/// that the cross-compile fails. Caller gates on os.tag accordingly.
 fn waitForInput(
-    display_fd: posix.fd_t,
+    display_fd: c_int,
     mux: *Multiplexer,
-    daemon_fd: ?posix.fd_t,
-    hook_fd: ?posix.fd_t,
-    watcher_fd: ?posix.fd_t,
+    daemon_fd: ?c_int,
+    hook_fd: ?c_int,
+    watcher_fd: ?c_int,
     timeout_ms: i32,
 ) void {
+    if (comptime builtin.os.tag != .linux) return;
+
     var fds: [32]posix.pollfd = undefined;
     var n: usize = 0;
 
@@ -1401,27 +1405,45 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
         // the default hard cap so we still periodically run
         // maintenance paths (MCP server poll, pane-backend, agent
         // event drain) that aren't fd-driven.
-        const now_ns = compat.monotonicNow();
-        const frame_min_ns: i128 = 16_666_667; // ~60 fps
-        const frame_cap_deadline = last_render_ns + frame_min_ns;
-        var any_grid_dirty = false;
-        for (mux.panes.items) |*pane| {
-            if (pane.grid.dirty) { any_grid_dirty = true; break; }
+        //
+        // Linux-only: the poll-based wait depends on Wayland/X11
+        // display fds and on posix.fd_t being an integer (on Windows
+        // it's HANDLE = *anyopaque, so the ConfigWatcher.fd / pollfd
+        // unification doesn't type-check). macOS' platform.Platform
+        // doesn't expose a displayFd either. On non-Linux we fall
+        // back to the old fixed-timer sleep — same behaviour as 0.6.2,
+        // not a regression.
+        if (comptime builtin.os.tag == .linux) {
+            const now_ns = compat.monotonicNow();
+            const frame_min_ns: i128 = 16_666_667; // ~60 fps
+            const frame_cap_deadline = last_render_ns + frame_min_ns;
+            var any_grid_dirty = false;
+            for (mux.panes.items) |*pane| {
+                if (pane.grid.dirty) { any_grid_dirty = true; break; }
+            }
+            const pending_render = any_grid_dirty and (frame_cap_deadline > now_ns);
+            const timeout_ms = computeIdleTimeoutMs(
+                now_ns,
+                last_blink_time,
+                config.cursor_blink and window_focused,
+                frame_cap_deadline,
+                pending_render,
+                mux.persist_dirty,
+                mux.persist_dirty_since,
+                500,
+            );
+            const hook_fd: ?c_int = if (hook_listener) |*hl| @intCast(hl.server_fd) else null;
+            const watcher_fd: ?c_int = if (config_watcher) |*w| @intCast(w.fd) else null;
+            const daemon_fd_c: ?c_int = if (daemon_fd) |fd| @intCast(fd) else null;
+            waitForInput(@intCast(win.displayFd()), &mux, daemon_fd_c, hook_fd, watcher_fd, timeout_ms);
+        } else {
+            // Non-Linux fallback — matches 0.6.2 behaviour. macOS +
+            // Windows don't expose a displayFd, and posix.fd_t on
+            // Windows is HANDLE (not an integer), so the poll-based
+            // path doesn't type-check there. Same 8 / 16 ms cadence
+            // as pre-0.6.3.
+            io.sleep(.fromMilliseconds(16), .awake) catch {};
         }
-        const pending_render = any_grid_dirty and (frame_cap_deadline > now_ns);
-        const timeout_ms = computeIdleTimeoutMs(
-            now_ns,
-            last_blink_time,
-            config.cursor_blink and window_focused,
-            frame_cap_deadline,
-            pending_render,
-            mux.persist_dirty,
-            mux.persist_dirty_since,
-            500,
-        );
-        const hook_fd: ?posix.fd_t = if (hook_listener) |*hl| hl.server_fd else null;
-        const watcher_fd: ?posix.fd_t = if (config_watcher) |*w| w.fd else null;
-        waitForInput(win.displayFd(), &mux, daemon_fd, hook_fd, watcher_fd, timeout_ms);
     }
 
     if (config.restore_layout or config.persist_session) {
