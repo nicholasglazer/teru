@@ -317,15 +317,16 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     else
         (@as(c_int, grid.dirty_row_max) + 1) * ch;
 
-    // When a drag-selection is active, every affected row must be
-    // re-rendered even if no VT content changed — the highlight
-    // overlay depends on selection coords that can shift on every
-    // motion packet. Mark full dirty so renderDirty walks all rows;
-    // selection_bg is applied per-cell inside renderRangeSel.
+    // Render the dirty range with selection overlay applied per-cell.
+    // `terminalMouseMotion` / `terminalMousePress` in ServerCursor now
+    // mark only the rows whose selection-bg state actually changed
+    // (prev-end, new-end, and start — one to three rows per motion
+    // tick for a typical drag). The earlier `markAllDirty` here was a
+    // sledgehammer that re-painted the full grid every frame a
+    // selection was active — sustained drag hit 4.46 % teruwm CPU.
     const sel_ptr: ?*const Selection = if (self.selection.active) &self.selection else null;
     const so: u32 = self.pane.scroll_offset;
     const sbl: u32 = if (grid.scrollback) |sb| @intCast(sb.lineCount()) else 0;
-    if (sel_ptr != null) grid.markAllDirty();
     self.renderer.renderDirtyWithSelection(grid, sel_ptr, so, sbl);
 
     const border: c_int = if (self.shouldDrawBorder()) blk: {

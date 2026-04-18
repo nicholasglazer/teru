@@ -26,6 +26,8 @@
 //!     surface — see `miozu_surface_is_live`.
 
 const std = @import("std");
+const teru = @import("teru");
+const Selection = teru.Selection;
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 const XdgView = @import("XdgView.zig");
@@ -446,7 +448,12 @@ fn terminalMousePress(server: *Server, tp: anytype, cx: f64, cy: f64) void {
     }
 }
 
-/// Motion during a drag — grow / shrink the selection.
+/// Motion during a drag — grow / shrink the selection. Only mark the
+/// rows that actually changed dirty; the prior `markAllDirty` made
+/// every drag tick cost a full-grid SIMD repaint (measured at 4.46 %
+/// teruwm CPU during a sustained drag). The union of prev-end,
+/// new-end, and start-row screen rows captures every cell whose
+/// selection-bg state flipped between the two motion ticks.
 fn terminalMouseMotion(server: *Server, tp: anytype, cx: f64, cy: f64) void {
     if (!tp.mouse.mouse_down) return;
     const rc = paneLocalCell(tp, cx, cy);
@@ -454,9 +461,42 @@ fn terminalMouseMotion(server: *Server, tp: anytype, cx: f64, cy: f64) void {
     const sbl: u32 = if (tp.pane.grid.scrollback) |sb| @intCast(sb.lineCount()) else 0;
     if (!tp.selection.active) {
         tp.selection.begin(tp.mouse.mouse_start_row, tp.mouse.mouse_start_col, so, sbl);
+        // First motion of this drag: anchor row must repaint too.
+        tp.pane.grid.markRowDirty(tp.mouse.mouse_start_row);
     }
+
+    const prev_end_abs = tp.selection.end_row;
     tp.selection.update(rc.row, rc.col, so, sbl);
-    tp.pane.grid.markAllDirty();
+    const new_end_abs = tp.selection.end_row;
+    const start_abs = tp.selection.start_row;
+    const grid_rows = tp.pane.grid.rows;
+
+    // Convert abs rows → screen rows; nulls (off-viewport) we skip.
+    const prev_screen = Selection.absoluteToScreen(prev_end_abs, so, sbl, grid_rows);
+    const new_screen = Selection.absoluteToScreen(new_end_abs, so, sbl, grid_rows);
+    const start_screen = Selection.absoluteToScreen(start_abs, so, sbl, grid_rows);
+
+    var rmin: u16 = std.math.maxInt(u16);
+    var rmax: u16 = 0;
+    if (prev_screen) |r| {
+        if (r < rmin) rmin = r;
+        if (r > rmax) rmax = r;
+    }
+    if (new_screen) |r| {
+        if (r < rmin) rmin = r;
+        if (r > rmax) rmax = r;
+    }
+    if (start_screen) |r| {
+        if (r < rmin) rmin = r;
+        if (r > rmax) rmax = r;
+    }
+    if (rmin <= rmax) {
+        var row = rmin;
+        while (row <= rmax) : (row += 1) {
+            tp.pane.grid.markRowDirty(row);
+            if (row == std.math.maxInt(u16)) break;
+        }
+    }
     server.scheduleRender();
 }
 
