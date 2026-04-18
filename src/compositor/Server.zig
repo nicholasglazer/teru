@@ -67,6 +67,20 @@ font_atlas: ?*teru.render.FontAtlas = null, // shared across all terminal panes
 next_node_id: u64 = 1,
 focused_view: ?*XdgView = null,
 focused_terminal: ?*TerminalPane = null,
+// Last xcursor name we pushed to wlr_cursor. Tracks whether the next
+// motion event actually needs a wlr_cursor_set_xcursor call. Without
+// this cache, hovering over a teruwm-native terminal pane calls
+// set_xcursor("default") on every motion packet — wlroots then
+// re-configures the cursor image + re-damages the output at mouse
+// rate, which on real hardware shows as visible flicker near the
+// cursor position. "" means "not yet set".
+last_xcursor_name: []const u8 = "",
+
+// Terminal pane currently being drag-selected (mouse_down over a
+// native terminal). Cleared on release. Non-null while a drag is in
+// progress so motion events continue updating the pane's Selection
+// even if the cursor wanders outside the pane bounds.
+drag_terminal: ?*TerminalPane = null,
 // XWayland (Emacs, Steam, GIMP) focus target. Lives alongside
 // focused_view because an xwayland_surface isn't an XdgView and we
 // don't want to fake one just to fit the existing XOR invariant.

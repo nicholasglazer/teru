@@ -13,6 +13,8 @@ const teru = @import("teru");
 const Pane = teru.Pane;
 const Grid = teru.Grid;
 const SoftwareRenderer = teru.render.SoftwareRenderer;
+const Selection = teru.Selection;
+const MouseState = teru.mouse.MouseState;
 const compat = teru.compat;
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
@@ -33,6 +35,16 @@ read_buf: [8192]u8 = undefined,
 // close it — the renderer falls through after 150 ms to avoid a
 // frozen-pane look.
 sync_started_ns: i128 = 0,
+
+// Mouse-driven text selection state. Populated by
+// ServerCursor.processCursorButton / processCursorMotion when the
+// cursor is over this pane's scene_buffer — teruwm-native panes
+// aren't Wayland clients, so wlr_seat_pointer_notify_button has no
+// effect on them and we have to do the selection bookkeeping here
+// ourselves. renderIfDirty consults selection.active and paints a
+// highlight overlay via SoftwareRenderer.renderDirtyWithSelection.
+selection: Selection = .{},
+mouse: MouseState = .{},
 
 // ── Construction ───────────────────────────────────────────────
 
@@ -305,7 +317,16 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     else
         (@as(c_int, grid.dirty_row_max) + 1) * ch;
 
-    self.renderer.renderDirty(grid);
+    // When a drag-selection is active, every affected row must be
+    // re-rendered even if no VT content changed — the highlight
+    // overlay depends on selection coords that can shift on every
+    // motion packet. Mark full dirty so renderDirty walks all rows;
+    // selection_bg is applied per-cell inside renderRangeSel.
+    const sel_ptr: ?*const Selection = if (self.selection.active) &self.selection else null;
+    const so: u32 = self.pane.scroll_offset;
+    const sbl: u32 = if (grid.scrollback) |sb| @intCast(sb.lineCount()) else 0;
+    if (sel_ptr != null) grid.markAllDirty();
+    self.renderer.renderDirtyWithSelection(grid, sel_ptr, so, sbl);
 
     const border: c_int = if (self.shouldDrawBorder()) blk: {
         const is_focused = (self.server.focused_terminal == self);
@@ -405,7 +426,10 @@ pub fn resize(self: *TerminalPane, pixel_w: u32, pixel_h: u32) void {
 
 /// Render the terminal grid into the pixel buffer + draw border.
 pub fn render(self: *TerminalPane) void {
-    self.renderer.render(&self.pane.grid);
+    const sel_ptr: ?*const Selection = if (self.selection.active) &self.selection else null;
+    const so: u32 = self.pane.scroll_offset;
+    const sbl: u32 = if (self.pane.grid.scrollback) |sb| @intCast(sb.lineCount()) else 0;
+    self.renderer.renderWithSelection(&self.pane.grid, sel_ptr, so, sbl);
 
     if (self.shouldDrawBorder()) {
         const is_focused = (self.server.focused_terminal == self);

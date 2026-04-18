@@ -177,7 +177,7 @@ pub fn handleRequestSetShape(listener: *wlr.wl_listener, data: ?*anyopaque) call
 
     const shape = wlr.miozu_cursor_shape_event_shape(event_ptr);
     const name_ptr = wlr.miozu_cursor_shape_name(shape) orelse return;
-    wlr.wlr_cursor_set_xcursor(server.cursor, server.cursor_mgr, name_ptr);
+    setXcursorIfChanged(server, name_ptr);
 }
 
 // ── Button dispatch ──────────────────────────────────────────
@@ -214,6 +214,9 @@ fn endGrab(server: *Server, button: u32, state: u32, time: u32) void {
         server.cursor_mode = .normal;
         server.grab_node_id = null;
     }
+    // Finalize any in-progress terminal drag-select. Selection stays
+    // painted (user can copy / refine); mouse_down toggles off.
+    if (server.drag_terminal) |tp| terminalMouseRelease(server, tp);
     _ = wlr.wlr_seat_pointer_notify_button(server.seat, time, button, state);
     // Every button notify must be followed by a frame, or clients
     // that batch (chromium, GTK) never dispatch the click. libinput
@@ -323,7 +326,19 @@ fn forwardAndFocus(server: *Server, button: u32, state: u32, time: u32, super_he
         if (server.nodeAtPoint(cx, cy)) |nid| {
             if (server.nodes.findById(nid)) |slot| {
                 switch (server.nodes.kind[slot]) {
-                    .terminal => focusTerminalByNode(server, nid),
+                    .terminal => {
+                        focusTerminalByNode(server, nid);
+                        // Left-click over a native terminal starts
+                        // drag-select bookkeeping. Without this path
+                        // (since the pane has no wl_surface) the seat
+                        // button notify below has no effect on the
+                        // pane, so selection never engaged.
+                        if (button == 272) { // BTN_LEFT
+                            if (server.terminalPaneById(nid)) |tp| {
+                                terminalMousePress(server, tp, cx, cy);
+                            }
+                        }
+                    },
                     .wayland_surface => {
                         if (server.nodes.xdg_view[slot]) |opaque_view| {
                             const view: *XdgView = @ptrCast(@alignCast(opaque_view));
@@ -388,9 +403,97 @@ fn syncWsActiveIndex(ws: anytype, nid: u64) void {
 
 // ── Motion dispatch ──────────────────────────────────────────
 
+// ── Terminal-pane mouse selection ───────────────────────────────
+//
+// teruwm-native terminal panes are wlr_scene_buffer nodes with no
+// wl_surface, so wlr_seat_pointer_notify_* can't deliver events to
+// them. libteru's Selection + MouseState live on each TerminalPane;
+// these helpers feed pane-local coords from the cursor position into
+// that state, same shape as src/input/mouse.zig does for windowed
+// mode — just without the Multiplexer scaffolding.
+
+fn paneLocalCell(tp: anytype, cx: f64, cy: f64) struct { row: u16, col: u16 } {
+    // Convert output-space cursor coords to pane-local then to grid
+    // (row, col). renderer.padding is the 8 px content inset.
+    const slot_pos = tp.server.nodes.findById(tp.node_id) orelse return .{ .row = 0, .col = 0 };
+    const pane_x: i32 = tp.server.nodes.pos_x[slot_pos];
+    const pane_y: i32 = tp.server.nodes.pos_y[slot_pos];
+    const lx = @as(i32, @intFromFloat(cx)) - pane_x - @as(i32, @intCast(tp.renderer.padding));
+    const ly = @as(i32, @intFromFloat(cy)) - pane_y - @as(i32, @intCast(tp.renderer.padding));
+    const cw: i32 = @intCast(tp.renderer.cell_width);
+    const ch: i32 = @intCast(tp.renderer.cell_height);
+    const max_col: i32 = @as(i32, @intCast(tp.pane.grid.cols)) - 1;
+    const max_row: i32 = @as(i32, @intCast(tp.pane.grid.rows)) - 1;
+    const col: u16 = @intCast(@max(0, @min(@divTrunc(@max(0, lx), @max(1, cw)), max_col)));
+    const row: u16 = @intCast(@max(0, @min(@divTrunc(@max(0, ly), @max(1, ch)), max_row)));
+    return .{ .row = row, .col = col };
+}
+
+/// Left-click press over a native terminal pane starts a drag-select.
+/// Records the anchor cell; the actual Selection.begin happens on the
+/// first motion event (matches the behaviour of a click-without-drag
+/// which should NOT start a selection).
+fn terminalMousePress(server: *Server, tp: anytype, cx: f64, cy: f64) void {
+    const rc = paneLocalCell(tp, cx, cy);
+    tp.mouse.mouse_start_row = rc.row;
+    tp.mouse.mouse_start_col = rc.col;
+    tp.mouse.mouse_down = true;
+    server.drag_terminal = tp;
+    if (tp.selection.active) {
+        tp.selection.clear();
+        tp.pane.grid.markAllDirty();
+        server.scheduleRender();
+    }
+}
+
+/// Motion during a drag — grow / shrink the selection.
+fn terminalMouseMotion(server: *Server, tp: anytype, cx: f64, cy: f64) void {
+    if (!tp.mouse.mouse_down) return;
+    const rc = paneLocalCell(tp, cx, cy);
+    const so: u32 = tp.pane.scroll_offset;
+    const sbl: u32 = if (tp.pane.grid.scrollback) |sb| @intCast(sb.lineCount()) else 0;
+    if (!tp.selection.active) {
+        tp.selection.begin(tp.mouse.mouse_start_row, tp.mouse.mouse_start_col, so, sbl);
+    }
+    tp.selection.update(rc.row, rc.col, so, sbl);
+    tp.pane.grid.markAllDirty();
+    server.scheduleRender();
+}
+
+/// Release — stop the drag. Selection stays visible; copy-on-release
+/// is a follow-up (needs the shared Clipboard + feedback notify path).
+fn terminalMouseRelease(server: *Server, tp: anytype) void {
+    tp.mouse.mouse_down = false;
+    server.drag_terminal = null;
+}
+
+/// Set the xcursor image only when the shape actually changes. Skips
+/// the underlying wlr_cursor_set_xcursor call otherwise — that's what
+/// re-damages the output and causes the cursor-neighbourhood flicker
+/// on real hardware when hovering over a surface-less scene_buffer
+/// (teruwm-native terminal pane).
+fn setXcursorIfChanged(server: *Server, name: [*:0]const u8) void {
+    const zig_name = std.mem.sliceTo(name, 0);
+    if (std.mem.eql(u8, server.last_xcursor_name, zig_name)) return;
+    wlr.wlr_cursor_set_xcursor(server.cursor, server.cursor_mgr, name);
+    server.last_xcursor_name = zig_name;
+}
+
 pub fn processCursorMotion(server: *Server, time: u32) void {
     const cx = wlr.miozu_cursor_x(server.cursor);
     const cy = wlr.miozu_cursor_y(server.cursor);
+
+    // Active drag-select on a native terminal: forward coords to the
+    // pane's Selection. Runs before every other motion dispatch so a
+    // drag that leaves the pane bounds still pins the far end at the
+    // cursor (matches what windowed-mode does via auto-scroll edges;
+    // teruwm's simpler variant just clamps to grid bounds inside
+    // paneLocalCell).
+    if (server.drag_terminal) |tp| {
+        terminalMouseMotion(server, tp, cx, cy);
+        // Don't return — still let the rest of the motion path run so
+        // other state (border hover, focus, etc.) stays consistent.
+    }
 
     // Tiled border drag — update ratio, defer layout to frame callback.
     if (server.cursor_mode == .border_drag) {
@@ -541,11 +644,11 @@ pub fn processCursorMotion(server: *Server, time: u32) void {
         // pointer to the view's root surface at clamped coords so
         // clicks register where the user expects.
         if (fallbackPointerToTiledView(server, cx, cy, time)) return;
-        wlr.wlr_cursor_set_xcursor(server.cursor, server.cursor_mgr, "default");
+        setXcursorIfChanged(server, "default");
         wlr.wlr_seat_pointer_clear_focus(server.seat);
     } else {
         if (fallbackPointerToTiledView(server, cx, cy, time)) return;
-        wlr.wlr_cursor_set_xcursor(server.cursor, server.cursor_mgr, "default");
+        setXcursorIfChanged(server, "default");
         wlr.wlr_seat_pointer_clear_focus(server.seat);
     }
 }
