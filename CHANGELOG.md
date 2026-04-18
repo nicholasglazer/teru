@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+## 0.6.3 (2026-04-18)
+
+Patch release — windowed-mode power draw + Wayland-client crash + drag-select efficiency.
+
+### Fixes
+
+- **windowed mode** — event-driven main loop. windowed.zig used to
+  sleep on a fixed 8/16 ms timer, waking the CPU ~60 Hz even with
+  nothing to do. New `waitForInput` uses `posix.poll()` on the
+  Wayland/X11 display fd, every PTY master, the daemon/hook-listener/
+  config-watcher fds, with a timeout equal to the nearest scheduled
+  deadline (cursor-blink flip, 60 fps frame cap, persist debounce,
+  500 ms hard cap). Measured: teru idle CPU 0.144% → 0.022% (−85%),
+  system power 20.765 W → 20.699 W (−66 mW) across 3 × 30 s trials.
+- **windowed mode** — cursor blink is now focus-gated. When the
+  window isn't focused, blink doesn't fire at all (no wakeups every
+  530 ms for a caret the user isn't watching). When focused, blink
+  marks only the cursor row dirty via `markRowDirty` instead of
+  setting `grid.dirty = true`, which used to force a full SIMD
+  repaint of the entire framebuffer (~16 MB at 2560×1600) every
+  530 ms. One-row per blink now.
+- **platform/wayland** — WaylandWindow.init allocated `state` on the
+  stack and passed `&state` as the listener data pointer to every
+  `wl_*_add_listener` call. The state was copied-by-value into
+  WaylandWindow on return; the listeners kept pointing at the
+  since-freed stack slot and panicked with an index-out-of-bounds
+  inside `pushEvent` the first time any Wayland event dispatched.
+  Heap-allocate via `std.heap.c_allocator` so the pointer stays stable.
+  Visible effect: teru now launches successfully as an xdg_toplevel
+  against an outer Wayland compositor.
+- **compositor** — narrow drag-select invalidation. Previously every
+  pointer motion during a drag called `grid.markAllDirty()`, so each
+  motion tick re-rendered every cell. Measured 4.46% teruwm CPU +
+  300 mW system power during sustained drag. Motion now marks only
+  the union of {previous-end, new-end, start} screen rows dirty —
+  exactly the cells whose selection-bg state can flip between ticks.
+  Typical drag spans 1-5 rows per tick; on an 80×50 grid that's ~50×
+  less work per motion.
+
 ## 0.6.2 (2026-04-18)
 
 Patch release — teruwm-native terminal panes now support mouse text
