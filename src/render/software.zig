@@ -15,6 +15,7 @@
 const std = @import("std");
 const Grid = @import("../core/Grid.zig");
 const FontAtlas = @import("FontAtlas.zig");
+const Selection = @import("../core/Selection.zig");
 pub const ColorScheme = @import("../config/Config.zig").ColorScheme;
 
 // ── SIMD types ─────────────────────────────────────────────────────
@@ -108,7 +109,17 @@ pub const SoftwareRenderer = struct {
 
     /// Full render — all rows. Used on first paint and by standalone terminal.
     pub fn render(self: *SoftwareRenderer, grid: *const Grid) void {
-        self.renderRange(grid, 0, grid.rows);
+        self.renderRangeSel(grid, 0, grid.rows, null, 0, 0);
+        self.last_cursor_row = grid.cursor_row;
+    }
+
+    /// Full render with selection overlay. Cells falling inside the
+    /// selection range get painted with selection_bg. Selection needs
+    /// scroll_offset + scrollback line count to translate grid (row, col)
+    /// to the Selection "screen row" coordinate space. When `sel` is
+    /// null, identical to render().
+    pub fn renderWithSelection(self: *SoftwareRenderer, grid: *const Grid, sel: ?*const Selection, scroll_offset: u32, sb_lines: u32) void {
+        self.renderRangeSel(grid, 0, grid.rows, sel, scroll_offset, sb_lines);
         self.last_cursor_row = grid.cursor_row;
     }
 
@@ -117,9 +128,16 @@ pub const SoftwareRenderer = struct {
     /// Falls back to full render if external code set grid.dirty = true
     /// without going through markRowDirty (detected by inverted range).
     pub fn renderDirty(self: *SoftwareRenderer, grid: *Grid) void {
+        self.renderDirtyWithSelection(grid, null, 0, 0);
+    }
+
+    /// renderDirty + selection overlay. Selection changes must
+    /// invalidate the affected rows (grid.markRowDirty) so the dirty
+    /// range catches them — selection alone isn't tracked separately.
+    pub fn renderDirtyWithSelection(self: *SoftwareRenderer, grid: *Grid, sel: ?*const Selection, scroll_offset: u32, sb_lines: u32) void {
         // Inverted range = external code set dirty without row tracking → full repaint
         if (grid.dirty_row_min > grid.dirty_row_max) {
-            self.renderRange(grid, 0, grid.rows);
+            self.renderRangeSel(grid, 0, grid.rows, sel, scroll_offset, sb_lines);
             self.last_cursor_row = grid.cursor_row;
             grid.clearDirty();
             return;
@@ -134,15 +152,25 @@ pub const SoftwareRenderer = struct {
         if (grid.cursor_row < rmin) rmin = grid.cursor_row;
         if (grid.cursor_row > rmax) rmax = grid.cursor_row;
 
-        self.renderRange(grid, rmin, rmax +| 1);
+        self.renderRangeSel(grid, rmin, rmax +| 1, sel, scroll_offset, sb_lines);
         self.last_cursor_row = grid.cursor_row;
         grid.clearDirty();
     }
 
     /// Render a range of rows [row_min..row_max) into the framebuffer.
     /// Called by render() with the dirty range, or with the full range
-    /// on first paint / resize.
+    /// on first paint / resize. Back-compat alias that passes no
+    /// selection — new code should call renderRangeSel directly.
     fn renderRange(self: *SoftwareRenderer, grid: *const Grid, row_min: u16, row_max: u16) void {
+        self.renderRangeSel(grid, row_min, row_max, null, 0, 0);
+    }
+
+    /// renderRange + optional selection overlay. When `sel` is non-null,
+    /// each cell checks Selection.isSelected and uses scheme.selection_bg
+    /// as its background. scroll_offset + sb_lines feed the Selection
+    /// coord mapping (Grid.rows starts at scroll_offset within the
+    /// Selection's "screen row" space). Drag-selection paths feed this.
+    fn renderRangeSel(self: *SoftwareRenderer, grid: *const Grid, row_min: u16, row_max: u16, sel: ?*const Selection, scroll_offset: u32, sb_lines: u32) void {
         const cols: usize = grid.cols;
         const rows: usize = grid.rows;
         const cw: usize = self.cell_width;
@@ -211,6 +239,19 @@ pub const SoftwareRenderer = struct {
 
                 if (cell.attrs.hidden) {
                     fg = bg;
+                }
+
+                // Selection overlay — flip to selection_bg for cells
+                // inside the current selection range. Grid coords are
+                // (row, col); Selection reads "screen rows" where
+                // rows 0..scroll_offset-1 are scrollback above the
+                // viewport.
+                if (sel) |s| {
+                    const screen_row: u16 = @intCast(scroll_offset + row);
+                    if (s.isSelected(screen_row, @intCast(col), scroll_offset, sb_lines)) {
+                        bg = self.scheme.selection_bg;
+                        if (fg == bg) fg = self.scheme.ansi[15];
+                    }
                 }
 
                 // 1. Fill cell rectangle with background color

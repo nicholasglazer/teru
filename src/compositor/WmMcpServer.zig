@@ -1333,10 +1333,31 @@ fn toolClick(self: *WmMcpServer, x: i32, y: i32, button: u32, buf: []u8, id: ?[]
 
 fn toolType(self: *WmMcpServer, text: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const srv = self.server;
-    var ms = monotonicMs();
     var sent: u32 = 0;
     var dropped: u32 = 0;
 
+    // Native terminal panes aren't Wayland clients — they have no
+    // wl_surface behind their scene_buffer, so wlr_seat_keyboard_notify_key
+    // has nowhere to deliver. Mirror ServerInput.handleKeyEvent's
+    // terminal fast-path: write bytes directly to the focused pane's
+    // PTY. Without this, MCP-driven typing into teruwm-native panes was
+    // a no-op even though real keyboard worked.
+    if (srv.focused_terminal) |tp| {
+        for (text) |c| {
+            const bytes: [1]u8 = .{c};
+            tp.writeInput(&bytes);
+            sent += 1;
+        }
+        const id_str = id orelse "null";
+        return std.fmt.bufPrint(buf,
+            \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"sent\":{d},\"dropped\":{d}}}"}}]}},"id":{s}}}
+        , .{ sent, dropped, id_str }) catch
+            jsonRpcError(buf, id, -32603, "Internal error");
+    }
+
+    // Fallback: synthetic keyboard events to whatever client owns
+    // seat keyboard focus (xdg / xwayland).
+    var ms = monotonicMs();
     for (text) |c| {
         const map = asciiToKeycode(c) orelse {
             dropped += 1;
@@ -1366,11 +1387,30 @@ fn toolType(self: *WmMcpServer, text: []const u8, buf: []u8, id: ?[]const u8) []
 
 fn toolPress(self: *WmMcpServer, key: []const u8, ctrl: bool, shift: bool, alt: bool, sup: bool, buf: []u8, id: ?[]const u8) []const u8 {
     const srv = self.server;
-    var ms = monotonicMs();
 
     const keycode = nameToKeycode(key) orelse return jsonRpcError(buf, id, -32602, "Unknown key name");
 
-    // Modifier presses
+    // Focused terminal pane: translate to PTY-bound escape bytes and
+    // write directly. Mirrors the special-key section of
+    // ServerInput.handleKeyEvent so real keyboard + MCP feel identical
+    // on native panes.
+    if (srv.focused_terminal) |tp| {
+        const bytes = ptyBytesForKeyname(key, ctrl, shift, alt);
+        if (bytes.len > 0) {
+            tp.writeInput(bytes);
+            const id_str = id orelse "null";
+            return std.fmt.bufPrint(buf,
+                \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"key\":\"{s}\",\"keycode\":{d},\"route\":\"pty\"}}"}}]}},"id":{s}}}
+            , .{ key, keycode, id_str }) catch
+                jsonRpcError(buf, id, -32603, "Internal error");
+        }
+        // Unknown name — fall through to the seat path so Ctrl+a / F1
+        // etc. still reach if somehow a client claims the seat.
+    }
+
+    // Seat path for xdg / xwayland focused clients.
+    var ms = monotonicMs();
+
     if (ctrl) { sendKey(srv, KEY_LEFTCTRL, true, ms); ms += 1; }
     if (shift) { sendKey(srv, KEY_LEFTSHIFT, true, ms); ms += 1; }
     if (alt) { sendKey(srv, KEY_LEFTALT, true, ms); ms += 1; }
@@ -1391,6 +1431,46 @@ fn toolPress(self: *WmMcpServer, key: []const u8, ctrl: bool, shift: bool, alt: 
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"key\":\"{s}\",\"keycode\":{d}}}"}}]}},"id":{s}}}
     , .{ key, keycode, id_str }) catch
         jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+/// Map a named key ("Return", "Escape", "Tab", arrows…) to the byte
+/// sequence a PTY-attached app expects. Ctrl prefix wraps
+/// printable letters with Ctrl (a → 0x01). Returns empty slice when
+/// the key is not mappable here — caller falls back to seat dispatch.
+fn ptyBytesForKeyname(key: []const u8, ctrl: bool, shift: bool, alt: bool) []const u8 {
+    _ = shift;
+    _ = alt;
+    if (std.mem.eql(u8, key, "Return") or std.mem.eql(u8, key, "Enter")) return "\r";
+    if (std.mem.eql(u8, key, "BackSpace") or std.mem.eql(u8, key, "Backspace")) return "\x7f";
+    if (std.mem.eql(u8, key, "Tab")) return "\t";
+    if (std.mem.eql(u8, key, "Escape")) return "\x1b";
+    if (std.mem.eql(u8, key, "Up")) return "\x1b[A";
+    if (std.mem.eql(u8, key, "Down")) return "\x1b[B";
+    if (std.mem.eql(u8, key, "Right")) return "\x1b[C";
+    if (std.mem.eql(u8, key, "Left")) return "\x1b[D";
+    if (std.mem.eql(u8, key, "Home")) return "\x1b[H";
+    if (std.mem.eql(u8, key, "End")) return "\x1b[F";
+    if (std.mem.eql(u8, key, "PageUp")) return "\x1b[5~";
+    if (std.mem.eql(u8, key, "PageDown")) return "\x1b[6~";
+    if (std.mem.eql(u8, key, "Delete")) return "\x1b[3~";
+    if (ctrl and key.len == 1) {
+        const c = key[0];
+        if (c >= 'a' and c <= 'z') {
+            // Ctrl+a..z → 0x01..0x1a. Emit from a static table.
+            return ctrlLetterSlice(c);
+        }
+    }
+    return "";
+}
+
+const ctrl_letters: [26][1]u8 = blk: {
+    var tab: [26][1]u8 = undefined;
+    for (&tab, 0..) |*e, i| e.* = .{@intCast(i + 1)};
+    break :blk tab;
+};
+
+fn ctrlLetterSlice(c: u8) []const u8 {
+    return ctrl_letters[@as(usize, c - 'a')][0..1];
 }
 
 fn toolScroll(self: *WmMcpServer, x: i32, y: i32, dy: i32, buf: []u8, id: ?[]const u8) []const u8 {
