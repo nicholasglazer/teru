@@ -2,21 +2,47 @@
 
 ## Unreleased
 
-## 0.6.2 (2026-04-17)
+## 0.6.2 (2026-04-18)
 
-Patch release — Wayland client robustness.
+Patch release — teruwm-native terminal panes now support mouse text
+selection, and hover no longer flickers near the cursor. The previously
+published 0.6.2 shipped an unrelated Wayland-client queue fix that
+didn't address either user-reported symptom — that tag has been replaced
+with this commit.
 
 ### Fixes
 
-- **platform/wayland**: coalesce consecutive mouse_motion events in
-  teru's Wayland event queue and drop motion preferentially when the
-  queue is full. The 32-slot ring buffer dropped new events on
-  saturation, so running teru inside teruwm (or any compositor that
-  fires notify_motion on every cursor packet) buried the following
-  button press under 32 motion packets — user-visible symptom: text
-  selection in teru failed to start while dragging. Button / key /
-  resize / close events now always find a slot even under high motion
-  load.
+- **teruwm** — text selection inside native terminal panes now works.
+  Panes created by `teruwm_spawn_terminal` are `wlr_scene_buffer` nodes
+  backed by libteru with no wl_surface, so `wlr_seat_pointer_notify_*`
+  had nowhere to deliver pointer events. New teruwm-internal path feeds
+  cursor coords into the pane's own `Selection` / `MouseState` and the
+  `SoftwareRenderer` now applies a `selection_bg` overlay per-cell.
+- **teruwm** — hover no longer flickers near the mouse cursor. Cache
+  the last xcursor image name server-side; skip `wlr_cursor_set_xcursor`
+  when the shape matches what's already set. Without this, hovering
+  over a surface-less terminal scene_buffer re-set the cursor on every
+  motion packet, which re-damaged the cursor plane at mouse rate and
+  visibly rippled the pixels under the cursor.
+- **teruwm_type / teruwm_press** (MCP) now route to the focused
+  terminal pane's PTY via `tp.writeInput`, mirroring the real-keyboard
+  special-case in `ServerInput.handleKeyEvent`. Previously these tools
+  called `wlr_seat_keyboard_notify_key` which has no destination for
+  native panes, so MCP-driven testing of terminal keyboard was a no-op.
+  xdg / xwayland fallback path preserved.
+
+### Internals
+
+- `SoftwareRenderer` gains `renderWithSelection` + `renderDirtyWithSelection`;
+  `renderRange` is now a thin wrapper over `renderRangeSel` that
+  threads an optional `Selection` + scroll/sb params.
+- `TerminalPane` carries `selection: Selection` and `mouse: MouseState`;
+  `Server` tracks `drag_terminal: ?*TerminalPane` so drags that leave
+  the pane rect still pin the far end at the cursor.
+- `.claude/rules/compositor-mcp-testing.md` — new playbook for
+  driving teruwm from MCP and verifying changes via pane screenshots.
+  Codifies: MCP routing quirks, DRM contention handling, what
+  screenshots can and cannot capture.
 
 ## 0.6.1 (2026-04-17)
 
