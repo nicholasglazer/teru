@@ -424,7 +424,18 @@ pub const WaylandWindow = struct {
     buf_width: u32 = 0,
     buf_height: u32 = 0,
 
-    state: WaylandState,
+    // libwayland-client listeners store a raw data pointer per registration
+    // and dereference it on every dispatch. The state pointer MUST stay
+    // valid for the window's full lifetime, which means it can't live
+    // in a stack-local or even be moved inside a by-value return: the
+    // original &state in init() has to survive the return + any
+    // subsequent @memcpy into a caller's var. We satisfy that by
+    // heap-allocating it via std.heap.c_allocator (link_libc=true
+    // guarantees c_allocator is present) and freeing in deinit. Pre-fix,
+    // `state` was `WaylandState` by-value and every dispatch after
+    // init() returned wrote into a dead stack slot — reliable crash the
+    // first time a pointer / key / resize event fired.
+    state: *WaylandState,
 
     // Cursor restore (null = cursor hide/show disabled on Wayland without libwayland-cursor)
     cursor_surface: ?*wl_surface = null,
@@ -441,11 +452,14 @@ pub const WaylandWindow = struct {
         const registry: *wl_registry = wl_display_get_registry(display) orelse
             return error.WaylandRegistryFailed;
 
-        // Shared state for callbacks
-        var state = WaylandState{};
+        // Shared state for callbacks — heap-allocated so listener data
+        // pointers stay valid after init() returns (see struct doc above).
+        const state = try std.heap.c_allocator.create(WaylandState);
+        errdefer std.heap.c_allocator.destroy(state);
+        state.* = .{};
 
         // 3. Listen for global objects
-        if (wl_registry_add_listener(registry, &registry_listener_impl, &state) < 0)
+        if (wl_registry_add_listener(registry, &registry_listener_impl, state) < 0)
             return error.WaylandListenerFailed;
 
         // Roundtrip to receive globals
@@ -459,12 +473,12 @@ pub const WaylandWindow = struct {
         _ = shm;
 
         // 4. Set up xdg_wm_base ping listener
-        if (xdg_wm_base_add_listener(xdg_wm, &xdg_wm_base_listener_impl, &state) < 0)
+        if (xdg_wm_base_add_listener(xdg_wm, &xdg_wm_base_listener_impl, state) < 0)
             return error.WaylandListenerFailed;
 
         // 5. Set up seat/keyboard if available
         if (state.seat) |seat| {
-            if (wl_seat_add_listener(seat, &seat_listener_impl, &state) < 0)
+            if (wl_seat_add_listener(seat, &seat_listener_impl, state) < 0)
                 return error.WaylandListenerFailed;
         }
 
@@ -482,7 +496,7 @@ pub const WaylandWindow = struct {
             return error.WaylandXdgSurfaceFailed;
         errdefer xdg_surface_destroy(xdg_surf);
 
-        if (xdg_surface_add_listener(xdg_surf, &xdg_surface_listener_impl, &state) < 0)
+        if (xdg_surface_add_listener(xdg_surf, &xdg_surface_listener_impl, state) < 0)
             return error.WaylandListenerFailed;
 
         // 8. Create xdg_toplevel
@@ -490,7 +504,7 @@ pub const WaylandWindow = struct {
             return error.WaylandToplevelFailed;
         errdefer xdg_toplevel_destroy(toplevel);
 
-        if (xdg_toplevel_add_listener(toplevel, &xdg_toplevel_listener_impl, &state) < 0)
+        if (xdg_toplevel_add_listener(toplevel, &xdg_toplevel_listener_impl, state) < 0)
             return error.WaylandListenerFailed;
 
         // 9. Set title — need a null-terminated copy
@@ -563,6 +577,7 @@ pub const WaylandWindow = struct {
 
         wl_registry_destroy(self.registry);
         wl_display_disconnect(self.display);
+        std.heap.c_allocator.destroy(self.state);
         self.is_open = false;
     }
 
