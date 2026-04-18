@@ -578,7 +578,16 @@ pub const X11Window = struct {
     pub fn getX11Info(self: *const X11Window) platform.X11Info {
         return .{ .conn = @ptrCast(self.connection), .root = self.screen.root };
     }
+
+    /// X display connection fd for poll() integration. See
+    /// WaylandWindow.displayFd — same purpose, drops idle wake rate
+    /// from the fixed-timer path to genuinely event-driven.
+    pub fn displayFd(self: *const X11Window) c_int {
+        return xcb_get_file_descriptor(self.connection);
+    }
 };
+
+extern "xcb" fn xcb_get_file_descriptor(conn: *xcb_connection_t) callconv(.c) c_int;
 
 /// Map XCB button detail (1-5) to MouseButton.
 fn xcbButtonToMouse(detail: u8) ?MouseButton {

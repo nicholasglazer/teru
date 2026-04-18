@@ -126,6 +126,16 @@ const DualPlatform = union(enum) {
             .wayland_ => null,
         };
     }
+
+    /// Display connection fd for poll() integration in the main loop.
+    /// Lets the loop block until input actually arrives instead of
+    /// busy-polling on a fixed 16 ms timer.
+    pub fn displayFd(self: *const DualPlatform) c_int {
+        return switch (self.*) {
+            .x11 => |*w| w.displayFd(),
+            .wayland_ => |*w| w.displayFd(),
+        };
+    }
 };
 
 // ── X11-only: zero-cost wrapper ─────────────────────────────────
@@ -171,6 +181,10 @@ const X11Only = struct {
     pub fn getX11Info(self: *const X11Only) ?X11Info {
         return self.inner.getX11Info();
     }
+
+    pub fn displayFd(self: *const X11Only) c_int {
+        return self.inner.displayFd();
+    }
 };
 
 // ── Wayland-only: zero-cost wrapper ─────────────────────────────
@@ -213,5 +227,9 @@ const WaylandOnly = struct {
 
     pub fn getX11Info(_: *const WaylandOnly) ?X11Info {
         return null; // Wayland uses wl_keyboard.keymap, not X11 properties
+    }
+
+    pub fn displayFd(self: *const WaylandOnly) c_int {
+        return self.inner.displayFd();
     }
 };
