@@ -24,9 +24,10 @@ Designed around an MCP control plane so AI agents and shell scripts can drive bo
 |---|---|---:|
 | `teru` | Terminal emulator, multiplexer, tiling manager, session daemon | **6.6 MB** |
 | `teruwm` | Wayland compositor (wlroots) built on libteru | **5.6 MB** |
+| `teruwmctl` | Shell CLI + MCP stdio adapter for the compositor | **11.9 MB** |
 
-One source tree (`src/`), two artifacts. Both share the libteru library: VT parser, grid, SIMD software renderer,
-layout engine, 43-tool MCP control plane.
+One source tree (`src/`), three artifacts. All share the libteru library: VT parser, grid, SIMD software renderer,
+layout engine, 45-tool MCP control plane.
 
 ## Why
 

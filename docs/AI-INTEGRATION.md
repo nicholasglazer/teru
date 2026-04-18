@@ -48,22 +48,24 @@ Use when you want to read another pane's scrollback, type into a pane,
 ask "is the build done yet?", move a pane between workspaces, or save a
 session to a `.tsess` template.
 
-Minimal Claude Code hookup:
+Minimal Claude Code / Cursor hookup (uses the built-in stdio adapters
+— no PID juggling, no socat):
 
 ```jsonc
-// ~/.config/claude-code/mcp.json
+// ~/.config/claude-code/mcp.json, ~/.cursor/mcp.json, or .mcp.json
 {
   "mcpServers": {
-    "teru": {
-      "command": "socat",
-      "args": ["UNIX-CONNECT:/run/user/1000/teru-mcp-PID.sock", "STDIO"]
-    }
+    "teru":   { "command": "teru",      "args": ["--mcp-server"] },
+    "teruwm": { "command": "teruwmctl", "args": ["--mcp-stdio"] }
   }
 }
 ```
 
-(Replace `PID` with the running teru's PID — `pgrep teru` — or wrap the
-socat call in a script that discovers it.)
+`teru --mcp-server` discovers `teru-mcp-*.sock` in `$XDG_RUNTIME_DIR`
+(or pin via `TERU_MCP_SOCKET`). `teruwmctl --mcp-stdio` discovers
+`teruwm-mcp-*.sock` (or pin via `TERUWM_MCP_SOCKET`). Either end
+tolerates the target being down — the first tool call returns a clean
+JSON-RPC error instead of hanging.
 
 Every tool documented with params and behavior in
 [MCP-API.md](MCP-API.md#teru-terminal-mcp--19-tools). Categories:

@@ -98,12 +98,43 @@ def teruwm_mcp(sock_path, tool, args=None):
 print(teruwm_mcp("/run/user/1000/teruwm-mcp-12345.sock", "teruwm_list_windows"))
 ```
 
-### Alternative transport: stdio proxy (`teru --mcp-server`)
+### Shell CLI: `teruwmctl`
 
-For clients that speak MCP-stdio (Claude Code, Cursor, anything following
-the MCP SDK's stdio convention), run `teru --mcp-server` as a subprocess.
-It proxies stdin/stdout line-JSON to a running teru's socket. The legacy
-flag `--mcp-bridge` is kept as an alias for older `.mcp.json` files.
+`teruwmctl` is a small binary shipped alongside `teru` and `teruwm` that
+fronts the compositor's MCP surface from the shell. Three entry forms:
+
+```sh
+# verb form — dashes become underscores, `teruwm_` prefix implicit
+teruwmctl list-windows
+teruwmctl spawn-terminal
+teruwmctl switch-workspace '{"workspace":2}'
+teruwmctl screenshot '{"path":"/tmp/s.png"}'
+teruwmctl focus-window '{"node_id":5}'
+
+# generic call form — for tool names that don't fit the verb pattern,
+# or when you want to be explicit
+teruwmctl call teruwm_set_widget '{"name":"battery","text":"{bat:%b%}"}'
+
+# stdio adapter — for MCP clients (Claude Code, Cursor, Zed, Continue.dev)
+teruwmctl --mcp-stdio
+```
+
+Discovery honours `$TERUWM_MCP_SOCKET`, otherwise scans
+`/run/user/$UID/teruwm-mcp-*.sock`. Response unwrapping: the
+`result.content[0].text` field (teruwm's standard MCP payload shape) is
+printed as the sole output; for other shapes (like `tools/list`) the
+raw JSON envelope is dumped. Exit codes: `0` ok, `1` JSON-RPC tool
+error (printed to stderr), `2` no socket / connection, `3` bad args.
+
+### Stdio proxy for teru: `teru --mcp-server`
+
+For the terminal-side MCP (not the compositor), `teru --mcp-server`
+proxies stdin/stdout line-JSON to a running teru's
+`teru-mcp-*.sock`. `--mcp-bridge` and `--mcp-stdio` are aliases.
+Targeting the compositor from this same binary works too:
+`teru --mcp-server --target teruwm` — identical wire to
+`teruwmctl --mcp-stdio`, just a different entry point for users who
+already have `teru` on PATH and not `teruwmctl`.
 
 ### Unified event subscription (v0.4.21)
 
@@ -441,16 +472,39 @@ mcp(SOCK, "teruwm_test_drag", {
 wins = mcp(SOCK, "teruwm_list_windows")
 ```
 
-## Connecting from Claude Code
+## Connecting from Claude Code / Cursor / Zed
+
+Recommended — uses the built-in stdio adapters so PID-based socket
+paths are discovered automatically:
 
 ```jsonc
-// ~/.config/claude/mcp-servers.json
+// ~/.config/claude/mcp-servers.json  (Claude Code)
+// ~/.cursor/mcp.json                  (Cursor)
+// .mcp.json (per-project)
 {
   "mcpServers": {
     "teru": {
-      "command": "socat",
-      "args": ["UNIX-CONNECT:/run/user/1000/teru-mcp-PID.sock", "STDIO"]
+      "command": "teru",
+      "args": ["--mcp-server"]
     },
+    "teruwm": {
+      "command": "teruwmctl",
+      "args": ["--mcp-stdio"]
+    }
+  }
+}
+```
+
+Either binary works for teruwm — `teruwmctl --mcp-stdio` is the
+canonical form; `teru --mcp-server --target teruwm` is equivalent if
+you only have `teru` on PATH.
+
+For older clients that can't spawn a helper but speak raw sockets,
+`socat` still works:
+
+```jsonc
+{
+  "mcpServers": {
     "teruwm": {
       "command": "socat",
       "args": ["UNIX-CONNECT:/run/user/1000/teruwm-mcp-PID.sock", "STDIO"]
@@ -459,8 +513,8 @@ wins = mcp(SOCK, "teruwm_list_windows")
 }
 ```
 
-Replace `PID` with the running process ID — or use `$(pgrep teru)` /
-`$(pgrep teruwm)` in a wrapper script.
+Replace `PID` with `$(pgrep teruwm)` in a wrapper script, or pin the
+path with `TERUWM_MCP_SOCKET`.
 
 ---
 
