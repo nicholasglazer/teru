@@ -40,7 +40,7 @@ Map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Two servers. 48 tools total.
 
 - **teru agent** (`src/agent/McpServer.zig`) — 20 tools + event push channel, sockets `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock` (requests) and `teru-mcp-events-$PID.sock` (events). Since v0.4.19 transparently forwards `teruwm_*` tools to the compositor socket.
-- **teruwm compositor** (`src/compositor/WmMcpServer.zig`) — 28 tools + event push channel, sockets `$XDG_RUNTIME_DIR/teru-wmmcp-$PID.sock` (requests) and `teru-wmmcp-events-$PID.sock` (events)
+- **teruwm compositor** (`src/compositor/WmMcpServer.zig`) — 28 tools + event push channel, sockets `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock` (requests) and `teruwm-mcp-events-$PID.sock` (events)
 
 Reference: [docs/MCP-API.md](docs/MCP-API.md).
 

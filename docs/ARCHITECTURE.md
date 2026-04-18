@@ -247,7 +247,7 @@ warning, critical, inverted)`. Thresholds come from
 ### MCP server (24 tools)
 
 `src/compositor/WmMcpServer.zig`. Socket
-`$XDG_RUNTIME_DIR/teru-wmmcp-$PID.sock`. Protocol mirrors
+`$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock`. Protocol mirrors
 `teru-mcp-*.sock`. See [MCP-API.md](MCP-API.md#teruwm-compositor-mcp--24-tools).
 
 ### E2E test surface

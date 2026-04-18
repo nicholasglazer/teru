@@ -77,7 +77,7 @@ Every tool documented with params and behavior in
 
 ## 3. teruwm MCP — script the compositor
 
-24 tools. Socket `$XDG_RUNTIME_DIR/teru-wmmcp-$PID.sock`. Separate
+24 tools. Socket `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock`. Separate
 process, separate socket.
 
 Use when you want to spawn windows, switch workspaces, change layouts,
@@ -126,7 +126,7 @@ palette — switch themes, the colors follow.
 #!/usr/bin/env python3
 import glob, json, os, socket, subprocess, sys
 
-SOCK = glob.glob("/run/user/1000/teru-wmmcp-*.sock")[0]
+SOCK = glob.glob("/run/user/1000/teruwm-mcp-*.sock")[0]
 
 def push(name, text, cls="none"):
     body = json.dumps({"jsonrpc":"2.0","method":"tools/call","params":{

@@ -70,9 +70,12 @@ pub fn init(server: *Server) ?*WmMcpServer {
     var pid_buf: [16]u8 = undefined;
     const pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{pid}) catch return null;
 
-    // Path: /run/user/$UID/teru-wmmcp-$PID.sock
+    // Path: /run/user/$UID/teruwm-mcp-$PID.sock  (renamed from
+    // teru-wmmcp-$PID.sock at v0.6.4 — `teruwm-` matches the binary
+    // name, and separating the family prefix from `mcp` makes it read
+    // as "teruwm / mcp / PID" instead of the mashed-together "wmmcp".)
     var ipc_path_buf: [256]u8 = undefined;
-    const path = ipc.buildPath(&ipc_path_buf, "wmmcp", pid_str) orelse return null;
+    const path = ipc.buildPathFamily(&ipc_path_buf, "teruwm", "mcp", pid_str) orelse return null;
 
     const ipc_server = ipc.listen(path) catch return null;
     const sock = ipc_server.rawFd();
@@ -98,7 +101,7 @@ pub fn init(server: *Server) ?*WmMcpServer {
 
         // Companion events socket — best-effort push channel.
         var evt_path_buf: [256]u8 = undefined;
-        if (ipc.buildPath(&evt_path_buf, "wmmcp-events", pid_str)) |evt_path| {
+        if (ipc.buildPathFamily(&evt_path_buf, "teruwm", "mcp-events", pid_str)) |evt_path| {
             if (ipc.listen(evt_path)) |evt_ipc| {
                 const evt_sock = evt_ipc.rawFd();
                 self.event_socket_fd = evt_sock;

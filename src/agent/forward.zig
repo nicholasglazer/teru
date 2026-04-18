@@ -30,7 +30,7 @@ var discovered_path: [256]u8 = undefined;
 /// teruwm running (no socket matches), in which case the caller should
 /// surface "Unknown tool" to its requester.
 pub fn findTeruwmSocket() ?[]const u8 {
-    if (compat.getenv("TERU_WMMCP_SOCKET")) |env| return env;
+    if (compat.getenv("TERUWM_MCP_SOCKET")) |env| return env;
     return scanRuntimeDir();
 }
 
@@ -40,20 +40,20 @@ pub fn findTeruwmSocket() ?[]const u8 {
 /// this one. Returns null when teruwm isn't running.
 var discovered_events_path: [256]u8 = undefined;
 pub fn findTeruwmEventsSocket() ?[]const u8 {
-    if (compat.getenv("TERU_WMMCP_EVENTS_SOCKET")) |env| return env;
-    return scanFor(&discovered_events_path, "teru-wmmcp-events-", null);
+    if (compat.getenv("TERUWM_MCP_EVENTS_SOCKET")) |env| return env;
+    return scanFor(&discovered_events_path, "teruwm-mcp-events-", null);
 }
 
 fn scanRuntimeDir() ?[]const u8 {
-    // Request socket: teru-wmmcp-<PID>.sock — NOT the -events- variant.
-    return scanFor(&discovered_path, "teru-wmmcp-", "teru-wmmcp-events-");
+    // Request socket: teruwm-mcp-<PID>.sock — NOT the -events- variant.
+    return scanFor(&discovered_path, "teruwm-mcp-", "teruwm-mcp-events-");
 }
 
 /// Shared runtime-directory scanner for socket discovery. Writes the
 /// first matching entry's full path into `out` and returns a slice.
 /// `prefix` is required; `exclude_prefix` (if non-null) filters out
 /// matches that start with that stricter prefix (e.g. the separate
-/// teru-wmmcp-events-* socket pair). All matches must end in `.sock`.
+/// teruwm-mcp-events-* socket pair). All matches must end in `.sock`.
 fn scanFor(out: *[256]u8, prefix: []const u8, exclude_prefix: ?[]const u8) ?[]const u8 {
     if (builtin.os.tag == .windows) return null;
 
@@ -94,7 +94,7 @@ pub fn forwardRequest(body: []const u8, out: []u8) ?[]const u8 {
     var conn = ipc.connect(sock_path) catch return null;
     defer conn.close();
 
-    // teruwm is still HTTP-framed as of v0.4.18; wrap the body.
+    // teruwm speaks HTTP/1.1 + JSON-RPC (same framing since v0.4.18).
     var header_buf: [256]u8 = undefined;
     const header = std.fmt.bufPrint(&header_buf,
         "POST / HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n",

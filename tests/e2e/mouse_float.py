@@ -117,13 +117,13 @@ def run():
     # Clean state
     subprocess.run(["pkill", "-x", "teruwm"], capture_output=True)
     time.sleep(0.4)
-    for f in glob.glob(f"{SOCK_DIR}/teru-wmmcp-*.sock"):
+    for f in glob.glob(f"{SOCK_DIR}/teruwm-mcp-*.sock"):
         try: os.unlink(f)
         except: pass
 
     wm = subprocess.Popen([TERUWM], stdout=subprocess.DEVNULL,
                           stderr=open(STDERR_LOG, "w"))
-    sock = wait_socket(f"{SOCK_DIR}/teru-wmmcp-*.sock", timeout=15)
+    sock = wait_socket(f"{SOCK_DIR}/teruwm-mcp-*.sock", timeout=15)
     r.check("00 compositor starts", sock is not None, sock or "")
     if not sock:
         wm.kill()
