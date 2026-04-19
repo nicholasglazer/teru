@@ -1223,7 +1223,8 @@ pub fn spawnTerminal(self: *Server, ws: u8) void {
         return;
     };
 
-    // Store in terminal_panes array FIRST (before arrangeworkspace)
+    // Store in terminal_panes array FIRST (before arrangeworkspace).
+    // pane_index was already populated by TerminalPane.init.
     for (&self.terminal_panes) |*slot| {
         if (slot.* == null) {
             slot.* = tp;
@@ -1231,7 +1232,6 @@ pub fn spawnTerminal(self: *Server, ws: u8) void {
             break;
         }
     }
-    self.pane_index.put(self.zig_allocator, tp.node_id, tp) catch {};
 
     // NOW arrange — all panes including the new one are findable
     self.arrangeworkspace(ws);

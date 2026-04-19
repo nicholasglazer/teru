@@ -13,9 +13,11 @@
 //! the floating walk, and hot-restart serializes them.
 
 const std = @import("std");
+const teru = @import("teru");
 const Server = @import("Server.zig");
 const TerminalPane = @import("TerminalPane.zig");
 const NodeRegistry = @import("Node.zig");
+const Pane = teru.Pane;
 
 const max_auto_name_len = 32;
 
@@ -112,6 +114,38 @@ pub fn rectForName(server: *const Server, name: []const u8) ScratchRect {
 
 // ── Private ──────────────────────────────────────────────────
 
+/// Populate `argv_storage` + `argv_ptrs` from a `[scratchpad.NAME]
+/// cmd = …` rule and return a SpawnConfig that points at them. Empty
+/// / missing cmd returns `.{}` (default shell). Caller owns the two
+/// backing buffers — they must outlive the Pane.init fork. Simple
+/// whitespace tokenisation; no quoting or shell expansion — if you
+/// want those, wrap the cmd in `sh -c "…"`.
+fn buildSpawnConfig(
+    server: *const Server,
+    name: []const u8,
+    argv_storage: *[16][256:0]u8,
+    argv_ptrs: *[17]?[*:0]const u8,
+) Pane.SpawnConfig {
+    const rule = server.scratchpadRuleFor(name) orelse return .{};
+    if (!rule.has_cmd or rule.cmd_len == 0) return .{};
+
+    var it = std.mem.tokenizeAny(u8, rule.getCmd(), " \t");
+    var n: usize = 0;
+    while (it.next()) |tok| {
+        if (n >= argv_storage.len) break;
+        const len = @min(tok.len, argv_storage[n].len);
+        @memcpy(argv_storage[n][0..len], tok[0..len]);
+        argv_storage[n][len] = 0;
+        argv_ptrs[n] = argv_storage[n][0..len :0].ptr;
+        n += 1;
+    }
+    if (n == 0) return .{};
+    argv_ptrs[n] = null;
+    return .{ .exec_argv = @ptrCast(argv_ptrs) };
+}
+
+// ── Hide / show / spawn ──────────────────────────────────────
+
 /// Promote a parked scratchpad slot onto workspace `ws` and focus it.
 /// Reparents the scene buffer back into the scene root if it was
 /// parked — see hide() for why we can't just rely on set_enabled.
@@ -171,7 +205,17 @@ fn spawn(server: *Server, name: []const u8, ws: u8) ?u16 {
     const cols: u16 = @intCast(@max(1, rect.w / cell_w));
     const rows: u16 = @intCast(@max(1, rect.h / cell_h));
 
-    const tp = TerminalPane.createFloating(server, rows, cols) orelse return null;
+    // Build a SpawnConfig from `[scratchpad.NAME] cmd = …` if present.
+    // No cmd → `{}` = default shell. Buffers are fork-safe: both the
+    // argv array and the NUL-terminated token strings are copies of
+    // the config rule data and live on the stack here long enough for
+    // `Pane.init`'s fork/execvp to use them; the child inherits the
+    // full address space on fork, so execvp sees valid pointers.
+    var argv_storage: [16][256:0]u8 = undefined;
+    var argv_ptrs: [17]?[*:0]const u8 = [_]?[*:0]const u8{null} ** 17;
+    const cfg = buildSpawnConfig(server, name, &argv_storage, &argv_ptrs);
+
+    const tp = TerminalPane.createFloating(server, rows, cols, cfg) orelse return null;
 
     const slot = server.nodes.addTerminal(server.zig_allocator, tp.node_id, ws) orelse {
         tp.deinit(server.zig_allocator);

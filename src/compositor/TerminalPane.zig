@@ -136,6 +136,12 @@ fn initWithSpawn(server: *Server, rows: u16, cols: u16, spawn_config: Pane.Spawn
         }
     }
 
+    // Pane index — centralised here so every creation path
+    // (createWithSpawn, createFloating, createRestored) gets it for
+    // free. Server.terminalPaneById(nid) returns this pointer; missing
+    // registration silently no-ops scratchpad hide/show (v0.6.4 bug).
+    server.pane_index.put(server.zig_allocator, tp.node_id, tp) catch {};
+
     return tp;
 }
 
@@ -241,7 +247,7 @@ pub fn createRestored(server: *Server, ws: u8, pane: *Pane) ?*TerminalPane {
         server.nodes.setName(s, auto_name);
     }
 
-    // Add to terminal_panes array
+    // Add to terminal_panes array (pane_index registration happens in init)
     for (server.terminal_panes, 0..) |maybe, i| {
         if (maybe == null) {
             server.terminal_panes[i] = tp;
@@ -249,21 +255,20 @@ pub fn createRestored(server: *Server, ws: u8, pane: *Pane) ?*TerminalPane {
             break;
         }
     }
-    server.pane_index.put(server.zig_allocator, tp.node_id, tp) catch {};
 
     tp.render();
     return tp;
 }
 
 /// Create a floating terminal pane (scratchpads — not part of workspace tiling).
-/// Registers the pane in server.pane_index exactly like createWithSpawn
-/// does for tiled panes. Without this, Server.terminalPaneById can't
-/// find the floating pane and any code path that resolves node_id → tp
-/// silently no-ops — notably ServerScratchpad.hide/show, which is why
-/// Mod+T press-to-close didn't take effect on real DRM (v0.6.4 bug).
-pub fn createFloating(server: *Server, rows: u16, cols: u16) ?*TerminalPane {
-    const tp = init(server, rows, cols) orelse return null;
-    server.pane_index.put(server.zig_allocator, tp.node_id, tp) catch {};
+/// `initWithSpawn` registers the pane in server.pane_index so
+/// Server.terminalPaneById resolves its node_id — this was broken in
+/// v0.6.4 when registration only lived in the tiled path, causing
+/// scratchpad hide/show to silently no-op. Pass `.{}` for the default
+/// shell-spawn, or a populated SpawnConfig to run `htop`, `$EDITOR`,
+/// etc. (threaded through from `[scratchpad.NAME] cmd = …`).
+pub fn createFloating(server: *Server, rows: u16, cols: u16, spawn_config: Pane.SpawnConfig) ?*TerminalPane {
+    const tp = initWithSpawn(server, rows, cols, spawn_config) orelse return null;
     tp.render();
     return tp;
 }
@@ -342,8 +347,7 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     self.renderer.renderDirtyWithSelection(grid, sel_ptr, so, sbl);
 
     const border: c_int = if (self.shouldDrawBorder()) blk: {
-        const is_focused = (self.server.focused_terminal == self);
-        const border_color: u32 = if (is_focused) 0xFFFF9837 else 0xFF3E4359;
+        const border_color = self.borderColor();
         self.drawBorder(border_color);
         break :blk 2; // drawBorder paints a 2-px perimeter.
     } else 0;
@@ -366,8 +370,7 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
 /// here was re-SIMD-blitting thousands of cells for nothing.
 pub fn repaintBorderOnly(self: *TerminalPane) void {
     if (!self.shouldDrawBorder()) return;
-    const is_focused = (self.server.focused_terminal == self);
-    const border_color: u32 = if (is_focused) 0xFFFF9837 else 0xFF3E4359;
+    const border_color = self.borderColor();
     self.drawBorder(border_color);
     // Only the 4 border strips changed — damage region is just those.
     // Pass dirty_y0=-1 so the helper skips the middle-band and unions
@@ -445,8 +448,7 @@ pub fn render(self: *TerminalPane) void {
     self.renderer.renderWithSelection(&self.pane.grid, sel_ptr, so, sbl);
 
     if (self.shouldDrawBorder()) {
-        const is_focused = (self.server.focused_terminal == self);
-        const border_color: u32 = if (is_focused) 0xFFFF9837 else 0xFF3E4359;
+        const border_color = self.borderColor();
         self.drawBorder(border_color);
     }
 
@@ -491,6 +493,18 @@ fn drawBorder(self: *TerminalPane, color: u32) void {
 }
 
 // ── Scene visibility ───────────────────────────────────────────
+
+/// Current border ARGB pulled from the compositor config, honouring
+/// the focused/unfocused distinction. Same source XdgView /
+/// XwaylandView already use, so Wayland clients and native terminal
+/// panes get identical chrome.
+pub fn borderColor(self: *const TerminalPane) u32 {
+    const is_focused = (self.server.focused_terminal == self);
+    return if (is_focused)
+        self.server.wm_config.border_color_focused
+    else
+        self.server.wm_config.border_color_unfocused;
+}
 
 pub fn setVisible(self: *TerminalPane, visible: bool) void {
     if (wlr.miozu_scene_buffer_node(self.scene_buffer)) |node| {
