@@ -83,6 +83,51 @@ pub const SpawnChord = struct {
     }
 };
 
+pub const max_scratchpad_chords = 8; // matches Action.scratchpad_0..scratchpad_7
+pub const max_scratchpad_rules = 16; // per-name rect/spawn overrides
+
+/// Per-name scratchpad rule. Mirrors xmonad's `customFloating
+/// (RationalRect x y w h)` — positions as fractions (0.0..1.0) of the
+/// active output's dimensions, evaluated at each show() so multi-
+/// monitor and hot-plug Just Work. `cmd` is reserved; today every
+/// scratchpad spawns the user shell.
+pub const ScratchpadRule = struct {
+    name: [32]u8 = undefined,
+    name_len: u8 = 0,
+    x: f32 = 0.325,
+    y: f32 = 0.30,
+    w: f32 = 0.35,
+    h: f32 = 0.40,
+    cmd: [256]u8 = undefined,
+    cmd_len: u16 = 0,
+    has_rect: bool = false,
+    has_cmd: bool = false,
+
+    pub fn getName(self: *const ScratchpadRule) []const u8 {
+        return self.name[0..self.name_len];
+    }
+    pub fn getCmd(self: *const ScratchpadRule) []const u8 {
+        return self.cmd[0..self.cmd_len];
+    }
+};
+
+/// User-defined scratchpad keybind. Chord → (scratchpad name) mapping
+/// from `[keybind] super+t = scratchpad:term`. Server allocates a
+/// scratchpad_<slot> action and records `name` in its table.
+pub const ScratchpadChord = struct {
+    chord: [64]u8 = undefined,
+    chord_len: u8 = 0,
+    name: [32]u8 = undefined,
+    name_len: u8 = 0,
+
+    pub fn getChord(self: *const ScratchpadChord) []const u8 {
+        return self.chord[0..self.chord_len];
+    }
+    pub fn getName(self: *const ScratchpadChord) []const u8 {
+        return self.name[0..self.name_len];
+    }
+};
+
 pub const max_name_rules = 32;
 
 /// Compile-time default that Server.init references before WmConfig is
@@ -220,6 +265,22 @@ autostart_count: u8 = 0,
 spawn_chords: [max_spawn_chords]SpawnChord = undefined,
 spawn_chord_count: u8 = 0,
 
+// ── User-defined scratchpad chords ─────────────────────────────
+
+/// Keybinds from the `[keybind]` section with `scratchpad:<name>`
+/// actions. Applied at init/reload alongside spawn chords.
+scratchpad_chords: [max_scratchpad_chords]ScratchpadChord = undefined,
+scratchpad_chord_count: u8 = 0,
+
+// Per-name scratchpad geometry / spawn rules. Populated from
+// `[scratchpad.NAME]` config sections AND from Server's default
+// seeder (applyDefaultScratchpadRules). User sections override
+// defaults: apply-order is defaults-first, then config-file, so
+// later applySection matching an existing name mutates the rule
+// in place.
+scratchpad_rules: [max_scratchpad_rules]ScratchpadRule = undefined,
+scratchpad_rule_count: u8 = 0,
+
 // ── DynamicProjects — per-workspace CWD + startup (v0.4.17) ────
 
 /// Startup command for workspace N (1-indexed in config, 0-indexed
@@ -336,6 +397,7 @@ pub fn load(io: Io) WmConfig {
 fn parse(self: *WmConfig, content: []const u8) void {
     var current_section: Section = .global;
     var current_ws_idx: ?u8 = null;
+    var current_sp_idx: ?u8 = null; // active [scratchpad.NAME] rule index
     var line_iter = std.mem.splitScalar(u8, content, '\n');
 
     while (line_iter.next()) |raw_line| {
@@ -360,14 +422,27 @@ fn parse(self: *WmConfig, content: []const u8) void {
                     if (idx_1 >= 1 and idx_1 <= 10) {
                         current_section = .workspace;
                         current_ws_idx = idx_1 - 1;
+                        current_sp_idx = null;
                     } else {
                         current_section = .global;
                         current_ws_idx = null;
                     }
                     continue;
                 }
+                // `[scratchpad.NAME]` — per-name rect / spawn overrides.
+                // Resolves to an index into scratchpad_rules; subsequent
+                // key=value lines mutate that rule. If the name doesn't
+                // yet have a rule (no default for it), we append a new one.
+                if (std.mem.startsWith(u8, sec_name, "scratchpad.")) {
+                    const name = sec_name["scratchpad.".len..];
+                    current_section = .scratchpad;
+                    current_ws_idx = null;
+                    current_sp_idx = self.resolveScratchpadRule(name);
+                    continue;
+                }
                 current_section = parseSection(sec_name);
                 current_ws_idx = null;
+                current_sp_idx = null;
             }
             continue;
         }
@@ -390,6 +465,7 @@ fn parse(self: *WmConfig, content: []const u8) void {
             .keybind => self.applyKeybind(key, value),
             .keyboard => self.applyKeyboard(key, value),
             .workspace => if (current_ws_idx) |idx| self.applyWorkspace(idx, key, value),
+            .scratchpad => if (current_sp_idx) |idx| self.applyScratchpadRule(idx, key, value),
         }
     }
 }
@@ -405,6 +481,7 @@ const Section = enum {
     keybind,
     keyboard,
     workspace,
+    scratchpad,
 };
 
 fn parseSection(name: []const u8) Section {
@@ -567,27 +644,128 @@ fn applyAutostart(self: *WmConfig, key: []const u8, value: []const u8) void {
     self.autostart_count += 1;
 }
 
-/// Parse `[keybind]` entries. Current v1 scope: only `spawn:<cmd>`
-/// actions. Other action types should use the shared `[keybinds.*]`
-/// syntax in teru.conf — this section is for commands that don't
-/// fit the pure Action enum (user-typed shell commands).
+/// Parse `[keybind]` entries. Handles two action types that carry
+/// string payloads and therefore can't live in the pure Action enum:
+///   - `spawn:<cmd>` — shell command to exec
+///   - `scratchpad:<name>` — named scratchpad to toggle
+/// All other action types use the shared `[keybinds.*]` syntax in
+/// teru.conf.
 fn applyKeybind(self: *WmConfig, key: []const u8, value: []const u8) void {
-    if (self.spawn_chord_count >= max_spawn_chords) return;
-    const prefix = "spawn:";
-    if (!std.mem.startsWith(u8, value, prefix)) return;
-    const cmd = std.mem.trim(u8, value[prefix.len..], &std.ascii.whitespace);
-    if (cmd.len == 0 or key.len == 0) return;
+    if (key.len == 0) return;
 
-    var chord = SpawnChord{};
-    const chord_len = @min(key.len, chord.chord.len);
-    @memcpy(chord.chord[0..chord_len], key[0..chord_len]);
-    chord.chord_len = @intCast(chord_len);
-    const cmd_len = @min(cmd.len, chord.cmd.len);
-    @memcpy(chord.cmd[0..cmd_len], cmd[0..cmd_len]);
-    chord.cmd_len = @intCast(cmd_len);
+    if (std.mem.startsWith(u8, value, "spawn:")) {
+        if (self.spawn_chord_count >= max_spawn_chords) return;
+        const cmd = std.mem.trim(u8, value["spawn:".len..], &std.ascii.whitespace);
+        if (cmd.len == 0) return;
 
-    self.spawn_chords[self.spawn_chord_count] = chord;
-    self.spawn_chord_count += 1;
+        var chord = SpawnChord{};
+        const chord_len = @min(key.len, chord.chord.len);
+        @memcpy(chord.chord[0..chord_len], key[0..chord_len]);
+        chord.chord_len = @intCast(chord_len);
+        const cmd_len = @min(cmd.len, chord.cmd.len);
+        @memcpy(chord.cmd[0..cmd_len], cmd[0..cmd_len]);
+        chord.cmd_len = @intCast(cmd_len);
+
+        self.spawn_chords[self.spawn_chord_count] = chord;
+        self.spawn_chord_count += 1;
+        return;
+    }
+
+    if (std.mem.startsWith(u8, value, "scratchpad:")) {
+        if (self.scratchpad_chord_count >= max_scratchpad_chords) return;
+        const name = std.mem.trim(u8, value["scratchpad:".len..], &std.ascii.whitespace);
+        if (name.len == 0) return;
+
+        var chord = ScratchpadChord{};
+        const chord_len = @min(key.len, chord.chord.len);
+        @memcpy(chord.chord[0..chord_len], key[0..chord_len]);
+        chord.chord_len = @intCast(chord_len);
+        const name_len = @min(name.len, chord.name.len);
+        @memcpy(chord.name[0..name_len], name[0..name_len]);
+        chord.name_len = @intCast(name_len);
+
+        self.scratchpad_chords[self.scratchpad_chord_count] = chord;
+        self.scratchpad_chord_count += 1;
+        return;
+    }
+}
+
+/// Look up or append a ScratchpadRule by name. Called when the parser
+/// enters a `[scratchpad.NAME]` section — subsequent key=value lines
+/// mutate this rule. If the rule table is full, returns null and
+/// subsequent applyScratchpadRule calls are no-ops.
+pub fn resolveScratchpadRule(self: *WmConfig, name: []const u8) ?u8 {
+    if (name.len == 0 or name.len >= 32) return null;
+    var i: u8 = 0;
+    while (i < self.scratchpad_rule_count) : (i += 1) {
+        if (std.mem.eql(u8, self.scratchpad_rules[i].getName(), name)) return i;
+    }
+    if (self.scratchpad_rule_count >= max_scratchpad_rules) return null;
+    const idx = self.scratchpad_rule_count;
+    var rule = ScratchpadRule{};
+    @memcpy(rule.name[0..name.len], name);
+    rule.name_len = @intCast(name.len);
+    self.scratchpad_rules[idx] = rule;
+    self.scratchpad_rule_count += 1;
+    return idx;
+}
+
+/// Parse one key=value under `[scratchpad.NAME]`. Accepted keys:
+/// x, y, w, h (fraction `0.42`, percent `42%`, or absolute pixels `400`),
+/// cmd (reserved, stored for future use).
+fn applyScratchpadRule(self: *WmConfig, idx: u8, key: []const u8, value: []const u8) void {
+    if (idx >= self.scratchpad_rule_count) return;
+    const rule = &self.scratchpad_rules[idx];
+
+    if (std.mem.eql(u8, key, "cmd")) {
+        const n = @min(value.len, rule.cmd.len);
+        @memcpy(rule.cmd[0..n], value[0..n]);
+        rule.cmd_len = @intCast(n);
+        rule.has_cmd = true;
+        return;
+    }
+
+    // Rect fields — all parse via parseFracOrPx.
+    // Absolute pixel values are stored as a NEGATIVE fraction tagged
+    // with the sentinel below; defaultRect divides by output dim at
+    // show() time. Keeping the tag inline dodges a parallel "units"
+    // field while preserving the 0..1 fraction semantics for cheap
+    // multiply-by-output-dim in ServerScratchpad.rectForName.
+    var target: ?*f32 = null;
+    if (std.mem.eql(u8, key, "x")) target = &rule.x
+    else if (std.mem.eql(u8, key, "y")) target = &rule.y
+    else if (std.mem.eql(u8, key, "w")) target = &rule.w
+    else if (std.mem.eql(u8, key, "h")) target = &rule.h;
+    if (target) |slot| {
+        if (parseFracOrPct(value)) |f| {
+            slot.* = f;
+            rule.has_rect = true;
+        }
+    }
+}
+
+/// Parse a fractional / percent value. Returns the value as a fraction
+/// (0.0..1.0); values > 1 are clamped. Accepted:
+///   0.42   → 0.42     (fraction, direct)
+///   42%    → 0.42     (percent)
+///   1/2    → not supported yet; use 0.5
+/// Pixel inputs (`400`) are not accepted here — the [scratchpad.NAME]
+/// section is fraction-only for now; add pixel support later if needed.
+fn parseFracOrPct(value: []const u8) ?f32 {
+    const trimmed = std.mem.trim(u8, value, &std.ascii.whitespace);
+    if (trimmed.len == 0) return null;
+    if (std.mem.endsWith(u8, trimmed, "%")) {
+        const num = trimmed[0 .. trimmed.len - 1];
+        const pct = std.fmt.parseFloat(f32, num) catch return null;
+        const f = pct / 100.0;
+        if (f < 0.0) return 0.0;
+        if (f > 1.0) return 1.0;
+        return f;
+    }
+    const f = std.fmt.parseFloat(f32, trimmed) catch return null;
+    if (f < 0.0) return 0.0;
+    if (f > 1.0) return 1.0;
+    return f;
 }
 
 /// Parse `[keyboard]` entries — xkb_rule_names fields. Empty or unset

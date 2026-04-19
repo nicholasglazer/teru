@@ -192,6 +192,23 @@ prev_workspace: ?u8 = null,
 spawn_table: [32][256]u8 = [_][256]u8{[_]u8{0} ** 256} ** 32,
 spawn_table_len: [32]u16 = [_]u16{0} ** 32,
 
+// User-defined scratchpad chord names. Paired with scratchpad_0..7
+// Action variants. Populated from `[keybind]` entries of the form
+// `Super+T = scratchpad:term`. Also pre-seeded with sensible
+// defaults (term / term2 / htop / help) bound to Super+T,
+// Super+Shift+T, Super+H, Super+Shift+H — see applyDefaultScratchpads
+// below.
+scratchpad_table: [8][32]u8 = [_][32]u8{[_]u8{0} ** 32} ** 8,
+scratchpad_table_len: [8]u8 = [_]u8{0} ** 8,
+
+// Permanently-disabled scene tree used to park scratchpad nodes when
+// toggled off. See getOrCreateHiddenTree() for rationale — we can't
+// rely on wlr_scene_node_set_enabled(false) alone because the scene →
+// output damage propagation sometimes loses the disable transition,
+// leaving DRM stuck on the last frame. Reparenting into a disabled
+// tree changes scene topology, which always damages correctly.
+hidden_tree: ?*wlr.wlr_scene_tree = null,
+
 // MCP server for compositor control
 wm_mcp: ?*WmMcpServer = null,
 
@@ -221,6 +238,17 @@ keybind_repeat_action: ?KBAction = null,
 keybind_repeat_rate_ms: c_int = 40,
 keybind_repeat_delay_ms: c_int = 400,
 event_loop: ?*wlr.wl_event_loop = null,
+
+// Terminal-input repeat state (v0.6.4). Same rationale as
+// keybind_repeat_src but for raw key bytes routed to focused_terminal.
+// Wayland clients (Chromium, Emacs, ...) handle repeat themselves via
+// the `repeat_info` hint we publish on the seat, but teru-native panes
+// read directly from PTY — no client to implement repeat. Symptom
+// before fix: hold Backspace → one character deleted, not a whole line.
+terminal_repeat_src: ?*wlr.wl_event_source = null,
+terminal_repeat_keycode: u32 = 0,
+terminal_repeat_bytes: [32]u8 = undefined,
+terminal_repeat_len: u8 = 0,
 
 // ── Listeners ──────────────────────────────────────────────────
 
@@ -630,6 +658,11 @@ pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem
     self.keybinds.mod_key = Mods.SUPER;
     self.keybinds.loadDefaults(); // uses mod_key = Super for all $mod bindings
     self.keybinds.loadMediaDefaults(); // XF86 media keys (no modifier)
+    self.keybinds.loadScratchpadDefaults(); // Super+T, Super+Shift+T → scratchpad_0, scratchpad_1
+    self.applyDefaultScratchpadNames(); // seed scratchpad_table[0..1]
+    // applyDefaultScratchpadRules runs later, *after* wm_config.load
+    // — otherwise load() would overwrite the rule table with its own
+    // default-init values. Deferred to the post-load hook below.
     // Apply user overrides from teru.conf on top
     // (config.keybinds were parsed with the old mod — we re-load with Super)
 
@@ -664,6 +697,15 @@ pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem
 
     // ── User-defined spawn chords from [keybind] section ────
     self.applyWmSpawnChords();
+
+    // ── User-defined scratchpad chords from [keybind] section ──
+    self.applyWmScratchpadChords();
+
+    // ── Default scratchpad geometry rules (xmonad parity) ──
+    // Runs AFTER wm_config.load so user's `[scratchpad.NAME]` rules
+    // are already in wm_config.scratchpad_rules — the default seeder
+    // only fills in names the user hasn't customised.
+    self.applyDefaultScratchpadRules();
 }
 
 /// Resolve each `[keybind] chord = spawn:cmd` entry into a spawn_table
@@ -696,6 +738,132 @@ fn applyWmSpawnChords(self: *Server) void {
     if (slot > 0) {
         std.debug.print("teruwm: loaded {d} spawn chords\n", .{slot});
     }
+}
+
+/// Resolve each `[keybind] chord = scratchpad:name` entry. User config
+/// entries take precedence over defaults: if a chord matches a default
+/// binding's chord we reuse the same slot (`addBinding` already
+/// overwrites same-chord mappings), but we first store the name in
+/// the next free table slot and bind `scratchpad_<slot>` to the chord.
+fn applyWmScratchpadChords(self: *Server) void {
+    var slot: u8 = 0;
+    for (self.wm_config.scratchpad_chords[0..self.wm_config.scratchpad_chord_count]) |*entry| {
+        if (slot >= self.scratchpad_table.len) break;
+
+        const trig = Keybinds.parseTriggerWithMod(entry.getChord(), self.keybinds.mod_key) orelse {
+            std.debug.print("teruwm: skipping bad scratchpad chord '{s}'\n", .{entry.getChord()});
+            continue;
+        };
+
+        const name = entry.getName();
+        const n = @min(name.len, self.scratchpad_table[slot].len);
+        @memcpy(self.scratchpad_table[slot][0..n], name[0..n]);
+        self.scratchpad_table_len[slot] = @intCast(n);
+
+        const first_tag: u8 = @intFromEnum(Keybinds.Action.scratchpad_0);
+        const action: Keybinds.Action = @enumFromInt(first_tag + slot);
+        _ = self.keybinds.add(.normal, trig.mods, trig.key, action);
+        slot += 1;
+    }
+    if (slot > 0) {
+        std.debug.print("teruwm: loaded {d} scratchpad chords\n", .{slot});
+    }
+}
+
+/// Return (lazily creating on first call) a permanently-disabled
+/// scene tree that lives as a sibling of the scene root. Scratchpads
+/// park their scene buffer node in here when toggled off. The tree is
+/// disabled so nothing in it ever paints; reparenting into/out of it
+/// damages both the old and new AABBs, which is what wlr_scene → output
+/// commit needs to flip the DRM. set_enabled alone is not enough —
+/// see hidden_tree field docstring.
+pub fn getOrCreateHiddenTree(self: *Server) ?*wlr.wlr_scene_tree {
+    if (self.hidden_tree) |t| return t;
+    const root = wlr.miozu_scene_tree(self.scene) orelse return null;
+    const tree = wlr.wlr_scene_tree_create(root) orelse return null;
+    if (wlr.miozu_scene_tree_node(tree)) |node| {
+        wlr.wlr_scene_node_set_enabled(node, false);
+    }
+    self.hidden_tree = tree;
+    return tree;
+}
+
+/// Pre-seed scratchpad_table[0..3] with the names the default
+/// loadScratchpadDefaults() chords point at. Called once during init,
+/// before the user's [keybind] entries are applied — users who
+/// override a default chord get their own name in the next free
+/// slot, but these defaults stay live for any chord they didn't
+/// rebind.
+fn applyDefaultScratchpadNames(self: *Server) void {
+    // Only 2 default-bound chords: Super+T → terminalBR, Super+Shift+T
+    // → terminalSR. Matches user's xmonad Mod+T / Mod+Shift+T bindings.
+    // terminalBL/SL are registered as rules (reachable via MCP or
+    // user-added config chord) but don't consume a default keybind.
+    const defaults = [_][]const u8{ "terminalBR", "terminalSR" };
+    for (defaults, 0..) |name, slot| {
+        const n = @min(name.len, self.scratchpad_table[slot].len);
+        @memcpy(self.scratchpad_table[slot][0..n], name[0..n]);
+        self.scratchpad_table_len[slot] = @intCast(n);
+    }
+}
+
+/// Pre-register 4 named scratchpad rules matching the user's xmonad
+/// layout (Scratchpads.hs). User's `[scratchpad.NAME]` config sections
+/// look these up by name — existing rules are mutated in place, new
+/// names are appended. So adding `[scratchpad.terminalBR] w = 70%` in
+/// the user's config replaces only the width field; x/y/h stay at
+/// xmonad defaults.
+fn applyDefaultScratchpadRules(self: *Server) void {
+    const defaults = [_]struct {
+        name: []const u8,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    }{
+        // terminalBR — big right: h=78%, w=57%, l=42%, t=3%
+        .{ .name = "terminalBR", .x = 0.42, .y = 0.03, .w = 0.57, .h = 0.78 },
+        // terminalSR — small right: h=15%, w=57%, l=42%, t=83%
+        .{ .name = "terminalSR", .x = 0.42, .y = 0.83, .w = 0.57, .h = 0.15 },
+        // terminalBL — big left: h=62%, w=40%, l=1%, t=3%
+        .{ .name = "terminalBL", .x = 0.01, .y = 0.03, .w = 0.40, .h = 0.62 },
+        // terminalSL — small left: h=31%, w=40%, l=1%, t=67%
+        .{ .name = "terminalSL", .x = 0.01, .y = 0.67, .w = 0.40, .h = 0.31 },
+    };
+    for (defaults) |d| {
+        // resolveScratchpadRule either finds or appends.
+        const idx = self.wm_config.resolveScratchpadRule(d.name) orelse continue;
+        const rule = &self.wm_config.scratchpad_rules[idx];
+        if (!rule.has_rect) {
+            rule.x = d.x;
+            rule.y = d.y;
+            rule.w = d.w;
+            rule.h = d.h;
+            rule.has_rect = true;
+        }
+    }
+}
+
+/// Look up per-name scratchpad rule by scratchpad name. Returns null
+/// if no explicit rule — caller should fall back to global centered
+/// rect.
+pub fn scratchpadRuleFor(self: *const Server, name: []const u8) ?*const WmConfig.ScratchpadRule {
+    var i: u8 = 0;
+    while (i < self.wm_config.scratchpad_rule_count) : (i += 1) {
+        const r = &self.wm_config.scratchpad_rules[i];
+        if (std.mem.eql(u8, r.getName(), name)) return r;
+    }
+    return null;
+}
+
+/// Return the scratchpad name for action `a` (which must be one of
+/// scratchpad_0..7). Empty string if unbound.
+pub fn scratchpadNameFor(self: *const Server, a: Keybinds.Action) []const u8 {
+    const first: u8 = @intFromEnum(Keybinds.Action.scratchpad_0);
+    const tag: u8 = @intFromEnum(a);
+    if (tag < first or tag >= first + self.scratchpad_table.len) return "";
+    const slot = tag - first;
+    return self.scratchpad_table[slot][0..self.scratchpad_table_len[slot]];
 }
 
 /// Apply teruwm bar config to the bar instance (called after bar creation).
@@ -1700,7 +1868,6 @@ fn isRepeatableAction(action: KBAction) bool {
         .pane_swap_next, .pane_swap_prev,
         .pane_rotate_slaves_up, .pane_rotate_slaves_down,
         .master_count_inc, .master_count_dec,
-        .zoom_in, .zoom_out,
         .workspace_next_nonempty, .workspace_toggle_last,
         => true,
         else => false,
@@ -1751,6 +1918,51 @@ pub fn cancelKeybindRepeat(self: *Server) void {
     }
     self.keybind_repeat_keycode = 0;
     self.keybind_repeat_action = null;
+}
+
+/// Re-send the stored terminal input bytes to the currently focused
+/// pane. Rearms itself for the next tick unless canceled.
+fn terminalRepeatTick(data: ?*anyopaque) callconv(.c) c_int {
+    const self: *Server = @ptrCast(@alignCast(data orelse return 0));
+    if (self.terminal_repeat_len == 0) return 0;
+    if (self.focused_terminal) |tp| {
+        tp.writeInput(self.terminal_repeat_bytes[0..self.terminal_repeat_len]);
+    }
+    if (self.terminal_repeat_src) |src| {
+        _ = wlr.wl_event_source_timer_update(src, self.keybind_repeat_rate_ms);
+    }
+    return 0;
+}
+
+/// Arm the terminal-input repeat timer. Called from the key press
+/// path in ServerInput.handleKeyEvent after bytes are written to the
+/// focused terminal. Cancels any prior repeat first — typing a new
+/// character while holding an old one replaces the target, same
+/// semantics as libinput/xkb repeat for Wayland clients.
+pub fn armTerminalRepeat(self: *Server, keycode: u32, bytes: []const u8) void {
+    if (bytes.len == 0 or bytes.len > self.terminal_repeat_bytes.len) {
+        self.cancelTerminalRepeat();
+        return;
+    }
+    if (self.terminal_repeat_src == null) {
+        const loop = self.event_loop orelse return;
+        self.terminal_repeat_src = wlr.wl_event_loop_add_timer(loop, terminalRepeatTick, @ptrCast(self));
+        if (self.terminal_repeat_src == null) return;
+    }
+    @memcpy(self.terminal_repeat_bytes[0..bytes.len], bytes);
+    self.terminal_repeat_len = @intCast(bytes.len);
+    self.terminal_repeat_keycode = keycode;
+    if (self.terminal_repeat_src) |src| {
+        _ = wlr.wl_event_source_timer_update(src, self.keybind_repeat_delay_ms);
+    }
+}
+
+pub fn cancelTerminalRepeat(self: *Server) void {
+    if (self.terminal_repeat_src) |src| {
+        _ = wlr.wl_event_source_timer_update(src, 0);
+    }
+    self.terminal_repeat_len = 0;
+    self.terminal_repeat_keycode = 0;
 }
 
 /// Move the focused node to the next output's current workspace.

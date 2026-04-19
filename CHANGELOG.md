@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.4 (2026-04-19)
+
+Scratchpad fix pack + xmonad-style keybind overhaul + terminal-input
+repeat fix + MCP socket rename + teruwmctl CLI.
 
 ### Breaking
 
@@ -13,6 +16,18 @@
   No compat fallback — update any scripts / `.mcp.json` entries that
   reference the old paths. teru terminal's `teru-mcp-*` sockets are
   unchanged.
+- **Default keybind changes** in teruwm:
+  - `$mod+T` / `$mod+Shift+T` now toggle named scratchpads
+    (`terminalBR` / `terminalSR`) — xmonad parity. Previously unbound.
+  - `$mod+H` / `$mod+L` still shrink / grow master width; **new**
+    `$mod+/` / `$mod+=` alternates for dvorak users (physical `[`/`]`).
+  - `$mod+Z` was "zoom_toggle" (monocle-style claim); now an explicit
+    alias for `pane_swap_master`. No behavior change in teruwm
+    (zoom_toggle already did swap-with-master) — docs corrected.
+  - `$mod+-` / `$mod+_` (shift + minus) are **teru standalone only**
+    (font zoom). In teruwm they're unbound — see "Zoom cleanup".
+  - `$mod+/` no longer enters search mode in teruwm. Use
+    `Ctrl+Space /` (prefix mode) or `$mod+V /` (scroll mode) instead.
 
 ### Features
 
@@ -42,9 +57,89 @@
   ```
   Internally the stdio path delegates to `McpBridge.run(io, .teruwm)`
   — same transport as `teru --mcp-server --target teruwm`.
+- **Per-name scratchpad geometry** — new `[scratchpad.NAME]` config
+  section binds x/y/w/h (fraction or percent) per scratchpad, mirroring
+  xmonad's `customFloating (RationalRect …)`. Four defaults ship
+  pre-registered matching the reference xmonad layout:
+  `terminalBR` / `terminalSR` / `terminalBL` / `terminalSL`. Evaluated
+  at each `show()` against the active output's dimensions so
+  multi-monitor + resolution change work automatically.
+  ```ini
+  [scratchpad.terminalBR]
+  x = 42%
+  y = 3%
+  w = 57%
+  h = 78%
+  ```
+- **`teruwm_quit` MCP tool** — terminates the compositor cleanly from
+  MCP. Mirrors `Mod+Shift+Q`. Response returns before `wl_display_terminate`
+  so the client sees the ack.
+- **`teruwmctl watch` subcommand** — streams the compositor's event
+  channel (`workspace_switched`, `focus_changed`, `urgent`,
+  `window_mapped`) as newline-JSON to stdout until EOF.
+- **`teruwmctl` positional args** — 20+ verbs accept shell-style
+  positional parameters (`teruwmctl notify hello`,
+  `teruwmctl switch-workspace 3`, `teruwmctl click 100 200`, …). JSON
+  form still works as an escape hatch.
+- **`$mod+`` ` alias** — xmonad-familiar toggle between last two
+  workspaces (same as `$mod+Escape`).
 - **`ipc.buildPathFamily(family, prefix, name)`** — new helper so
   binaries can own their own socket family (`teruwm-*` vs `teru-*`)
   instead of sharing the single hardcoded `teru-` prefix.
+
+### Fixes
+
+- **Scratchpad hide no-op on real DRM** (the bug that bit for hours of
+  debugging). Two root causes layered on top of each other:
+  1. `TerminalPane.createFloating` skipped registering the pane in
+     `server.pane_index`, so `Server.terminalPaneById(nid)` returned
+     `null` on every hide/show. The `if |tp|` block in
+     `ServerScratchpad.hide()` / `show()` silently fell through — only
+     the workspace field in the node registry flipped, nothing at the
+     scene-graph level changed. Visible symptom: `teruwm_list_windows`
+     showed `workspace=255` immediately, but the scratchpad stayed
+     visible on screen.
+  2. Even after fixing (1), `wlr_scene_node_set_enabled(false)` alone
+     didn't always cause wlroots to page-flip the DRM output. The
+     scene-node → output damage propagation could drop the
+     enable-transition, leaving the eDP-1 front buffer showing the
+     last good frame. Fixed by reparenting the scene buffer into a
+     permanently-disabled `Server.hidden_tree` on hide instead of
+     relying on the enabled flag — reparenting always damages both
+     the old and new AABBs, which reliably flips.
+- **Terminal-input key repeat** — holding Backspace (or any key) on a
+  teru-native pane only deleted one character because libinput doesn't
+  emit repeat events and teru-native panes have no Wayland client to
+  implement client-side repeat from `repeat_info`. Added a
+  `terminal_repeat_src` timer on Server that rearms at 40 ms ticks
+  after a 400 ms initial delay, matching the rate advertised to
+  Wayland clients. Canceled on release, modifier change, or a
+  different key press.
+- **MCP socket FD leak across fork/exec** — `acceptPosix` didn't set
+  `FD_CLOEXEC`. Scratchpad (and tiled) terminal spawns inherited the
+  MCP request fd, keeping the socket open after `Server.poll()`
+  closed its end, which hung MCP clients reading for EOF. Set
+  `FD_CLOEXEC` immediately after accept. Affected every tool that
+  triggers a shell fork (`spawn_terminal`, `scratchpad`).
+- **Double-escape bug in list tools** — `teruwm_list_workspaces`,
+  `teruwm_list_windows`, `teruwm_list_widgets` emitted `\\\"` (three
+  backslashes + quote) inside the `text` field instead of `\"`,
+  producing doubly-encoded JSON. `teruwmctl` now also unescapes the
+  `text` field once before printing, so the clean shape is visible
+  to users.
+
+### Cleanup
+
+- **Zoom actions in teruwm removed** — `.zoom_in` / `.zoom_out` /
+  `.zoom_reset` were byte-identical aliases for `resize_grow_w` /
+  `resize_shrink_w` / `master_ratio = 0.6` in the compositor. Removed
+  from `ServerInput.executeAction` (teruwm) and from
+  `isRepeatableAction`. `zoom_toggle` kept — it's a distinct action
+  (swap-with-master). Teru standalone still uses all four for font
+  zoom (`loadTerminalZoomDefaults`).
+- **Load-order fix for scratchpad rules** — `applyDefaultScratchpadRules`
+  now runs after `wm_config.load()` so user's `[scratchpad.NAME]`
+  sections aren't wiped.
 
 ## 0.6.3 (2026-04-18)
 

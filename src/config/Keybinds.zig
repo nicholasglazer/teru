@@ -234,6 +234,15 @@ pub const Action = enum(u8) {
     spawn_16, spawn_17, spawn_18, spawn_19, spawn_20, spawn_21, spawn_22, spawn_23,
     spawn_24, spawn_25, spawn_26, spawn_27, spawn_28, spawn_29, spawn_30, spawn_31,
 
+    // Named scratchpad chords (xmonad NamedScratchpad). Each slot maps
+    // to a scratchpad name in Server.scratchpad_table[slot]. Config
+    // assigns via `[keybind] super+t = scratchpad:term` — the parser
+    // allocates the next free slot, stores the name, and binds the
+    // chord to scratchpad_<slot>. 8 slots is the practical ceiling:
+    // xmonad users rarely keep more than 3–4 named pads in rotation.
+    scratchpad_0, scratchpad_1, scratchpad_2, scratchpad_3,
+    scratchpad_4, scratchpad_5, scratchpad_6, scratchpad_7,
+
     pub fn fromString(s: []const u8) ?Action {
         // Exact match table
         const map = .{
@@ -634,6 +643,7 @@ pub const Keybinds = struct {
 
         // Workspace navigation (v0.4.15)
         _ = self.add(n, M, 0xFF1B, .workspace_toggle_last); // Mod+Escape
+        _ = self.add(n, M, '`', .workspace_toggle_last); // Mod+grave (xmonad familiar)
         _ = self.add(n, MC, '`', .workspace_next_nonempty); // Mod+Ctrl+grave
 
         // Multi-output (v0.4.20)
@@ -663,13 +673,25 @@ pub const Keybinds = struct {
         _ = self.add(n, M, 'm', .launcher_toggle);
 
         // Modes + UI
-        _ = self.add(n, M, '/', .mode_search);
+        // Note: Mod+/ is *not* bound to mode_search here — it's the
+        // master-resize-shrink key on dvorak (physical `[` position).
+        // Use Ctrl+Space → `/` (prefix mode) or `$mod+V` → `/` (scroll
+        // mode) to enter search.
         _ = self.add(n, M, 'v', .mode_scroll);
         _ = self.add(n, M, 'b', .bar_toggle_top);
         _ = self.add(n, MS, 'b', .bar_toggle_bottom);
-        _ = self.add(n, M, '=', .zoom_in);
-        _ = self.add(n, M, '-', .zoom_out);
-        _ = self.add(n, M, '\\', .zoom_reset);
+        // Master resize: bind on both qwerty positions AND the dvorak
+        // equivalents so both layouts feel native.
+        //   qwerty H / L   → resize_shrink_w / resize_grow_w (already set above)
+        //   dvorak `/`     → shrink_w (physical [ on qwerty)
+        //   dvorak `=`     → grow_w   (physical ] on qwerty)
+        _ = self.add(n, M, '/', .resize_shrink_w);
+        _ = self.add(n, M, '=', .resize_grow_w);
+        // NOTE: zoom keys (`-`, `_`, `\`) are NOT bound here. In teruwm
+        // they would duplicate resize_shrink_w/grow_w (same master_ratio
+        // adjustment). In standalone teru they control font size —
+        // that binding is added by `loadTerminalZoomDefaults`, called
+        // only from the terminal init path, never from teruwm.
         _ = self.add(n, MS, 'q', .compositor_quit);
         _ = self.add(n, MS, 'r', .config_reload);
         // Mod+Ctrl+Shift+R: hot-restart compositor (preserves terminal sessions)
@@ -751,6 +773,42 @@ pub const Keybinds = struct {
         // ── Shared ──────────────────────────────────────
         _ = self.add(.shared, Mods.CTRL_SHIFT, 'c', .copy_selection);
         _ = self.add(.shared, Mods.CTRL_SHIFT, 'v', .paste_clipboard);
+    }
+
+    /// Load terminal-font zoom keybinds. Standalone teru only — in
+    /// teruwm these actions would be redundant aliases for
+    /// resize_shrink_w / resize_grow_w (both just bump `master_ratio`).
+    /// Binding them at the compositor level causes user confusion
+    /// ("why does Mod+- do the same as Mod+H?"), so the compositor
+    /// omits them and leaves the keys free.
+    ///   $mod+-   → zoom_out  (smaller font)
+    ///   $mod+_   → zoom_in   (bigger font; xkb delivers `_` on Shift+-)
+    ///   $mod+\   → zoom_reset
+    pub fn loadTerminalZoomDefaults(self: *Keybinds) void {
+        const n = Mode.normal;
+        const M = self.mod_key;
+        _ = self.add(n, M, '-', .zoom_out);
+        _ = self.add(n, M, '_', .zoom_in);
+        _ = self.add(n, M, '\\', .zoom_reset);
+    }
+
+    /// Load default scratchpad keybinds (compositor only). Two chords
+    /// matching the user's xmonad Mod+T / Mod+Shift+T layout. The
+    /// remaining scratchpad slots (scratchpad_2..7) are reachable via
+    /// user's `[keybind]` config section or directly over MCP. Names
+    /// for slot 0/1 are seeded by `Server.applyDefaultScratchpadNames`;
+    /// geometries by `Server.applyDefaultScratchpadRules`.
+    ///   Mod+T          → scratchpad_0   (seeded "terminalBR")
+    ///   Mod+Shift+T    → scratchpad_1   (seeded "terminalSR")
+    /// Mod+H is intentionally NOT bound here so loadDefaults'
+    /// `resize_shrink_w` mapping stays live. Standalone teru never
+    /// calls this.
+    pub fn loadScratchpadDefaults(self: *Keybinds) void {
+        const n = Mode.normal;
+        const M = self.mod_key;
+        const MS = M.withShift();
+        _ = self.add(n, M,  't', .scratchpad_0);
+        _ = self.add(n, MS, 't', .scratchpad_1);
     }
 
     /// Load media key defaults (no modifier — XF86 keysyms).

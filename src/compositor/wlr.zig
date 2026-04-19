@@ -444,6 +444,15 @@ pub extern "c" fn miozu_scene_tree(scene: *wlr_scene) callconv(.c) ?*wlr_scene_t
 pub extern "c" fn miozu_scene_tree_node(tree: *wlr_scene_tree) callconv(.c) ?*wlr_scene_node;
 pub extern "c" fn miozu_scene_buffer_node(buffer: *wlr_scene_buffer) callconv(.c) ?*wlr_scene_node;
 
+// Scene graph topology — scratchpad park/unpark needs to reparent scene
+// nodes into a permanently-disabled "hidden" tree. set_enabled alone
+// isn't reliable: wlroots' scene → output damage path can skip the
+// DRM commit when only the enabled flag flipped (verified on tty3/eDP-1,
+// v0.6.4). Reparenting changes topology, which always damages both old
+// and new AABBs and forces the next commit.
+pub extern "c" fn wlr_scene_tree_create(parent: *wlr_scene_tree) callconv(.c) ?*wlr_scene_tree;
+pub extern "c" fn wlr_scene_node_reparent(node: *wlr_scene_node, new_parent: *wlr_scene_tree) callconv(.c) void;
+
 // Output enable+commit helper
 pub extern "c" fn miozu_output_enable_and_commit(output: *wlr_output) callconv(.c) bool;
 

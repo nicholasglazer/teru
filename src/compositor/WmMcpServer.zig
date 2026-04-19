@@ -268,6 +268,7 @@ const tools_list_body: []const u8 =
     \\{"name":"teruwm_set_name","description":"Assign a human-readable name to a window/pane.","inputSchema":{"type":"object","properties":{"node_id":{"type":"integer"},"name":{"type":"string"},"new_name":{"type":"string"}},"required":["new_name"]}},
     \\{"name":"teruwm_perf","description":"Get compositor performance stats: frame timing (avg/max us), PTY throughput, terminal count","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"teruwm_restart","description":"Hot-restart the compositor: serializes PTY state, exec()s new binary. Terminal sessions survive. Use after rebuild.","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"teruwm_quit","description":"Terminate the compositor cleanly. Same effect as Mod+Shift+Q. Destructive — every managed client loses its display server and any unsaved state. Prefer teruwm_restart if you're reloading after a rebuild.","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"teruwm_toggle_bar","description":"Toggle top or bottom status bar visibility. Triggers a re-arrange of all workspaces.","inputSchema":{"type":"object","properties":{"which":{"type":"string","enum":["top","bottom"]}},"required":["which"]}},
     \\{"name":"teruwm_set_bar","description":"Set the enabled state of the top or bottom status bar explicitly.","inputSchema":{"type":"object","properties":{"which":{"type":"string","enum":["top","bottom"]},"enabled":{"type":"boolean"}},"required":["which","enabled"]}},
     \\{"name":"teruwm_set_widget","description":"Register or update a push widget shown in a bar via {widget:name}. Upsert semantics — idempotent.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"widget name, ≤32 chars"},"text":{"type":"string","description":"text to display, ≤128 chars"},"class":{"type":"string","enum":["none","muted","info","success","warning","critical","accent"],"description":"semantic color class (defaults to fg)"}},"required":["name","text"]}},
@@ -334,6 +335,7 @@ const tool_table = std.StaticStringMap(F.Thunk).initComptime(.{
     .{ "teruwm_set_name", thunkSetName },
     .{ "teruwm_perf", thunkPerf },
     .{ "teruwm_restart", thunkRestart },
+    .{ "teruwm_quit", thunkQuit },
     .{ "teruwm_toggle_bar", thunkToggleBar },
     .{ "teruwm_set_bar", thunkSetBar },
     .{ "teruwm_set_widget", thunkSetWidget },
@@ -452,6 +454,11 @@ fn thunkPerf(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []co
 fn thunkRestart(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     _ = p;
     return self.toolRestart(buf, id);
+}
+
+fn thunkQuit(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    _ = p;
+    return self.toolQuit(buf, id);
 }
 
 fn thunkToggleBar(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -706,7 +713,7 @@ fn toolListWindows(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
             const safe_name = jsonEscapeString(node_name, &name_esc);
 
             const entry = std.fmt.bufPrint(buf[pos..],
-                \\{{\\\"id\\\":{d},\\\"name\\\":\\\"{s}\\\",\\\"workspace\\\":{d},\\\"kind\\\":\\\"{s}\\\",\\\"title\\\":\\\"{s}\\\",\\\"x\\\":{d},\\\"y\\\":{d},\\\"w\\\":{d},\\\"h\\\":{d}}}
+                \\{{\"id\":{d},\"name\":\"{s}\",\"workspace\":{d},\"kind\":\"{s}\",\"title\":\"{s}\",\"x\":{d},\"y\":{d},\"w\":{d},\"h\":{d}}}
             , .{
                 nid, safe_name, ws, kind_str, safe_title,
                 srv.nodes.pos_x[slot], srv.nodes.pos_y[slot],
@@ -817,7 +824,7 @@ fn toolListWorkspaces(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8
         const count = ws.node_ids.items.len;
 
         const entry = std.fmt.bufPrint(buf[pos..],
-            \\{{\\\"id\\\":{d},\\\"layout\\\":\\\"{s}\\\",\\\"windows\\\":{d},\\\"active\\\":{s}}}
+            \\{{\"id\":{d},\"layout\":\"{s}\",\"windows\":{d},\"active\":{s}}}
         , .{ wi, layout_str, count, active }) catch break;
         pos += entry.len;
     }
@@ -1042,6 +1049,21 @@ fn toolRestart(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
         jsonRpcError(buf, id, -32603, "Internal error");
 }
 
+fn toolQuit(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
+    // Format the response BEFORE terminating so the client gets an
+    // ack — wl_display_terminate flips a flag that the main run loop
+    // (wl_display_run) checks on its next iteration, so this current
+    // MCP handler finishes writing out its response before the
+    // compositor actually tears down. Clean handshake.
+    const id_str = id orelse "null";
+    const resp = std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"quit scheduled — compositor will terminate after this response"}}]}},"id":{s}}}
+    , .{id_str}) catch
+        return jsonRpcError(buf, id, -32603, "Internal error");
+    wlr.wl_display_terminate(self.server.display);
+    return resp;
+}
+
 fn toolPerf(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";
     const perf = &self.server.perf;
@@ -1154,7 +1176,7 @@ fn toolListWidgets(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
         const safe_name = jsonEscapeString(pw.name(), &name_esc_buf);
 
         const entry = std.fmt.bufPrint(buf[pos..],
-            \\{{\\\"name\\\":\\\"{s}\\\",\\\"text\\\":\\\"{s}\\\",\\\"class\\\":\\\"{s}\\\",\\\"age_ms\\\":{d}}}
+            \\{{\"name\":\"{s}\",\"text\":\"{s}\",\"class\":\"{s}\",\"age_ms\":{d}}}
         , .{ safe_name, safe_text, class_name, age_ms }) catch break;
         pos += entry.len;
     }

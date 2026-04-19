@@ -33,12 +33,23 @@ There are three keyboard modes:
 | `$mod+J` / `$mod+K` | Focus next / previous pane |
 | `$mod+Tab` / `$mod+Shift+Tab` | Focus next / previous (XMonad-style) |
 | `$mod+Shift+J` / `$mod+Shift+K` | Swap focused pane with next / previous |
-| `$mod+M` | Focus the master pane |
 | `$mod+Shift+M` | Swap focused pane ↔ master (xmonad `W.swapMaster`) |
+| `$mod+Z` | Same as `$mod+Shift+M` (xmonad-muscle-memory alias) |
 | `$mod+H` / `$mod+L` | Shrink / grow master width |
+| `$mod+/` / `$mod+=` | Shrink / grow master width — dvorak alternates (physical `[` / `]` positions) |
 | `$mod+Ctrl+J` / `$mod+Ctrl+K` | Rotate slaves down / up (keeps master + focus in place; xmonad `rotSlaves`) |
 | `$mod+,` / `$mod+.` | Inc / dec **master count** — master-stack supports N masters stacked vertically |
 | `$mod+Ctrl+S` | Sink *all* floating windows back into tiling |
+
+Note: `$mod+M` opens the launcher (moved off `$mod+D` to dodge
+Claude Code's `Alt+D` chord). To reclaim it for `pane:focus_master`,
+bind it explicitly in your config:
+
+```ini
+[keybinds.normal]
+super+m = pane:focus_master
+super+p = launcher:toggle
+```
 
 ## Layout
 
@@ -46,9 +57,12 @@ There are three keyboard modes:
 |-----|--------|
 | `$mod+Space` | Cycle through this workspace's layouts |
 | `$mod+Shift+Space` | Reset layout to `master-stack` (and `master_count` to 1) |
-| `$mod+Z` | Toggle zoom (monocle) on focused pane |
 | `$mod+F` | Toggle fullscreen |
 | `$mod+S` | Toggle floating for focused window |
+
+In **teru standalone** only, `$mod+Z` toggles monocle. In **teruwm** it's a
+swap-master alias (see the pane table above) because a compositor-wide
+monocle would stomp xmonad muscle memory.
 
 Workspaces have an ordered list of layouts. `$mod+Space` cycles. Available
 layouts: `master-stack`, `grid`, `monocle`, `dishes`, `spiral`, `three-col`,
@@ -61,6 +75,7 @@ layouts: `master-stack`, `grid`, `monocle`, `dishes`, `spiral`, `three-col`,
 | `$mod+1` … `$mod+9`, `$mod+0` | Switch to workspace 1–9, 0 |
 | `$mod+Shift+1` … `$mod+Shift+0` | Move focused window to workspace N |
 | `$mod+Escape` | Toggle **last visited** workspace (xmonad `toggleWS`) |
+| `$mod+`` ` | Same — xmonad-familiar grave alias |
 | `$mod+Ctrl+`` ` | Jump to next **non-empty** workspace (skips empties) |
 | `$mod+O` | Cycle focus to the next **output** (multi-monitor) |
 | `$mod+Shift+O` | Move focused window across outputs |
@@ -74,9 +89,33 @@ on. Since v0.4.18 scratchpads live in the node registry — they're
 visible to `teruwm_list_windows`, composited at the correct z-order
 by screenshots, and survive hot-restart.
 
-| Key | Action |
-|-----|--------|
-| `Alt+RAlt+1` … `Alt+RAlt+9` | Toggle numbered scratchpad 1–9. Compat shim — delegates to named `pad1`..`pad9`. |
+### Default bindings (v0.6.4)
+
+| Key | Scratchpad name | Notes |
+|-----|-----------------|-------|
+| `$mod+T` | `term` | shell scratchpad |
+| `$mod+Shift+T` | `term2` | second shell |
+| `$mod+H` | `htop` | (overrides the old `resize:shrink_w` default) |
+| `$mod+Shift+H` | `help` | reserved, defaults to shell |
+
+Also still available: the hardcoded `Alt+RAlt+1..9` chord toggles the
+numbered compat pads `pad1..pad9`. That chord isn't rebindable today;
+the four defaults above are.
+
+### Rebinding
+
+Any `[keybind]` entry with a `scratchpad:NAME` value reassigns a chord
+to a named pad. Up to 8 named scratchpad chords are supported at once.
+
+```ini
+# ~/.config/teruwm/config
+[keybind]
+super+t       = scratchpad:term       # keep the default name
+super+shift+t = scratchpad:notes      # rename slot 1
+super+h       = resize:shrink_w       # revert Mod+H to master resize
+super+shift+h = scratchpad:mail
+super+n       = scratchpad:notes      # add a fifth chord
+```
 
 **MCP:** `teruwm_scratchpad { name }` — toggle a scratchpad by name.
 First call spawns a floating terminal tagged with `name`; subsequent
@@ -84,16 +123,11 @@ calls flip visibility or migrate between workspaces (xmonad follow-me).
 
 ```sh
 # Two independent scratchpads kept warm across a session:
-grim /tmp/before.png
-teruwm_scratchpad name=term      # spawn + show
-teruwm_scratchpad name=notes     # spawn + show a second one
-teruwm_scratchpad name=term      # hide 'term'; 'notes' stays
-teruwm_scratchpad name=term      # show 'term' again
+teruwmctl scratchpad term       # spawn + show
+teruwmctl scratchpad notes      # spawn + show a second one
+teruwmctl scratchpad term       # hide 'term'; 'notes' stays
+teruwmctl scratchpad term       # show 'term' again
 ```
-
-The `Alt+RAlt+N` chord is explicitly Alt + Right-Alt + digit: both
-Alt keys must be held. This avoids collision with the single-Alt or
-single-Super workspace shortcuts.
 
 ## UI / compositor (teruwm)
 
@@ -113,9 +147,12 @@ single-Super workspace shortcuts.
 
 | Key | Action |
 |-----|--------|
-| `$mod+=` | Zoom in (+1 px) |
 | `$mod+-` | Zoom out (-1 px) |
+| `$mod+_` | Zoom in (+1 px) — shift + minus, same key |
 | `$mod+\` | Reset zoom |
+
+In **teruwm** these chords are unbound — compositor-level font zoom
+doesn't exist; `$mod+=` is master resize instead (see the pane table).
 
 ## Modes
 
