@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.6.5 (2026-04-19)
+
+Cleanup release on top of v0.6.4. Dead Action variants removed, two
+latent teruwm-dispatch bugs fixed, scratchpad config surface finished,
+doc drift swept.
+
+### Breaking
+
+- `Action.send_through` (and its `send:through` parser entry) deleted.
+  Was a scaffold with no handler. Delete any `send:through` config
+  line; add a proper prefix-mode pass-through impl later if you need
+  tmux-style literal-prefix behaviour.
+- `Action.mode_locked` (and its `mode:locked` parser entry) deleted.
+  The enum stub returned `.none`; nothing entered or exited the mode.
+  `Mode.locked` + `shared_except_locked` kept — they're real infra
+  for a future lockscreen client (`ext-session-lock-v1`).
+
+### Features
+
+- **Per-scratchpad spawn command wired.** `[scratchpad.NAME] cmd = …`
+  actually runs the command now (was reserved-future in v0.6.4).
+  `ServerScratchpad.spawn` tokenises the rule's cmd string on
+  whitespace and threads it into `Pane.SpawnConfig.exec_argv`.
+  Empty cmd → default shell. No shell expansion; wrap complex lines
+  in `sh -c "…"`.
+  ```ini
+  [scratchpad.htop]
+  x = 25%
+  y = 25%
+  w = 50%
+  h = 50%
+  cmd = htop
+  ```
+- **`Super+M` → `pane_focus_master`** (reclaimed from the v0.6.4
+  launcher override). **`Super+D` → `launcher_toggle`** (xmonad-native
+  dmenu chord). Match xmonad defaults again.
+
+### Fixes
+
+- **`pane_focus_master` no-oped in teruwm.** KeyHandler had an impl,
+  `ServerInput.executeAction` didn't. Any user config binding
+  `super+N = pane:focus_master` fell through silently.
+- **`split_horizontal` no-oped in teruwm.** Prefix-mode `Ctrl+Space
+  -` did nothing. Merged into the existing split_vertical case since
+  the tiling layouts don't distinguish orientation at the compositor
+  level (teru standalone still does inside one window).
+- **Native terminal border colors now honour `wm_config.border_color_*`.**
+  Were hardcoded in three render paths (`render`, `repaintBorderOnly`,
+  `renderDirtyWithSelection`). Now pulled through a single
+  `TerminalPane.borderColor()` accessor, same source XDG/XWayland
+  windows already used — `[compositor] border_color_focused = #...`
+  takes effect across all pane types.
+- **`pane_index` registration centralised** into `TerminalPane.init`.
+  Missing registration was how the v0.6.4 scratchpad-hide bug shipped
+  — `createFloating` skipped the `server.pane_index.put` call.
+  Centralising eliminates the class of bug.
+
+### Cleanup
+
+- `Server.sceneRoot()` accessor replaces 3× `miozu_scene_tree(scene)`
+  duplication.
+- `toggleByName()` dropped unused `default_cmd` parameter — per-name
+  spawn lives on `ScratchpadRule.cmd` now.
+- `sync_output_timeout_ms = 150` named constant replaces magic literal.
+- Tool counts synced across README / CLAUDE / AI-INTEGRATION / MCP-API
+  (20 teru + 36 teruwm = 56).
+- `KEYBINDINGS.md` scratchpad defaults table fixed (was listing stale
+  `term`/`htop`/`help` names instead of the v0.6.4
+  `terminalBR`/`SR`/`BL`/`SL`).
+- `MCP-API.md` documents `teruwm_quit` (added in v0.6.4, was missing
+  from the reference).
+
 ## 0.6.4 (2026-04-19)
 
 Scratchpad fix pack + xmonad-style keybind overhaul + terminal-input
