@@ -220,7 +220,6 @@ pub fn executeAction(action: KB.Action, mux: *Multiplexer) MuxAction {
         .mode_prefix => .none,
         .mode_scroll => .enter_vi_mode,
         .mode_search => .enter_search,
-        .mode_locked => .none,
         .session_detach => .detach,
         .toggle_status_bar => .toggle_status_bar,
         .copy_selection => .copy_selection,

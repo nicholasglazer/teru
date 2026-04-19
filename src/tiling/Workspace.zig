@@ -145,6 +145,14 @@ pub fn removeNode(self: *Workspace, id: u64) void {
 
 // ── Focus ──────────────────────────────────────────────────────
 
+/// Move focus to the master (index 0). For tree layouts the "master"
+/// is the first pane in depth-first order; active_index aligns there
+/// anyway because we emit panes DFS-first when rebuilding.
+pub fn focusMaster(self: *Workspace) void {
+    if (self.node_ids.items.len == 0) return;
+    self.active_index = 0;
+}
+
 pub fn focusNext(self: *Workspace) void {
     if (self.split_root != null) {
         self.focusNextInTree();

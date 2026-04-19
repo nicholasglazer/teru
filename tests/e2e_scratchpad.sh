@@ -63,44 +63,44 @@ print('MISSING')
 "
 }
 
-# ── scratchpad_0 (Mod+T → term) ────────────────────────────────────
+# ── scratchpad_0 (Mod+T → terminalBR, xmonad layout big-right) ────
 # Press 1: spawn + show (ws=0)
 ctl_retry call teruwm_test_key '{"action":"scratchpad_0"}' > /dev/null
 sleep 0.3
-w="$(ws_of scratch-term)"
-if [[ "$w" == "0" ]]; then ok "Mod+T press 1 → scratch-term on ws=0"
+w="$(ws_of scratch-terminalBR)"
+if [[ "$w" == "0" ]]; then ok "Mod+T press 1 → scratch-terminalBR on ws=0"
 else bad "Mod+T press 1" "expected ws=0, got $w"
 fi
 
 # Press 2: hide (ws=255, HIDDEN_WS)
 ctl_retry call teruwm_test_key '{"action":"scratchpad_0"}' > /dev/null
 sleep 0.3
-w="$(ws_of scratch-term)"
-if [[ "$w" == "255" ]]; then ok "Mod+T press 2 → scratch-term hidden (ws=255)"
+w="$(ws_of scratch-terminalBR)"
+if [[ "$w" == "255" ]]; then ok "Mod+T press 2 → scratch-terminalBR hidden (ws=255)"
 else bad "Mod+T press 2" "expected ws=255, got $w"
 fi
 
 # Press 3: re-show (back to ws=0)
 ctl_retry call teruwm_test_key '{"action":"scratchpad_0"}' > /dev/null
 sleep 0.3
-w="$(ws_of scratch-term)"
-if [[ "$w" == "0" ]]; then ok "Mod+T press 3 → scratch-term re-shown (ws=0)"
+w="$(ws_of scratch-terminalBR)"
+if [[ "$w" == "0" ]]; then ok "Mod+T press 3 → scratch-terminalBR re-shown (ws=0)"
 else bad "Mod+T press 3" "expected ws=0, got $w"
 fi
 
-# ── scratchpad_2 (Mod+H → htop) ────────────────────────────────────
-ctl_retry call teruwm_test_key '{"action":"scratchpad_2"}' > /dev/null
+# ── scratchpad_1 (Mod+Shift+T → terminalSR, small right) ──────────
+ctl_retry call teruwm_test_key '{"action":"scratchpad_1"}' > /dev/null
 sleep 0.3
-w="$(ws_of scratch-htop)"
-if [[ "$w" == "0" ]]; then ok "Mod+H press 1 → scratch-htop on ws=0"
-else bad "Mod+H press 1" "expected ws=0, got $w"
+w="$(ws_of scratch-terminalSR)"
+if [[ "$w" == "0" ]]; then ok "Mod+Shift+T press 1 → scratch-terminalSR on ws=0"
+else bad "Mod+Shift+T press 1" "expected ws=0, got $w"
 fi
 
-ctl_retry call teruwm_test_key '{"action":"scratchpad_2"}' > /dev/null
+ctl_retry call teruwm_test_key '{"action":"scratchpad_1"}' > /dev/null
 sleep 0.3
-w="$(ws_of scratch-htop)"
-if [[ "$w" == "255" ]]; then ok "Mod+H press 2 → scratch-htop hidden"
-else bad "Mod+H press 2" "expected ws=255, got $w"
+w="$(ws_of scratch-terminalSR)"
+if [[ "$w" == "255" ]]; then ok "Mod+Shift+T press 2 → scratch-terminalSR hidden"
+else bad "Mod+Shift+T press 2" "expected ws=255, got $w"
 fi
 
 # ── Cross-workspace migration (xmonad follow-me) ───────────────────
@@ -111,7 +111,7 @@ sleep 0.2
 # migrate to active ws (3), not toggle visibility.
 ctl_retry call teruwm_test_key '{"action":"scratchpad_0"}' > /dev/null
 sleep 0.3
-w="$(ws_of scratch-term)"
+w="$(ws_of scratch-terminalBR)"
 if [[ "$w" == "3" ]]; then ok "Mod+T from ws=3 → term migrated to ws=3"
 else bad "follow-me migration" "expected ws=3, got $w"
 fi

@@ -644,8 +644,17 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
             }
             return true;
         },
-        .split_vertical => {
+        .split_vertical, .split_horizontal => {
+            // In teruwm both splits spawn a new terminal onto the
+            // active workspace — the layout engine decides where it
+            // lands. Teru standalone distinguishes the two (manual
+            // H/V splits inside one window); the compositor's tiling
+            // semantics don't need the distinction.
             server.spawnTerminal(server.layout_engine.active_workspace);
+            return true;
+        },
+        .pane_focus_master => {
+            server.layout_engine.getActiveWorkspace().focusMaster();
             return true;
         },
         .float_toggle => {
