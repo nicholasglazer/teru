@@ -82,11 +82,16 @@ pub const Keyboard = struct {
 
         kb.server.notifyActivity();
 
-        // Release of the currently-repeating key disarms the timer.
+        // Release of the currently-repeating key disarms the timers.
         // Done before dispatch so a press of a different key can re-arm
         // cleanly in the same event.
-        if (key_state == 0 and keycode == kb.server.keybind_repeat_keycode) {
-            kb.server.cancelKeybindRepeat();
+        if (key_state == 0) {
+            if (keycode == kb.server.keybind_repeat_keycode) {
+                kb.server.cancelKeybindRepeat();
+            }
+            if (keycode == kb.server.terminal_repeat_keycode) {
+                kb.server.cancelTerminalRepeat();
+            }
         }
 
         if (key_state == 1) {
@@ -110,14 +115,27 @@ pub const Keyboard = struct {
                     return;
                 }
 
+                // Pressing a different key while another is held-repeating
+                // takes ownership; arm with the new byte sequence after
+                // we write it.
+                var repeat_bytes: []const u8 = &[_]u8{};
+
                 if (ctrl and sym >= 'a' and sym <= 'z') {
                     buf[0] = @intCast(sym - 'a' + 1);
                     tp.writeInput(buf[0..1]);
+                    repeat_bytes = buf[0..1];
                 } else {
                     const len = wlr.xkb_state_key_get_utf8(xkb_st, keycode + 8, &buf, buf.len);
                     if (len > 0) {
                         tp.writeInput(buf[0..@intCast(len)]);
+                        repeat_bytes = buf[0..@intCast(len)];
                     }
+                }
+
+                if (repeat_bytes.len > 0) {
+                    kb.server.armTerminalRepeat(keycode, repeat_bytes);
+                } else {
+                    kb.server.cancelTerminalRepeat();
                 }
             }
             return;
@@ -135,6 +153,10 @@ pub const Keyboard = struct {
         // otherwise the timer keeps firing Mod+L actions even though
         // the user only meant to press Mod+L once then release Super.
         kb.server.cancelKeybindRepeat();
+        // Modifier flip also ends a PTY-input repeat so e.g. holding
+        // Ctrl then pressing `u` for one Ctrl+U doesn't keep repeating
+        // after Ctrl is released.
+        kb.server.cancelTerminalRepeat();
     }
 
     /// Device went away (unplug, runtime disable). Unhook listeners
@@ -394,6 +416,20 @@ fn tryRunSpawnChord(server: *Server, action: KBAction) bool {
     return true;
 }
 
+/// Resolve a `scratchpad_N` action variant to the configured scratchpad
+/// name and toggle. Unconfigured slots are silently ignored — the chord
+/// is still "consumed" so it doesn't leak through to the client.
+fn tryRunScratchpadChord(server: *Server, action: KBAction) bool {
+    const tag: u8 = @intFromEnum(action);
+    const first: u8 = @intFromEnum(KBAction.scratchpad_0);
+    const last: u8 = @intFromEnum(KBAction.scratchpad_7);
+    if (tag < first or tag > last) return false;
+    const slot: u8 = tag - first;
+    const len: usize = server.scratchpad_table_len[slot];
+    if (len > 0) server.toggleScratchpadByName(server.scratchpad_table[slot][0..len], null);
+    return true;
+}
+
 /// Execute a keybind action. Shared by compositor keybinds and MCP
 /// tools (WmMcpServer exposes this via teruwm_run_action).
 pub fn executeAction(server: *Server, action: KBAction) bool {
@@ -587,24 +623,12 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
             server.arrangeworkspace(server.layout_engine.active_workspace);
             return true;
         },
-        .zoom_in => {
-            const ws = server.layout_engine.getActiveWorkspace();
-            ws.master_ratio = @min(0.9, ws.master_ratio + 0.05);
-            server.arrangeworkspace(server.layout_engine.active_workspace);
-            return true;
-        },
-        .zoom_out => {
-            const ws = server.layout_engine.getActiveWorkspace();
-            ws.master_ratio = @max(0.1, ws.master_ratio - 0.05);
-            server.arrangeworkspace(server.layout_engine.active_workspace);
-            return true;
-        },
-        .zoom_reset => {
-            const ws = server.layout_engine.getActiveWorkspace();
-            ws.master_ratio = 0.6;
-            server.arrangeworkspace(server.layout_engine.active_workspace);
-            return true;
-        },
+        // `.zoom_in` / `.zoom_out` / `.zoom_reset` were byte-identical
+        // to `.resize_grow_w` / `.resize_shrink_w` / (reset master
+        // ratio). Removed as teruwm actions — they survive only as
+        // teru-standalone font-zoom actions. Use resize_* in teruwm
+        // configs. `.zoom_toggle` above (swap-with-master) stays — it
+        // *is* a distinct compositor action.
         // Legacy alias — toggles both bars. Per-bar actions below are
         // preferred; this keeps old configs working.
         .toggle_status_bar => {
@@ -716,6 +740,9 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
             if (server.focused_terminal) |tp| applyScrollAction(tp, action);
             return true;
         },
-        else => return tryRunSpawnChord(server, action),
+        else => {
+            if (tryRunScratchpadChord(server, action)) return true;
+            return tryRunSpawnChord(server, action);
+        },
     }
 }

@@ -193,6 +193,15 @@ fn acceptPosix(server: IpcHandle) ?IpcHandle {
     const flags = std.c.fcntl(conn, posix.F.GETFL);
     if (flags >= 0) _ = std.c.fcntl(conn, posix.F.SETFL, flags | compat.O_NONBLOCK);
 
+    // Set FD_CLOEXEC so PTY / shell fork(execve) doesn't inherit this
+    // socket — otherwise the MCP client hangs after `spawn_terminal`
+    // because the shell holds the fd open even after the server's
+    // close(). Request sockets are single-use (accept → respond →
+    // close), so no caller ever wants the child to keep them.
+    const FD_CLOEXEC: c_int = 1;
+    const fdflags = std.c.fcntl(conn, posix.F.GETFD);
+    if (fdflags >= 0) _ = std.c.fcntl(conn, posix.F.SETFD, fdflags | FD_CLOEXEC);
+
     return .{ .fd = conn };
 }
 

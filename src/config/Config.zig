@@ -203,6 +203,7 @@ allocator: Allocator,
 pub fn load(allocator: Allocator, io: Io) !Config {
     var config = Config{ .allocator = allocator };
     config.keybinds.loadDefaults();
+    config.keybinds.loadTerminalZoomDefaults(); // font zoom — teru only
 
     const home = compat.getenv("HOME") orelse return config;
 
@@ -414,6 +415,7 @@ fn parseWithDepth(self: *Config, allocator: Allocator, content: []const u8, io: 
                         // First keybinds section: start fresh (user overrides all)
                         self.keybinds.count = 0;
                         self.keybinds.loadDefaults();
+                        self.keybinds.loadTerminalZoomDefaults();
                         self.keybinds_loaded = true;
                     }
                 } else {
@@ -549,6 +551,7 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         }
         // Re-load defaults with the new mod key
         self.keybinds.loadDefaults();
+        self.keybinds.loadTerminalZoomDefaults();
     } else if (std.mem.eql(u8, key, "mouse_hide_when_typing")) {
         self.mouse_hide_when_typing = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "restore_layout")) {

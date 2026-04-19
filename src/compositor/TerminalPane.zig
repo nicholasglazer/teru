@@ -250,8 +250,14 @@ pub fn createRestored(server: *Server, ws: u8, pane: *Pane) ?*TerminalPane {
 }
 
 /// Create a floating terminal pane (scratchpads — not part of workspace tiling).
+/// Registers the pane in server.pane_index exactly like createWithSpawn
+/// does for tiled panes. Without this, Server.terminalPaneById can't
+/// find the floating pane and any code path that resolves node_id → tp
+/// silently no-ops — notably ServerScratchpad.hide/show, which is why
+/// Mod+T press-to-close didn't take effect on real DRM (v0.6.4 bug).
 pub fn createFloating(server: *Server, rows: u16, cols: u16) ?*TerminalPane {
     const tp = init(server, rows, cols) orelse return null;
+    server.pane_index.put(server.zig_allocator, tp.node_id, tp) catch {};
     tp.render();
     return tp;
 }
@@ -483,6 +489,16 @@ fn drawBorder(self: *TerminalPane, color: u32) void {
 pub fn setVisible(self: *TerminalPane, visible: bool) void {
     if (wlr.miozu_scene_buffer_node(self.scene_buffer)) |node| {
         wlr.wlr_scene_node_set_enabled(node, visible);
+    }
+}
+
+/// Move the pane's scene buffer into a different scene tree. Used by
+/// the scratchpad park/unpark path — reparenting always damages the
+/// old and new AABBs, so unlike set_enabled(false) it reliably forces
+/// the next DRM commit to flip.
+pub fn reparent(self: *TerminalPane, new_parent: *wlr.wlr_scene_tree) void {
+    if (wlr.miozu_scene_buffer_node(self.scene_buffer)) |node| {
+        wlr.wlr_scene_node_reparent(node, new_parent);
     }
 }
 

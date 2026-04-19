@@ -16,6 +16,7 @@ const std = @import("std");
 const Server = @import("Server.zig");
 const TerminalPane = @import("TerminalPane.zig");
 const NodeRegistry = @import("Node.zig");
+const wlr = @import("wlr.zig");
 
 const max_auto_name_len = 32;
 
@@ -42,10 +43,20 @@ pub fn toggleByName(server: *Server, name: []const u8, default_cmd: ?[]const u8)
             server.nodes.moveSlotToWorkspace(slot, active_ws);
             show(server, slot, active_ws);
         }
+        // Hide/show mutate the scene graph (reparent + enable flag +
+        // position), none of which schedule a frame on their own. Without
+        // this the compositor keeps displaying the last frame —
+        // symptom: Mod+T "opens" a scratchpad and a second press is
+        // silently swallowed. Reparenting into a disabled scene tree
+        // (see hide()) is what gets wlroots to actually atomic-flip.
+        server.scheduleRender();
         return;
     }
 
     _ = spawn(server, name, active_ws);
+    // spawn() calls tp.render() which damages the buffer, but we still
+    // need to kick the output so the new buffer paints this vsync.
+    server.scheduleRender();
 }
 
 /// Numbered compatibility shim — index N maps to named scratchpad
@@ -60,8 +71,9 @@ pub fn toggleNumbered(server: *Server, index: u8) void {
 }
 
 /// Default geometry for a scratchpad rect — percentage of the active
-/// output's dimensions, centered. Future: per-name overrides from a
-/// `[scratchpads]` config section.
+/// output's dimensions, centered. Fallback when no per-name rule
+/// exists. Prefer `rectForName(server, name)` which honours
+/// `[scratchpad.NAME]` config + default-seeded xmonad rects.
 pub fn defaultRect(server: *const Server) ScratchRect {
     const dims = server.activeOutputDims();
     const out_w: u32 = dims.w;
@@ -76,17 +88,45 @@ pub fn defaultRect(server: *const Server) ScratchRect {
     };
 }
 
+/// Per-name scratchpad geometry. Looks up `[scratchpad.NAME]` rule
+/// (either from config or pre-seeded xmonad defaults in
+/// Server.applyDefaultScratchpadRules), multiplies its x/y/w/h
+/// fractions by the active output's pixel dimensions, and returns
+/// the absolute rect. Falls back to the centered defaultRect when
+/// no rule matches — users can toggle a fresh name with
+/// `teruwm_scratchpad name=whatever` and get a sensible default.
+pub fn rectForName(server: *const Server, name: []const u8) ScratchRect {
+    const rule = server.scratchpadRuleFor(name) orelse return defaultRect(server);
+    if (!rule.has_rect) return defaultRect(server);
+    const dims = server.activeOutputDims();
+    const out_w_f: f32 = @floatFromInt(dims.w);
+    const out_h_f: f32 = @floatFromInt(dims.h);
+    const x_px: i32 = @intFromFloat(rule.x * out_w_f);
+    const y_px: i32 = @intFromFloat(rule.y * out_h_f);
+    const w_px: u32 = @intFromFloat(rule.w * out_w_f);
+    const h_px: u32 = @intFromFloat(rule.h * out_h_f);
+    return .{ .x = x_px, .y = y_px, .w = w_px, .h = h_px };
+}
+
 // ── Private ──────────────────────────────────────────────────
 
 /// Promote a parked scratchpad slot onto workspace `ws` and focus it.
+/// Reparents the scene buffer back into the scene root if it was
+/// parked — see hide() for why we can't just rely on set_enabled.
 fn show(server: *Server, slot: u16, ws: u8) void {
     server.nodes.moveSlotToWorkspace(slot, ws);
-    const rect = defaultRect(server);
+    // Look up per-name rect: fraction-of-output-size, evaluated at
+    // every show() so multi-monitor + resolution change Just Work.
+    const name = server.nodes.getScratchpad(slot);
+    const rect = rectForName(server, name);
     server.nodes.applyRect(slot, rect.x, rect.y, rect.w, rect.h);
 
     if (server.nodes.kind[slot] == .terminal) {
         const nid = server.nodes.node_id[slot];
         if (server.terminalPaneById(nid)) |tp| {
+            if (wlr.miozu_scene_tree(server.scene)) |root| {
+                tp.reparent(root);
+            }
             tp.setVisible(true);
             tp.resize(rect.w, rect.h);
             tp.setPosition(rect.x, rect.y);
@@ -97,12 +137,22 @@ fn show(server: *Server, slot: u16, ws: u8) void {
     }
 }
 
-/// Demote a visible scratchpad to HIDDEN_WS.
+/// Demote a visible scratchpad to HIDDEN_WS by reparenting the scene
+/// buffer into Server.hidden_tree (disabled). `wlr_scene_node_reparent`
+/// damages both the old (visible) and new (hidden, disabled) positions,
+/// guaranteeing the next DRM commit actually flips — previously we
+/// called only `wlr_scene_node_set_enabled(false)`, which updates the
+/// flag but can lose the enable-transition damage in wlr_scene's output
+/// propagation, so the eDP-1 panel kept showing the last frame until
+/// something else forced a repaint.
 fn hide(server: *Server, slot: u16) void {
     server.nodes.moveSlotToWorkspace(slot, NodeRegistry.HIDDEN_WS);
     if (server.nodes.kind[slot] == .terminal) {
         const nid = server.nodes.node_id[slot];
         if (server.terminalPaneById(nid)) |tp| {
+            if (server.getOrCreateHiddenTree()) |parked| {
+                tp.reparent(parked);
+            }
             tp.setVisible(false);
             if (server.focused_terminal == tp) server.focused_terminal = null;
         }
@@ -113,7 +163,7 @@ fn hide(server: *Server, slot: u16) void {
 /// focused. Returns the registry slot, or null on alloc failure (pane
 /// is torn down cleanly on that path).
 fn spawn(server: *Server, name: []const u8, ws: u8) ?u16 {
-    const rect = defaultRect(server);
+    const rect = rectForName(server, name);
     const cell_w: u32 = if (server.font_atlas) |fa| fa.cell_width else 8;
     const cell_h: u32 = if (server.font_atlas) |fa| fa.cell_height else 16;
     const cols: u16 = @intCast(@max(1, rect.w / cell_w));
