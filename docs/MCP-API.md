@@ -209,7 +209,7 @@ path (below) all get the same unified surface. Set
 `TERUWM_MCP_SOCKET=/path/to/sock` to pin a specific teruwm instance
 when multiple run on the same host.
 
-`tools/list` today returns only teru's 19 tools — the forwarded
+`tools/list` today returns only teru's 20 tools — the forwarded
 tools aren't merged into the listing. Clients that want the full
 surface should also query teruwm's socket directly for its
 `tools/list`, or rely on documentation (this file). Unified
@@ -243,7 +243,7 @@ release — today, `teruwm_*` tools must still go through the compositor
 socket. See [AI-INTEGRATION.md](AI-INTEGRATION.md#in-band-mcp-over-osc-9999)
 for the full protocol spec.
 
-## teru (terminal) MCP — 19 tools
+## teru (terminal) MCP — 20 tools
 
 Socket: `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock`. Implementation: `src/agent/McpServer.zig`.
 
@@ -299,7 +299,7 @@ Layouts: `master-stack`, `grid`, `monocle`, `dishes`, `spiral`, `three-col`,
 |---|---|---|
 | `teru_screenshot` | `path` (string, default `/tmp/teru-screenshot.png`) | Capture current framebuffer as PNG. X11/Wayland only. |
 
-## teruwm (compositor) MCP — 28 tools
+## teruwm (compositor) MCP — 36 tools
 
 Socket: `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock`. Implementation: `src/compositor/WmMcpServer.zig`.
 
@@ -352,6 +352,7 @@ Socket: `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock`. Implementation: `src/compositor
 | `teruwm_perf` | — | Frame timing stats: `frames`, `avg_us`, `max_us`, `min_us`, `pty_reads`, `pty_bytes`, `terminals`. |
 | `teruwm_notify` | `message` | Show a notification overlay. |
 | `teruwm_restart` | — | Hot-restart: serialize PTY fds, `exec()` the current binary. Shells survive. Use after rebuild. |
+| `teruwm_quit` | — | Terminate compositor cleanly (same as `Mod+Shift+Q`). Response returns before `wl_display_terminate` so the client sees the ack. Destructive — every managed client loses its display server. |
 
 ### Screenshots
 

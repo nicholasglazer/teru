@@ -82,30 +82,48 @@ by screenshots, and survive hot-restart.
 
 ### Default bindings (v0.6.4)
 
-| Key | Scratchpad name | Notes |
-|-----|-----------------|-------|
-| `$mod+T` | `term` | shell scratchpad |
-| `$mod+Shift+T` | `term2` | second shell |
-| `$mod+H` | `htop` | (overrides the old `resize:shrink_w` default) |
-| `$mod+Shift+H` | `help` | reserved, defaults to shell |
+Four named scratchpads are pre-registered with xmonad-parity geometry
+(`src/compositor/Server.applyDefaultScratchpadRules`). Only two have
+default chords; `terminalBL` / `terminalSL` are reachable via MCP
+(`teruwmctl scratchpad terminalBL`) or by adding your own chord.
+
+| Key | Scratchpad | Geometry |
+|-----|------------|----------|
+| `$mod+T` | `terminalBR` | big right — x=42%, y=3%, w=57%, h=78% |
+| `$mod+Shift+T` | `terminalSR` | small right — x=42%, y=83%, w=57%, h=15% |
+| *(unbound)* | `terminalBL` | big left — x=1%, y=3%, w=40%, h=62% |
+| *(unbound)* | `terminalSL` | small left — x=1%, y=67%, w=40%, h=31% |
 
 Also still available: the hardcoded `Alt+RAlt+1..9` chord toggles the
 numbered compat pads `pad1..pad9`. That chord isn't rebindable today;
-the four defaults above are.
+the named four are.
 
 ### Rebinding
 
-Any `[keybind]` entry with a `scratchpad:NAME` value reassigns a chord
-to a named pad. Up to 8 named scratchpad chords are supported at once.
+Any `[keybind]` entry with a `scratchpad:NAME` value assigns a chord
+to a named pad. Up to 8 named scratchpad chords at once.
 
 ```ini
 # ~/.config/teruwm/config
 [keybind]
-super+t       = scratchpad:term       # keep the default name
-super+shift+t = scratchpad:notes      # rename slot 1
-super+h       = resize:shrink_w       # revert Mod+H to master resize
-super+shift+h = scratchpad:mail
-super+n       = scratchpad:notes      # add a fifth chord
+super+shift+h = scratchpad:terminalSL   # xmonad-default left-small
+super+h       = scratchpad:terminalBL   # xmonad-default left-big
+super+n       = scratchpad:notes        # custom named pad
+```
+
+### Per-name geometry overrides
+
+New in v0.6.4 — `[scratchpad.NAME]` sections accept `x/y/w/h` as
+fractions (`0.42`) or percent (`42%`). Evaluated at each show() against
+the active output's dimensions, so the same config works at 1080p and
+4K without edits.
+
+```ini
+[scratchpad.notes]
+x = 5%
+y = 60%
+w = 40%
+h = 35%
 ```
 
 **MCP:** `teruwm_scratchpad { name }` — toggle a scratchpad by name.

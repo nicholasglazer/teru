@@ -23,13 +23,13 @@ zig build run -- --raw                # run debug teru (TTY mode)
 - `src/server/` — Session daemon (`daemon.zig`), wire protocol, cross-platform IPC (`ipc.zig`)
 - `src/pty/` — `pty.zig` comptime dispatch, `PosixPty.zig`, `WinPty.zig` (ConPTY), `RemotePty.zig`
 - `src/graph/` — `ProcessGraph` (DAG of processes/agents, MCP-queryable)
-- `src/agent/` — OSC 9999 parser, HookHandler/Listener, `McpServer.zig` + `McpDispatch.zig` (19 tools, line-JSON), `McpBridge.zig` (stdio proxy), `in_band.zig` (in-band MCP over OSC 9999 + DCS), `PaneBackend.zig`
+- `src/agent/` — OSC 9999 parser, HookHandler/Listener, `McpServer.zig` + `McpDispatch.zig` (20 tools, line-JSON), `McpBridge.zig` (stdio proxy), `in_band.zig` (in-band MCP over OSC 9999 + DCS), `PaneBackend.zig`
 - `src/tiling/` — Layout engine + workspace state; 8 layouts (master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion)
 - `src/persist/` — Session serialization, scrollback compression (keyframe + delta)
 - `src/config/` — Config parser, `Keybinds.zig` (configurable), `ConfigWatcher.zig` (inotify/kqueue/poll), `themes.zig`
 - `src/render/` — `software.zig` (SIMD renderer), `FontAtlas.zig` (stb_truetype), `BarRenderer.zig` (shared), `BarWidget.zig`, `PushWidget.zig`
 - `src/platform/` — X11 (XCB) + Wayland (xdg-shell) + AppKit + Win32; keyboard translation per OS
-- `src/compositor/` — **teruwm only.** `main.zig`, `Server.zig`, `Bar.zig`, `TerminalPane.zig`, `XdgView.zig`, `XwaylandView.zig`, `WmMcpServer.zig` (28 tools), `WmConfig.zig`, `Node.zig`, wlroots `wlr.zig` bindings, `miozu-wlr-glue.c`
+- `src/compositor/` — **teruwm only.** `main.zig`, `Server.zig`, `Bar.zig`, `TerminalPane.zig`, `XdgView.zig`, `XwaylandView.zig`, `WmMcpServer.zig` (36 tools), `WmConfig.zig`, `Node.zig`, wlroots `wlr.zig` bindings, `miozu-wlr-glue.c`
 - `src/compat.zig` — `monotonicNow`, `sleepNs`, `getPid`, `getUid`, `posixFork`, `forkExec`, `MemWriter/MemReader`
 - `tools/bench.zig` — vtebench payload throughput harness (zig build bench)
 
@@ -37,7 +37,7 @@ Map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## MCP
 
-Two servers. 48 tools total.
+Two servers. 56 tools total.
 
 - **teru agent** (`src/agent/McpServer.zig`) — 20 tools + event push channel, sockets `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock` (requests) and `teru-mcp-events-$PID.sock` (events). Since v0.4.19 transparently forwards `teruwm_*` tools to the compositor socket.
 - **teruwm compositor** (`src/compositor/WmMcpServer.zig`) — 28 tools + event push channel, sockets `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock` (requests) and `teruwm-mcp-events-$PID.sock` (events)
@@ -107,7 +107,7 @@ place:
 - [docs/INSTALLING.md](docs/INSTALLING.md) — per-platform install + teruwm TTY caveat
 - [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md) — every default keybind for both binaries
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — teru.conf, teruwm/config, widgets, thresholds, rules
-- [docs/MCP-API.md](docs/MCP-API.md) — all 48 tools with schemas + examples
+- [docs/MCP-API.md](docs/MCP-API.md) — all 56 tools with schemas + examples
 - [docs/AI-INTEGRATION.md](docs/AI-INTEGRATION.md) — CustomPaneBackend, push widgets, OSC 9999, .tsess templates
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module map, rendering pipeline, hot-restart, gap arithmetic
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — methodology + numbers, explicitly-not-measured items

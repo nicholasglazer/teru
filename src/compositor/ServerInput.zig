@@ -426,7 +426,7 @@ fn tryRunScratchpadChord(server: *Server, action: KBAction) bool {
     if (tag < first or tag > last) return false;
     const slot: u8 = tag - first;
     const len: usize = server.scratchpad_table_len[slot];
-    if (len > 0) server.toggleScratchpadByName(server.scratchpad_table[slot][0..len], null);
+    if (len > 0) server.toggleScratchpadByName(server.scratchpad_table[slot][0..len]);
     return true;
 }
 

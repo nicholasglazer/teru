@@ -16,7 +16,6 @@ const std = @import("std");
 const Server = @import("Server.zig");
 const TerminalPane = @import("TerminalPane.zig");
 const NodeRegistry = @import("Node.zig");
-const wlr = @import("wlr.zig");
 
 const max_auto_name_len = 32;
 
@@ -27,8 +26,11 @@ pub const ScratchRect = struct { x: i32, y: i32, w: u32, h: u32 };
 ///   (b) hidden (HIDDEN_WS)     → promote to active workspace
 ///   (c) on active workspace    → demote to HIDDEN_WS
 ///   (d) on another workspace   → migrate to active workspace (follow-me)
-pub fn toggleByName(server: *Server, name: []const u8, default_cmd: ?[]const u8) void {
-    _ = default_cmd; // reserved for future per-scratchpad spawn cmds
+///
+/// Per-name spawn commands (`[scratchpad.NAME] cmd = htop`) are read
+/// via `server.scratchpadRuleFor(name)` in spawn() — no need for an
+/// explicit parameter here.
+pub fn toggleByName(server: *Server, name: []const u8) void {
     if (name.len == 0 or name.len >= NodeRegistry.max_scratchpad_name) return;
     const active_ws = server.layout_engine.active_workspace;
 
@@ -67,7 +69,7 @@ pub fn toggleNumbered(server: *Server, index: u8) void {
     if (index >= 9) return;
     var name_buf: [8]u8 = undefined;
     const name = std.fmt.bufPrint(&name_buf, "pad{d}", .{index + 1}) catch return;
-    toggleByName(server, name, null);
+    toggleByName(server, name);
 }
 
 /// Default geometry for a scratchpad rect — percentage of the active
@@ -124,7 +126,7 @@ fn show(server: *Server, slot: u16, ws: u8) void {
     if (server.nodes.kind[slot] == .terminal) {
         const nid = server.nodes.node_id[slot];
         if (server.terminalPaneById(nid)) |tp| {
-            if (wlr.miozu_scene_tree(server.scene)) |root| {
+            if (server.sceneRoot()) |root| {
                 tp.reparent(root);
             }
             tp.setVisible(true);

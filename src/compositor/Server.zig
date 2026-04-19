@@ -770,6 +770,13 @@ fn applyWmScratchpadChords(self: *Server) void {
     }
 }
 
+/// Scene graph root — the parent tree of every mapped node (terminals,
+/// XDG surfaces, XWayland surfaces, scene_rect borders, bars). Cached
+/// accessor so callers don't have to know about the wlr glue function.
+pub fn sceneRoot(self: *const Server) ?*wlr.wlr_scene_tree {
+    return wlr.miozu_scene_tree(self.scene);
+}
+
 /// Return (lazily creating on first call) a permanently-disabled
 /// scene tree that lives as a sibling of the scene root. Scratchpads
 /// park their scene buffer node in here when toggled off. The tree is
@@ -779,7 +786,7 @@ fn applyWmScratchpadChords(self: *Server) void {
 /// see hidden_tree field docstring.
 pub fn getOrCreateHiddenTree(self: *Server) ?*wlr.wlr_scene_tree {
     if (self.hidden_tree) |t| return t;
-    const root = wlr.miozu_scene_tree(self.scene) orelse return null;
+    const root = self.sceneRoot() orelse return null;
     const tree = wlr.wlr_scene_tree_create(root) orelse return null;
     if (wlr.miozu_scene_tree_node(tree)) |node| {
         wlr.wlr_scene_node_set_enabled(node, false);
@@ -1488,8 +1495,8 @@ pub fn toggleFullscreen(self: *Server) void {
 //   hook   → per-scratchpad rect from WmConfig (future) or default 35×40% center
 
 /// Toggle a named scratchpad. Delegates to ServerScratchpad.zig.
-pub fn toggleScratchpadByName(self: *Server, name: []const u8, default_cmd: ?[]const u8) void {
-    Scratchpad.toggleByName(self, name, default_cmd);
+pub fn toggleScratchpadByName(self: *Server, name: []const u8) void {
+    Scratchpad.toggleByName(self, name);
 }
 
 /// Numbered compatibility shim — N maps to named scratchpad padN+1.
