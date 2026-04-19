@@ -33,6 +33,7 @@ There are three keyboard modes:
 | `$mod+J` / `$mod+K` | Focus next / previous pane |
 | `$mod+Tab` / `$mod+Shift+Tab` | Focus next / previous (XMonad-style) |
 | `$mod+Shift+J` / `$mod+Shift+K` | Swap focused pane with next / previous |
+| `$mod+M` | Focus the master pane (no swap) |
 | `$mod+Shift+M` | Swap focused pane ↔ master (xmonad `W.swapMaster`) |
 | `$mod+Z` | Same as `$mod+Shift+M` (xmonad-muscle-memory alias) |
 | `$mod+H` / `$mod+L` | Shrink / grow master width |
@@ -40,16 +41,6 @@ There are three keyboard modes:
 | `$mod+Ctrl+J` / `$mod+Ctrl+K` | Rotate slaves down / up (keeps master + focus in place; xmonad `rotSlaves`) |
 | `$mod+,` / `$mod+.` | Inc / dec **master count** — master-stack supports N masters stacked vertically |
 | `$mod+Ctrl+S` | Sink *all* floating windows back into tiling |
-
-Note: `$mod+M` opens the launcher (moved off `$mod+D` to dodge
-Claude Code's `Alt+D` chord). To reclaim it for `pane:focus_master`,
-bind it explicitly in your config:
-
-```ini
-[keybinds.normal]
-super+m = pane:focus_master
-super+p = launcher:toggle
-```
 
 ## Layout
 

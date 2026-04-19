@@ -169,7 +169,6 @@ pub const Action = enum(u8) {
     mode_prefix,
     mode_scroll,
     mode_search,
-    mode_locked,
 
     // Session
     session_detach,
@@ -197,9 +196,6 @@ pub const Action = enum(u8) {
 
     // Select (for scroll/copy mode)
     select_begin,
-
-    // Send raw key through to PTY
-    send_through,
 
     // Compositor actions (no-ops in standalone teru, handled by teruwm Server)
     spawn_terminal,
@@ -284,7 +280,6 @@ pub const Action = enum(u8) {
             .{ "mode:prefix", Action.mode_prefix },
             .{ "mode:scroll", Action.mode_scroll },
             .{ "mode:search", Action.mode_search },
-            .{ "mode:locked", Action.mode_locked },
             .{ "session:detach", Action.session_detach },
             .{ "session:save", Action.session_save },
             .{ "session:restore", Action.session_restore },
@@ -300,7 +295,6 @@ pub const Action = enum(u8) {
             .{ "search:next", Action.search_next },
             .{ "search:prev", Action.search_prev },
             .{ "select:begin", Action.select_begin },
-            .{ "send:through", Action.send_through },
             .{ "spawn:terminal", Action.spawn_terminal },
             .{ "window:close", Action.window_close },
             .{ "compositor:quit", Action.compositor_quit },
@@ -670,7 +664,10 @@ pub const Keybinds = struct {
         _ = self.add(n, M, 'z', .zoom_toggle);
         _ = self.add(n, M, 'f', .fullscreen_toggle);
         _ = self.add(n, M, 's', .float_toggle);
-        _ = self.add(n, M, 'm', .launcher_toggle);
+        _ = self.add(n, M, 'd', .launcher_toggle);
+        // Mod+M stays as pane_focus_master from the pane section above
+        // (xmonad parity). Previously overwritten here with launcher;
+        // v0.6.5 reverts that so launcher lives on Mod+D instead.
 
         // Modes + UI
         // Note: Mod+/ is *not* bound to mode_search here — it's the
