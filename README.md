@@ -40,7 +40,7 @@ human with a keyboard for.
 
 **Concrete differentiators** (things no other terminal or compositor has):
 
-- **MCP control plane.** 19 tools for the terminal, 24 tools for the compositor. Every feature
+- **MCP control plane.** 20 tools for the terminal, 36 tools for the compositor. Every feature
   that has a keybind also has a tool. [docs/MCP-API.md](docs/MCP-API.md).
 - **Push widgets.** External daemons register `{widget:name}` entries in the bar and push updates
   via MCP — event-driven, no polling. [docs/AI-INTEGRATION.md](docs/AI-INTEGRATION.md#push-widgets).
@@ -147,7 +147,7 @@ Everything user-facing lives in `docs/`. Concept-by-concept:
 | teru terminal, Windows (Win32 + ConPTY) | all subsystems wired; needs hardware testing |
 | teruwm compositor, Linux (wlroots) | usable; XDG + XWayland verified with Chromium / Emacs / Figma |
 | Session persistence (`-n NAME`) | production |
-| MCP (48 tools) | production; E2E suite covers every tool |
+| MCP (56 tools) | production; E2E suite covers every tool |
 | Hot restart | production; shells survive exec |
 | Push widgets | production |
 | Keypress-to-photon latency numbers | waiting on phototransistor rig — deliberately not published until measured in hardware |

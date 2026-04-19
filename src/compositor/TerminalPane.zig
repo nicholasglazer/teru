@@ -21,6 +21,12 @@ const Server = @import("Server.zig");
 
 const TerminalPane = @This();
 
+/// Safety valve for DEC private mode 2026 (synchronized output). When an
+/// app opens a sync batch and never closes it (buggy client, crashed
+/// mid-paint), we fall through after this many milliseconds so the pane
+/// isn't frozen. Matches Alacritty's published default.
+const sync_output_timeout_ms: u64 = 150;
+
 server: *Server,
 pane: Pane,
 renderer: SoftwareRenderer,
@@ -295,13 +301,13 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     // rebuilds row-by-row. windowed.zig honours this already; the
     // compositor path had regressed since the module split.
     //
-    // Safety valve: if an app enters the sync batch and never exits
-    // (buggy client, crashed), fall through after ~150 ms so the
-    // pane isn't frozen forever. Matches Alacritty's timeout.
+    // Safety valve: if an app enters the sync batch and never exits,
+    // fall through after `sync_output_timeout_ms` so the pane isn't
+    // frozen forever. See the constant's docstring.
     if (self.pane.vt.sync_output) {
         const now = compat.monotonicNow();
         if (self.sync_started_ns == 0) self.sync_started_ns = now;
-        if (now - self.sync_started_ns < 150 * std.time.ns_per_ms) return false;
+        if (now - self.sync_started_ns < sync_output_timeout_ms * std.time.ns_per_ms) return false;
         // Timed out — let the frame render below and reset tracker.
         self.sync_started_ns = 0;
     } else {

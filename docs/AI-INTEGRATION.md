@@ -246,7 +246,7 @@ printf '\e]9999;query;id=1;tool=teru_list_panes\x07' > /dev/tty
 
 ### Current scope
 
-Tools exposed: all 45 tools. As of v0.4.19, teru's MCP transparently
+Tools exposed: all 56 tools. As of v0.4.19, teru's MCP transparently
 forwards `teruwm_*` tool calls to the running teruwm socket. Agents
 running inside a teru pane under teruwm can use the same `teru-query`
 helper for compositor control:

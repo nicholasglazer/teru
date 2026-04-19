@@ -1268,7 +1268,7 @@ fn toolToggleScratchpad(self: *WmMcpServer, index: u8, buf: []u8, id: ?[]const u
     // the toggle result by reading the new state from the NodeRegistry.
     var name_buf: [8]u8 = undefined;
     const name = std.fmt.bufPrint(&name_buf, "pad{d}", .{index + 1}) catch return jsonRpcError(buf, id, -32603, "bad index");
-    self.server.toggleScratchpadByName(name, null);
+    self.server.toggleScratchpadByName(name);
 
     const id_str = id orelse "null";
     const slot = self.server.nodes.findByScratchpad(name);
@@ -1280,8 +1280,11 @@ fn toolToggleScratchpad(self: *WmMcpServer, index: u8, buf: []u8, id: ?[]const u
 }
 
 fn toolScratchpad(self: *WmMcpServer, name: []const u8, cmd: ?[]const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    _ = cmd; // `cmd` param is wire-compat with the MCP schema — per-name
+             // spawn commands live in `[scratchpad.NAME] cmd = …` now.
+             // This MCP field stays for back-compat but is ignored.
     if (name.len == 0) return jsonRpcError(buf, id, -32602, "scratchpad name required");
-    self.server.toggleScratchpadByName(name, cmd);
+    self.server.toggleScratchpadByName(name);
 
     const id_str = id orelse "null";
     const slot = self.server.nodes.findByScratchpad(name);
