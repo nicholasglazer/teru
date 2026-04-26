@@ -1,40 +1,74 @@
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 
+# ── CRT fix (GCC 15+ .sframe — Zig linker R_X86_64_PC64 gap) ──────────
+# fix-crt.sh is idempotent: fast no-op when .sframe not present,
+# creates stripped CRT copies + libc.txt when needed.
+CRT_FIX_LIBC = .cache/crt-fix-all/libc.txt
+CRT_FIX_FLAG = $$([ -f $(CRT_FIX_LIBC) ] && echo "--libc $(CRT_FIX_LIBC)")
+
+.PHONY: prepare
+prepare: ## Run once: set up CRT fix (auto-detect, idempotent)
+	./tools/fix-crt.sh
+
 # ── Development ─────────────────────────────────────────────────────
 .PHONY: dev
 dev: ## Debug build (4MB, full safety + debug symbols)
-	zig build
+	./tools/fix-crt.sh
+	zig build $(CRT_FIX_FLAG)
 
 .PHONY: run
 run: ## Build and run (debug)
-	zig build run
+	./tools/fix-crt.sh
+	zig build run $(CRT_FIX_FLAG)
 
 .PHONY: test
 test: ## Run all tests
-	zig build test
+	./tools/fix-crt.sh
+	zig build test $(CRT_FIX_FLAG)
 
 # ── Release ─────────────────────────────────────────────────────────
 .PHONY: release
 release: ## Release build (1.3MB, optimized + safety checks)
-	zig build -Doptimize=ReleaseSafe
+	./tools/fix-crt.sh
+	zig build -Doptimize=ReleaseSafe $(CRT_FIX_FLAG)
 	strip zig-out/bin/teru
 
 .PHONY: release-small
 release-small: ## Smallest build (~800KB, no safety checks)
-	zig build -Doptimize=ReleaseSmall
+	./tools/fix-crt.sh
+	zig build -Doptimize=ReleaseSmall $(CRT_FIX_FLAG)
 	strip zig-out/bin/teru
 
 # ── Minimal builds (single backend) ────────────────────────────────
 .PHONY: release-x11
 release-x11: ## X11-only release (no wayland-client dep)
-	zig build -Doptimize=ReleaseSafe -Dwayland=false
+	./tools/fix-crt.sh
+	zig build -Doptimize=ReleaseSafe -Dwayland=false $(CRT_FIX_FLAG)
 	strip zig-out/bin/teru
 
 .PHONY: release-wayland
 release-wayland: ## Wayland-only release (no libxcb dep)
-	zig build -Doptimize=ReleaseSafe -Dx11=false
+	./tools/fix-crt.sh
+	zig build -Doptimize=ReleaseSafe -Dx11=false $(CRT_FIX_FLAG)
 	strip zig-out/bin/teru
+
+# ── Compositor (teruwm) ─────────────────────────────────────────────
+.PHONY: compositor
+compositor: ## Debug build with compositor (teruwm)
+	./tools/fix-crt.sh
+	zig build -Dcompositor $(CRT_FIX_FLAG)
+
+.PHONY: release-compositor
+release-compositor: ## Release build with compositor (teruwm)
+	./tools/fix-crt.sh
+	zig build -Doptimize=ReleaseSafe -Dcompositor $(CRT_FIX_FLAG)
+	strip zig-out/bin/teruwm
+
+.PHONY: run-wm
+run-wm: ## Build and run teruwm compositor
+	./tools/fix-crt.sh
+	zig build run-wm --libc $(CRT_FIX_FLAG)
 
 # ── Install ─────────────────────────────────────────────────────────
 .PHONY: install
@@ -52,29 +86,28 @@ bump-version: ## Bump version: make bump-version V=x.y.z
 	@sed -i 's/const version = ".*"/const version = "$(V)"/' build.zig
 	@sed -i 's/\.version = ".*"/.version = "$(V)"/' build.zig.zon
 	@echo "Bumped to $(V) in build.zig + build.zig.zon"
-	@echo "  main.zig and McpServer.zig read build_options.version at compile time"
 
 # ── Clean ───────────────────────────────────────────────────────────
 .PHONY: clean
 clean: ## Remove build artifacts
-	rm -rf zig-out .zig-cache
+	rm -rf zig-out .zig-cache .cache/crt-fix-all
 
-# ── Info ────────────────────────────────────────────────────────────
 .PHONY: help
 help: ## Show this help
 	@grep -E '^[a-z-]+:.*##' Makefile | awk -F ':.*## ' '{printf "  %-20s %s\n", $$1, $$2}'
 
 .PHONY: size
 size: ## Show binary size for all build profiles
-	@echo "=== Build profiles ==="
-	@zig build -Doptimize=ReleaseSafe 2>/dev/null && strip zig-out/bin/teru && printf "  ReleaseSafe:  %s\n" "$$(du -h zig-out/bin/teru | cut -f1)"
-	@zig build -Doptimize=ReleaseSmall 2>/dev/null && strip zig-out/bin/teru && printf "  ReleaseSmall: %s\n" "$$(du -h zig-out/bin/teru | cut -f1)"
-	@zig build 2>/dev/null && printf "  Debug:        %s\n" "$$(du -h zig-out/bin/teru | cut -f1)"
+	./tools/fix-crt.sh
+	zig build -Doptimize=ReleaseSafe $(CRT_FIX_FLAG) 2>/dev/null && strip zig-out/bin/teru && printf "  ReleaseSafe:  %s\n" "$$(du -h zig-out/bin/teru | cut -f1)"; true
+	zig build -Doptimize=ReleaseSmall $(CRT_FIX_FLAG) 2>/dev/null && strip zig-out/bin/teru && printf "  ReleaseSmall: %s\n" "$$(du -h zig-out/bin/teru | cut -f1)"; true
+	zig build $(CRT_FIX_FLAG) 2>/dev/null && printf "  Debug:        %s\n" "$$(du -h zig-out/bin/teru | cut -f1)"; true
 
 .PHONY: deps
 deps: ## Check runtime dependencies
+	./tools/fix-crt.sh
 	@echo "=== Linked libraries ==="
-	@zig build -Doptimize=ReleaseSafe 2>/dev/null && ldd zig-out/bin/teru 2>/dev/null | grep -E 'xcb|xkb|wayland' || echo "  (cross-compiled or static)"
+	@zig build -Doptimize=ReleaseSafe $(CRT_FIX_FLAG) 2>/dev/null && ldd zig-out/bin/teru 2>/dev/null | grep -E 'xcb|xkb|wayland' || echo "  (cross-compiled or static)"; true
 	@echo ""
 	@echo "=== Clipboard tools ==="
 	@command -v xclip >/dev/null 2>&1 && echo "  xclip: found" || echo "  xclip: NOT FOUND (needed for X11 clipboard)"
