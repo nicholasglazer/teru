@@ -4,12 +4,33 @@ Two binaries, one source tree. `teru` is a terminal emulator + multiplexer;
 `teruwm` is a wlroots Wayland compositor built on the same libteru library.
 Written in Zig 0.16+. Links libc via `src/compat.zig`.
 
+## CRT Fix (GCC 15+ .sframe)
+
+GCC 15+ adds `.sframe` sections to CRT files with `R_X86_64_PC64` relocations
+that the Zig linker can't handle yet (upstream gap). The build auto-detects this
+and creates stripped CRT copies in `.cache/crt-fix-all/`. Syslib symlinks
+are generated so Zig resolves libraries against the fixed `crt_dir`.
+
+Direct `zig build` needs `--libc`:
+```sh
+zig build --libc .cache/crt-fix-all/libc.txt
+zig build -Dcompositor --libc .cache/crt-fix-all/libc.txt
+```
+
+Makefile targets handle this automatically:
+```sh
+make dev               # auto-fix + debug teru
+make compositor        # auto-fix + debug teruwm
+```
+
 ## Build
 
 ```sh
-zig build                             # debug teru
+make dev                                  # debug teru (auto CRT fix)
+zig build                                 # debug teru (no CRT fix)
 zig build -Doptimize=ReleaseFast      # release teru   → zig-out/bin/teru
-zig build -Dcompositor                # debug teruwm
+make compositor                           # debug teruwm (auto CRT fix)
+zig build -Dcompositor                    # debug teruwm (no CRT fix)
 zig build -Doptimize=ReleaseFast -Dcompositor   # release teruwm → zig-out/bin/teruwm
 zig build test                        # 472+ inline tests (library-level)
 zig build bench -- tools/bench-payloads   # throughput benchmarks
