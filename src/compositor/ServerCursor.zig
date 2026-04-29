@@ -273,7 +273,7 @@ fn tryBeginFloatDrag(server: *Server, button: u32, cx: f64, cy: f64) bool {
         server.grab_x = cx - @as(f64, @floatFromInt(server.nodes.pos_x[slot]));
         server.grab_y = cy - @as(f64, @floatFromInt(server.nodes.pos_y[slot]));
         return true;
-    } else if (button == 274) { // BTN_RIGHT: resize
+    } else if (button == 273) { // BTN_RIGHT: resize
         server.cursor_mode = .resize;
         server.grab_node_id = nid;
         server.grab_x = cx;

@@ -33,8 +33,17 @@ pub const wlr_output_state = opaque {};
 pub const wlr_xdg_shell = opaque {};
 pub const wlr_xdg_surface = opaque {};
 pub const wlr_xdg_toplevel = opaque {};
+pub const wlr_xdg_popup = opaque {};
+
+pub const wlr_box = extern struct {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+};
 
 pub const wlr_seat = opaque {};
+pub const wlr_seat_client = opaque {};
 pub const wlr_keyboard = opaque {};
 pub const wlr_pointer = opaque {};
 pub const wlr_cursor = opaque {};
@@ -222,6 +231,7 @@ pub extern "wlroots-0.18" fn wlr_primary_selection_v1_device_manager_create(disp
 
 pub const wlr_xdg_decoration_manager_v1 = opaque {};
 pub const wlr_xdg_toplevel_decoration_v1 = opaque {};
+pub const XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE: u32 = 1;
 pub const XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE: u32 = 2;
 
 pub extern "wlroots-0.18" fn wlr_xdg_decoration_manager_v1_create(display: *wl_display) callconv(.c) ?*wlr_xdg_decoration_manager_v1;
@@ -406,13 +416,32 @@ pub extern "c" fn miozu_xdg_toplevel_destroy(toplevel: *wlr_xdg_toplevel) callco
 pub extern "c" fn miozu_xdg_toplevel_request_move(toplevel: *wlr_xdg_toplevel) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_xdg_toplevel_request_resize(toplevel: *wlr_xdg_toplevel) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_xdg_toplevel_request_fullscreen(toplevel: *wlr_xdg_toplevel) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_xdg_toplevel_request_show_window_menu(toplevel: *wlr_xdg_toplevel) callconv(.c) *wl_signal;
+
+pub const wlr_xdg_toplevel_show_window_menu_event = opaque {};
+pub extern "c" fn miozu_show_window_menu_event_toplevel(event: *wlr_xdg_toplevel_show_window_menu_event) callconv(.c) ?*wlr_xdg_toplevel;
+pub extern "c" fn miozu_show_window_menu_event_seat(event: *wlr_xdg_toplevel_show_window_menu_event) callconv(.c) ?*wlr_seat_client;
+pub extern "c" fn miozu_show_window_menu_event_serial(event: *wlr_xdg_toplevel_show_window_menu_event) callconv(.c) u32;
+pub extern "c" fn miozu_show_window_menu_event_x(event: *wlr_xdg_toplevel_show_window_menu_event) callconv(.c) i32;
+pub extern "c" fn miozu_show_window_menu_event_y(event: *wlr_xdg_toplevel_show_window_menu_event) callconv(.c) i32;
 pub extern "c" fn miozu_xdg_toplevel_base(toplevel: *wlr_xdg_toplevel) callconv(.c) ?*wlr_xdg_surface;
 pub extern "c" fn miozu_xdg_toplevel_app_id(toplevel: *wlr_xdg_toplevel) callconv(.c) ?[*:0]const u8;
 pub extern "c" fn miozu_xdg_toplevel_title(toplevel: *wlr_xdg_toplevel) callconv(.c) ?[*:0]const u8;
 
+// XDG surface signals
+pub extern "c" fn miozu_xdg_surface_new_popup(surface: *wlr_xdg_surface) callconv(.c) *wl_signal;
+
 // XDG surface fields
 pub extern "c" fn miozu_xdg_surface_surface(surface: *wlr_xdg_surface) callconv(.c) ?*wlr_surface;
 pub extern "c" fn miozu_xdg_surface_initial_commit(surface: *wlr_xdg_surface) callconv(.c) bool;
+
+// XDG popup fields
+pub extern "c" fn miozu_xdg_popup_base(popup: *wlr_xdg_popup) callconv(.c) ?*wlr_xdg_surface;
+pub extern "c" fn miozu_xdg_popup_parent(popup: *wlr_xdg_popup) callconv(.c) ?*wlr_surface;
+pub extern "c" fn miozu_xdg_popup_scheduled_box(popup: *wlr_xdg_popup) callconv(.c) wlr_box;
+
+// XDG popup positioning
+pub extern "c" fn wlr_xdg_popup_unconstrain_from_box(popup: *wlr_xdg_popup, box: ?*anyopaque) callconv(.c) void;
 
 // wlr_surface signals (map/unmap/commit live on wlr_surface in 0.18)
 pub extern "c" fn miozu_surface_map(surface: *wlr_surface) callconv(.c) *wl_signal;

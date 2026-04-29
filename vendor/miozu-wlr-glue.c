@@ -88,8 +88,64 @@ struct wl_signal *miozu_xdg_toplevel_request_fullscreen(struct wlr_xdg_toplevel 
     return &t->events.request_fullscreen;
 }
 
+struct wl_signal *miozu_xdg_toplevel_request_show_window_menu(struct wlr_xdg_toplevel *t) {
+    return &t->events.request_show_window_menu;
+}
+
 struct wl_signal *miozu_xdg_toplevel_destroy(struct wlr_xdg_toplevel *t) {
     return &t->events.destroy;
+}
+
+/* ── XDG toplevel show_window_menu event fields ────────────────── */
+
+struct wlr_xdg_toplevel *miozu_show_window_menu_event_toplevel(
+    struct wlr_xdg_toplevel_show_window_menu_event *e)
+{
+    return e->toplevel;
+}
+
+struct wlr_seat_client *miozu_show_window_menu_event_seat(
+    struct wlr_xdg_toplevel_show_window_menu_event *e)
+{
+    return e->seat;
+}
+
+uint32_t miozu_show_window_menu_event_serial(
+    struct wlr_xdg_toplevel_show_window_menu_event *e)
+{
+    return e->serial;
+}
+
+int32_t miozu_show_window_menu_event_x(
+    struct wlr_xdg_toplevel_show_window_menu_event *e)
+{
+    return e->x;
+}
+
+int32_t miozu_show_window_menu_event_y(
+    struct wlr_xdg_toplevel_show_window_menu_event *e)
+{
+    return e->y;
+}
+
+/* ── XDG surface new_popup signal ───────────────────────────────── */
+
+struct wl_signal *miozu_xdg_surface_new_popup(struct wlr_xdg_surface *s) {
+    return &s->events.new_popup;
+}
+
+/* ── XDG popup fields ───────────────────────────────────────────── */
+
+struct wlr_xdg_surface *miozu_xdg_popup_base(struct wlr_xdg_popup *p) {
+    return p->base;
+}
+
+struct wlr_surface *miozu_xdg_popup_parent(struct wlr_xdg_popup *p) {
+    return p->parent;
+}
+
+struct wlr_box miozu_xdg_popup_scheduled_box(struct wlr_xdg_popup *p) {
+    return p->scheduled.geometry;
 }
 
 struct wlr_xdg_surface *miozu_xdg_toplevel_base(struct wlr_xdg_toplevel *t) {
