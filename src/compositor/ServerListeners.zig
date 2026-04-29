@@ -95,13 +95,13 @@ pub fn handleXdgActivation(listener: *wlr.wl_listener, data: ?*anyopaque) callco
     }
 }
 
-/// xdg-decoration-v1: force server-side decoration (tiling WM has
-/// no use for client titlebars). wlroots sends the configure on the
-/// next commit. If the client later asks for client-side we ignore
-/// it; the most-recent mode we set stays in effect.
+/// xdg-decoration-v1: prefer client-side decoration so clients
+/// (Chromium, Vivaldi, GTK) handle their titlebars and context
+/// menus internally. Tiling is unaffected — the compositor still
+/// controls size and position via arrangeWorkspace.
 pub fn handleNewXdgDecoration(_: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const dec: *wlr.wlr_xdg_toplevel_decoration_v1 = @ptrCast(@alignCast(data orelse return));
-    _ = wlr.wlr_xdg_toplevel_decoration_v1_set_mode(dec, wlr.XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    _ = wlr.wlr_xdg_toplevel_decoration_v1_set_mode(dec, wlr.XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
 }
 
 // ── idle_inhibit_v1 ──────────────────────────────────────────
@@ -180,6 +180,7 @@ pub fn handleOutputPowerSetMode(_: *wlr.wl_listener, data: ?*anyopaque) callconv
 
 pub fn handleNewVirtualKeyboard(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const server = wlr.listenerParent(Server, "new_virtual_keyboard", listener);
+    if (!server.wm_config.allow_virtual_input) return;
     const vkbd: *wlr.wlr_virtual_keyboard_v1 = @ptrCast(@alignCast(data orelse return));
     const device = wlr.miozu_virtual_keyboard_input_device(vkbd);
     server.setupKeyboard(device);
@@ -187,6 +188,7 @@ pub fn handleNewVirtualKeyboard(listener: *wlr.wl_listener, data: ?*anyopaque) c
 
 pub fn handleNewVirtualPointer(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const server = wlr.listenerParent(Server, "new_virtual_pointer", listener);
+    if (!server.wm_config.allow_virtual_input) return;
     const event: *wlr.wlr_virtual_pointer_v1_new_pointer_event = @ptrCast(@alignCast(data orelse return));
     const device = wlr.miozu_virtual_pointer_new_pointer(event);
     wlr.wlr_cursor_attach_input_device(server.cursor, device);
