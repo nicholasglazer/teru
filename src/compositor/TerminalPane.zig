@@ -42,6 +42,12 @@ read_buf: [8192]u8 = undefined,
 // frozen-pane look.
 sync_started_ns: i128 = 0,
 
+/// Set by poll() when VtParser.sync_flushed was true after a PTY read
+/// cycle — the app closed its DEC-2026 batch (even if it re-opened it
+/// in the same write). Read and cleared by renderIfDirty to skip the
+/// sync-hold timeout and render immediately.
+sync_flushed: bool = false,
+
 // Mouse-driven text selection state. Populated by
 // ServerCursor.processCursorButton / processCursorMotion when the
 // cursor is over this pane's scene_buffer — teruwm-native panes
@@ -285,6 +291,16 @@ pub fn poll(self: *TerminalPane) bool {
     for (0..max_reads_per_tick) |_| {
         const n = self.pane.readAndProcess(&self.read_buf) catch return any;
         if (n == 0) break;
+        // Capture sync flush signal from VtParser before the next read
+        // overwrites it. The app may have closed the DEC-2026 batch
+        // (ESC[?2026l) and immediately re-opened it (ESC[?2026h) in the
+        // same PTY write — the final state is "open" but the flush
+        // intent is on every close. Picking this up lets renderIfDirty
+        // skip the 150 ms hold for keystroke-granular updates.
+        if (self.pane.vt.sync_flushed) {
+            self.sync_flushed = true;
+            self.pane.vt.sync_flushed = false;
+        }
         self.server.perf.recordPtyRead(n);
         any = true;
     }
@@ -306,10 +322,18 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     // rebuilds row-by-row. windowed.zig honours this already; the
     // compositor path had regressed since the module split.
     //
+    // If the app closed the sync batch (ESC[?2026l) at any point since
+    // our last render — even if it immediately re-opened it with
+    // ESC[?2026h in the same PTY write — poll() caught the flush signal
+    // and set sync_flushed. Render immediately; the app intended this
+    // data to be visible. Without this, every keystroke in an app that
+    // keeps a perpetual batch (like many TUIs) lands with a 150 ms delay
+    // because the final sync_output state after the read is "open".
+    //
     // Safety valve: if an app enters the sync batch and never exits,
     // fall through after `sync_output_timeout_ms` so the pane isn't
     // frozen forever. See the constant's docstring.
-    if (self.pane.vt.sync_output) {
+    if (self.pane.vt.sync_output and !self.sync_flushed) {
         const now = compat.monotonicNow();
         if (self.sync_started_ns == 0) self.sync_started_ns = now;
         if (now - self.sync_started_ns < sync_output_timeout_ms * std.time.ns_per_ms) return false;
@@ -318,6 +342,7 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     } else {
         self.sync_started_ns = 0;
     }
+    self.sync_flushed = false;
 
     // Capture dirty range BEFORE renderDirty resets it. Convert
     // grid rows → pixel Y via cell_height. If the range is empty
@@ -389,6 +414,10 @@ pub fn repaintBorderOnly(self: *TerminalPane) void {
 /// Write input to the terminal's PTY.
 pub fn writeInput(self: *TerminalPane, data: []const u8) void {
     _ = self.pane.ptyWrite(data) catch {};
+    // Ensure a frame fires so the frame callback polls for the echo
+    // and renders the updated grid. The PTY fd event (edge-triggered
+    // epoll) can miss data races; the vsync poll is the fallback.
+    self.server.scheduleRender();
 }
 
 /// Get the PTY master fd for polling.

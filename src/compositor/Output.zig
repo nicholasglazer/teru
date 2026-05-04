@@ -157,13 +157,37 @@ fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
             server.resize_pending_id = null;
         }
 
-        // Render dirty terminal panes before compositing. Terminals are
-        // software-rendered into a shared scene graph, so rendering once
-        // per vsync on the canonical output is enough — every other
+        // Poll PTYs for pending data before rendering. The edge-triggered
+        // epoll used by wl_event_loop_add_fd can miss data that arrives
+        // while the fd is already readable (e.g., shell echo landing
+        // between two rapid keystrokes). Polling here on every vsync
+        // catches those stragglers with at most 16 ms of latency.
+        // Then render dirty terminal panes before compositing. Terminals
+        // are software-rendered into a shared scene graph, so rendering
+        // once per vsync on the canonical output is enough — every other
         // output that shows the same workspace reads the same buffer.
+        var any_pane_still_dirty = false;
         for (server.terminal_panes) |maybe_tp| {
-            if (maybe_tp) |tp| _ = tp.renderIfDirty();
+            if (maybe_tp) |tp| {
+                _ = tp.poll();
+                const rendered = tp.renderIfDirty();
+                if (!rendered and tp.pane.grid.dirty) {
+                    // DEC-2026 sync batch hold or similar — render
+                    // was deferred. The grid is still dirty but we
+                    // didn't paint it. Schedule a follow-up frame so
+                    // the timeout can fire; otherwise the compositor
+                    // goes idle and the pane stays frozen.
+                    any_pane_still_dirty = true;
+                }
+            }
         }
+        if (any_pane_still_dirty) {
+            wlr.wlr_output_schedule_frame(output.wlr_output);
+        }
+
+        // Bar uses a signature check internally — cheap no-op when
+        // nothing user-visible changed (clock, exec widgets, keymap).
+        if (server.bar) |b| b.render(server);
     }
 
     const scene_output = wlr.wlr_scene_get_scene_output(server.scene, output.wlr_output) orelse return;

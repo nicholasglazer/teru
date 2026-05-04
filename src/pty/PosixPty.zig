@@ -118,10 +118,10 @@ pub fn spawn(opts: SpawnOptions) !Pty {
     }
 
     // ── Parent process ───────────────────────────────────────────
-    // Note: ECHO is disabled on the child (slave) side before execve,
-    // which is sufficient for the DA1/DSR exchange. Do NOT disable ECHO
-    // from the parent (master) side — it races with the shell's termios
-    // init and can leave ECHO permanently off.
+    // Note: ECHO is intentionally NOT disabled on the child side before
+    // execve (see child comment above). DA1/DSR response echo is handled
+    // by VtParser's CSI dispatch — it only replies to genuine queries
+    // (param_count==0), not to echoed response bytes.
 
     return Pty{
         .master = master,
