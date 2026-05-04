@@ -43,6 +43,39 @@ scrollback: Scrollback,
 scroll_offset: u32 = 0,
 scroll_pixel: i32 = 0, // sub-cell pixel offset for smooth scrolling (0..cell_height-1)
 
+/// Shared scroll math — single source of truth for both TUI and compositor paths.
+/// Positive pixel_delta moves toward older scrollback (increases offset).
+/// Returns true if scroll state changed (caller must mark dirty + render).
+pub fn scrollBy(self: *Pane, pixel_delta: i32, cell_height: u32, max_offset: u32) bool {
+    const ch: i32 = @intCast(cell_height);
+    var new_pixel = self.scroll_pixel + pixel_delta;
+    var new_offset: i32 = @intCast(@min(self.scroll_offset, @as(u32, std.math.maxInt(i32))));
+    const max_offset_i32: i32 = @intCast(@min(max_offset, @as(u32, std.math.maxInt(i32))));
+
+    while (new_pixel >= ch) {
+        new_pixel -= ch;
+        new_offset += 1;
+    }
+    while (new_pixel < 0) {
+        new_pixel += ch;
+        new_offset -= 1;
+    }
+
+    if (new_offset < 0) {
+        new_offset = 0;
+        new_pixel = 0;
+    }
+    if (new_offset > max_offset_i32) {
+        new_offset = max_offset_i32;
+        new_pixel = 0;
+    }
+
+    const changed = new_offset != @as(i32, @intCast(self.scroll_offset)) or new_pixel != self.scroll_pixel;
+    self.scroll_offset = @intCast(new_offset);
+    self.scroll_pixel = new_pixel;
+    return changed;
+}
+
 pub fn init(allocator: Allocator, rows: u16, cols: u16, id: u64, spawn_config: SpawnConfig) !Pane {
     var grid = try Grid.init(allocator, rows, cols);
     errdefer grid.deinit(allocator);

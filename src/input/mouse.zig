@@ -63,6 +63,7 @@ pub const LayoutParams = struct {
 pub const MouseConfig = struct {
     copy_on_select: bool,
     scroll_speed: u32,
+    touchpad_scroll_invert: bool,
     word_delimiters: []const u8,
     show_status_bar: bool,
 };
@@ -463,7 +464,8 @@ pub fn handleMousePress(
             if (!in_alt) {
                 const max_offset = mux.getScrollbackLineCount();
                 if (max_offset > 0) {
-                    _ = mux.smoothScroll(@as(i32, @intCast(lp.cell_height)) * @as(i32, @intCast(cfg.scroll_speed)), lp.cell_height, max_offset);
+                    const sign: i32 = if (cfg.touchpad_scroll_invert) -1 else 1;
+                    _ = mux.smoothScroll(sign * @as(i32, @intCast(lp.cell_height)) * @as(i32, @intCast(cfg.scroll_speed)), lp.cell_height, max_offset);
                 }
             }
             return .{};
@@ -473,7 +475,8 @@ pub fn handleMousePress(
             if (!in_alt) {
                 if (mux.getScrollOffset() > 0 or mux.getScrollPixel() > 0) {
                     const max_offset = mux.getScrollbackLineCount();
-                    _ = mux.smoothScroll(-@as(i32, @intCast(lp.cell_height)) * @as(i32, @intCast(cfg.scroll_speed)), lp.cell_height, max_offset);
+                    const sign: i32 = if (cfg.touchpad_scroll_invert) 1 else -1;
+                    _ = mux.smoothScroll(sign * @as(i32, @intCast(lp.cell_height)) * @as(i32, @intCast(cfg.scroll_speed)), lp.cell_height, max_offset);
                 }
             }
             return .{};
