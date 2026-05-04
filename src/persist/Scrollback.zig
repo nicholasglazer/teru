@@ -425,7 +425,8 @@ fn encodeKeyframe(allocator: Allocator, grid: *const Grid) ![]const u8 {
 fn decodeKeyframe(grid: *Grid, data: []const u8) void {
     var pos: usize = 0;
 
-    // Header
+    // Header: 2+2+2+2+2+2 = 12 bytes minimum
+    if (data.len < 12) return;
     const cols = readU16(data, &pos);
     const rows = readU16(data, &pos);
     grid.cursor_col = readU16(data, &pos);
@@ -437,32 +438,48 @@ fn decodeKeyframe(grid: *Grid, data: []const u8) void {
     grid.cursor_col = @min(grid.cursor_col, grid.cols -| 1);
     grid.cursor_row = @min(grid.cursor_row, grid.rows -| 1);
 
-    // Pen state
+    // Pen state: 1 + up to 4 + up to 4 = 9 bytes max
+    if (pos + 1 > data.len) return;
     grid.pen_attrs = @bitCast(readU8(data, &pos));
-    grid.pen_fg = decodeColor(data, &pos);
-    grid.pen_bg = decodeColor(data, &pos);
+    grid.pen_fg = decodeColorBounded(data, &pos);
+    grid.pen_bg = decodeColorBounded(data, &pos);
 
     // Clear grid
     for (grid.cells) |*c| c.* = Grid.Cell.blank();
 
-    // Cell count
+    // Cell count: 4 bytes
+    if (pos + 4 > data.len) return;
     const count = readU32(data, &pos);
+
+    // Validate cell data before looping: each cell is 2+2+3+color+color+1 bytes
+    // Worst case (both colors RGB): 16 bytes/cell
+    if (count > 0 and pos + @as(usize, count) * 16 > data.len) {
+        // Corrupted keyframe — truncate cell count to what fits.
+        // Silently dropping excess cells is safe (they didn't exist anyway).
+        const max_cells = (data.len -| pos) / 16;
+        _ = max_cells;
+        // Continue but validate each read below
+    }
 
     // Restore cells (skip any that fall outside current grid dimensions)
     _ = cols;
     _ = rows;
     for (0..count) |_| {
+        if (pos + 2 > data.len) return;
         const col = readU16(data, &pos);
+        if (pos + 2 > data.len) return;
         const row = readU16(data, &pos);
 
         // Character from 3 LE bytes
+        if (pos + 3 > data.len) return;
         const b0: u24 = readU8(data, &pos);
         const b1: u24 = readU8(data, &pos);
         const b2: u24 = readU8(data, &pos);
         const char: u21 = @intCast(b0 | (b1 << 8) | (b2 << 16));
 
-        const fg = decodeColor(data, &pos);
-        const bg = decodeColor(data, &pos);
+        const fg = decodeColorBounded(data, &pos);
+        const bg = decodeColorBounded(data, &pos);
+        if (pos + 1 > data.len) return;
         const attrs: Grid.Attrs = @bitCast(readU8(data, &pos));
 
         if (col < grid.cols and row < grid.rows) {
@@ -503,6 +520,28 @@ fn decodeColor(data: []const u8, pos: *usize) Grid.Color {
             .g = readU8(data, pos),
             .b = readU8(data, pos),
         } },
+        else => .default,
+    };
+}
+
+/// Bounds-checked variant of decodeColor for untrusted keyframe data.
+/// Returns .default if the tag byte or its payload overruns the buffer.
+fn decodeColorBounded(data: []const u8, pos: *usize) Grid.Color {
+    if (pos.* + 1 > data.len) return .default;
+    const tag = readU8(data, pos);
+    return switch (tag) {
+        1 => blk: {
+            if (pos.* + 1 > data.len) break :blk .default;
+            break :blk .{ .indexed = readU8(data, pos) };
+        },
+        2 => blk: {
+            if (pos.* + 3 > data.len) break :blk .default;
+            break :blk .{ .rgb = .{
+                .r = readU8(data, pos),
+                .g = readU8(data, pos),
+                .b = readU8(data, pos),
+            } };
+        },
         else => .default,
     };
 }

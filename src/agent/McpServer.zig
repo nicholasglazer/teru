@@ -258,6 +258,28 @@ pub fn dispatch(self: *McpServer, body: []const u8, resp_buf: []u8) []const u8 {
     return F.dispatch(self, body, resp_buf, &framework_config);
 }
 
+/// Minimal JSON string escape — replaces `"` and `\` so user-supplied
+/// text embedded in a JSON string value can't break the structure.
+fn jsonEscape(dst: []u8, src: []const u8) []const u8 {
+    var pos: usize = 0;
+    for (src) |ch| {
+        if (pos + 2 > dst.len) break;
+        if (ch == '"' or ch == '\\') {
+            if (pos + 2 > dst.len) break;
+            dst[pos] = '\\';
+            dst[pos + 1] = ch;
+            pos += 2;
+        } else if (ch < 0x20) {
+            // Drop control characters (would break JSON)
+            continue;
+        } else {
+            dst[pos] = ch;
+            pos += 1;
+        }
+    }
+    return dst[0..pos];
+}
+
 // ── Prompts (only prompts/get is server-specific; prompts/list is static) ──
 
 fn handlePromptsGet(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -270,7 +292,11 @@ fn handlePromptsGet(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const 
         return tools.jsonRpcError(buf, id, -32602, "Missing params.name");
 
     if (std.mem.eql(u8, name, "workspace_setup")) {
-        const user_desc = tools.extractNestedJsonString(params_body, "description") orelse "default setup";
+        const user_desc_raw = tools.extractNestedJsonString(params_body, "description") orelse "default setup";
+        // JSON-escape the user description to prevent prompt injection
+        // via embedded quotes or backslashes in the user-supplied text.
+        var escaped_buf: [512]u8 = undefined;
+        const user_desc = jsonEscape(&escaped_buf, user_desc_raw);
         return std.fmt.bufPrint(buf,
             \\{{"jsonrpc":"2.0","result":{{"messages":[
             \\{{"role":"user","content":{{"type":"text","text":"Set up teru workspaces as follows: {s}\n\nYou have these teru MCP tools:\n- teru_switch_workspace(workspace) — switch to workspace 0-9\n- teru_create_pane(workspace, direction) — spawn a new pane (starts user shell)\n- teru_send_input(pane_id, text) — type text into pane (omit \\n to leave command typed but not executed)\n- teru_send_keys(pane_id, keys) — send keystrokes like ['enter'], ['ctrl+c']\n- teru_set_layout(workspace, layout) — layouts: master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion\n- teru_set_config(key, value) — set appearance: font_size, opacity, theme, bg, fg, padding, cursor_shape\n- teru_focus_pane(pane_id) — focus a pane\n- teru_list_panes() — list all panes to get IDs\n\nWorkflow:\n1. For each workspace: switch to it, create panes, set layout\n2. To type a command without running it: teru_send_input(id, 'command') — no \\n\n3. To type and execute: teru_send_input(id, 'command') then teru_send_keys(id, ['enter'])\n4. After creating panes, call teru_list_panes() to get their IDs for send_input\n5. Workspace 0 already has 1 pane — create additional panes as needed"}}}}
@@ -898,9 +924,15 @@ fn toolSetConfig(_: *McpServer, key: []const u8, value: []const u8, buf: []u8, i
         }
     }
 
-    // Write back: replace existing key or append
+    // Write to temp file then rename — atomic replacement prevents config
+    // loss if the process crashes mid-write (fopen("w") truncates first).
     {
-        const f = std.c.fopen(@ptrCast(path_buf[0..path.len :0]), "w");
+        var tmp_buf: [512:0]u8 = undefined;
+        const tmp_path = std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{path}) catch
+            return tools.jsonRpcError(buf, id, -32603, "Path too long");
+        tmp_buf[tmp_path.len] = 0;
+
+        const f = std.c.fopen(@ptrCast(tmp_buf[0..tmp_path.len :0]), "w");
         if (f == null)
             return tools.jsonRpcError(buf, id, -32603, "Cannot write config file");
 
@@ -926,6 +958,9 @@ fn toolSetConfig(_: *McpServer, key: []const u8, value: []const u8, buf: []u8, i
             _ = std.c.fwrite(new_line.ptr, 1, new_line.len, f.?);
         }
         _ = std.c.fclose(f.?);
+
+        // Atomically replace the old config with the new one
+        _ = std.c.rename(@ptrCast(tmp_buf[0..tmp_path.len :0]), @ptrCast(path_buf[0..path.len :0]));
     }
 
     var key_esc: [128]u8 = undefined;
@@ -1078,6 +1113,10 @@ fn toolScreenshot(self: *McpServer, path: []const u8, buf: []u8, id: ?[]const u8
         .cpu => |cpu| cpu.height,
         .tty => return tools.jsonRpcError(buf, id, -32603, "No framebuffer in TTY mode"),
     };
+
+    // Reject path traversal in user-supplied screenshot path
+    if (!compat.isSafeScreenshotPath(path))
+        return tools.jsonRpcError(buf, id, -32602, "Invalid path (must be under /tmp or $HOME)");
 
     // Null-terminate path for C fopen
     var path_z: [512:0]u8 = undefined;
@@ -1251,8 +1290,10 @@ fn resolveKey(name: []const u8, app_cursor: bool) []const u8 {
         }
     }
 
-    // Fallback: pass through as literal bytes
-    return name;
+    // Unrecognized key names are unsafe to pass through as literal
+    // bytes — they could inject control sequences or shell commands
+    // into the PTY. Return empty to silently ignore.
+    return "";
 }
 
 /// Comptime table: ctrl_byte_table['a'-'a'] = 0x01, ..., ctrl_byte_table['z'-'a'] = 0x1a
@@ -1535,9 +1576,13 @@ test "resolveKey ctrl+letter" {
     try t.expectEqualStrings("\x1a", resolveKey("ctrl+z", false));
 }
 
-test "resolveKey literal fallback" {
-    try t.expectEqualStrings("hello", resolveKey("hello", false));
-    try t.expectEqualStrings("x", resolveKey("x", false));
+test "resolveKey rejects unknown names" {
+    // Unrecognised key names must NOT pass through as literal bytes —
+    // they could inject control sequences or shell commands into the
+    // PTY. resolveKey returns an empty slice; the caller treats this
+    // as "no input to write".
+    try t.expectEqualStrings("", resolveKey("hello", false));
+    try t.expectEqualStrings("", resolveKey("x", false));
 }
 
 test "extractNestedJsonArray" {

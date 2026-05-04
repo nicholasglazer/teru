@@ -168,6 +168,42 @@ fn clockGettime(clock: anytype) i128 {
     }
 }
 
+/// Reject path traversal in user-supplied filenames (session names,
+/// screenshot paths, etc.). Returns true if the name is safe — no `../`,
+/// no path separators, no null bytes.
+pub fn isSafeFilename(name: []const u8) bool {
+    if (name.len == 0) return false;
+    for (name, 0..) |ch, i| {
+        if (ch == 0) return false;
+        if (ch == '/') return false;
+        if (ch == '\\') return false;
+        if (ch == '.' and i + 1 < name.len and name[i + 1] == '.') {
+            // ".." anywhere in the name is a traversal attempt
+            if (i == 0 or name[i - 1] == '/') return false;
+        }
+    }
+    return true;
+}
+
+/// Reject `../` traversal in screenshot paths. Allows absolute paths
+/// under /tmp or relative paths under HOME, but blocks `..` segments.
+pub fn isSafeScreenshotPath(path: []const u8) bool {
+    if (path.len == 0) return false;
+    // Reject null bytes
+    if (std.mem.indexOfScalar(u8, path, 0) != null) return false;
+    // Reject `..` segments
+    if (std.mem.indexOf(u8, path, "..")) |_| return false;
+    // Must be under /tmp or start with HOME
+    const home = getenv("HOME") orelse return false;
+    if (std.mem.eql(u8, path, "/tmp") or std.mem.startsWith(u8, path, "/tmp/")) {
+        return true;
+    }
+    if (std.mem.startsWith(u8, path, home)) {
+        return true;
+    }
+    return false;
+}
+
 /// Portable nanosleep. On Windows uses Sleep(), on POSIX uses nanosleep.
 pub fn sleepNs(ns: u64) void {
     if (builtin.os.tag == .windows) {
