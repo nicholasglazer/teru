@@ -223,8 +223,9 @@ pub fn deserialize(reader: anytype, allocator: Allocator) !Session {
 
     // Allocate nodes
     const nodes = try allocator.alloc(SerializedNode, count);
+    var deserialized: usize = 0;
     errdefer {
-        for (nodes[0..count]) |*n| {
+        for (nodes[0..deserialized]) |*n| {
             n.deinit(allocator);
         }
         allocator.free(nodes);
@@ -232,6 +233,7 @@ pub fn deserialize(reader: anytype, allocator: Allocator) !Session {
 
     for (0..count) |i| {
         nodes[i] = try deserializeNode(reader, allocator);
+        deserialized += 1;
     }
 
     // Workspace states

@@ -177,7 +177,7 @@ fn listenPosix(path: []const u8) IpcError!IpcHandle {
     if (std.c.bind(sock, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)) != 0)
         return IpcError.BindFailed;
 
-    _ = std.c.chmod(@ptrCast(&path_z), 0o660);
+    _ = std.c.chmod(@ptrCast(&path_z), 0o600);
 
     if (std.c.listen(sock, 5) != 0)
         return IpcError.ListenFailed;
@@ -188,6 +188,25 @@ fn listenPosix(path: []const u8) IpcError!IpcHandle {
 fn acceptPosix(server: IpcHandle) ?IpcHandle {
     const conn = std.c.accept(server.fd, null, null);
     if (conn < 0) return null;
+
+    // SO_PEERCRED: verify the connecting process runs as the same UID.
+    // Filesystem permissions on the socket directory are the primary
+    // guard; this is defense-in-depth against misconfiguration.
+    // Root (uid 0) is always allowed for debugging/admin tools.
+    if (builtin.os.tag == .linux) {
+        const Ucred = extern struct { pid: i32, uid: u32, gid: u32 };
+        var cr: Ucred = undefined;
+        var cr_len: posix.socklen_t = @sizeOf(Ucred);
+        const SOL_SOCKET = 1;
+        const SO_PEERCRED = 17;
+        if (posix.system.getsockopt(conn, SOL_SOCKET, SO_PEERCRED, @ptrCast(&cr), &cr_len) == 0) {
+            const my_uid = compat.getUid();
+            if (cr.uid != 0 and cr.uid != my_uid) {
+                _ = posix.system.close(conn);
+                return null;
+            }
+        }
+    }
 
     // Set non-blocking
     const flags = std.c.fcntl(conn, posix.F.GETFL);

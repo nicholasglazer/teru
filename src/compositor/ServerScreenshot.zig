@@ -31,8 +31,9 @@ pub fn takeScreenshot(server: *Server) void {
 }
 
 /// Named-path variant: used by MCP (teruwm_screenshot) + Server.takeScreenshot.
-/// Returns true on PNG write success.
+/// Returns true on PNG write success. Rejects paths containing `../`.
 pub fn takeScreenshotToPath(server: *Server, path: []const u8) bool {
+    if (!teru.compat.isSafeScreenshotPath(path)) return false;
     const dims_ss = server.activeOutputDims();
     const out_w: u32 = dims_ss.w;
     const out_h: u32 = dims_ss.h;

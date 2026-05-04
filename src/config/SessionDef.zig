@@ -401,7 +401,9 @@ pub fn getSessionDir(allocator: Allocator) ![]const u8 {
 
 /// Build the full path for a session file.
 /// Caller owns the returned slice.
+/// Rejects names containing path traversal (`../`, `/`, `\0`).
 pub fn getSessionPath(allocator: Allocator, name: []const u8) ![]const u8 {
+    if (!compat.isSafeFilename(name)) return error.InvalidName;
     const dir = try getSessionDir(allocator);
     defer allocator.free(dir);
     return std.fmt.allocPrint(allocator, "{s}/{s}.tsess", .{ dir, name });

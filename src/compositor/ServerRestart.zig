@@ -18,7 +18,13 @@ const Pane = teru.Pane;
 const Server = @import("Server.zig");
 const TerminalPane = @import("TerminalPane.zig");
 
-pub const restart_state_path = "/tmp/teruwm-restart.bin";
+/// Prefer $XDG_RUNTIME_DIR (private, cleaned on logout) over /tmp.
+fn restartStatePath(buf: []u8) [:0]const u8 {
+    const dir = teru.compat.getenv("XDG_RUNTIME_DIR") orelse "/tmp";
+    const path = std.fmt.bufPrint(buf, "{s}/teruwm-restart.bin", .{dir}) catch @panic("restartStatePath: buffer too small");
+    buf[path.len] = 0;
+    return buf[0..path.len :0];
+}
 
 /// Save live state + exec the new binary. Returns only on exec failure
 /// (FD_CLOEXEC is restored on that path). Callers usually treat the
@@ -89,7 +95,9 @@ pub fn execRestart(server: *Server) void {
     }
 
     // Write state file
-    const file = std.c.fopen(restart_state_path, "wb");
+    var rpath_buf: [128:0]u8 = undefined;
+    const rpath = restartStatePath(&rpath_buf);
+    const file = std.c.fopen(rpath, "wb");
     if (file) |f| {
         _ = std.c.fwrite(buf[0..pos].ptr, 1, pos, f);
         _ = std.c.fclose(f);
@@ -106,8 +114,7 @@ pub fn execRestart(server: *Server) void {
     var argv_buf: [3:null]?[*:0]const u8 = .{ @ptrCast(self_exe), @ptrCast("--restore"), null };
     _ = std.posix.system.execve(@ptrCast(self_exe), @ptrCast(&argv_buf), std.c.environ);
 
-    // If exec returns, it failed — put FD_CLOEXEC back so the open PTY
-    // masters don't leak into any future forked child.
+    // If exec returns, it failed — put FD_CLOEXEC back
     std.debug.print("teruwm: exec failed, continuing\n", .{});
     restoreCloexec(cleared_fds.items);
 }
@@ -117,14 +124,16 @@ pub fn execRestart(server: *Server) void {
 /// still running. One-shot: the state file is unlinked after read.
 pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
     var buf: [65536]u8 = undefined;
-    const file = std.c.fopen(restart_state_path, "rb") orelse {
+    var rpath_buf: [128:0]u8 = undefined;
+    const rpath = restartStatePath(&rpath_buf);
+    const file = std.c.fopen(rpath, "rb") orelse {
         std.debug.print("teruwm: no restart state found\n", .{});
         return;
     };
     const n = std.c.fread(&buf, 1, buf.len, file);
     _ = std.c.fclose(file);
 
-    _ = std.c.unlink(restart_state_path);
+    _ = std.c.unlink(rpath);
 
     if (n < 13) return;
 
