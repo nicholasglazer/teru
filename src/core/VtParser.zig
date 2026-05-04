@@ -103,6 +103,12 @@ g0_line_drawing: bool = false,
 /// the app sends ESC[?2026l. Prevents flickering during rapid screen updates.
 sync_output: bool = false,
 
+/// Set to true when the sync batch is closed (ESC[?2026l) while sync_output
+/// was active. The compositor render path reads this to know the app intended
+/// a flush even when the batch was immediately re-opened in the same PTY write.
+/// Consumed and cleared by TerminalPane.renderIfDirty.
+sync_flushed: bool = false,
+
 /// Agent protocol: last OSC 9999 payload for external consumption
 agent_event_buf: [512]u8 = undefined,
 agent_event_len: usize = 0,
@@ -113,10 +119,10 @@ pub fn init(allocator: std.mem.Allocator, grid: *Grid) VtParser {
     return .{ .grid = grid, .allocator = allocator };
 }
 
-/// Send a response back to the PTY (for DA1, DSR, etc.)
-/// ECHO is disabled on the slave termios from the master side at PTY
-/// creation, so response bytes written here are delivered to the shell's
-/// stdin without being echoed back to the master as output.
+/// Send a response back to the PTY (for DA1, DSR, etc.).
+/// ECHO is left enabled on the slave termios so the shell controls its own
+/// echo. CSI dispatch guards against echoing responses back by only replying
+/// to genuine queries (param_count==0), not to echoed response-like sequences.
 fn sendResponse(self: *const VtParser, data: []const u8) void {
     if (@import("builtin").os.tag == .windows) return; // ConPTY handles DA1/DSR internally
     if (self.response_fn) |f| {
@@ -895,8 +901,11 @@ fn dispatchCsi(self: *VtParser, final: u8) void {
         'u' => { // RCP — restore cursor position
             self.grid.restoreCursor();
         },
-        'c' => { // DA1 — primary device attributes (non-private form: ESC[c)
-            self.sendResponse("\x1b[?62;22c");
+        'c' => { // DA1 query (ESC[c or ESC[0c) — only respond to queries
+            const p0 = self.getParam(0, 0);
+            if (self.param_count == 0 or p0 == 0) {
+                self.sendResponse("\x1b[?62;22c");
+            }
         },
         else => {
             // Unknown CSI final byte: ignore
@@ -956,6 +965,7 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
                     self.grid.right_margin = 0;
                 },
                 2026 => {
+                    if (self.sync_output) self.sync_flushed = true;
                     self.sync_output = false;
                     self.grid.dirty = true;
                 },
@@ -964,13 +974,21 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
         },
         'c' => {
             if (self.csi_prefix == '>') {
-                // DA2 (ESC[>c) — Secondary Device Attributes
-                // Respond: ESC[>Pp;Pv;Pc c (VT100-class, version, 0)
-                self.sendResponse("\x1b[>0;0;0c");
+                // DA2 query (ESC[>c) — no-param form only.
+                // Guard against echo loop: the DA2 response (ESC[>0;0;0c)
+                // has params, so param_count>0 means this is an echoed
+                // response, not a genuine query. Only reply to queries.
+                if (self.param_count == 0) {
+                    self.sendResponse("\x1b[>0;0;0c");
+                }
             } else {
-                // DA1 (ESC[?c or ESC[c) — Primary Device Attributes
-                // Respond: VT220 with ANSI color support
-                self.sendResponse("\x1b[?62;22c");
+                // DA1 query (ESC[?c) — no-param or zero-param form only.
+                // Guard against echo loop: the DA1 response (ESC[?62;22c)
+                // has non-zero params. Only reply to genuine queries.
+                const p0 = self.getParam(0, 0);
+                if (self.param_count == 0 or p0 == 0) {
+                    self.sendResponse("\x1b[?62;22c");
+                }
             }
         },
         'u' => {
