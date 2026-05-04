@@ -985,6 +985,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                     const cfg = mouse_handler.MouseConfig{
                         .copy_on_select = config.copy_on_select,
                         .scroll_speed = config.scroll_speed,
+                        .touchpad_scroll_invert = config.touchpad_scroll_invert,
                         .word_delimiters = config.word_delimiters orelse " \t{}[]()\"'`,;:@",
                         .show_status_bar = config.show_status_bar,
                     };
@@ -1015,6 +1016,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                     const release_cfg = mouse_handler.MouseConfig{
                         .copy_on_select = config.copy_on_select,
                         .scroll_speed = config.scroll_speed,
+                        .touchpad_scroll_invert = config.touchpad_scroll_invert,
                         .word_delimiters = config.word_delimiters orelse " \t{}[]()\"'`,;:@",
                         .show_status_bar = config.show_status_bar,
                     };

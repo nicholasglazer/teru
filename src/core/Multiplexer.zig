@@ -84,34 +84,7 @@ pub fn getScrollPixel(self: *const Multiplexer) i32 {
 /// Returns true if the scroll state changed (need redraw).
 pub fn smoothScroll(self: *Multiplexer, pixel_delta: i32, cell_height: u32, max_offset: u32) bool {
     const pane = self.getActivePaneMut() orelse return false;
-    const ch: i32 = @intCast(cell_height);
-
-    var new_pixel = pane.scroll_pixel + pixel_delta;
-    var new_offset: i32 = @intCast(pane.scroll_offset);
-
-    // Consume full lines from pixel accumulator
-    while (new_pixel >= ch) {
-        new_pixel -= ch;
-        new_offset += 1;
-    }
-    while (new_pixel < 0) {
-        new_pixel += ch;
-        new_offset -= 1;
-    }
-
-    // Clamp
-    if (new_offset < 0) {
-        new_offset = 0;
-        new_pixel = 0;
-    }
-    if (new_offset > @as(i32, @intCast(max_offset))) {
-        new_offset = @intCast(max_offset);
-        new_pixel = 0;
-    }
-
-    const changed = new_offset != @as(i32, @intCast(pane.scroll_offset)) or new_pixel != pane.scroll_pixel;
-    pane.scroll_offset = @intCast(new_offset);
-    pane.scroll_pixel = new_pixel;
+    const changed = pane.scrollBy(pixel_delta, cell_height, max_offset);
     if (changed) pane.grid.dirty = true;
     return changed;
 }

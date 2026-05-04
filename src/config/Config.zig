@@ -157,6 +157,7 @@ bold_is_bright: bool = false,
 // Terminal
 term: ?[]const u8 = null,
 scroll_speed: u32 = 3,
+touchpad_scroll_invert: bool = false,
 copy_on_select: bool = true,
 bell: Bell = .visual,
 tab_width: u8 = 8,
@@ -533,6 +534,8 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         self.setString(allocator, &self.term, value);
     } else if (std.mem.eql(u8, key, "scroll_speed")) {
         self.scroll_speed = std.fmt.parseInt(u32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "touchpad_scroll_invert")) {
+        self.touchpad_scroll_invert = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "copy_on_select")) {
         self.copy_on_select = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "bell")) {
