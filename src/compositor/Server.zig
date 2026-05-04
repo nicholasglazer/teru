@@ -488,12 +488,9 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     const output_power_mgr = wlr.wlr_output_power_manager_v1_create(display);
 
     // wlr_virtual_keyboard_v1 / wlr_virtual_pointer_v1 — synthetic
-    // input. wtype, ydotool, wlrctl, accessibility tools. Any client
-    // binding these globals can inject keys / pointer events —
-    // default-on; gate behind a config field if you need to harden a
-    // kiosk / shared host. wlroots handles the ABI; route the new
-    // object into the existing real-device setup path via
-    // handleNewVirtual*.
+    // input. wtype, ydotool, wlrctl, accessibility tools. Gated by
+    // wm_config.allow_virtual_input (default true). Disable on shared
+    // or kiosk hosts to prevent input-layer compromise.
     const virtual_keyboard_mgr = wlr.wlr_virtual_keyboard_manager_v1_create(display);
     const virtual_pointer_mgr = wlr.wlr_virtual_pointer_manager_v1_create(display);
 
@@ -2038,7 +2035,7 @@ pub fn spawnProcess(_: *Server, cmd: [*:0]const u8) void {
         std.os.linux.exit(0);
     }
     if (pid > 0) {
-        _ = std.c.waitpid(@intCast(pid), null, 0);
+        _ = std.c.waitpid(@intCast(pid), null, std.c.W.NOHANG);
     }
 }
 
@@ -2047,6 +2044,9 @@ pub fn spawnProcess(_: *Server, cmd: [*:0]const u8) void {
 /// truncated (matches the config parser's bound).
 pub fn spawnShell(self: *Server, cmd: []const u8) void {
     var buf: [512:0]u8 = undefined;
+    if (cmd.len >= buf.len) {
+        std.debug.print("teruwm: spawnShell command truncated ({d} > 512)\n", .{cmd.len});
+    }
     const n = @min(cmd.len, buf.len);
     @memcpy(buf[0..n], cmd[0..n]);
     buf[n] = 0;
