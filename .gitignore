@@ -13,3 +13,4 @@ zig-socket-test*
 
 # Internal docs (plans, roadmap, drafts, specs)
 docs/.internal/
+.internal/
