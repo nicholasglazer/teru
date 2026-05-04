@@ -92,7 +92,135 @@ pub const BarData = struct {
     // on every `.push_widget` token and does a linear name lookup — fine
     // for the ≤32-slot budget. Slots with `.used = false` are skipped.
     push_widgets: []const PushWidget = &.{},
+
+    // Cached sysfs/proc values. Populated by the compositor via
+    // populateBarDataCache() before rendering. Widget renderers read
+    // these when the module-level `cache_valid` flag is set; standalone
+    // teru never sets that flag, so renderers use the legacy I/O path.
+    mem_used_pct: u32 = 0,
+    cpu_pct: u32 = 0,
+    cpu_temp_c: ?u32 = null,
+    battery_percent: u8 = 0,
+    battery_charging: bool = false,
+    battery_present: bool = false,
+    watts: f32 = 0.0,
+    watts_charging: bool = false,
+    watts_present: bool = false,
 };
+
+// ── Sysfs/proc cache ──────────────────────────────────────────────
+// Module-level so TTLs survive across frames. refreshCachedData()
+// reads /proc and /sys with per-source TTL gating; widget renderers
+// read from the cached values below when `cache_valid` is set, so no
+// synchronous I/O lands on the wlroots event loop during rendering.
+
+var cache_mem_pct: u32 = 0;
+var cache_cpu_pct: u32 = 0;
+var cache_cpu_temp_c: ?u32 = null;
+var cache_battery_percent: u8 = 0;
+var cache_battery_charging: bool = false;
+var cache_battery_present: bool = false;
+var cache_watts: f32 = 0.0;
+var cache_watts_charging: bool = false;
+var cache_watts_present: bool = false;
+
+var cache_last_mem_ns: i128 = 0;
+var cache_last_cpu_ns: i128 = 0;
+var cache_last_temp_ns: i128 = 0;
+var cache_last_battery_ns: i128 = 0;
+var cache_last_watts_ns: i128 = 0;
+
+/// Whether the module-level cache has been populated at least once.
+var cache_valid: bool = false;
+
+/// When true, exec widgets are managed by the compositor via non-blocking
+/// fork+pipe+wl_event_loop_add_fd. The render path just reads from the
+/// widget cache. Set by Bar.create(); standalone teru leaves this false
+/// so evalExec() runs synchronously in the render path.
+pub var exec_nonblocking: bool = false;
+
+/// Refresh stale sysfs/proc cache entries. Called from the frame
+/// callback before bar rendering. Each data source has its own TTL —
+/// only reads when stale. Returns true if any cached value changed
+/// (caller should mark the bar dirty).
+pub fn refreshCachedData(now_ns: i128) bool {
+    const ns_per_s = std.time.ns_per_s;
+    var changed = false;
+
+    // Memory: refresh every 2s
+    if (now_ns - cache_last_mem_ns > 2 * ns_per_s) {
+        cache_last_mem_ns = now_ns;
+        if (readMemPct()) |pct| {
+            if (pct != cache_mem_pct) changed = true;
+            cache_mem_pct = pct;
+        }
+    }
+
+    // CPU: refresh every 1s
+    if (now_ns - cache_last_cpu_ns > 1 * ns_per_s) {
+        cache_last_cpu_ns = now_ns;
+        if (readCpuPct()) |pct| {
+            if (pct != cache_cpu_pct) changed = true;
+            cache_cpu_pct = pct;
+        }
+    }
+
+    // CPU temp: refresh every 5s
+    if (now_ns - cache_last_temp_ns > 5 * ns_per_s) {
+        cache_last_temp_ns = now_ns;
+        const new_temp = readCpuTempC();
+        if (new_temp != cache_cpu_temp_c) changed = true;
+        cache_cpu_temp_c = new_temp;
+    }
+
+    // Battery: refresh every 10s
+    if (now_ns - cache_last_battery_ns > 10 * ns_per_s) {
+        cache_last_battery_ns = now_ns;
+        const bat = readBattery();
+        const present = bat != null;
+        const pct: u8 = if (bat) |b| b.percent else 0;
+        const chg = if (bat) |b| b.charging else false;
+        if (present != cache_battery_present or pct != cache_battery_percent or chg != cache_battery_charging) changed = true;
+        cache_battery_present = present;
+        cache_battery_percent = pct;
+        cache_battery_charging = chg;
+    }
+
+    // Watts: refresh every 10s
+    if (now_ns - cache_last_watts_ns > 10 * ns_per_s) {
+        cache_last_watts_ns = now_ns;
+        const pw = readWatts();
+        const present = pw != null;
+        const w: f32 = if (pw) |p| p.watts else 0.0;
+        const chg = if (pw) |p| p.charging else false;
+        if (present != cache_watts_present or !approxEq(w, cache_watts) or chg != cache_watts_charging) changed = true;
+        cache_watts_present = present;
+        cache_watts = w;
+        cache_watts_charging = chg;
+    }
+
+    cache_valid = true;
+    return changed;
+}
+
+fn approxEq(a: f32, b: f32) bool {
+    const diff = if (a > b) a - b else b - a;
+    return diff < 0.05;
+}
+
+/// Copy module-level cache values into a BarData struct so widget
+/// renderers can read them without touching the module-level vars.
+pub fn populateBarDataCache(data: *BarData) void {
+    data.mem_used_pct = cache_mem_pct;
+    data.cpu_pct = cache_cpu_pct;
+    data.cpu_temp_c = cache_cpu_temp_c;
+    data.battery_percent = cache_battery_percent;
+    data.battery_charging = cache_battery_charging;
+    data.battery_present = cache_battery_present;
+    data.watts = cache_watts;
+    data.watts_charging = cache_watts_charging;
+    data.watts_present = cache_watts_present;
+}
 
 /// Linear scan over the ≤32-slot push widget array. Short-circuits on
 /// empty slice. Hot-path-shared between renderWidgets and measureWidgets
@@ -231,13 +359,17 @@ pub fn renderWidgets(
                 }
             },
             .exec => {
-                // Refresh the cache if enough time has elapsed.
-                const now_ns = compat.monotonicNow();
-                const age_s: u32 = if (w.last_eval == 0) std.math.maxInt(u32) else blk: {
-                    const age = @divTrunc(now_ns -| w.last_eval, std.time.ns_per_s);
-                    break :blk if (age > std.math.maxInt(u32)) std.math.maxInt(u32) else @as(u32, @intCast(age));
-                };
-                if (age_s >= w.interval) evalExec(w, now_ns);
+                // If the compositor manages exec via non-blocking fork+pipe,
+                // the cache is filled asynchronously — just render from it.
+                // Standalone teru (exec_nonblocking=false) evaluates inline.
+                if (!exec_nonblocking) {
+                    const now_ns = compat.monotonicNow();
+                    const age_s: u32 = if (w.last_eval == 0) std.math.maxInt(u32) else blk: {
+                        const age = @divTrunc(now_ns -| w.last_eval, std.time.ns_per_s);
+                        break :blk if (age > std.math.maxInt(u32)) std.math.maxInt(u32) else @as(u32, @intCast(age));
+                    };
+                    if (age_s >= w.interval) evalExec(w, now_ns);
+                }
 
                 for (w.cache[0..w.cache_len]) |ch| {
                     if (ch < 32 or ch > 126) continue;
@@ -317,25 +449,38 @@ fn classColor(c: WidgetClass, s: anytype) u32 {
     };
 }
 
-/// Read /proc/meminfo and render used-memory percentage. Just "N%" — the
-/// caller's format string is responsible for any label ("RAM {mem}" etc).
+/// Read /proc/meminfo and return used-memory percentage (0-100). Returns
+/// null if the file can't be read or parsed. Extracted from renderMemWidget
+/// so refreshCachedData can call it outside the render path.
+fn readMemPct() ?u32 {
+    var buf: [512]u8 = undefined;
+    const fd = libc.open("/proc/meminfo", 0, 0);
+    if (fd < 0) return null;
+    defer _ = libc.close(fd);
+    const n = libc.read(fd, &buf, buf.len);
+    if (n <= 0) return null;
+    const data = buf[0..@as(usize, @intCast(n))];
+    const total = parseMemLine(data, "MemTotal:") orelse return null;
+    const available = parseMemLine(data, "MemAvailable:") orelse return null;
+    if (total == 0) return 0;
+    return @intCast(100 - (available * 100 / total));
+}
+
 fn renderMemWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, th: *const Thresholds) usize {
     var x = start_x;
-    var mem_buf: [512]u8 = undefined;
     var pct_buf: [16]u8 = undefined;
     var used_pct: u32 = 0;
     const mem_str = blk: {
-        const fd = libc.open("/proc/meminfo", 0, 0);
-        if (fd < 0) break :blk "?%";
-        defer _ = libc.close(fd);
-        const n = libc.read(fd, &mem_buf, mem_buf.len);
-        if (n <= 0) break :blk "?%";
-        const data = mem_buf[0..@as(usize, @intCast(n))];
-        const total = parseMemLine(data, "MemTotal:") orelse break :blk "?%";
-        const available = parseMemLine(data, "MemAvailable:") orelse break :blk "?%";
-        if (total == 0) break :blk "0%";
-        used_pct = @intCast(100 - (available * 100 / total));
-        break :blk std.fmt.bufPrint(&pct_buf, "{d}%", .{used_pct}) catch "?%";
+        if (cache_valid) {
+            used_pct = cache_mem_pct;
+            break :blk std.fmt.bufPrint(&pct_buf, "{d}%", .{used_pct}) catch "?%";
+        }
+        // Legacy path (standalone teru): do synchronous I/O.
+        if (readMemPct()) |pct| {
+            used_pct = pct;
+            break :blk std.fmt.bufPrint(&pct_buf, "{d}%", .{used_pct}) catch "?%";
+        }
+        break :blk "?%";
     };
     const color = rampColor(@intCast(used_pct), th.mem_warning, th.mem_critical, false, s);
     for (mem_str) |ch| {
@@ -400,7 +545,7 @@ fn readCpuPct() ?u32 {
 fn renderCpuWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, max_x: usize, th: *const Thresholds) usize {
     var x = start_x;
     var buf: [16]u8 = undefined;
-    const pct = readCpuPct() orelse {
+    const pct: u32 = if (cache_valid) cache_cpu_pct else readCpuPct() orelse {
         for ("?%") |ch| {
             Ui.blitCharAt(cpu, ch, x, y, s.ansi[8]);
             x += cw;
@@ -424,7 +569,7 @@ fn renderCpuWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, 
 fn renderCpuTempWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, max_x: usize, th: *const Thresholds) usize {
     var x = start_x;
     var buf: [16]u8 = undefined;
-    const temp = readCpuTempC();
+    const temp: ?u32 = if (cache_valid) cache_cpu_temp_c else readCpuTempC();
     const text = if (temp) |t| std.fmt.bufPrint(&buf, "{d}C", .{t}) catch "?C" else "?C";
     const color: u32 = if (temp) |t|
         rampColor(@intCast(t), th.cputemp_warning, th.cputemp_critical, false, s)
@@ -479,15 +624,19 @@ fn readCpuTempC() ?u32 {
 
 fn renderBatteryWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, max_x: usize, th: *const Thresholds) usize {
     var x = start_x;
-    const b = readBattery();
+    const present, const pct, const charging = if (cache_valid)
+        .{ cache_battery_present, cache_battery_percent, cache_battery_charging }
+    else blk: {
+        const b = readBattery();
+        break :blk .{ b != null, if (b) |bat| bat.percent else @as(u8, 0), if (b) |bat| bat.charging else false };
+    };
     var buf: [16]u8 = undefined;
-    const text = if (b) |bat|
-        std.fmt.bufPrint(&buf, "{c}{d}%", .{ if (bat.charging) @as(u8, '+') else @as(u8, ' '), bat.percent }) catch "?"
+    const text = if (present)
+        std.fmt.bufPrint(&buf, "{c}{d}%", .{ if (charging) @as(u8, '+') else @as(u8, ' '), pct }) catch "?"
     else
         "";
-    // inverted=true: low % is bad (red), high % is good (green)
-    const color: u32 = if (b) |bat|
-        rampColor(bat.percent, th.battery_warning, th.battery_critical, true, s)
+    const color: u32 = if (present)
+        rampColor(pct, th.battery_warning, th.battery_critical, true, s)
     else
         s.ansi[8];
     for (text) |ch| {
@@ -575,15 +724,19 @@ const max_exec_cmd = 512;
 
 fn renderWattsWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, max_x: usize, th: *const Thresholds) usize {
     var x = start_x;
+    const present, const w, const charging = if (cache_valid)
+        .{ cache_watts_present, cache_watts, cache_watts_charging }
+    else blk: {
+        const pw = readWatts();
+        break :blk .{ pw != null, if (pw) |p| p.watts else @as(f32, 0.0), if (pw) |p| p.charging else false };
+    };
     var buf: [16]u8 = undefined;
-    const w_opt = readWatts();
-    const text = if (w_opt) |pw|
-        std.fmt.bufPrint(&buf, "{c}{d:.1}W", .{ if (pw.charging) @as(u8, '+') else @as(u8, ' '), pw.watts }) catch "?W"
+    const text = if (present)
+        std.fmt.bufPrint(&buf, "{c}{d:.1}W", .{ if (charging) @as(u8, '+') else @as(u8, ' '), w }) catch "?W"
     else
         "";
-    // Charging always green; otherwise ramp against discharge thresholds.
-    const color: u32 = if (w_opt) |pw|
-        (if (pw.charging) s.ansi[2] else rampColor(@intFromFloat(pw.watts), th.watts_warning, th.watts_critical, false, s))
+    const color: u32 = if (present)
+        (if (charging) s.ansi[2] else rampColor(@intFromFloat(w), th.watts_warning, th.watts_critical, false, s))
     else
         s.ansi[8];
     for (text) |ch| {

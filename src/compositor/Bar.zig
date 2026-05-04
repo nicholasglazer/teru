@@ -17,6 +17,7 @@
 //!   right = {mem}
 
 const std = @import("std");
+const posix = std.posix;
 const teru = @import("teru");
 const SoftwareRenderer = teru.render.SoftwareRenderer;
 const BarWidget = teru.render.BarWidget;
@@ -27,6 +28,15 @@ const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 
 const Bar = @This();
+
+const max_pending_execs = 8;
+
+const PendingExec = struct {
+    fd: posix.fd_t = -1,
+    pid: i32 = 0,
+    widget: *BarWidget.Widget,
+    event_source: ?*wlr.wl_event_source = null,
+};
 
 const Section = struct {
     widgets: BarWidget.WidgetList = .{},
@@ -59,6 +69,14 @@ last_bottom_sig: u64 = 0,
 /// Forces the next render regardless of signature. Set on config
 /// reload + dimension change; cleared by the first render after.
 dirty: bool = true,
+	/// Set by render() when refreshCachedData detects a sysfs/proc value
+	/// change. Forces re-render so the bar reflects updated CPU%, temp, etc.
+	cache_dirty: bool = false,
+
+	/// Non-blocking exec widget state. Each slot tracks one in-flight
+	/// fork+pipe exec whose output will land asynchronously via the
+	/// wlroots event loop. Slots with fd=-1 are free.
+	pending_execs: [max_pending_execs]PendingExec = undefined,
 
 pub fn create(server: *Server) ?*Bar {
     const allocator = server.zig_allocator;
@@ -70,6 +88,11 @@ pub fn create(server: *Server) ?*Bar {
     const bar_h: u32 = cell_h + 4;
 
     const bar = allocator.create(Bar) catch return null;
+
+    // Initialize pending exec slots as free
+    for (&bar.pending_execs) |*pe| {
+        pe.* = .{ .fd = -1, .pid = 0, .widget = undefined, .event_source = null };
+    }
 
     // Create top bar
     bar.top = createBarInstance(server, allocator, out_w, bar_h, cell_w, cell_h, 0) orelse {
@@ -97,6 +120,11 @@ pub fn create(server: *Server) ?*Bar {
     bar.bottom.left.widgets = BarWidget.parse(BarWidget.default_bottom_left);
     bar.bottom.right.widgets = BarWidget.parse(BarWidget.default_bottom_right);
     bar.bottom.enabled = true;
+
+    // Enable non-blocking exec widget evaluation via fork+pipe+event loop.
+    // After this point, exec widget TTL expiry triggers fork+exec instead
+    // of blocking popen() on the wlroots event loop.
+    BarRenderer.exec_nonblocking = true;
 
     return bar;
 }
@@ -141,9 +169,21 @@ pub fn updateVisibility(self: *Bar) void {
 
 /// Render both bars from compositor state.
 pub fn render(self: *Bar, server: *Server) void {
+    // Refresh cached sysfs/proc data (TTL-gated, non-blocking reads).
+    // Must happen before barSignature so value changes trigger re-render.
+    const now = teru.compat.monotonicNow();
+    if (BarRenderer.refreshCachedData(now)) {
+        self.cache_dirty = true;
+    }
+
+    // Launch non-blocking exec widgets whose TTL has expired.
+    // Output arrives asynchronously via wl_event_loop and marks bar dirty.
+    self.refreshExecWidgets(server, now);
+
     const sig = self.barSignature(server);
-    const force = self.dirty;
+    const force = self.dirty or self.cache_dirty;
     self.dirty = false;
+    self.cache_dirty = false;
 
     if (self.top.enabled and (force or sig != self.last_top_sig)) {
         self.renderBar(&self.top, server);
@@ -155,6 +195,173 @@ pub fn render(self: *Bar, server: *Server) void {
         wlr.wlr_scene_buffer_set_buffer_with_damage(self.bottom.scene_buffer, self.bottom.pixel_buffer, null);
         self.last_bottom_sig = sig;
     }
+}
+
+// ── Non-blocking exec widgets ─────────────────────────────────────
+//
+// Exec widgets (e.g. {exec:5:nvidia-smi ...}) are evaluated via
+// fork+pipe instead of popen() so the wlroots event loop never blocks.
+// refreshExecWidgets() is called every frame from render(); it checks
+// each widget's TTL and launches a child process for expired ones.
+// Output lands asynchronously via wl_event_loop_add_fd → execReadable(),
+// which stores the result in the widget's cache and marks the bar dirty.
+
+/// Iterate all widget sections and launch non-blocking execs for any
+/// whose TTL has expired. Called from render() before the signature check.
+fn refreshExecWidgets(self: *Bar, server: *Server, now_ns: i128) void {
+    if (self.top.enabled) {
+        refreshSectionExecs(self, &self.top.left, server, now_ns);
+        refreshSectionExecs(self, &self.top.center, server, now_ns);
+        refreshSectionExecs(self, &self.top.right, server, now_ns);
+    }
+    if (self.bottom.enabled) {
+        refreshSectionExecs(self, &self.bottom.left, server, now_ns);
+        refreshSectionExecs(self, &self.bottom.center, server, now_ns);
+        refreshSectionExecs(self, &self.bottom.right, server, now_ns);
+    }
+}
+
+fn refreshSectionExecs(self: *Bar, section: *Section, server: *Server, now_ns: i128) void {
+    for (section.widgets.items[0..section.widgets.count]) |*w| {
+        if (w.kind != .exec) continue;
+        if (w.arg.len == 0) continue;
+
+        // Check TTL
+        const age_s: u32 = if (w.last_eval == 0) std.math.maxInt(u32) else blk: {
+            const age = @divTrunc(now_ns -| w.last_eval, std.time.ns_per_s);
+            break :blk if (age > std.math.maxInt(u32)) std.math.maxInt(u32) else @as(u32, @intCast(age));
+        };
+        if (age_s < w.interval) continue;
+
+        // Prevent double-fork for the same widget
+        if (findPendingExec(self, w) != null) continue;
+
+        // Set last_eval now so we don't re-fork during this interval,
+        // even if the child hasn't produced output yet.
+        w.last_eval = now_ns;
+
+        // Null-terminate command
+        var cmd_z: [512]u8 = undefined;
+        if (w.arg.len >= cmd_z.len) continue;
+        @memcpy(cmd_z[0..w.arg.len], w.arg);
+        cmd_z[w.arg.len] = 0;
+
+        // Create pipe
+        var pipe_fds: [2]posix.fd_t = undefined;
+        if (std.c.pipe(&pipe_fds) != 0) continue;
+        const read_fd = pipe_fds[0];
+        const write_fd = pipe_fds[1];
+
+        // Fork
+        const pid = std.os.linux.fork();
+        if (pid < 0) {
+            _ = posix.system.close(read_fd);
+            _ = posix.system.close(write_fd);
+            continue;
+        }
+
+        if (pid == 0) {
+            // Child: redirect stdout to pipe, exec /bin/sh -c <cmd>.
+            _ = posix.system.close(read_fd);
+            _ = std.c.dup2(write_fd, posix.STDOUT_FILENO);
+            _ = std.c.dup2(write_fd, posix.STDERR_FILENO);
+            _ = posix.system.close(write_fd);
+
+            const cmd_slice: [:0]const u8 = cmd_z[0..w.arg.len :0];
+            const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", cmd_slice.ptr, null };
+            const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
+            _ = posix.system.execve("/bin/sh", &argv, @ptrCast(envp));
+            std.os.linux.exit(1);
+        }
+
+        // Parent: close write end, set read end non-blocking.
+        _ = posix.system.close(write_fd);
+
+        const flags = std.c.fcntl(read_fd, posix.F.GETFL);
+        if (flags >= 0) {
+            _ = std.c.fcntl(read_fd, posix.F.SETFL, flags | teru.compat.O_NONBLOCK);
+        }
+
+        // Register with event loop
+        if (addPendingExec(self, read_fd, @intCast(pid), w)) |pe| {
+            if (server.event_loop) |el| {
+                pe.event_source = wlr.wl_event_loop_add_fd(
+                    el,
+                    read_fd,
+                    wlr.WL_EVENT_READABLE,
+                    execReadable,
+                    @ptrCast(pe),
+                );
+            }
+        } else {
+            // No free slot — clean up immediately (widget keeps stale cache).
+            _ = posix.system.close(read_fd);
+            _ = std.c.waitpid(@intCast(pid), null, std.c.W.NOHANG);
+        }
+    }
+}
+
+fn findPendingExec(self: *Bar, widget: *BarWidget.Widget) ?*PendingExec {
+    for (&self.pending_execs) |*pe| {
+        if (pe.fd != -1 and pe.widget == widget) return pe;
+    }
+    return null;
+}
+
+fn addPendingExec(self: *Bar, fd: posix.fd_t, pid: i32, widget: *BarWidget.Widget) ?*PendingExec {
+    for (&self.pending_execs) |*pe| {
+        if (pe.fd == -1) {
+            pe.fd = fd;
+            pe.pid = pid;
+            pe.widget = widget;
+            return pe;
+        }
+    }
+    return null;
+}
+
+fn execReadable(fd: c_int, mask: u32, data: ?*anyopaque) callconv(.c) c_int {
+    const pe: *PendingExec = @ptrCast(@alignCast(data orelse return 1));
+
+    if (mask & 0x10 != 0) { // WL_EVENT_HANGUP
+        cleanupExec(pe);
+        return 1;
+    }
+
+    // Read whatever the child has written so far. The pipe is O_NONBLOCK
+    // so we'll get EAGAIN if there's nothing yet (shouldn't happen since
+    // the event loop only calls us when data is available).
+    var buf: [BarWidget.max_exec_output]u8 = undefined;
+    const n = std.c.read(fd, &buf, buf.len);
+    if (n > 0) {
+        var data_bytes = buf[0..@as(usize, @intCast(n))];
+        // Trim trailing whitespace / newlines
+        while (data_bytes.len > 0) {
+            const c = data_bytes[data_bytes.len - 1];
+            if (!isExecWhitespace(c)) break;
+            data_bytes.len -= 1;
+        }
+        // Only keep first line (bar is single-line)
+        if (std.mem.indexOfScalar(u8, data_bytes, 0x0A)) |nl| data_bytes = data_bytes[0..nl];
+
+        const copy_n = @min(data_bytes.len, pe.widget.cache.len);
+        @memcpy(pe.widget.cache[0..copy_n], data_bytes[0..copy_n]);
+        pe.widget.cache_len = @intCast(copy_n);
+    }
+
+    cleanupExec(pe);
+    return 1; // remove event source
+}
+
+fn isExecWhitespace(c: u8) bool {
+    return c == ' ' or c == '\t' or c == '\n' or c == '\r';
+}
+
+fn cleanupExec(pe: *PendingExec) void {
+    _ = posix.system.close(pe.fd);
+    _ = std.c.waitpid(pe.pid, null, std.c.W.NOHANG);
+    pe.fd = -1;
+    pe.event_source = null;
 }
 
 /// Cheap u64 fingerprint of the user-visible bar state. Collisions
@@ -191,14 +398,24 @@ fn barSignature(self: *Bar, server: *Server) u64 {
     h ^= server.nodes.countInWorkspace(server.layout_engine.active_workspace);
     h *%= prime;
     if (server.focused_terminal) |tp| {
-        h ^= @intFromPtr(&tp.pane.vt.title);
-        h ^= tp.pane.vt.title_len;
+        // Hash title content so same-length title changes trigger re-render.
+        // (title is [256]u8 — &tp.pane.vt.title is a stable fixed-array pointer,
+        // so old code only caught length changes, not content changes.)
+        const title_bytes = tp.pane.vt.title[0..tp.pane.vt.title_len];
+        h ^= std.hash.Wyhash.hash(0, title_bytes);
     }
     h *%= prime;
 
     // Keymap name — changes on layout switch.
     h ^= @intFromPtr(server.active_keymap_name.ptr);
     h ^= server.active_keymap_name.len;
+    h *%= prime;
+
+    // Clock / exec widget staleness: hash the current minute so the
+    // bar re-renders when time-dependent widgets (clock, exec-N)
+    // need to show updated values. Without this, the signature
+    // optimisation kept the bar frozen until a workspace switch.
+    h ^= @intCast(@divTrunc(teru.compat.monotonicNow(), 60 * std.time.ns_per_s));
     h *%= prime;
 
     // Push widget used-mask, with a cheap short-circuit: if the first
@@ -292,6 +509,10 @@ fn buildBarData(_: *Bar, server: *Server) BarData {
     // Push widgets registered via MCP. Pass the whole fixed-size array;
     // the renderer filters by `used` and matches on name.
     data.push_widgets = &server.push_widgets;
+
+    // Populate sysfs/proc cache fields so widget renderers read from
+    // cache instead of doing synchronous I/O on the event loop.
+    BarRenderer.populateBarDataCache(&data);
 
     return data;
 }
