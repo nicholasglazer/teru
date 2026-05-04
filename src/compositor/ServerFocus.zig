@@ -365,6 +365,7 @@ pub fn focusWorkspace(server: *Server, target: u8) void {
         server.maybeFireWorkspaceStartup(target);
         server.emitMcpEventKind("workspace_switched", ",\"from\":{d},\"to\":{d}", .{ old, target });
         if (server.bar) |b| b.render(server);
+        server.scheduleRender();
         return;
     };
 
@@ -393,6 +394,7 @@ pub fn focusWorkspace(server: *Server, target: u8) void {
     server.prev_workspace = prev;
     server.emitMcpEventKind("workspace_switched", ",\"from\":{d},\"to\":{d}", .{ prev, target });
     if (server.bar) |b| b.render(server);
+    server.scheduleRender();
 }
 
 /// Cycle focus to the next connected output (keybind action).
