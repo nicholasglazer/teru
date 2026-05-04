@@ -184,6 +184,17 @@ unfocused_opacity: f32 = 1.0,
 /// Server init before config applies; changing this requires restart.
 cursor_size: u32 = default_cursor_size,
 
+/// Allow wlr_virtual_keyboard_v1 / wlr_virtual_pointer_v1 globals to
+/// inject input. Used by wtype, ydotool, wlrctl, and accessibility
+/// tools. Set to false on shared / kiosk hosts to prevent any client
+/// in this session from synthesising keys or pointer events.
+allow_virtual_input: bool = true,
+
+/// Invert touchpad-style 2-finger scroll. False (default) matches the
+/// TUI convention "scroll down → newer content"; true flips to the
+/// natural-scrolling convention "scroll down → older content".
+touchpad_scroll_invert: bool = false,
+
 /// Pixel width of the border-drag hit zone inside each pane. Clicks
 /// within this distance of a pane's edge start a border-resize drag
 /// instead of focusing the pane. 2 is the outer insensitive ring,
@@ -499,6 +510,8 @@ fn parseSection(name: []const u8) Section {
 fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
     if (std.mem.eql(u8, key, "gap")) {
         self.gap = std.fmt.parseInt(u16, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "allow_virtual_input")) {
+        self.allow_virtual_input = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "border_width")) {
         self.border_width = std.fmt.parseInt(u16, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "unfocused_opacity")) {
@@ -525,6 +538,8 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.float_default_h = std.fmt.parseInt(u32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "resize_min_px")) {
         self.resize_min_px = std.fmt.parseInt(i32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "touchpad_scroll_invert")) {
+        self.touchpad_scroll_invert = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "border_drag_insensitive_px")) {
         self.border_drag_insensitive_px = std.fmt.parseInt(i32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "border_drag_zone_px")) {
