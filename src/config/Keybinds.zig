@@ -689,7 +689,8 @@ pub const Keybinds = struct {
         // adjustment). In standalone teru they control font size —
         // that binding is added by `loadTerminalZoomDefaults`, called
         // only from the terminal init path, never from teruwm.
-        _ = self.add(n, MS, 'q', .compositor_quit);
+        _ = self.add(n, M, 'q', .window_close); // xmonad parity: close focused
+        _ = self.add(n, MS, 'q', .compositor_quit); // xmonad parity: quit compositor
         _ = self.add(n, MS, 'r', .config_reload);
         // Mod+Ctrl+Shift+R: hot-restart compositor (preserves terminal sessions)
         const MCS = Mods{ .ctrl = true, .shift = true, .super_ = true };
