@@ -22,8 +22,10 @@ map: wlr.wl_listener,
 unmap: wlr.wl_listener,
 destroy: wlr.wl_listener,
 commit: wlr.wl_listener,
-	show_window_menu: wlr.wl_listener = makeListener(handleShowWindowMenu),
-	new_popup: wlr.wl_listener = makeListener(handleNewPopup),
+show_window_menu: wlr.wl_listener = makeListener(handleShowWindowMenu),
+new_popup: wlr.wl_listener = makeListener(handleNewPopup),
+request_move: wlr.wl_listener = makeListener(handleRequestMove),
+request_resize: wlr.wl_listener = makeListener(handleRequestResize),
 
 // wlr_foreign_toplevel_management_v1 handle. Created on map, destroyed
 // on unmap; null in between. Taskbar clients (waybar, nwg-panel) see
@@ -65,8 +67,10 @@ pub fn create(server: *Server, toplevel: *wlr.wlr_xdg_toplevel) ?*XdgView {
         .unmap = makeListener(handleUnmap),
         .destroy = makeListener(handleDestroy),
         .commit = makeListener(handleCommit),
-		.show_window_menu = makeListener(handleShowWindowMenu),
-		.new_popup = makeListener(handleNewPopup),
+        .show_window_menu = makeListener(handleShowWindowMenu),
+        .new_popup = makeListener(handleNewPopup),
+        .request_move = makeListener(handleRequestMove),
+        .request_resize = makeListener(handleRequestResize),
     };
 
     // Register listeners on the surface and toplevel events
@@ -75,8 +79,10 @@ pub fn create(server: *Server, toplevel: *wlr.wlr_xdg_toplevel) ?*XdgView {
     wlr.wl_signal_add(wlr.miozu_surface_unmap(surface), &view.unmap);
     wlr.wl_signal_add(wlr.miozu_surface_commit(surface), &view.commit);
     wlr.wl_signal_add(wlr.miozu_xdg_toplevel_destroy(toplevel), &view.destroy);
-	wlr.wl_signal_add(wlr.miozu_xdg_toplevel_request_show_window_menu(toplevel), &view.show_window_menu);
-	wlr.wl_signal_add(wlr.miozu_xdg_surface_new_popup(xdg_surface), &view.new_popup);
+    wlr.wl_signal_add(wlr.miozu_xdg_toplevel_request_show_window_menu(toplevel), &view.show_window_menu);
+    wlr.wl_signal_add(wlr.miozu_xdg_surface_new_popup(xdg_surface), &view.new_popup);
+    wlr.wl_signal_add(wlr.miozu_xdg_toplevel_request_move(toplevel), &view.request_move);
+    wlr.wl_signal_add(wlr.miozu_xdg_toplevel_request_resize(toplevel), &view.request_resize);
 
     return view;
 }
@@ -246,8 +252,10 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     wlr.wl_list_remove(&view.unmap.link);
     wlr.wl_list_remove(&view.destroy.link);
     wlr.wl_list_remove(&view.commit.link);
-	wlr.wl_list_remove(&view.show_window_menu.link);
-	wlr.wl_list_remove(&view.new_popup.link);
+    wlr.wl_list_remove(&view.show_window_menu.link);
+    wlr.wl_list_remove(&view.new_popup.link);
+    wlr.wl_list_remove(&view.request_move.link);
+    wlr.wl_list_remove(&view.request_resize.link);
 
     std.debug.print("teruwm: surface destroyed node={d}\n", .{view.node_id});
 
@@ -276,11 +284,16 @@ fn handleNewPopup(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) vo
     const popup: *wlr.wlr_xdg_popup = @ptrCast(@alignCast(data orelse return));
     const popup_surface = wlr.miozu_xdg_popup_base(popup) orelse return;
     std.debug.print("teruwm: new_popup node={d} popup_surface={*}\n", .{ view.node_id, popup_surface });
-    _ = wlr.wlr_scene_xdg_surface_create(view.scene_tree, popup_surface);
+    if (wlr.wlr_scene_xdg_surface_create(view.scene_tree, popup_surface) == null) return;
 
     // Constrain the popup to the output area. Without this the popup
     // never receives a configure event and the client never commits a
     // buffer — the context menu simply doesn't appear.
+    //
+    // Constraint box is in parent-surface-local coordinates. Origin is
+    // (-vx, -vy) assuming a single output at (0,0). Multi-monitor with
+    // offset outputs would need the output's layout position subtracted
+    // as well: (output.x - vx, output.y - vy).
     const slot = view.server.nodes.findById(view.node_id) orelse return;
     const vx = view.server.nodes.pos_x[slot];
     const vy = view.server.nodes.pos_y[slot];
@@ -291,34 +304,90 @@ fn handleNewPopup(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) vo
         .width = @intCast(dims.w),
         .height = @intCast(dims.h),
     };
-    wlr.wlr_xdg_popup_unconstrain_from_box(popup, @ptrCast(&constraint_box));
-
-    view.server.scheduleRender();
+    wlr.wlr_xdg_popup_unconstrain_from_box(popup, &constraint_box);
 }
 
 /// xdg_toplevel.show_window_menu handler. Toggle floating on the
 /// requesting toplevel.
-fn handleShowWindowMenu(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+fn handleShowWindowMenu(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const view: *XdgView = @fieldParentPtr("show_window_menu", listener);
     const server = view.server;
     const slot = server.nodes.findByToplevel(view.toplevel) orelse return;
 
-    _ = data;
     server.nodes.floating[slot] = !server.nodes.floating[slot];
     const now_float = server.nodes.floating[slot];
     std.debug.print("teruwm: show_window_menu node={d} float={}\n", .{ view.node_id, now_float });
 
     if (now_float) {
-        const ws = server.layout_engine.active_workspace;
-        server.layout_engine.workspaces[ws].removeNode(view.node_id);
+        const ws = server.nodes.workspace[slot];
+        if (ws < 10) server.layout_engine.workspaces[ws].removeNode(view.node_id);
         const cx = wlr.miozu_cursor_x(server.cursor);
         const cy = wlr.miozu_cursor_y(server.cursor);
         server.nodes.applyRect(slot, @intFromFloat(cx - 200), @intFromFloat(cy - 24), server.nodes.width[slot], server.nodes.height[slot]);
     } else {
-        server.layout_engine.workspaces[server.layout_engine.active_workspace].addNode(server.zig_allocator, view.node_id) catch {};
+        const ws = server.nodes.workspace[slot];
+        if (ws < 10) server.layout_engine.workspaces[ws].addNode(server.zig_allocator, view.node_id) catch {};
     }
     server.arrangeworkspace(server.layout_engine.active_workspace);
     if (server.bar) |b| b.render(server);
+}
+
+/// xdg_toplevel.request_move handler. CSD titlebar drag — float the
+/// window and start an interactive move grab at the cursor position.
+fn handleRequestMove(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const view: *XdgView = @fieldParentPtr("request_move", listener);
+    const server = view.server;
+    const slot = server.nodes.findByToplevel(view.toplevel) orelse return;
+
+    if (!server.nodes.floating[slot]) {
+        const ws = server.nodes.workspace[slot];
+        if (ws < 10) server.layout_engine.workspaces[ws].removeNode(view.node_id);
+        server.nodes.floating[slot] = true;
+        const cx = wlr.miozu_cursor_x(server.cursor);
+        const cy = wlr.miozu_cursor_y(server.cursor);
+        const cur_w = server.nodes.width[slot];
+        const cur_h = server.nodes.height[slot];
+        const fw: u32 = if (cur_w > 0) cur_w else server.wm_config.float_default_w;
+        const fh: u32 = if (cur_h > 0) cur_h else server.wm_config.float_default_h;
+        server.nodes.applyRect(slot, @intFromFloat(cx - @as(f64, @floatFromInt(fw)) / 2.0), @intFromFloat(cy - @as(f64, @floatFromInt(fh)) / 2.0), fw, fh);
+        server.arrangeworkspace(server.layout_engine.active_workspace);
+        if (server.bar) |b| b.render(server);
+    }
+
+    server.cursor_mode = .move;
+    server.grab_node_id = view.node_id;
+    server.grab_x = wlr.miozu_cursor_x(server.cursor) - @as(f64, @floatFromInt(server.nodes.pos_x[slot]));
+    server.grab_y = wlr.miozu_cursor_y(server.cursor) - @as(f64, @floatFromInt(server.nodes.pos_y[slot]));
+}
+
+/// xdg_toplevel.request_resize handler. CSD edge drag — float the
+/// window and start an interactive resize grab at the cursor position.
+fn handleRequestResize(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const view: *XdgView = @fieldParentPtr("request_resize", listener);
+    const server = view.server;
+    const slot = server.nodes.findByToplevel(view.toplevel) orelse return;
+
+    if (!server.nodes.floating[slot]) {
+        const ws = server.nodes.workspace[slot];
+        if (ws < 10) server.layout_engine.workspaces[ws].removeNode(view.node_id);
+        server.nodes.floating[slot] = true;
+        const cx = wlr.miozu_cursor_x(server.cursor);
+        const cy = wlr.miozu_cursor_y(server.cursor);
+        const cur_w = server.nodes.width[slot];
+        const cur_h = server.nodes.height[slot];
+        const fw: u32 = if (cur_w > 0) cur_w else server.wm_config.float_default_w;
+        const fh: u32 = if (cur_h > 0) cur_h else server.wm_config.float_default_h;
+        server.nodes.applyRect(slot, @intFromFloat(cx - @as(f64, @floatFromInt(fw)) / 2.0), @intFromFloat(cy - @as(f64, @floatFromInt(fh)) / 2.0), fw, fh);
+        server.arrangeworkspace(server.layout_engine.active_workspace);
+        if (server.bar) |b| b.render(server);
+    }
+
+    server.cursor_mode = .resize;
+    server.grab_node_id = view.node_id;
+    server.grab_x = wlr.miozu_cursor_x(server.cursor);
+    server.grab_y = wlr.miozu_cursor_y(server.cursor);
+    server.grab_w = server.nodes.width[slot];
+    server.grab_h = server.nodes.height[slot];
 }
 // ── Helper ─────────────────────────────────────────────────────
 
