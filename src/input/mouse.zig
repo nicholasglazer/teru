@@ -448,13 +448,7 @@ pub fn handleMousePress(
         .middle => {
             // Paste from clipboard (with bracketed paste wrapping)
             if (mux.getActivePaneMut()) |pane| {
-                if (pane.vt.bracketed_paste) {
-                    _ = pane.ptyWrite("\x1b[200~") catch {};
-                }
-                Clipboard.paste(&pane.backend.local);
-                if (pane.vt.bracketed_paste) {
-                    _ = pane.ptyWrite("\x1b[201~") catch {};
-                }
+                Clipboard.paste(pane);
             }
             return .{};
         },

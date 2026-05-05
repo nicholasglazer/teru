@@ -673,13 +673,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                 }
                                 if (keysym == ks.V_upper or keysym == ks.V_lower) {
                                     if (mux.getActivePaneMut()) |pane| {
-                                        if (pane.vt.bracketed_paste) {
-                                            _ = pane.ptyWrite("\x1b[200~") catch {};
-                                        }
-                                        Clipboard.paste(&pane.backend.local);
-                                        if (pane.vt.bracketed_paste) {
-                                            _ = pane.ptyWrite("\x1b[201~") catch {};
-                                        }
+                                        Clipboard.paste(pane);
                                     }
                                     continue;
                                 }
@@ -774,13 +768,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                     }
                                     if (action == .paste_clipboard) {
                                         if (mux.getActivePaneMut()) |pane| {
-                                            if (pane.vt.bracketed_paste) {
-                                                _ = pane.ptyWrite("\x1b[200~") catch {};
-                                            }
-                                            Clipboard.paste(&pane.backend.local);
-                                            if (pane.vt.bracketed_paste) {
-                                                _ = pane.ptyWrite("\x1b[201~") catch {};
-                                            }
+                                            Clipboard.paste(pane);
                                         }
                                         continue;
                                     }
