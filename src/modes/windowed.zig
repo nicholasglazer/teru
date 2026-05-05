@@ -1189,7 +1189,9 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                         .meta => {},
                         .query => {
                             if (mcp) |*m| {
-                                in_band.handleQuery(pane, event_data, m);
+                                in_band.handleQuery(pane, event_data, m, .{
+                                    .enabled = config.agent_in_band,
+                                });
                             }
                         },
                     }

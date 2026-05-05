@@ -147,6 +147,14 @@ hook_on_close: ?[]const u8 = null,
 hook_on_agent_start: ?[]const u8 = null,
 hook_on_session_save: ?[]const u8 = null,
 
+/// Allow OSC 9999 in-band MCP queries from agents running inside a
+/// pane. When false (default), in-band queries return a JSON-RPC
+/// error and never reach the MCP dispatcher. When true, only the
+/// allowlisted set of tools is dispatchable; any pane_id arg is
+/// forced to the calling pane's id, blocking cross-pane drive-by.
+/// See src/agent/in_band.zig for the allowlist.
+agent_in_band: bool = false,
+
 // Appearance
 padding: u32 = 8,
 opacity: f32 = 1.0,
@@ -520,6 +528,8 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         self.setString(allocator, &self.hook_on_agent_start, value);
     } else if (std.mem.eql(u8, key, "hook_on_session_save")) {
         self.setString(allocator, &self.hook_on_session_save, value);
+    } else if (std.mem.eql(u8, key, "agent_in_band")) {
+        self.agent_in_band = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "padding")) {
         self.padding = std.fmt.parseInt(u32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "opacity")) {
