@@ -29,6 +29,24 @@
 //! ring, one McpServer.dispatch, a few hundred bytes written back.
 //! Zero processes, zero sockets, zero context switches beyond the one
 //! teru already does per PTY read.
+//!
+//! Authorisation
+//! ─────────────
+//! The in-band channel is OPT-IN — `agent_in_band = true` in
+//! teru.conf. When disabled (the default) every query is rejected
+//! with a JSON-RPC -32601 and never reaches McpServer.dispatch.
+//!
+//! When enabled, only the allowlisted tools below are dispatchable.
+//! The allowlist is intentionally narrow: read-only introspection
+//! and self-affecting agent metadata. Tools that mutate other panes
+//! (`teru_send_input`, `teru_send_keys`, `teru_create_pane`, etc.),
+//! spawn processes, write the user's config, take screenshots, or
+//! drive the compositor (`teruwm_*`) are NOT exposed to in-band —
+//! they're available via the Unix socket where the caller has
+//! already crossed an authorisation boundary by holding the runtime
+//! socket. For any allowlisted tool that takes a `pane_id`, the
+//! handler forces it to the calling pane's id, so an agent can only
+//! query / annotate its own pane.
 
 const std = @import("std");
 const Pane = @import("../core/Pane.zig");
@@ -42,16 +60,116 @@ pub const max_response: usize = 16 * 1024;
 /// Maximum synthesized JSON-RPC body we're willing to build.
 pub const max_request: usize = 8 * 1024;
 
+/// Per-call options threaded from the caller (windowed mode reads
+/// `agent_in_band` from Config and passes it through). Decoupled
+/// from McpServer so a single dispatcher serves both paths.
+pub const Options = struct {
+    enabled: bool = false,
+};
+
+/// Tools an in-band agent is allowed to call. Read-only introspection
+/// and self-affecting metadata only — anything that mutates state in
+/// other panes / on disk / in the compositor is dispatched only over
+/// the Unix socket. Keep this list short; broaden only after auditing
+/// the target tool's argument surface.
+const allowed_tools = [_][]const u8{
+    // Read-only / introspection
+    "teru_list_panes",
+    "teru_get_state",
+    "teru_get_graph",
+    "teru_query_status",
+    "teru_query_history",
+    "teru_list_widgets",
+    "teru_read_output", // pane_id forced to caller's pane below
+    // Agent metadata for the calling pane
+    "teru_progress",
+    "teru_agent_status",
+    // Push widgets (no exec, no pane_id)
+    "teru_set_widget",
+    "teru_delete_widget",
+    // Event subscribe (returns socket paths; caller still has to connect)
+    "teru_subscribe_events",
+};
+
+fn isToolAllowed(tool: []const u8) bool {
+    for (allowed_tools) |t| {
+        if (std.mem.eql(u8, tool, t)) return true;
+    }
+    return false;
+}
+
+/// Replace any `pane_id` argument with the calling pane's id (or inject
+/// one if absent). This is the security-critical step: without it, an
+/// allowlisted read tool like `teru_read_output` could exfil another
+/// pane's scrollback (which may contain a sudo password prompt, an
+/// SSH session, etc.) just because the caller asked for a different id.
+fn overridePaneId(
+    args_in: []const protocol.QueryArg,
+    out: []protocol.QueryArg,
+    pane_id_str: []const u8,
+) []const protocol.QueryArg {
+    var n: usize = 0;
+    var saw_pane_id = false;
+    for (args_in) |a| {
+        if (n >= out.len) break;
+        if (std.mem.eql(u8, a.key, "pane_id")) {
+            out[n] = .{ .key = a.key, .value = pane_id_str };
+            saw_pane_id = true;
+        } else {
+            out[n] = a;
+        }
+        n += 1;
+    }
+    if (!saw_pane_id and n < out.len) {
+        out[n] = .{ .key = "pane_id", .value = pane_id_str };
+        n += 1;
+    }
+    return out[0..n];
+}
+
+/// Build a small JSON-RPC error and frame it as a DCS reply.
+fn writeErrorReply(pane: *const Pane, id: []const u8, code: i32, msg: []const u8) void {
+    var body_buf: [256]u8 = undefined;
+    const id_is_int = std.fmt.parseInt(i64, id, 10) catch null != null;
+    const body = if (id_is_int)
+        std.fmt.bufPrint(&body_buf,
+            \\{{"jsonrpc":"2.0","error":{{"code":{d},"message":"{s}"}},"id":{s}}}
+        , .{ code, msg, id }) catch return
+    else
+        std.fmt.bufPrint(&body_buf,
+            \\{{"jsonrpc":"2.0","error":{{"code":{d},"message":"{s}"}},"id":"{s}"}}
+        , .{ code, msg, id }) catch return;
+    var framed_buf: [320]u8 = undefined;
+    const framed = frameDcs(id, body, &framed_buf) orelse return;
+    _ = pane.ptyWrite(framed) catch {};
+}
+
 /// Handle an OSC query: build the equivalent JSON-RPC tools/call body,
 /// dispatch through McpServer, frame the response as DCS, write to PTY.
 /// Silently returns on any malformed input — an in-band channel must
 /// never crash the terminal just because some agent sent garbage.
-pub fn handleQuery(pane: *const Pane, event: protocol.AgentEvent, mcp: *McpServer) void {
+pub fn handleQuery(pane: *const Pane, event: protocol.AgentEvent, mcp: *McpServer, opts: Options) void {
     const tool = event.query_tool orelse return;
     const id = event.query_id orelse "null";
 
+    if (!opts.enabled) {
+        writeErrorReply(pane, id, -32601, "in-band MCP disabled (set agent_in_band=true)");
+        return;
+    }
+
+    if (!isToolAllowed(tool)) {
+        writeErrorReply(pane, id, -32601, "tool not allowed via in-band channel");
+        return;
+    }
+
+    // Force pane_id to the calling pane's id for any tool that takes one.
+    var args_buf: [protocol.max_query_args + 1]protocol.QueryArg = undefined;
+    var pane_id_digits: [21]u8 = undefined;
+    const pane_id_str = std.fmt.bufPrint(&pane_id_digits, "{d}", .{pane.id}) catch return;
+    const args = overridePaneId(event.query_args.slice(), &args_buf, pane_id_str);
+
     var req_buf: [max_request]u8 = undefined;
-    const req = buildJsonRpcRequest(tool, id, event.query_args.slice(), &req_buf) orelse return;
+    const req = buildJsonRpcRequest(tool, id, args, &req_buf) orelse return;
 
     var resp_buf: [max_response]u8 = undefined;
     const resp = mcp.dispatch(req, &resp_buf);
@@ -175,4 +293,67 @@ test "writeValue — string escaping" {
     var out: [64]u8 = undefined;
     const n = writeValue(&out, "he\"ll\nworld") orelse return error.Overflow;
     try std.testing.expectEqualStrings("\"he\\\"ll\\nworld\"", out[0..n]);
+}
+
+test "isToolAllowed — allowlist hits" {
+    try std.testing.expect(isToolAllowed("teru_list_panes"));
+    try std.testing.expect(isToolAllowed("teru_get_state"));
+    try std.testing.expect(isToolAllowed("teru_progress"));
+    try std.testing.expect(isToolAllowed("teru_set_widget"));
+}
+
+test "isToolAllowed — block list" {
+    // Cross-pane mutations
+    try std.testing.expect(!isToolAllowed("teru_send_input"));
+    try std.testing.expect(!isToolAllowed("teru_send_keys"));
+    try std.testing.expect(!isToolAllowed("teru_create_pane"));
+    try std.testing.expect(!isToolAllowed("teru_close_pane"));
+    try std.testing.expect(!isToolAllowed("teru_focus_pane"));
+    // Disk + config
+    try std.testing.expect(!isToolAllowed("teru_set_config"));
+    try std.testing.expect(!isToolAllowed("teru_screenshot"));
+    try std.testing.expect(!isToolAllowed("teru_session_save"));
+    try std.testing.expect(!isToolAllowed("teru_session_restore"));
+    // Compositor surface
+    try std.testing.expect(!isToolAllowed("teruwm_list_windows"));
+    try std.testing.expect(!isToolAllowed("teruwm_send_input"));
+    try std.testing.expect(!isToolAllowed("teruwm_screenshot"));
+    // Garbage
+    try std.testing.expect(!isToolAllowed(""));
+    try std.testing.expect(!isToolAllowed("teru_nope"));
+}
+
+test "overridePaneId — replaces existing pane_id" {
+    var out: [4]protocol.QueryArg = undefined;
+    const args_in = [_]protocol.QueryArg{
+        .{ .key = "pane_id", .value = "99" },
+        .{ .key = "lines", .value = "10" },
+    };
+    const result = overridePaneId(&args_in, &out, "7");
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("pane_id", result[0].key);
+    try std.testing.expectEqualStrings("7", result[0].value);
+    try std.testing.expectEqualStrings("lines", result[1].key);
+    try std.testing.expectEqualStrings("10", result[1].value);
+}
+
+test "overridePaneId — injects pane_id when absent" {
+    var out: [4]protocol.QueryArg = undefined;
+    const args_in = [_]protocol.QueryArg{
+        .{ .key = "lines", .value = "10" },
+    };
+    const result = overridePaneId(&args_in, &out, "7");
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("lines", result[0].key);
+    try std.testing.expectEqualStrings("pane_id", result[1].key);
+    try std.testing.expectEqualStrings("7", result[1].value);
+}
+
+test "overridePaneId — empty input still gets pane_id" {
+    var out: [4]protocol.QueryArg = undefined;
+    const args_in = [_]protocol.QueryArg{};
+    const result = overridePaneId(&args_in, &out, "42");
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("pane_id", result[0].key);
+    try std.testing.expectEqualStrings("42", result[0].value);
 }
