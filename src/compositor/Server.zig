@@ -250,6 +250,17 @@ terminal_repeat_keycode: u32 = 0,
 terminal_repeat_bytes: [32]u8 = undefined,
 terminal_repeat_len: u8 = 0,
 
+// Bar reactivity tick (v0.6.6). Idle compositor never schedules a
+// frame — no PTY output, no input, no client damage — which means
+// `Bar.render` (driven from the frame callback) never re-evaluates
+// its widgets. Symptom: clock + CPU% + battery froze for minutes
+// at a time on an idle desktop. We fire `barTick` at 1 Hz: it
+// refreshes the sysfs/proc cache (TTL-gated, near-zero cost), and
+// only schedules a frame when the bar's signature actually changed
+// — so a truly-idle bar still produces no GPU work.
+bar_tick_src: ?*wlr.wl_event_source = null,
+bar_tick_last_sig: u64 = 0,
+
 // ── Listeners ──────────────────────────────────────────────────
 
 new_output: wlr.wl_listener = makeListener(Listeners.handleNewOutput),
@@ -910,7 +921,7 @@ pub fn reloadWmConfig(self: *Server) void {
             self.wm_config.bar_bottom_right,
         );
         b.dirty = true;
-        b.render(self);
+        _ = b.render(self);
     }
 
     // Apply new background color to the scene rect
@@ -986,11 +997,15 @@ pub fn deinit(self: *Server) void {
     // the server deref path.
     self.shutting_down = true;
 
-    // Tear down the keybind-repeat timer first so a late tick can't
-    // fire against torn-down Server state.
+    // Tear down timers first so a late tick can't fire against
+    // torn-down Server state.
     if (self.keybind_repeat_src) |src| {
         _ = wlr.wl_event_source_remove(src);
         self.keybind_repeat_src = null;
+    }
+    if (self.bar_tick_src) |src| {
+        _ = wlr.wl_event_source_remove(src);
+        self.bar_tick_src = null;
     }
 
     // Free every InhibitorTracker before wl_display_destroy fires
@@ -1241,7 +1256,7 @@ pub fn spawnTerminal(self: *Server, ws: u8) void {
     for (self.terminal_panes) |maybe_tp| {
         if (maybe_tp) |t| t.render();
     }
-    if (self.bar) |b| b.render(self);
+    if (self.bar) |b| _ = b.render(self);
 }
 
 // ── Clipboard (internal buffer for Ctrl+Shift+C/V) ───────────
@@ -1335,7 +1350,7 @@ pub fn renderLauncherBar(self: *Server) void {
             self.launcher.render(&b.top.renderer);
             wlr.wlr_scene_buffer_set_buffer_with_damage(b.top.scene_buffer, b.top.pixel_buffer, null);
         } else {
-            b.render(self); // restore normal bar
+            _ = b.render(self); // restore normal bar
         }
     }
 }
@@ -1388,7 +1403,7 @@ pub fn toggleFloat(self: *Server) void {
     self.arrangeworkspace(ws);
     std.debug.print("teruwm: unfloat node={d}\n", .{nid});
 
-    if (self.bar) |b| b.render(self);
+    if (self.bar) |b| _ = b.render(self);
 }
 
 // ── Fullscreen ───────────────────────────────────────────────
@@ -1425,7 +1440,7 @@ pub fn toggleFullscreen(self: *Server) void {
 
         // Re-tile (respects bar height again)
         self.arrangeworkspace(ws);
-        if (self.bar) |b| b.render(self);
+        if (self.bar) |b| _ = b.render(self);
 
         std.debug.print("teruwm: fullscreen off\n", .{});
         return;
@@ -1591,7 +1606,7 @@ pub fn closeNode(self: *Server, node_id: u64) bool {
                 self.terminal_count -|= 1;
                 self.arrangeworkspace(ws);
                 self.updateFocusedTerminal();
-                if (self.bar) |b| b.render(self);
+                if (self.bar) |b| _ = b.render(self);
                 return true;
             }
         }
@@ -1695,7 +1710,7 @@ pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
 
     // Re-tile
     self.arrangeworkspace(self.layout_engine.active_workspace);
-    if (self.bar) |b| b.render(self);
+    if (self.bar) |b| _ = b.render(self);
 }
 
 // ── Focus management ──────────────────────────────────────────
@@ -1798,7 +1813,7 @@ pub fn moveNodeToWorkspace(self: *Server, nid: u64, target: u8) void {
     // a signature change — felt like a noticeable lag after Mod+Shift+N.
     if (self.bar) |b| {
         b.dirty = true;
-        b.render(self);
+        _ = b.render(self);
     }
 }
 
@@ -1967,6 +1982,51 @@ pub fn cancelTerminalRepeat(self: *Server) void {
     }
     self.terminal_repeat_len = 0;
     self.terminal_repeat_keycode = 0;
+}
+
+// ── Bar reactivity tick (v0.6.6) ─────────────────────────────
+//
+// Idle compositor scenario: no PTY output, no input, no client damage
+// → wlroots schedules zero frames → handleFrame never fires → Bar.render
+// never re-evaluates its widgets → clock and CPU% sit frozen for
+// minutes (verified empirically with snapshots 5 min apart returning
+// byte-identical bar pixels). Frame-driven reactivity is correct for
+// terminal panes (output drives damage) but wrong for time/sysfs
+// widgets that have no event source of their own.
+//
+// Fix: a 1-Hz wlroots timer that calls Bar.render directly. Bar.render
+// already does TTL-gated /proc reads and a signature short-circuit, so
+// when nothing actually changed the tick costs only the /proc syscalls
+// (a few µs) and a u64 hash. We only call scheduleRender when the bar
+// reports it actually re-painted — so a truly-idle bar produces zero
+// extra GPU/scene-commit work. 1 Hz is the floor because the CPU%
+// widget's cache TTL is 1 s; longer TTL widgets (battery, watts) are
+// already gated inside refreshCachedData and won't burn extra reads.
+
+fn barTick(data: ?*anyopaque) callconv(.c) c_int {
+    const self: *Server = @ptrCast(@alignCast(data orelse return 0));
+    if (!self.shutting_down) {
+        if (self.bar) |b| {
+            const repainted = b.render(self);
+            if (repainted) self.scheduleRender();
+        }
+    }
+    if (self.bar_tick_src) |src| {
+        _ = wlr.wl_event_source_timer_update(src, 1000);
+    }
+    return 0;
+}
+
+/// Start the 1-Hz bar reactivity tick. Idempotent — safe to call
+/// multiple times. Called from Output.attach once a bar exists; the
+/// timer is torn down in deinit.
+pub fn startBarTick(self: *Server) void {
+    if (self.bar_tick_src != null) return;
+    const loop = self.event_loop orelse return;
+    self.bar_tick_src = wlr.wl_event_loop_add_timer(loop, barTick, @ptrCast(self));
+    if (self.bar_tick_src) |src| {
+        _ = wlr.wl_event_source_timer_update(src, 1000);
+    }
 }
 
 /// Move the focused node to the next output's current workspace.

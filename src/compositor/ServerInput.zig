@@ -206,7 +206,7 @@ pub fn refreshActiveKeymap(server: *Server, keyboard: *wlr.wlr_keyboard) void {
     @memcpy(server.active_keymap_name_buf[0..n], name_slice[0..n]);
     server.active_keymap_name = server.active_keymap_name_buf[0..n];
 
-    if (server.bar) |b| b.render(server);
+    if (server.bar) |b| _ = b.render(server);
 }
 
 /// Extract the Nth XKB layout code from the keymap's xkb_symbols
@@ -479,7 +479,7 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
         .layout_cycle => {
             server.layout_engine.getActiveWorkspace().cycleLayout();
             server.arrangeworkspace(server.layout_engine.active_workspace);
-            if (server.bar) |b| b.render(server);
+            if (server.bar) |b| _ = b.render(server);
             return true;
         },
         .pane_focus_next => {
@@ -546,7 +546,7 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
             ws.layout = .master_stack;
             ws.master_count = 1;
             server.arrangeworkspace(server.layout_engine.active_workspace);
-            if (server.bar) |b| b.render(server);
+            if (server.bar) |b| _ = b.render(server);
             return true;
         },
         .session_save => {
@@ -637,7 +637,7 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
                 b.top.enabled = new_enabled;
                 b.bottom.enabled = new_enabled;
                 b.updateVisibility();
-                if (new_enabled) b.render(server);
+                if (new_enabled) _ = b.render(server);
                 for (0..server.layout_engine.workspaces.len) |ws| {
                     server.arrangeworkspace(@intCast(ws));
                 }
@@ -673,7 +673,7 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
                 // we need to overwrite are the launcher's leftovers.
                 if (server.bar) |b| {
                     b.dirty = true;
-                    b.render(server);
+                    _ = b.render(server);
                 }
             } else {
                 server.launcher.activate();
@@ -709,7 +709,7 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
             if (server.bar) |b| {
                 b.top.enabled = !b.top.enabled;
                 b.updateVisibility();
-                if (b.top.enabled) b.render(server);
+                if (b.top.enabled) _ = b.render(server);
                 for (0..server.layout_engine.workspaces.len) |ws| {
                     server.arrangeworkspace(@intCast(ws));
                 }
@@ -720,7 +720,7 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
             if (server.bar) |b| {
                 b.bottom.enabled = !b.bottom.enabled;
                 b.updateVisibility();
-                if (b.bottom.enabled) b.render(server);
+                if (b.bottom.enabled) _ = b.render(server);
                 for (0..server.layout_engine.workspaces.len) |ws| {
                     server.arrangeworkspace(@intCast(ws));
                 }

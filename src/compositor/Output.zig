@@ -117,7 +117,11 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
         // unsure whether close worked.
         server.layout_engine.switchWorkspace(0);
 
-        if (server.bar) |b| b.render(server);
+        if (server.bar) |b| _ = b.render(server);
+        // Drive periodic bar updates (clock/CPU/battery) via a 1-Hz
+        // timer — without it, an idle compositor schedules no frames
+        // and the bar widgets freeze. See barTick in Server.zig.
+        server.startBarTick();
         std.debug.print("teruwm: output attached, workspace 1 active (empty)\n", .{});
     }
 
@@ -187,7 +191,7 @@ fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
 
         // Bar uses a signature check internally — cheap no-op when
         // nothing user-visible changed (clock, exec widgets, keymap).
-        if (server.bar) |b| b.render(server);
+        if (server.bar) |b| _ = b.render(server);
     }
 
     const scene_output = wlr.wlr_scene_get_scene_output(server.scene, output.wlr_output) orelse return;

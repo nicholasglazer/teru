@@ -90,7 +90,7 @@ pub fn handleXdgActivation(listener: *wlr.wl_listener, data: ?*anyopaque) callco
         const ws = server.nodes.workspace[slot];
         std.debug.print("teruwm: urgent node={d} ws={d}\n", .{ nid, ws });
         server.emitMcpEventKind("urgent", ",\"node_id\":{d},\"workspace\":{d}", .{ nid, ws });
-        if (server.bar) |b| b.render(server);
+        if (server.bar) |b| _ = b.render(server);
         server.scheduleRender();
     }
 }

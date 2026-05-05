@@ -160,7 +160,7 @@ pub fn restore(server: *Server, name: []const u8) !void {
     for (server.terminal_panes) |maybe_tp| {
         if (maybe_tp) |t| t.render();
     }
-    if (server.bar) |b| b.render(server);
+    if (server.bar) |b| _ = b.render(server);
 
     std.debug.print("teruwm: session {s} restored\n", .{name});
 }

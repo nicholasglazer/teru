@@ -167,8 +167,11 @@ pub fn updateVisibility(self: *Bar) void {
     }
 }
 
-/// Render both bars from compositor state.
-pub fn render(self: *Bar, server: *Server) void {
+/// Render both bars from compositor state. Returns true if at least
+/// one bar's scene buffer was actually re-painted — the periodic
+/// bar-tick uses this to decide whether to scheduleRender (and so
+/// avoids waking the compositor on a truly-idle frame).
+pub fn render(self: *Bar, server: *Server) bool {
     // Refresh cached sysfs/proc data (TTL-gated, non-blocking reads).
     // Must happen before barSignature so value changes trigger re-render.
     const now = teru.compat.monotonicNow();
@@ -185,16 +188,20 @@ pub fn render(self: *Bar, server: *Server) void {
     self.dirty = false;
     self.cache_dirty = false;
 
+    var painted = false;
     if (self.top.enabled and (force or sig != self.last_top_sig)) {
         self.renderBar(&self.top, server);
         wlr.wlr_scene_buffer_set_buffer_with_damage(self.top.scene_buffer, self.top.pixel_buffer, null);
         self.last_top_sig = sig;
+        painted = true;
     }
     if (self.bottom.enabled and (force or sig != self.last_bottom_sig)) {
         self.renderBar(&self.bottom, server);
         wlr.wlr_scene_buffer_set_buffer_with_damage(self.bottom.scene_buffer, self.bottom.pixel_buffer, null);
         self.last_bottom_sig = sig;
+        painted = true;
     }
+    return painted;
 }
 
 // ── Non-blocking exec widgets ─────────────────────────────────────

@@ -766,7 +766,7 @@ fn toolFocusWindow(self: *WmMcpServer, node_id: u64, buf: []u8, id: ?[]const u8)
         }
         workspace.active_node = node_id;
         srv.updateFocusedTerminal();
-        if (srv.bar) |b| b.render(srv);
+        if (srv.bar) |b| _ = b.render(srv);
         return std.fmt.bufPrint(buf,
             \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"focused window {d}"}}]}},"id":{s}}}
         , .{ node_id, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
@@ -789,7 +789,7 @@ fn toolMoveToWorkspace(self: *WmMcpServer, node_id: u64, ws: u8, buf: []u8, id: 
     // `node_moved`. Pre-v0.4.22 this called layout_engine directly
     // and never emitted the event.
     self.server.moveNodeToWorkspace(node_id, ws);
-    if (self.server.bar) |b| b.render(self.server);
+    if (self.server.bar) |b| _ = b.render(self.server);
 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"moved window {d} to workspace {d}"}}]}},"id":{s}}}
@@ -864,7 +864,7 @@ fn toolSetLayout(self: *WmMcpServer, ws: u8, layout_str: []const u8, buf: []u8, 
 
     srv.layout_engine.workspaces[ws].layout = layout;
     srv.arrangeworkspace(ws);
-    if (srv.bar) |b| b.render(srv);
+    if (srv.bar) |b| _ = b.render(srv);
 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
@@ -1115,7 +1115,7 @@ fn toolToggleBar(self: *WmMcpServer, which: []const u8, explicit: ?bool, buf: []
     for (0..self.server.layout_engine.workspaces.len) |ws| {
         self.server.arrangeworkspace(@intCast(ws));
     }
-    if (new_val) bar.render(self.server);
+    if (new_val) _ = bar.render(self.server);
 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{s} bar {s}"}}]}},"id":{s}}}
