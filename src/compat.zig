@@ -304,6 +304,61 @@ pub fn forkExecPipeStdin(argv: [*:null]const ?[*:0]const u8, data: []const u8) v
     _ = posix.system.close(write_end);
 }
 
+/// Fork, exec command, capture child's stdout into `buf`. Blocks until child
+/// exits. Returns bytes captured (truncated to `buf.len` — extra child output
+/// is drained so the child doesn't SIGPIPE). Returns 0 on any failure.
+///
+/// Used by paste paths that need to sanitise clipboard content before it
+/// hits the PTY. forkExecReadStdout (which dup2s straight into the PTY
+/// master) is not safe for that — pasted bytes go through the parser
+/// unfiltered and a clipboard newline executes the line.
+pub fn forkExecCaptureStdout(argv: [*:null]const ?[*:0]const u8, buf: []u8) usize {
+    if (builtin.os.tag == .windows) return 0;
+    var pipe_fds: [2]posix.fd_t = undefined;
+    if (std.c.pipe(&pipe_fds) != 0) return 0;
+    const read_end = pipe_fds[0];
+    const write_end = pipe_fds[1];
+
+    const pid = posixFork();
+    if (pid < 0) {
+        _ = posix.system.close(read_end);
+        _ = posix.system.close(write_end);
+        return 0;
+    }
+
+    if (pid == 0) {
+        _ = posix.system.close(read_end);
+        _ = std.c.dup2(write_end, posix.STDOUT_FILENO);
+        _ = posix.system.close(write_end);
+        const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
+        _ = posix.system.execve(argv[0].?, argv, @ptrCast(envp));
+        posixExit(1);
+    }
+
+    _ = posix.system.close(write_end);
+
+    var total: usize = 0;
+    while (total < buf.len) {
+        const n = posix.read(read_end, buf[total..]) catch break;
+        if (n == 0) break;
+        total += n;
+    }
+    // Drain anything past buf.len so the child's write side doesn't get
+    // a SIGPIPE on a long clipboard. We just discard.
+    if (total == buf.len) {
+        var sink: [4096]u8 = undefined;
+        while (true) {
+            const n = posix.read(read_end, &sink) catch break;
+            if (n == 0) break;
+        }
+    }
+    _ = posix.system.close(read_end);
+
+    var status: c_int = 0;
+    _ = std.c.waitpid(@intCast(pid), &status, 0);
+    return total;
+}
+
 /// Fork, exec command, read child's stdout into `output_fd`. Blocks until child exits.
 pub fn forkExecReadStdout(argv: [*:null]const ?[*:0]const u8, output_fd: posix.fd_t) void {
     if (builtin.os.tag == .windows) return; // TODO: CreateProcessW
