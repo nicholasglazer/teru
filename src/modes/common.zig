@@ -41,7 +41,14 @@ pub const PERSIST_DEBOUNCE_NS: i128 = 100_000_000; // 100 ms
 pub const DAEMON_RETRY_ATTEMPTS: u32 = 20;
 pub const DAEMON_RETRY_DELAY_MS: u32 = 100;
 
-pub const session_path = "/tmp/teru-session.bin";
+/// Detached-session blob path — written by the Ctrl-B d "detach"
+/// keybind, read by `--attach`. Lives under $XDG_RUNTIME_DIR (mode
+/// 0700, cleaned on logout) instead of /tmp. The fallback to /tmp is
+/// for systems without a runtime dir; it isn't safer there but the
+/// alternative is "feature breaks for those users".
+pub fn sessionPath(buf: *[256:0]u8) ?[:0]const u8 {
+    return compat.runtimeFilePath(buf[0..], "teru-session.bin");
+}
 
 pub const setenv = if (builtin.os.tag == .windows) struct {
     fn f(_: [*:0]const u8, _: [*:0]const u8, _: c_int) c_int {

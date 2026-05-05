@@ -106,8 +106,16 @@ pub fn handleMuxCommand(
             return .panes_changed;
         },
         'd' => {
-            // Detach: save session and exit
-            const path = "/tmp/teru-session.bin";
+            // Detach: save session and exit. Path is under
+            // $XDG_RUNTIME_DIR (private, cleaned on logout) — see
+            // common.sessionPath.
+            var path_buf: [256:0]u8 = undefined;
+            const dir = compat.getenv("XDG_RUNTIME_DIR") orelse "/tmp";
+            const path = std.fmt.bufPrint(&path_buf, "{s}/teru-session.bin", .{dir}) catch {
+                writeMsg("[teru] Session path too long, exiting anyway\n");
+                running.* = false;
+                return .none;
+            };
             const pane_n = mux.panes.items.len;
             mux.saveSession(graph, path, io) catch {
                 writeMsg("[teru] Session save failed, exiting anyway\n");

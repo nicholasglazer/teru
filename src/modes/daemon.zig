@@ -23,7 +23,12 @@ const render = @import("../render/render.zig");
 /// --attach: restore a saved session into windowed mode. Falls back
 /// to fresh-start if no saved session exists.
 pub fn runAttach(allocator: std.mem.Allocator, io: std.Io, wm_class: ?[]const u8) !void {
-    var sess = Session.loadFromFile(common.session_path, allocator, io) catch {
+    var path_buf: [256:0]u8 = undefined;
+    const path = common.sessionPath(&path_buf) orelse {
+        common.out("[teru] Could not build session path, starting fresh\n");
+        return windowed.run(allocator, io, null, wm_class);
+    };
+    var sess = Session.loadFromFile(path, allocator, io) catch {
         common.out("[teru] No saved session found, starting fresh\n");
         return windowed.run(allocator, io, null, wm_class);
     };
