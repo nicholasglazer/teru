@@ -1004,6 +1004,11 @@ fn toolScreenshotPane(self: *WmMcpServer, params_body: []const u8, path_opt: ?[]
                     break :blk p;
                 };
 
+                // Reject path traversal in user-supplied path. png.write
+                // additionally opens with O_NOFOLLOW (defense-in-depth).
+                if (!teru.compat.isSafeScreenshotPath(path))
+                    return jsonRpcError(buf, id, -32602, "Invalid path (must be under /tmp or $HOME)");
+
                 // Null-terminate
                 var path_z: [512:0]u8 = undefined;
                 if (path.len >= path_z.len) return jsonRpcError(buf, id, -32602, "Path too long");

@@ -220,6 +220,31 @@ pub fn isSafeScreenshotPath(path: []const u8) bool {
     return false;
 }
 
+/// Open a file for writing, refusing to follow symlinks at the final
+/// path component. Used for screenshot output: an attacker who can
+/// guess a predictable screenshot path (e.g. `/tmp/teru-screenshot.png`)
+/// could otherwise pre-create a symlink pointing at a victim file
+/// (~/.ssh/authorized_keys, /etc/passwd if root) and have us overwrite
+/// it. O_NOFOLLOW makes that fail with ELOOP.
+///
+/// Mode 0o600 (owner-only) — screenshots may include credentials,
+/// terminal contents, or session data; world-readable defaults are
+/// inappropriate.
+///
+/// Returns -1 on error. Caller must close().
+pub fn openFileNoFollow(path: [*:0]const u8) c_int {
+    // Linux: O_WRONLY=1, O_CREAT=64 (0o100), O_TRUNC=512 (0o1000),
+    // O_NOFOLLOW=131072 (0o400000). macOS uses different bits but the
+    // pattern works equivalently via std.posix.O.
+    const flags = std.posix.O{
+        .ACCMODE = .WRONLY,
+        .CREAT = true,
+        .TRUNC = true,
+        .NOFOLLOW = true,
+    };
+    return std.c.open(path, flags, @as(std.posix.mode_t, 0o600));
+}
+
 /// Portable nanosleep. On Windows uses Sleep(), on POSIX uses nanosleep.
 pub fn sleepNs(ns: u64) void {
     if (builtin.os.tag == .windows) {

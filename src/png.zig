@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const compat = @import("compat.zig");
 
 const signature = [_]u8{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
 
@@ -13,6 +14,13 @@ pub const Error = error{ FileOpenFailed, OutOfMemory };
 
 /// Write an ARGB framebuffer as a PNG file.
 /// Pixel format: 0xAARRGGBB (alpha ignored, written as RGB).
+///
+/// Output uses `open(O_NOFOLLOW | O_CREAT | O_TRUNC, 0o600)` via
+/// `compat.openFileNoFollow` — refuses to follow a pre-existing
+/// symlink at the final path component (defends against a victim
+/// pre-planting `/tmp/teru-screenshot.png → ~/.ssh/authorized_keys`)
+/// and creates owner-readable-only files (screenshots may include
+/// terminal contents / credentials).
 pub fn write(
     allocator: Allocator,
     path: [*:0]const u8,
@@ -20,7 +28,12 @@ pub fn write(
     width: u32,
     height: u32,
 ) Error!void {
-    const file = fopen(path, "wb") orelse return error.FileOpenFailed;
+    const fd = compat.openFileNoFollow(path);
+    if (fd < 0) return error.FileOpenFailed;
+    const file = fdopen(fd, "wb") orelse {
+        _ = std.posix.system.close(fd);
+        return error.FileOpenFailed;
+    };
     defer _ = fclose(file);
 
     const row_size: usize = 1 + @as(usize, width) * 3;
@@ -141,6 +154,7 @@ fn fileWrite(file: *anyopaque, data: []const u8) void {
 }
 
 extern "c" fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
+extern "c" fn fdopen(fd: c_int, mode: [*:0]const u8) ?*anyopaque;
 extern "c" fn fwrite(ptr: [*]const u8, size: usize, count: usize, stream: *anyopaque) usize;
 extern "c" fn fclose(stream: *anyopaque) c_int;
 
