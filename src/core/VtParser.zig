@@ -658,8 +658,24 @@ fn finishOsc(self: *VtParser) void {
                 }
             },
             52 => {
-                // Clipboard (OSC 52). Format: "c;BASE64" or "c;?" for query.
+                // Clipboard (OSC 52). Format: "c;BASE64" (write) or "c;?" (read).
                 // Silently accepted — clipboard integration requires platform support.
+                //
+                // SECURITY: a future implementation MUST gate this behind explicit
+                // user opt-in. OSC 52 is an unauthenticated channel: any program
+                // with PTY write access (including remote SSH peers, untrusted
+                // agents, or piped output via `cat`) can both *overwrite* the
+                // user's clipboard and *exfiltrate* its contents via the `c;?`
+                // query. Mitigations to layer in when wiring this up:
+                //   1. Disabled by default; opt-in via `clipboard_osc52 = true`.
+                //   2. Cap payload size (e.g. 64 KiB) — VT-level oversize attacks
+                //      otherwise let an agent stash arbitrary blobs in clipboard.
+                //   3. Strict base64 validation; reject anything else outright.
+                //   4. NEVER honour the `?` (read) form by default — that lets
+                //      a malicious peer exfil whatever the user copied (passwords,
+                //      OAuth tokens). Treat reads as a separate, second opt-in.
+                //   5. Strip control chars from the decoded payload before piping
+                //      to the host clipboard (matches Clipboard.sanitise).
             },
             133 => {
                 // Shell integration: semantic prompt marks (A/B/C/D)
