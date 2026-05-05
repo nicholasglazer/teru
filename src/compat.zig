@@ -262,20 +262,35 @@ pub fn posixExit(status: u8) noreturn {
     }
 }
 
-/// Fork and exec a command. Fire-and-forget — parent does NOT wait.
-/// The child's stdin/stdout are inherited from the parent.
+/// Fork and exec a command. Fire-and-forget — parent does NOT wait
+/// for the exec'd grandchild to finish. The child's stdin/stdout are
+/// inherited from the parent.
+///
+/// Uses the double-fork pattern: parent → middle → grandchild. The
+/// middle child exits immediately, so the parent's waitpid is a
+/// microsecond no-op that reaps it. The grandchild is reparented to
+/// PID 1 (init) which reaps it whenever it finishes — no zombies
+/// accumulate in the long-running parent.
 pub fn forkExec(argv: [*:null]const ?[*:0]const u8) void {
     if (builtin.os.tag == .windows) return; // TODO: CreateProcessW
     const pid = posixFork();
     if (pid < 0) return;
     if (pid == 0) {
-        const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
-        _ = posix.system.execve(argv[0].?, argv, @ptrCast(envp));
-        posixExit(1);
+        const pid2 = posixFork();
+        if (pid2 == 0) {
+            const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
+            _ = posix.system.execve(argv[0].?, argv, @ptrCast(envp));
+            posixExit(1);
+        }
+        posixExit(0);
+    }
+    if (pid > 0) {
+        _ = std.c.waitpid(@intCast(pid), null, 0);
     }
 }
 
-/// Fork, pipe `data` into the child's stdin, exec command. Fire-and-forget.
+/// Fork, pipe `data` into the child's stdin, exec command.
+/// Fire-and-forget grandchild via double-fork (no zombies).
 pub fn forkExecPipeStdin(argv: [*:null]const ?[*:0]const u8, data: []const u8) void {
     if (builtin.os.tag == .windows) return; // TODO: CreateProcessW
     var pipe_fds: [2]posix.fd_t = undefined;
@@ -291,17 +306,35 @@ pub fn forkExecPipeStdin(argv: [*:null]const ?[*:0]const u8, data: []const u8) v
     }
 
     if (pid == 0) {
-        _ = posix.system.close(write_end);
-        _ = std.c.dup2(read_end, posix.STDIN_FILENO);
+        // Middle child: re-fork so the grandchild gets reparented to
+        // init (PID 1) once we exit. Avoids leaking a zombie when the
+        // grandchild finally exits, since the original parent never
+        // waitpids on it.
+        const pid2 = posixFork();
+        if (pid2 == 0) {
+            // Grandchild: redirect stdin from the read end of the pipe,
+            // exec the command. The write end is held only by the
+            // original parent — closing it will EOF us.
+            _ = posix.system.close(write_end);
+            _ = std.c.dup2(read_end, posix.STDIN_FILENO);
+            _ = posix.system.close(read_end);
+            const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
+            _ = posix.system.execve(argv[0].?, argv, @ptrCast(envp));
+            posixExit(1);
+        }
+        // Middle child must close BOTH pipe fds before exiting,
+        // otherwise the read end stays open after the grandchild does
+        // (it dup2s and closes its copy) and EOF never fires.
         _ = posix.system.close(read_end);
-        const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
-        _ = posix.system.execve(argv[0].?, argv, @ptrCast(envp));
-        posixExit(1);
+        _ = posix.system.close(write_end);
+        posixExit(0);
     }
 
+    // Original parent: write data, close, reap the middle child.
     _ = posix.system.close(read_end);
     _ = std.c.write(write_end, data.ptr, data.len);
     _ = posix.system.close(write_end);
+    _ = std.c.waitpid(@intCast(pid), null, 0);
 }
 
 /// Fork, exec command, capture child's stdout into `buf`. Blocks until child
