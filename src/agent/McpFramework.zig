@@ -82,6 +82,19 @@ pub fn Framework(comptime Impl: type) type {
             unavailable_msg: []const u8,
         };
 
+        /// Server-side read-only enforcement. Mirror of the bridge-level
+        /// `TERU_MCP_READONLY` filter, but applied here so a client that
+        /// connects directly to the socket (bypassing the bridge) still
+        /// can't invoke a write tool.
+        ///
+        /// `is_active_fn` is checked per-request; null = always off.
+        /// `write_tool_names` is the comptime allowlist of tools to
+        /// reject + filter from `tools/list`. Empty = no-op.
+        pub const ReadOnly = struct {
+            is_active_fn: *const fn (impl: *Impl) bool,
+            write_tool_names: []const []const u8,
+        };
+
         pub const Config = struct {
             server_name: []const u8,
             server_version: []const u8,
@@ -96,6 +109,7 @@ pub fn Framework(comptime Impl: type) type {
             tools_list_body: []const u8,
             prompts: ?Prompts = null,
             forward: ?Forward = null,
+            read_only: ?ReadOnly = null,
         };
 
         /// Route a JSON-RPC body through method dispatch. Public because
@@ -106,7 +120,7 @@ pub fn Framework(comptime Impl: type) type {
             const id = tools.extractJsonId(body);
 
             if (std.mem.eql(u8, method, "initialize")) return handleInitialize(resp, id, config);
-            if (std.mem.eql(u8, method, "tools/list")) return handleToolsList(resp, id, config);
+            if (std.mem.eql(u8, method, "tools/list")) return handleToolsList(impl, resp, id, config);
             if (std.mem.eql(u8, method, "tools/call")) return handleToolsCall(impl, body, resp, id, config);
             if (std.mem.startsWith(u8, method, "notifications/")) {
                 // MCP notifications (initialized, progress, cancelled)
@@ -204,8 +218,24 @@ pub fn Framework(comptime Impl: type) type {
                 tools.jsonRpcError(resp, id, -32603, "Internal error");
         }
 
-        fn handleToolsList(resp: []u8, id: ?[]const u8, config: *const Config) []const u8 {
+        fn handleToolsList(impl: *Impl, resp: []u8, id: ?[]const u8, config: *const Config) []const u8 {
             const id_str = id orelse "null";
+
+            // Read-only: filter write tools out of the listed schema so
+            // downstream clients that don't enforce a separate filter
+            // never see disabled tools advertised.
+            if (config.read_only) |ro| {
+                if (ro.is_active_fn(impl)) {
+                    var filter_buf: [max_response]u8 = undefined;
+                    if (filterToolsList(config.tools_list_body, &filter_buf, ro.write_tool_names)) |body| {
+                        return std.fmt.bufPrint(resp,
+                            \\{{"jsonrpc":"2.0","result":{{"tools":{s}}},"id":{s}}}
+                        , .{ body, id_str }) catch
+                            tools.jsonRpcError(resp, id, -32603, "Internal error");
+                    }
+                }
+            }
+
             return std.fmt.bufPrint(resp,
                 \\{{"jsonrpc":"2.0","result":{{"tools":{s}}},"id":{s}}}
             , .{ config.tools_list_body, id_str }) catch
@@ -224,6 +254,19 @@ pub fn Framework(comptime Impl: type) type {
             const tool_name = tools.extractJsonString(params_body, "name") orelse
                 return tools.jsonRpcError(resp, id, -32602, "Missing params.name");
 
+            // Server-side read-only enforcement. Mirrors the bridge
+            // filter; gives defense-in-depth for clients that connect
+            // directly to the socket.
+            if (config.read_only) |ro| {
+                if (ro.is_active_fn(impl)) {
+                    for (ro.write_tool_names) |w| {
+                        if (std.mem.eql(u8, tool_name, w)) {
+                            return tools.jsonRpcError(resp, id, -32601, "Read-only mode: write tools are disabled");
+                        }
+                    }
+                }
+            }
+
             if (config.tool_table.get(tool_name)) |thunk| return thunk(impl, params_body, resp, id);
 
             if (config.forward) |fwd| {
@@ -234,5 +277,128 @@ pub fn Framework(comptime Impl: type) type {
             }
             return tools.jsonRpcError(resp, id, -32602, "Unknown tool");
         }
+
+        /// Strip every tool object whose `"name":"..."` matches an entry
+        /// in `write_names` from a pre-serialized tools/list array body.
+        /// Returns null on any parse error so the caller can fall back
+        /// to the unfiltered body.
+        fn filterToolsList(src: []const u8, out: []u8, write_names: []const []const u8) ?[]const u8 {
+            if (src.len < 2 or src[0] != '[' or src[src.len - 1] != ']') return null;
+            var pos: usize = 0;
+            if (pos >= out.len) return null;
+            out[pos] = '[';
+            pos += 1;
+
+            const body = src[1 .. src.len - 1];
+            var i: usize = 0;
+            var first = true;
+            while (i < body.len) {
+                while (i < body.len and (body[i] == ',' or body[i] == ' ')) i += 1;
+                if (i >= body.len) break;
+                if (body[i] != '{') return null;
+
+                var depth: i32 = 0;
+                var j = i;
+                while (j < body.len) : (j += 1) {
+                    if (body[j] == '{') depth += 1 else if (body[j] == '}') {
+                        depth -= 1;
+                        if (depth == 0) break;
+                    }
+                }
+                if (j >= body.len) return null;
+                const obj = body[i .. j + 1];
+
+                var is_write = false;
+                for (write_names) |w| {
+                    var name_buf: [128]u8 = undefined;
+                    const needle = std.fmt.bufPrint(&name_buf, "\"name\":\"{s}\"", .{w}) catch continue;
+                    if (std.mem.indexOf(u8, obj, needle) != null) {
+                        is_write = true;
+                        break;
+                    }
+                }
+
+                if (!is_write) {
+                    if (!first) {
+                        if (pos >= out.len) return null;
+                        out[pos] = ',';
+                        pos += 1;
+                    }
+                    if (pos + obj.len > out.len) return null;
+                    @memcpy(out[pos..][0..obj.len], obj);
+                    pos += obj.len;
+                    first = false;
+                }
+
+                i = j + 1;
+            }
+
+            if (pos >= out.len) return null;
+            out[pos] = ']';
+            pos += 1;
+            return out[0..pos];
+        }
     };
+}
+
+// ── Inline tests ─────────────────────────────────────────────────
+
+test "read-only mode rejects write tools" {
+    const Dummy = struct {
+        active: bool,
+        fn isActive(self: *@This()) bool {
+            return self.active;
+        }
+        fn dispatchEcho(_: *@This(), _: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+            const id_str = id orelse "null";
+            return std.fmt.bufPrint(buf,
+                \\{{"jsonrpc":"2.0","result":"ok","id":{s}}}
+            , .{id_str}) catch "{}";
+        }
+    };
+    const FW = Framework(Dummy);
+    const dispatch_table = std.StaticStringMap(FW.Thunk).initComptime(.{
+        .{ "test_read", Dummy.dispatchEcho },
+        .{ "test_write", Dummy.dispatchEcho },
+    });
+    const config: FW.Config = .{
+        .server_name = "t",
+        .server_version = "0",
+        .framing = .line_json,
+        .capabilities_json = "\"tools\":{}",
+        .tool_table = &dispatch_table,
+        .tools_list_body =
+            \\[{"name":"test_read","description":"r","inputSchema":{}},{"name":"test_write","description":"w","inputSchema":{}}]
+        ,
+        .read_only = .{
+            .is_active_fn = Dummy.isActive,
+            .write_tool_names = &[_][]const u8{"test_write"},
+        },
+    };
+
+    var impl = Dummy{ .active = true };
+    var resp_buf: [2048]u8 = undefined;
+
+    // Read tools call succeeds
+    const read_call = "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"test_read\"},\"id\":1}";
+    const r1 = FW.dispatch(&impl, read_call, &resp_buf, &config);
+    try std.testing.expect(std.mem.indexOf(u8, r1, "\"result\"") != null);
+
+    // Write tools call rejected
+    const write_call = "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"test_write\"},\"id\":2}";
+    const r2 = FW.dispatch(&impl, write_call, &resp_buf, &config);
+    try std.testing.expect(std.mem.indexOf(u8, r2, "Read-only") != null);
+
+    // tools/list excludes test_write
+    const list_call = "{\"jsonrpc\":\"2.0\",\"method\":\"tools/list\",\"id\":3}";
+    const r3 = FW.dispatch(&impl, list_call, &resp_buf, &config);
+    try std.testing.expect(std.mem.indexOf(u8, r3, "test_read") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r3, "test_write") == null);
+
+    // Disabling the gate restores write access + listing
+    impl.active = false;
+    const r4 = FW.dispatch(&impl, write_call, &resp_buf, &config);
+    try std.testing.expect(std.mem.indexOf(u8, r4, "\"result\"") != null);
+    const r5 = FW.dispatch(&impl, list_call, &resp_buf, &config);
+    try std.testing.expect(std.mem.indexOf(u8, r5, "test_write") != null);
 }
