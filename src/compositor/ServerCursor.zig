@@ -359,7 +359,7 @@ fn focusTerminalByNode(server: *Server, nid: u64) void {
         if (prev != tp) prev.repaintBorderOnly();
     }
     tp.repaintBorderOnly();
-    if (server.bar) |b| b.render(server);
+    if (server.bar) |b| _ = b.render(server);
 }
 
 fn syncWsActiveIndex(ws: anytype, nid: u64) void {

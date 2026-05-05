@@ -136,7 +136,7 @@ pub fn handleKey(self: *Launcher, keysym: u32, server: *Server) bool {
             // the dirty flag so render() bypasses the signature check.
             if (server.bar) |b| {
                 b.dirty = true;
-                b.render(server);
+                _ = b.render(server);
             }
             return true;
         },
@@ -149,7 +149,7 @@ pub fn handleKey(self: *Launcher, keysym: u32, server: *Server) bool {
             self.deactivate();
             if (server.bar) |b| {
                 b.dirty = true;
-                b.render(server);
+                _ = b.render(server);
             }
             return true;
         },

@@ -329,7 +329,7 @@ fn handleShowWindowMenu(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c)
         if (ws < 10) server.layout_engine.workspaces[ws].addNode(server.zig_allocator, view.node_id) catch {};
     }
     server.arrangeworkspace(server.layout_engine.active_workspace);
-    if (server.bar) |b| b.render(server);
+    if (server.bar) |b| _ = b.render(server);
 }
 
 /// xdg_toplevel.request_move handler. CSD titlebar drag — float the
@@ -351,7 +351,7 @@ fn handleRequestMove(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) vo
         const fh: u32 = if (cur_h > 0) cur_h else server.wm_config.float_default_h;
         server.nodes.applyRect(slot, @intFromFloat(cx - @as(f64, @floatFromInt(fw)) / 2.0), @intFromFloat(cy - @as(f64, @floatFromInt(fh)) / 2.0), fw, fh);
         server.arrangeworkspace(server.layout_engine.active_workspace);
-        if (server.bar) |b| b.render(server);
+        if (server.bar) |b| _ = b.render(server);
     }
 
     server.cursor_mode = .move;
@@ -379,7 +379,7 @@ fn handleRequestResize(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) 
         const fh: u32 = if (cur_h > 0) cur_h else server.wm_config.float_default_h;
         server.nodes.applyRect(slot, @intFromFloat(cx - @as(f64, @floatFromInt(fw)) / 2.0), @intFromFloat(cy - @as(f64, @floatFromInt(fh)) / 2.0), fw, fh);
         server.arrangeworkspace(server.layout_engine.active_workspace);
-        if (server.bar) |b| b.render(server);
+        if (server.bar) |b| _ = b.render(server);
     }
 
     server.cursor_mode = .resize;

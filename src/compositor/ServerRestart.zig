@@ -180,7 +180,7 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
     server.setWorkspaceVisibility(active_ws, true);
     server.arrangeworkspace(active_ws);
     server.updateFocusedTerminal();
-    if (server.bar) |b| b.render(server);
+    if (server.bar) |b| _ = b.render(server);
 
     std.debug.print("teruwm: restored {d}/{d} panes\n", .{ restored, pane_count });
 }

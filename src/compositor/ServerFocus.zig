@@ -91,7 +91,7 @@ pub fn focusView(server: *Server, view: *XdgView) void {
         .{ @intFromPtr(target), @intFromPtr(root_surface), if (server.last_pointer_surface) |l| @intFromPtr(l) else null },
     );
 
-    if (server.bar) |b| b.render(server);
+    if (server.bar) |b| _ = b.render(server);
 }
 
 /// Null every Server pointer that references `node_id`. Call BEFORE
@@ -207,7 +207,7 @@ pub fn cycleFocusAll(server: *Server, forward: bool) void {
                             refreshAllBorders(server);
                             if (server.bar) |b| {
                                 b.dirty = true;
-                                b.render(server);
+                                _ = b.render(server);
                             }
                             break;
                         }
@@ -286,7 +286,7 @@ pub fn focusXwaylandSurface(server: *Server, xw: *wlr.wlr_xwayland_surface) void
     for (server.terminal_panes) |maybe_tp| {
         if (maybe_tp) |tp| tp.repaintBorderOnly();
     }
-    if (server.bar) |b| b.render(server);
+    if (server.bar) |b| _ = b.render(server);
 }
 
 pub fn updateFocusedTerminal(server: *Server) void {
@@ -343,7 +343,7 @@ pub fn updateFocusedTerminal(server: *Server) void {
     for (server.terminal_panes) |maybe_tp| {
         if (maybe_tp) |tp| tp.repaintBorderOnly();
     }
-    if (server.bar) |b| b.render(server);
+    if (server.bar) |b| _ = b.render(server);
 }
 
 /// Switch the focused output to workspace `target`. Handles the
@@ -364,7 +364,7 @@ pub fn focusWorkspace(server: *Server, target: u8) void {
         updateFocusedTerminal(server);
         server.maybeFireWorkspaceStartup(target);
         server.emitMcpEventKind("workspace_switched", ",\"from\":{d},\"to\":{d}", .{ old, target });
-        if (server.bar) |b| b.render(server);
+        if (server.bar) |b| _ = b.render(server);
         server.scheduleRender();
         return;
     };
@@ -393,7 +393,7 @@ pub fn focusWorkspace(server: *Server, target: u8) void {
     server.maybeFireWorkspaceStartup(target);
     server.prev_workspace = prev;
     server.emitMcpEventKind("workspace_switched", ",\"from\":{d},\"to\":{d}", .{ prev, target });
-    if (server.bar) |b| b.render(server);
+    if (server.bar) |b| _ = b.render(server);
     server.scheduleRender();
 }
 
@@ -416,7 +416,7 @@ pub fn focusNextOutput(server: *Server) void {
     server.layout_engine.active_workspace = to_ws;
     updateFocusedTerminal(server);
     server.emitMcpEventKind("output_focused", ",\"from_ws\":{d},\"to_ws\":{d}", .{ from_ws, to_ws });
-    if (server.bar) |b| b.render(server);
+    if (server.bar) |b| _ = b.render(server);
 }
 
 /// Move the focused node to the next output's current workspace.
