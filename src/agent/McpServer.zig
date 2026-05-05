@@ -51,6 +51,12 @@ graph: *ProcessGraph,
 allocator: Allocator,
 running: bool,
 
+/// Set from `$TERU_MCP_READONLY=1` at init. When true, the framework
+/// rejects every tool listed in `write_tool_names` and filters them
+/// out of `tools/list`. Defense-in-depth versus the bridge filter:
+/// a client connecting directly to the socket can't bypass this.
+read_only: bool = false,
+
 // ── Event subscriber channel (v0.4.21) ────────────────────────
 // Separate socket pushing newline-delimited JSON events for things
 // that change *without* an explicit tool call — pane spawn/exit,
@@ -85,6 +91,11 @@ pub fn init(allocator: Allocator, mux: *Multiplexer, graph: *ProcessGraph) !McpS
     const ipc_server = ipc.listen(path) catch return error.SocketFailed;
     const sock = ipc_server.rawFd();
 
+    const read_only = if (compat.getenv("TERU_MCP_READONLY")) |v|
+        v.len > 0 and v[0] == '1'
+    else
+        false;
+
     var server = McpServer{
         .socket_path = undefined,
         .socket_path_len = path_len,
@@ -93,6 +104,7 @@ pub fn init(allocator: Allocator, mux: *Multiplexer, graph: *ProcessGraph) !McpS
         .graph = graph,
         .allocator = allocator,
         .running = true,
+        .read_only = read_only,
     };
     @memcpy(server.socket_path[0..path_len], path);
 
@@ -229,6 +241,30 @@ const prompts_list_body: []const u8 =
     \\[{"name":"workspace_setup","description":"Set up teru workspaces with panes, layouts, and commands. Describe your desired workspace configuration in natural language.","arguments":[{"name":"description","description":"Natural language description of desired workspace setup (e.g. '4 workspaces, workspace 1 has 1 pane, workspace 2 has 2 panes, each running vim')","required":true}]}]
 ;
 
+/// Tools that mutate state. Mirror of McpBridge.write_tool_names —
+/// the bridge filters at the proxy boundary, the framework enforces
+/// at the socket so a direct connection can't bypass either.
+const write_tool_names = [_][]const u8{
+    "teru_send_input",
+    "teru_create_pane",
+    "teru_broadcast",
+    "teru_send_keys",
+    "teru_close_pane",
+    "teru_switch_workspace",
+    "teru_set_layout",
+    "teru_set_config",
+    "teru_session_restore",
+    "teru_focus_pane",
+};
+
+/// Snapshotted at server init from `$TERU_MCP_READONLY=1`.
+/// Stored on the server struct rather than re-read per request because
+/// env can't change after process start, and the framework gives us
+/// `*McpServer` for free in its read-only callback.
+fn isReadOnly(self: *McpServer) bool {
+    return self.read_only;
+}
+
 const framework_config: F.Config = .{
     .server_name = "teru",
     .server_version = build_options.version,
@@ -244,6 +280,10 @@ const framework_config: F.Config = .{
         .prefix = "teruwm_",
         .fn_ = forward.forwardRequest,
         .unavailable_msg = "teruwm not running or socket unreachable",
+    },
+    .read_only = .{
+        .is_active_fn = isReadOnly,
+        .write_tool_names = &write_tool_names,
     },
 };
 
