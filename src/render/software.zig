@@ -189,10 +189,16 @@ pub const SoftwareRenderer = struct {
         const has_right_strip = grid_right < fb_w;
         if ((pad > 0 or has_bottom_strip or has_right_strip) and row_min == 0) {
             const bg_fill = self.scheme.bg;
-            // Top padding rows
+            // Top padding rows.
+            // NOTE: explicit loop instead of `@memset(self.framebuffer[0..N], bg_fill)`
+            // because Zig 0.17.0-dev.135 mis-codegens this specific pattern in
+            // Debug builds — the rep-stosd lowering swaps source/dest, faulting
+            // at address `bg_fill`. Reproducer: `Renderer CPU tier init and render`
+            // test in tier.zig. ReleaseSafe and explicit loop both work.
             if (pad > 0) {
                 const top_end = @min(pad * fb_w, self.framebuffer.len);
-                if (top_end > 0) @memset(self.framebuffer[0..top_end], bg_fill);
+                var i: usize = 0;
+                while (i < top_end) : (i += 1) self.framebuffer[i] = bg_fill;
             }
             // Bottom leftover: from grid_bottom to fb_h (covers both padding and cell-size remainder)
             if (has_bottom_strip) {
