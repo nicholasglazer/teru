@@ -19,11 +19,10 @@ const Server = @import("Server.zig");
 const TerminalPane = @import("TerminalPane.zig");
 
 /// Prefer $XDG_RUNTIME_DIR (private, cleaned on logout) over /tmp.
+/// Thin wrapper around compat.runtimeFilePath for the restart blob.
 fn restartStatePath(buf: []u8) [:0]const u8 {
-    const dir = teru.compat.getenv("XDG_RUNTIME_DIR") orelse "/tmp";
-    const path = std.fmt.bufPrint(buf, "{s}/teruwm-restart.bin", .{dir}) catch @panic("restartStatePath: buffer too small");
-    buf[path.len] = 0;
-    return buf[0..path.len :0];
+    return teru.compat.runtimeFilePath(buf, "teruwm-restart.bin") orelse
+        @panic("restartStatePath: buffer too small");
 }
 
 /// Save live state + exec the new binary. Returns only on exec failure

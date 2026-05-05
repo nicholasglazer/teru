@@ -168,6 +168,22 @@ fn clockGettime(clock: anytype) i128 {
     }
 }
 
+/// Build a path under `$XDG_RUNTIME_DIR` (or `/tmp` fallback) for the
+/// given file name. Used for sockets, restart state, and detached
+/// session blobs — files we want kept private to the user (runtime
+/// dir is mode 0700, cleaned on logout) instead of /tmp's shared,
+/// world-readable surface where another user could symlink-attack.
+///
+/// Returns null only on bufPrint overflow. Returned slice is sentinel-
+/// null-terminated so it can be passed straight to C APIs.
+pub fn runtimeFilePath(buf: []u8, name: []const u8) ?[:0]const u8 {
+    const dir = getenv("XDG_RUNTIME_DIR") orelse "/tmp";
+    const path = std.fmt.bufPrint(buf, "{s}/{s}", .{ dir, name }) catch return null;
+    if (path.len + 1 > buf.len) return null;
+    buf[path.len] = 0;
+    return buf[0..path.len :0];
+}
+
 /// Reject path traversal in user-supplied filenames (session names,
 /// screenshot paths, etc.). Returns true if the name is safe — no `../`,
 /// no path separators, no null bytes.
