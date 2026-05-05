@@ -2035,7 +2035,11 @@ pub fn spawnProcess(_: *Server, cmd: [*:0]const u8) void {
         std.os.linux.exit(0);
     }
     if (pid > 0) {
-        _ = std.c.waitpid(@intCast(pid), null, std.c.W.NOHANG);
+        // Reap the intermediate child. It does exit(0) right after the
+        // second fork, so this blocks for microseconds — effectively
+        // never. WNOHANG would race against the kernel scheduler and
+        // leak a zombie when the exit hasn't been processed yet.
+        _ = std.c.waitpid(@intCast(pid), null, 0);
     }
 }
 
