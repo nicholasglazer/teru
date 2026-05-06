@@ -164,16 +164,18 @@ fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         // Poll PTYs for pending data before rendering. The edge-triggered
         // epoll used by wl_event_loop_add_fd can miss data that arrives
         // while the fd is already readable (e.g., shell echo landing
-        // between two rapid keystrokes). Polling here on every vsync
-        // catches those stragglers with at most 16 ms of latency.
-        // Then render dirty terminal panes before compositing. Terminals
-        // are software-rendered into a shared scene graph, so rendering
-        // once per vsync on the canonical output is enough — every other
-        // output that shows the same workspace reads the same buffer.
+        // between two rapid keystrokes). Polling here catches those
+        // stragglers — but at 60 Hz × 256 slots × N panes the syscall
+        // count exits intel_idle on every vsync. Gate it: poll every
+        // frame for ≤ 4 frames after recent input (covers echo within
+        // ~64 ms), then poll every 16th frame as a safety net (~270 ms
+        // worst-case latency for missed-event recovery).
+        const sf = server.frames_since_pty_input;
+        const should_poll_ptys = sf < 4 or (sf & 15) == 0;
         var any_pane_still_dirty = false;
         for (server.terminal_panes) |maybe_tp| {
             if (maybe_tp) |tp| {
-                _ = tp.poll();
+                if (should_poll_ptys) _ = tp.poll();
                 const rendered = tp.renderIfDirty();
                 if (!rendered and tp.pane.grid.dirty) {
                     // DEC-2026 sync batch hold or similar — render
@@ -185,6 +187,7 @@ fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
                 }
             }
         }
+        server.frames_since_pty_input +|= 1;
         if (any_pane_still_dirty) {
             wlr.wlr_output_schedule_frame(output.wlr_output);
         }

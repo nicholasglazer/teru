@@ -110,7 +110,7 @@ primary_output: ?*wlr.wlr_output = null,
 // walks this list. `focused_output` tracks the output that workspace-
 // switch / keyboard-focus actions target.
 
-outputs: std.ArrayListUnmanaged(*Output) = .empty,
+outputs: std.ArrayList(*Output) = .empty,
 focused_output: ?*Output = null,
 workspace_trees: [10]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** 10,
 
@@ -126,7 +126,7 @@ active_keymap_name: []const u8 = "",
 // don't remove on unplug today because Keyboard never frees itself;
 // stale entries would dereference a dead `wlr_keyboard`. Wiring device-
 // destroy listeners + removal is the next step if/when unplug matters.
-keyboards: std.ArrayListUnmanaged(*Input.Keyboard) = .empty,
+keyboards: std.ArrayList(*Input.Keyboard) = .empty,
 
 // Diagnostic only — tracks the last surface pointer notify_enter was
 // called with, so motion logging can print only on transitions instead
@@ -261,6 +261,13 @@ terminal_repeat_len: u8 = 0,
 bar_tick_src: ?*wlr.wl_event_source = null,
 bar_tick_last_sig: u64 = 0,
 
+// Frames since the last PTY write from input (key, paste, mouse). Used by
+// Output.handleFrame's edge-trigger fallback poll: poll every vsync for
+// the first few frames after input (catches shell echo stragglers), then
+// drop to a 16-frame safety net (~270 ms at 60 Hz). Without this gate the
+// fallback issues N×60 non-blocking reads/sec for every idle terminal.
+frames_since_pty_input: u32 = std.math.maxInt(u32),
+
 // ── Listeners ──────────────────────────────────────────────────
 
 new_output: wlr.wl_listener = makeListener(Listeners.handleNewOutput),
@@ -300,7 +307,7 @@ idle_notifier: ?*wlr.wlr_idle_notifier_v1 = null,
 idle_inhibit_mgr: ?*wlr.wlr_idle_inhibit_manager_v1 = null,
 idle_inhibitor_count: u16 = 0,
 new_inhibitor: wlr.wl_listener = makeListener(Listeners.handleNewInhibitor),
-inhibitor_trackers: std.ArrayListUnmanaged(*Listeners.InhibitorTracker) = .empty,
+inhibitor_trackers: std.ArrayList(*Listeners.InhibitorTracker) = .empty,
 shutting_down: bool = false,
 
 // wlr_output_power_management_v1 — wlopm / swayidle dpms hook.
@@ -2005,14 +2012,27 @@ pub fn cancelTerminalRepeat(self: *Server) void {
 
 fn barTick(data: ?*anyopaque) callconv(.c) c_int {
     const self: *Server = @ptrCast(@alignCast(data orelse return 0));
-    if (!self.shutting_down) {
+    // DPMS gate: when every output is asleep (lid closed, swayidle blanked,
+    // monitor off), skip the /proc reads + signature hash and re-arm at 5 s
+    // instead of 1 s. ~5× wakeup reduction on a closed-lid laptop.
+    var any_enabled = false;
+    for (self.outputs.items) |out| {
+        if (wlr.miozu_output_enabled(out.wlr_output) != 0) {
+            any_enabled = true;
+            break;
+        }
+    }
+    var next_ms: c_int = 1000;
+    if (!self.shutting_down and any_enabled) {
         if (self.bar) |b| {
             const repainted = b.render(self);
             if (repainted) self.scheduleRender();
         }
+    } else {
+        next_ms = 5000;
     }
     if (self.bar_tick_src) |src| {
-        _ = wlr.wl_event_source_timer_update(src, 1000);
+        _ = wlr.wl_event_source_timer_update(src, next_ms);
     }
     return 0;
 }
