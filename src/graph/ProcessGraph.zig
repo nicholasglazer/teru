@@ -37,7 +37,7 @@ pub const Node = struct {
 
     // Graph edges
     parent: ?NodeId = null,
-    children: std.ArrayListUnmanaged(NodeId) = .empty,
+    children: std.ArrayList(NodeId) = .empty,
 
     // Process info
     pid: ?i32 = null,
@@ -61,7 +61,7 @@ pub const Node = struct {
 allocator: Allocator,
 nodes: std.AutoHashMapUnmanaged(NodeId, Node),
 next_id: NodeId = 1,
-root_nodes: std.ArrayListUnmanaged(NodeId) = .empty,
+root_nodes: std.ArrayList(NodeId) = .empty,
 
 pub fn init(allocator: Allocator) ProcessGraph {
     return .{

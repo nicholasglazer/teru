@@ -1,8 +1,8 @@
 # Zig Terminal Development Rules (CRITICAL)
 
-Rules for developing teru, the AI-first terminal emulator in Zig 0.16.
+Rules for developing teru, the AI-first terminal emulator in Zig 0.17.0-dev.135+.
 
-## Zig 0.16 API (MUST KNOW)
+## Zig 0.17 API (MUST KNOW)
 
 ### std.process.Init signature
 ```zig
@@ -40,8 +40,8 @@ Every function that does file/network/timer I/O MUST accept `io: std.Io`. Thread
 | `std.posix.exit()` | `std.os.linux.exit()` |
 | `std.fs.cwd()` | `Io.Dir.cwd()` (requires io) |
 
-### Other 0.16 changes
-- `ArrayListUnmanaged` default init: `.{}` is now `.empty`
+### Other 0.17 changes
+- `ArrayListUnmanaged` is a **deprecated alias** for `ArrayList` — write `std.ArrayList(T)` and initialize with `.empty`. The unmanaged distinction was merged.
 - PROT flags: `PROT.READ|PROT.WRITE` is now `.{ .READ = true, .WRITE = true }` (packed struct)
 - Sigaction handler: `fn(c_int)` is now `fn(posix.SIG)`
 - Calling convention: `callconv(.c)` not `.C`
@@ -49,8 +49,21 @@ Every function that does file/network/timer I/O MUST accept `io: std.Io`. Thread
 - termios flags: direct bool fields (`raw.iflag.ICRNL = false`)
 - cflag.CSIZE: `.CS8` (not `cflag.CS8`)
 - pollfd events/revents: raw `i16`
-- Build system: `b.createModule()` + `addExecutable(.{ .root_module = mod })`
+- Build system: `b.createModule()` + `addExecutable(.{ .root_module = mod })`. `strip` is a `Module.CreateOptions` field; `lto` is set on the Compile step (`exe.lto = .full`).
 - `@cImport` still works but hand-declared C externs are preferred
+
+### std.heap (0.17 allocator landscape)
+
+| Old | New |
+|-----|-----|
+| `std.heap.GeneralPurposeAllocator` | `std.heap.DebugAllocator` (Debug) / `std.heap.smp_allocator` (Release) |
+| `std.heap.page_allocator.create(SmallStruct)` | `std.heap.smp_allocator.create(...)` — `page_allocator` does an `mmap` per allocation in 0.17 |
+
+**Always prefer `init.gpa`** from `std.process.Init` — it's already wired to `DebugAllocator` in Debug and `smp_allocator` in Release. Manual `DebugAllocator{}` instantiation is forbidden. Only fall back to `std.heap.smp_allocator` directly in callbacks/global state where `Init` isn't reachable (Win32 WndProc, signal handlers).
+
+### @memset codegen bug (Zig 0.17.0-dev.135)
+
+`@memset(slice_u32, runtime_scalar)` mis-codegens in Debug builds on x86_64 — the rep-stosd lowering swaps source/dest and faults at the value's address. **All `[]u32` framebuffer fills must go through `compat.memsetU32(buf, value)`** (in `src/compat.zig`). Repro: `Renderer CPU tier init and render` test in `tier.zig`. ReleaseSafe and the explicit while loop both work; once Zig fixes the codegen we can collapse the helper to a direct `@memset`.
 
 ### compat.zig (minimal -- only 4 things)
 Only these belong in compat.zig (no io needed):
@@ -183,10 +196,13 @@ make install PREFIX=/usr  # custom prefix
 1. **DON'T use compat.* for file I/O** -- use `Io.Dir.cwd().openFile(io, ...)`
 2. **DON'T use linux.nanosleep** -- use `io.sleep(duration, clock)`
 3. **DON'T use std.c.socket/bind/listen** -- use `Io.net.*`
-4. **DON'T create DebugAllocator** -- use `init.gpa` from process Init
+4. **NEVER manually instantiate `DebugAllocator`** -- use `init.gpa` from process Init (it's already DebugAllocator in Debug, smp_allocator in Release)
 5. **DON'T use std.process.argsAlloc** -- use `init.minimal.args` iterator
 6. **DON'T add `catch {}` silently** -- propagate errors or log with meaningful message
 7. **DON'T allocate in render loop** -- pre-allocate everything
 8. **DON'T use GPU APIs** -- CPU SIMD only
 9. **DON'T add external Zig packages** -- use std or implement it
 10. **DON'T use `@cImport` for new C bindings** -- hand-declare externs
+11. **DON'T use `compat.MemWriter`/`compat.DynWriter` in new code** -- use `std.Io.Writer.fixed(buf)` (fixed buffer) and `std.Io.Writer.Allocating.init(gpa)` (growable) from the native 0.17 std.Io. The compat helpers are kept transitional only.
+12. **DON'T use `std.heap.page_allocator` for small allocs** -- it's one mmap per allocation in 0.17. Use `init.gpa` or `std.heap.smp_allocator`.
+13. **DON'T use bare `@memset` on `[]u32` with a runtime scalar** -- routes through `compat.memsetU32` because of the 0.17.0-dev.135 codegen bug.

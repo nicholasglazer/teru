@@ -370,8 +370,12 @@ pub fn saveToFile(graph: *const ProcessGraph, path: []const u8, io: Io) !void {
 
 /// Serialize the graph with workspace metadata and write to a file.
 pub fn saveToFileWithWorkspaces(graph: *const ProcessGraph, path: []const u8, io: Io, ws_meta: ?*const [10]WorkspaceMeta) !void {
-    // Serialize to dynamic memory buffer
-    var dyn = compat.DynWriter{ .allocator = std.heap.page_allocator };
+    // Serialize to dynamic memory buffer.
+    // smp_allocator over page_allocator: page_allocator is one mmap per
+    // allocation in 0.17, lethal for the small-grow-many pattern of
+    // session writes on every PTY mutation. smp_allocator is the
+    // singleton multithreaded GPA shipped in Release builds.
+    var dyn = compat.DynWriter{ .allocator = std.heap.smp_allocator };
     defer dyn.deinit();
     try serializeWithWorkspaces(graph, &dyn, ws_meta);
 

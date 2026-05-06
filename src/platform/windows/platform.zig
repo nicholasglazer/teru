@@ -309,8 +309,12 @@ pub const Win32Window = struct {
 
         _ = RegisterClassExW(&wc);
 
-        // Allocate persistent state for the WndProc callback
-        const state = std.heap.page_allocator.create(WindowState) catch return error.OutOfMemory;
+        // Allocate persistent state for the WndProc callback.
+        // smp_allocator over page_allocator: page_allocator wastes a full
+        // 4 KB page per WindowState struct in 0.17 (one mmap per alloc).
+        // smp_allocator is the singleton GPA in Release. WndProc has no
+        // process Init in scope, so this is the right fallback.
+        const state = std.heap.smp_allocator.create(WindowState) catch return error.OutOfMemory;
         state.* = .{
             .width = width,
             .height = height,
@@ -370,7 +374,7 @@ pub const Win32Window = struct {
     pub fn deinit(self: *Win32Window) void {
         _ = DestroyWindow(self.hwnd);
         self.state.is_open = false;
-        std.heap.page_allocator.destroy(self.state);
+        std.heap.smp_allocator.destroy(self.state);
         state_storage = null;
     }
 

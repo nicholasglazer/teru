@@ -2,7 +2,7 @@ const std = @import("std");
 const Grid = @import("../core/Grid.zig");
 const VtParser = @import("../core/VtParser.zig");
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 
 /// Command-stream scrollback buffer with keyframe compression.
 ///

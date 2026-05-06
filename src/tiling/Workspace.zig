@@ -20,7 +20,7 @@ const Workspace = @This();
 name: []const u8,
 layout: Layout,
 prev_layout: ?Layout = null,
-node_ids: std.ArrayListUnmanaged(u64),
+node_ids: std.ArrayList(u64),
 active_index: usize = 0,
 master_ratio: f32 = 0.6,
 
