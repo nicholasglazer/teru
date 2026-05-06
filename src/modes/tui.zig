@@ -186,7 +186,11 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
             .{ .fd = sigwinch_fds[0], .events = POLLIN, .revents = 0 },
         };
         const nfds: usize = if (sigwinch_fds[0] != -1) 3 else 2;
-        const poll_result = posix.poll(fds[0..nfds], 50) catch continue;
+        // Deadline-driven: only the in-progress escape sequence (50 ms)
+        // and prefix timeout window need a timer wake. Otherwise block
+        // forever — formerly fixed at 50 ms which was 20 Hz idle wakeups.
+        const timeout_ms = tui_input.nextTimeoutMs();
+        const poll_result = posix.poll(fds[0..nfds], timeout_ms) catch continue;
 
         var needs_render = false;
 

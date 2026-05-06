@@ -250,7 +250,10 @@ pub fn runSessionAttach(session_name: []const u8) !void {
             .{ .fd = 0, .events = POLLIN, .revents = 0 },
             .{ .fd = sock, .events = POLLIN, .revents = 0 },
         };
-        _ = posix.poll(&fds, 100) catch continue;
+        // Block until stdin or socket is readable. No timer-driven work
+        // happens here — formerly capped at 100 ms, which produced 10 Hz
+        // idle wakeups for nothing.
+        _ = posix.poll(&fds, -1) catch continue;
 
         if (fds[0].revents & POLLIN != 0) {
             const n = posix.read(0, &in_buf) catch break;

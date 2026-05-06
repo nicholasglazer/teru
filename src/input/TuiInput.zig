@@ -249,6 +249,27 @@ pub fn checkTimeout(self: *Self, daemon_fd: std.posix.fd_t) void {
     }
 }
 
+/// How many milliseconds (max) the poll loop should wait before calling
+/// `checkTimeout`. Returns -1 when no timer is pending (block forever).
+/// Lets callers replace fixed-cadence polling with a deadline-driven poll.
+pub fn nextTimeoutMs(self: *const Self) i32 {
+    var min_remaining: i64 = -1;
+    const now_ms = @as(i64, @intCast(@divFloor(compat.monotonicNow(), 1_000_000)));
+    if (self.state == .escape) {
+        const r = 50 - (now_ms - self.esc_timestamp);
+        if (r <= 0) return 0;
+        if (min_remaining < 0 or r < min_remaining) min_remaining = r;
+    }
+    if (self.prefix_active) {
+        const r = @as(i64, @intCast(self.prefix_timeout_ms)) - (now_ms - self.prefix_timestamp);
+        if (r <= 0) return 0;
+        if (min_remaining < 0 or r < min_remaining) min_remaining = r;
+    }
+    if (min_remaining < 0) return -1;
+    if (min_remaining > std.math.maxInt(i32)) return std.math.maxInt(i32);
+    return @intCast(min_remaining);
+}
+
 /// Returns true if in nested mode (prefix-only bindings).
 pub fn isNested(self: *const Self) bool {
     return self.nested;
