@@ -88,7 +88,7 @@ pub fn renderSearchOverlay(
             const row_start = y * fb_w;
             const end = @min(row_start + fb_w, cpu.framebuffer.len);
             if (row_start < end) {
-                @memset(cpu.framebuffer[row_start..end], bar_bg);
+                compat.memsetU32(cpu.framebuffer[row_start..end], bar_bg);
             }
         }
 
@@ -97,7 +97,7 @@ pub fn renderSearchOverlay(
             const sep_start = bar_y * fb_w;
             const sep_end = @min(sep_start + fb_w, cpu.framebuffer.len);
             if (sep_start < sep_end) {
-                @memset(cpu.framebuffer[sep_start..sep_end], s.cursor);
+                compat.memsetU32(cpu.framebuffer[sep_start..sep_end], s.cursor);
             }
         }
 
@@ -154,14 +154,14 @@ pub fn renderTextStatusBar(
     for (bar_y..fb_h) |y| {
         const row_start = y * fb_w;
         const end = @min(row_start + fb_w, cpu.framebuffer.len);
-        if (row_start < end) @memset(cpu.framebuffer[row_start..end], s.bg);
+        if (row_start < end) compat.memsetU32(cpu.framebuffer[row_start..end], s.bg);
     }
 
     // Top separator line
     if (bar_y > 0 and bar_y < fb_h) {
         const sep_start = bar_y * fb_w;
         const sep_end = @min(sep_start + fb_w, cpu.framebuffer.len);
-        if (sep_start < sep_end) @memset(cpu.framebuffer[sep_start..sep_end], s.selection_bg);
+        if (sep_start < sep_end) compat.memsetU32(cpu.framebuffer[sep_start..sep_end], s.selection_bg);
     }
 
     const text_y = bar_y + 2;
@@ -444,7 +444,7 @@ pub fn renderScrollOverlay(
     for (ry..@min(ry + clear_rows, ry + rh)) |y| {
         const row_start = y * fb_w + rx;
         if (row_start + rw <= cpu.framebuffer.len) {
-            @memset(cpu.framebuffer[row_start..][0..rw], s.bg);
+            compat.memsetU32(cpu.framebuffer[row_start..][0..rw], s.bg);
         }
     }
 
@@ -609,7 +609,7 @@ pub fn renderScrollOverlay(
                     if (py >= cpu.height) break;
                     const row_start = py * fb_w;
                     if (row_start + max_x <= cpu.framebuffer.len and screen_x < max_x) {
-                        @memset(cpu.framebuffer[row_start + screen_x .. row_start + max_x], eff_bg);
+                        compat.memsetU32(cpu.framebuffer[row_start + screen_x .. row_start + max_x], eff_bg);
                     }
                 }
             }

@@ -7,6 +7,7 @@
 //! Zero allocations in the hot path. All buffers are pre-allocated.
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const SoftwareRenderer = @import("software.zig").SoftwareRenderer;
 const Grid = @import("../core/Grid.zig");
 const FontAtlas = @import("FontAtlas.zig");
@@ -128,7 +129,7 @@ pub fn renderPaneIntoRect(
             for (cy..cursor_max_y) |py| {
                 const row_start = py * fb_w;
                 if (cx < cursor_max_x) {
-                    @memset(renderer.framebuffer[row_start + cx .. row_start + cursor_max_x], cursor_color);
+                    compat.memsetU32(renderer.framebuffer[row_start + cx .. row_start + cursor_max_x], cursor_color);
                 }
             }
         }
@@ -220,12 +221,12 @@ pub fn drawBorder(renderer: *SoftwareRenderer, rect: Rect, color: u32) void {
     // Top edge
     if (y0 < fb_h) {
         const row_start = y0 * fb_w;
-        @memset(renderer.framebuffer[row_start + x0 .. row_start + x1], color);
+        compat.memsetU32(renderer.framebuffer[row_start + x0 .. row_start + x1], color);
     }
     // Bottom edge
     if (y1 > 0 and y1 - 1 < fb_h) {
         const row_start = (y1 - 1) * fb_w;
-        @memset(renderer.framebuffer[row_start + x0 .. row_start + x1], color);
+        compat.memsetU32(renderer.framebuffer[row_start + x0 .. row_start + x1], color);
     }
     // Left edge
     for (y0..y1) |py| {
@@ -263,7 +264,7 @@ pub fn renderAgentStatusBar(
         const row_start = y * fb_w;
         const end = @min(row_start + screen_width, renderer.framebuffer.len);
         if (row_start < end) {
-            @memset(renderer.framebuffer[row_start..end], bar_bg);
+            compat.memsetU32(renderer.framebuffer[row_start..end], bar_bg);
         }
     }
 
@@ -272,7 +273,7 @@ pub fn renderAgentStatusBar(
         const sep_start = bar_y * fb_w;
         const sep_end = @min(sep_start + screen_width, renderer.framebuffer.len);
         if (sep_start < sep_end) {
-            @memset(renderer.framebuffer[sep_start..sep_end], scheme.selection_bg);
+            compat.memsetU32(renderer.framebuffer[sep_start..sep_end], scheme.selection_bg);
         }
     }
 
@@ -388,7 +389,7 @@ test "drawBorder" {
     defer renderer.deinit();
 
     const bg = renderer.scheme.bg;
-    @memset(renderer.framebuffer, bg);
+    compat.memsetU32(renderer.framebuffer, bg);
 
     drawBorder(&renderer, .{ .x = 2, .y = 2, .width = 4, .height = 3 }, 0xFFFF0000);
 
@@ -506,7 +507,7 @@ test "renderAgentStatusBar no graph is no-op" {
     defer renderer.deinit();
 
     const scheme = renderer.scheme;
-    @memset(renderer.framebuffer, scheme.bg);
+    compat.memsetU32(renderer.framebuffer, scheme.bg);
 
     renderAgentStatusBar(&renderer, null, width, height, 20);
 

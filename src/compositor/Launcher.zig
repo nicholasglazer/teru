@@ -235,11 +235,11 @@ pub fn render(self: *Launcher, cpu: *SoftwareRenderer) void {
     // Clear bar with slightly different bg to indicate launcher mode
     const launcher_bg = s.ansi[0]; // black
     const total = @min(fb_w * bar_h, cpu.framebuffer.len);
-    @memset(cpu.framebuffer[0..total], launcher_bg);
+    teru.compat.memsetU32(cpu.framebuffer[0..total], launcher_bg);
 
     // Separator
     if (fb_w > 0 and total >= fb_w) {
-        @memset(cpu.framebuffer[0..fb_w], s.cursor); // orange separator = launcher active
+        teru.compat.memsetU32(cpu.framebuffer[0..fb_w], s.cursor); // orange separator = launcher active
     }
 
     const text_y: usize = 2;

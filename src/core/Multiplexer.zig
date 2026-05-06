@@ -522,7 +522,7 @@ pub fn renderAllWithSelection(
     sel: ?*const Selection,
     status_bar_h: u32,
 ) void {
-    @memset(renderer.framebuffer, renderer.scheme.bg);
+    compat.memsetU32(renderer.framebuffer, renderer.scheme.bg);
 
     const pad = renderer.padding;
     const screen_rect = Rect{
