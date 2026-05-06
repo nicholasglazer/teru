@@ -41,6 +41,9 @@ session_name: []const u8,
 running: bool,
 persist_session: bool = false,
 io: ?std.Io = null,
+/// Monotonic ns of last checkPaneAlive() call; used to throttle the
+/// pane-health sweep to ~5 s in the absence of POLLHUP/POLLERR.
+last_pane_check_ns: i128 = 0,
 
 // ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -92,7 +95,8 @@ pub fn run(self: *Daemon) void {
 
         // Build poll fd set (POSIX only — Windows daemon returns Unsupported in init)
         if (builtin.os.tag == .windows) return;
-        var fds: [34]posix.pollfd = undefined; // listen + client + up to 32 PTYs
+        // listen + client + 32 PTYs + 2 MCP fds (request + event)
+        var fds: [36]posix.pollfd = undefined;
         var nfds: usize = 0;
 
         // [0] = listen socket
@@ -105,22 +109,51 @@ pub fn run(self: *Daemon) void {
             nfds = 2;
         }
 
-        // [nfds..] = PTY master fds
+        // [nfds..pty_end] = PTY master fds
         const pty_start = nfds;
         for (self.mux.panes.items) |*pane| {
-            if (nfds >= fds.len) break;
+            if (nfds >= fds.len - 2) break; // leave room for MCP fds
             fds[nfds] = .{ .fd = pane.ptyMasterFd(), .events = POLLIN, .revents = 0 };
             nfds += 1;
         }
+        const pty_end = nfds;
 
-        // Poll with 10ms timeout
-        const ready = posix.poll(fds[0..nfds], 10) catch 0;
-        if (ready == 0) {
-            // Idle — poll MCP and check pane health
-            if (self.mcp) |m| m.poll();
-            self.checkPaneAlive();
-            continue;
+        // [pty_end..nfds] = MCP request + event listen sockets (if any).
+        // Adding them to the poll set means MCP wakes us on demand instead
+        // of forcing an idle 100 Hz poll loop just to call mcp.poll().
+        var mcp_req_idx: ?usize = null;
+        var mcp_evt_idx: ?usize = null;
+        if (self.mcp) |m| {
+            if (m.socket_fd >= 0 and nfds < fds.len) {
+                fds[nfds] = .{ .fd = m.socket_fd, .events = POLLIN, .revents = 0 };
+                mcp_req_idx = nfds;
+                nfds += 1;
+            }
+            if (m.event_socket_fd >= 0 and nfds < fds.len) {
+                fds[nfds] = .{ .fd = m.event_socket_fd, .events = POLLIN, .revents = 0 };
+                mcp_evt_idx = nfds;
+                nfds += 1;
+            }
         }
+
+        // Deadline-driven timeout: wait forever unless we have a debounce
+        // window pending (persist save fires 100 ms after last mutation).
+        // Cap at 5000 ms as a safety net for any periodic work that isn't
+        // currently event-driven (none today, but cheap insurance).
+        var timeout_ms: i32 = 5000;
+        if (self.persist_session and self.mux.persist_dirty) {
+            const elapsed_ns: i128 = compat.monotonicNow() - self.mux.persist_dirty_since;
+            const remaining_ns: i128 = 100_000_000 - elapsed_ns;
+            if (remaining_ns <= 0) {
+                timeout_ms = 0;
+            } else {
+                const cand_ms: i32 = @intCast(@divFloor(remaining_ns, 1_000_000));
+                if (cand_ms < timeout_ms) timeout_ms = cand_ms;
+            }
+        }
+
+        const ready = posix.poll(fds[0..nfds], timeout_ms) catch 0;
+        _ = ready;
 
         // Accept new client
         if (fds[0].revents & POLLIN != 0) {
@@ -128,7 +161,7 @@ pub fn run(self: *Daemon) void {
         }
 
         // Read client input
-        if (self.client_fd != null and nfds > 1) {
+        if (self.client_fd != null and pty_start >= 2) {
             if (fds[1].revents & (POLLIN | POLLHUP | POLLERR) != 0) {
                 self.handleClientData(&recv_buf);
             }
@@ -136,7 +169,8 @@ pub fn run(self: *Daemon) void {
 
         // Read PTY output and relay to client (tagged with pane_id)
         var pane_idx: usize = 0;
-        for (pty_start..nfds) |fi| {
+        var any_pty_died = false;
+        for (pty_start..pty_end) |fi| {
             if (pane_idx >= self.mux.panes.items.len) break;
             if (fds[fi].revents & POLLIN != 0) {
                 const pane = &self.mux.panes.items[pane_idx];
@@ -153,21 +187,35 @@ pub fn run(self: *Daemon) void {
                 }
             }
             if (fds[fi].revents & (POLLHUP | POLLERR) != 0) {
-                // PTY died — will be cleaned up in checkPaneAlive
+                any_pty_died = true;
             }
             pane_idx += 1;
         }
 
-        // Poll MCP server
-        if (self.mcp) |m| m.poll();
+        // MCP poll only when one of its listen sockets has readiness.
+        // mcp.poll() drains both event_socket_fd and socket_fd internally,
+        // so calling it once per loop iteration is sufficient.
+        const mcp_ready =
+            (if (mcp_req_idx) |i| (fds[i].revents & POLLIN != 0) else false) or
+            (if (mcp_evt_idx) |i| (fds[i].revents & POLLIN != 0) else false);
+        if (mcp_ready) {
+            if (self.mcp) |m| m.poll();
+        }
 
-        // Check for dead panes
-        self.checkPaneAlive();
+        // Check for dead panes only when a PTY signaled HUP/ERR or when
+        // ≥ 5 s has elapsed since the last sweep (safety net for SIGCHLD
+        // races). Without this throttle, every wake-up (keystroke, MCP
+        // request) would re-scan all panes — wasted syscalls.
+        const now_ns = compat.monotonicNow();
+        if (any_pty_died or (now_ns - self.last_pane_check_ns) >= 5_000_000_000) {
+            self.checkPaneAlive();
+            self.last_pane_check_ns = now_ns;
+        }
 
-        // Persist session: debounced save (100ms after last mutation)
+        // Persist session: debounced save (100 ms after last mutation)
         if (self.persist_session and self.mux.persist_dirty) {
             const elapsed = compat.monotonicNow() - self.mux.persist_dirty_since;
-            if (elapsed >= 100_000_000) { // 100ms
+            if (elapsed >= 100_000_000) { // 100 ms
                 self.mux.persist_dirty = false;
                 self.persistSave();
             }
