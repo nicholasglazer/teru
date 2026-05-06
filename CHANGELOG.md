@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.9 (2026-05-06)
+
+teruwm fix — X11 notifications, dialogs, and fixed-size HUDs now float
+instead of tiling.
+
+### Fixes
+
+- **Notifications no longer take half the screen.** dunst (the user's
+  notification daemon) maps regular X11 windows with
+  `_NET_WM_WINDOW_TYPE_NOTIFICATION` and fixed `size_hints`. The
+  previous handleMap path tiled any non-override-redirect X11 window,
+  stretching dunst across the workspace. `XwaylandView.handleMap` now
+  detects auxiliary windows before tiling: fixed `size_hints`,
+  `transient_for`, modal flag, or class allowlist
+  (Dunst/dmenu/polybar/conky/screenkey/pavucontrol/polkit/xmessage/feh).
+  Matching surfaces are positioned at their client-requested coords
+  and kept out of the layout engine, exactly like override-redirect
+  windows.
+
 ## 0.6.8 (2026-05-06)
 
 teruwm layout fixes — two related visual bugs reported together.
