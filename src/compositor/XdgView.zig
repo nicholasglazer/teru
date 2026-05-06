@@ -207,11 +207,25 @@ fn handleUnmap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         wlr.wlr_foreign_toplevel_handle_v1_destroy(h);
     }
 
+    // Capture the workspace the view lived on BEFORE removing it — we
+    // reflow that specific workspace once the node is gone.
+    const ws_index: ?u8 = if (server.nodes.findById(view.node_id)) |s|
+        server.nodes.workspace[s]
+    else
+        null;
+
     // Remove from node registry and tiling engine
     _ = server.nodes.remove(view.node_id);
     for (&server.layout_engine.workspaces) |*ws| {
         ws.removeNode(view.node_id);
     }
+
+    // Reflow the workspace so remaining tiles fill the gap. Without
+    // this, closing a browser / xdg client leaves dead space where
+    // the window was — the XwaylandView path already does this.
+    // Smart-border state (count change → solo) also depends on the
+    // rearrange to repaint borders correctly.
+    if (ws_index) |w| server.arrangeworkspace(w);
 
     std.debug.print("teruwm: surface unmapped node={d}\n", .{view.node_id});
 }
@@ -241,11 +255,17 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         wlr.wlr_foreign_toplevel_handle_v1_destroy(h);
     }
 
-    // Clean up node registry
+    // Clean up node registry. Capture the workspace first so we can
+    // reflow if destroy fires without a prior unmap (hard client crash).
+    const ws_index: ?u8 = if (server.nodes.findById(view.node_id)) |s|
+        server.nodes.workspace[s]
+    else
+        null;
     _ = server.nodes.remove(view.node_id);
     for (&server.layout_engine.workspaces) |*ws| {
         ws.removeNode(view.node_id);
     }
+    if (ws_index) |w| server.arrangeworkspace(w);
 
     // Remove listeners
     wlr.wl_list_remove(&view.map.link);
