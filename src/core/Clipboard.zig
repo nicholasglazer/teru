@@ -56,7 +56,58 @@ pub fn paste(pane: *const Pane) void {
     var raw_buf: [max_paste_bytes]u8 = undefined;
     const captured = capture(&raw_buf);
     if (captured == 0) return;
+    if (!looksLikeText(raw_buf[0..captured])) return;
     writeSanitised(pane, raw_buf[0..captured]);
+}
+
+/// Return true if the bytes look like UTF-8 text we can safely shove into
+/// a PTY. Returns false for image/binary clipboards.
+///
+/// This is the X11 / xclip 0.13 backstop. xclip's `-t UTF8_STRING -o` is
+/// supposed to reject mismatched targets, but in 0.13 (still the
+/// distro-shipped version on Arch + Debian as of 2026) the target filter
+/// is silently ignored on output — `-t` is honoured for input but
+/// ignored for output, so requesting `UTF8_STRING` from an image-only
+/// clipboard returns the raw PNG/JPEG bytes anyway. Without this guard,
+/// pressing Ctrl+Shift+V after a screenshot copy would write 64 KB of
+/// binary garbage into the PTY. The PTY master is `O_NONBLOCK`, so a
+/// short write drops the trailing bytes (including the closing
+/// `\x1b[201~`), which leaves bracketed-paste-aware TUIs (notably
+/// claude-code) stuck mid-paste forever, looking like a hang.
+///
+/// Heuristic, not a parser:
+///   - Reject any NUL byte (0x00)
+///   - Reject too many high-bit bytes that aren't valid UTF-8 starts
+///   - Allow tab / LF / CR; reject other C0 if present in bulk
+fn looksLikeText(bytes: []const u8) bool {
+    if (bytes.len == 0) return false;
+    var bad: usize = 0;
+    var i: usize = 0;
+    while (i < bytes.len) : (i += 1) {
+        const ch = bytes[i];
+        if (ch == 0) return false;
+        if (ch < 0x20 and ch != 0x09 and ch != 0x0A and ch != 0x0D) {
+            bad += 1;
+        } else if (ch >= 0x80) {
+            // Validate the UTF-8 multi-byte sequence starting at i.
+            const seq_len = std.unicode.utf8ByteSequenceLength(ch) catch {
+                bad += 1;
+                continue;
+            };
+            if (i + seq_len > bytes.len) {
+                bad += 1;
+                continue;
+            }
+            _ = std.unicode.utf8Decode(bytes[i..][0..seq_len]) catch {
+                bad += 1;
+                continue;
+            };
+            i += seq_len - 1;
+        }
+    }
+    // Tolerate a tiny amount of noise but reject anything visibly binary.
+    // 0.5 % is enough headroom for stray control codes in legitimate text.
+    return bad * 200 <= bytes.len;
 }
 
 /// Capture clipboard bytes into `buf`, returning how many bytes were
@@ -88,7 +139,56 @@ fn writeSanitised(pane: *const Pane, text: []const u8) void {
             pos += paste_end.len;
         }
     }
-    _ = pane.ptyWrite(out_buf[0..pos]) catch {};
+    writeAllToPty(pane, out_buf[0..pos]);
+}
+
+/// Write every byte of `data` to the pane's PTY master, retrying on
+/// short writes (PTY master is O_NONBLOCK and the kernel input buffer
+/// is small — typically 4 KiB).
+///
+/// A single `pane.ptyWrite(64KiB)` writes ~one buffer's worth and
+/// returns short; the caller used to discard the return value, dropping
+/// the trailing bytes including the closing `\x1b[201~` marker. That
+/// left bracketed-paste-aware apps stuck mid-paste forever (the
+/// "freeze" symptom on Ctrl+Shift+V into claude-code).
+///
+/// Has a 1 s overall deadline so a wedged reader can't lock the UI
+/// thread; remaining bytes are dropped if the deadline trips, which
+/// breaks bracketed paste *for that paste only* — better than the UI
+/// being unrecoverable. Drops include the closing marker, so the app
+/// would see a partial paste; sending an explicit `\x1b[201~` after
+/// the timeout closes the envelope to keep the app usable.
+fn writeAllToPty(pane: *const Pane, data: []const u8) void {
+    const deadline_ms: i64 = 1000;
+    const start_ns = compat.monotonicNow();
+    const POLLOUT: i16 = 0x004;
+    var fd_array = [_]posix.pollfd{.{
+        .fd = pane.ptyMasterFd(),
+        .events = POLLOUT,
+        .revents = 0,
+    }};
+    var written: usize = 0;
+    while (written < data.len) {
+        const elapsed_ns: i64 = @intCast(compat.monotonicNow() - start_ns);
+        const remaining_ms: i32 = @intCast(@max(0, deadline_ms - @divFloor(elapsed_ns, 1_000_000)));
+        if (remaining_ms == 0) break;
+        const n = pane.ptyWrite(data[written..]) catch {
+            // EAGAIN-ish: wait for the master fd to drain.
+            fd_array[0].revents = 0;
+            _ = posix.poll(&fd_array, remaining_ms) catch return;
+            continue;
+        };
+        if (n == 0) break;
+        written += n;
+    }
+    // If we dropped the closing marker, send one explicitly so the
+    // receiving app exits its bracketed-paste accumulator. Better than
+    // a permanent freeze.
+    const trailing = data[@min(written, data.len)..];
+    const dropped_close = std.mem.indexOf(u8, trailing, paste_end) != null;
+    if (dropped_close) {
+        _ = pane.ptyWrite(paste_end) catch {};
+    }
 }
 
 /// Filter `src` into `dst`, returning bytes written. Strips NUL, ESC,
@@ -382,4 +482,36 @@ test "sanitise — handles trailing partial marker prefix" {
     const src = "ok\x1b[20";
     const n = sanitise(src, &out, false);
     try std.testing.expectEqualStrings("ok[20", out[0..n]); // ESC stripped, [20 stays
+}
+
+test "looksLikeText — accepts plain ASCII" {
+    try std.testing.expect(looksLikeText("hello world\n"));
+}
+
+test "looksLikeText — accepts valid UTF-8" {
+    try std.testing.expect(looksLikeText("привіт ✓"));
+}
+
+test "looksLikeText — rejects PNG header" {
+    // First bytes of a real PNG: \x89PNG\r\n\x1a\n
+    try std.testing.expect(!looksLikeText("\x89PNG\r\n\x1a\nIHDR"));
+}
+
+test "looksLikeText — rejects NUL byte anywhere" {
+    try std.testing.expect(!looksLikeText("hello\x00world"));
+}
+
+test "looksLikeText — rejects bulk control codes" {
+    try std.testing.expect(!looksLikeText("a\x01\x02\x03\x04\x05\x06\x07b"));
+}
+
+test "looksLikeText — rejects empty input" {
+    try std.testing.expect(!looksLikeText(""));
+}
+
+test "looksLikeText — tolerates a single stray control byte" {
+    var buf: [4096]u8 = undefined;
+    @memset(&buf, 'a');
+    buf[100] = 0x01; // one control byte in 4 KB of text
+    try std.testing.expect(looksLikeText(&buf));
 }
