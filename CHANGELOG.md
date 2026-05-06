@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.6.8 (2026-05-06)
+
+teruwm layout fixes — two related visual bugs reported together.
+
+### Fixes
+
+- **Lone xdg/xwayland window no longer draws a border.** `TerminalPane`
+  already suppressed the border when it was the only window on a
+  workspace; this extends the same smart-border rule to browsers, xdg
+  clients, and xwayland clients via `ServerLayout.arrangeWorkspace`.
+  When `countInWorkspace ≤ 1` the wayland_surface border is set to
+  width 0 (which destroys the rects entirely). Closing a second window
+  drops the count back to 1 and the survivor's border disappears on
+  the next arrange.
+
+- **Closing an xdg client now reflows the workspace.** `XdgView.handleUnmap`
+  + `handleDestroy` were removing the node from the registry/tiling
+  engine but never calling `arrangeworkspace`, so closing Firefox left
+  dead space where the window was — remaining tiles kept their old
+  rects until the next manual arrange. Both paths now capture the
+  node's workspace before removing it and arrange that workspace once
+  the node is gone. Same hardening applied to `XwaylandView.handleDestroy`
+  (the unmap path already arranged, but a hard client crash bypasses
+  unmap).
+
 ## 0.6.7 (2026-05-06)
 
 Hotfix on top of v0.6.6 — the Ctrl+Shift+V "freeze" fix in v0.6.6
