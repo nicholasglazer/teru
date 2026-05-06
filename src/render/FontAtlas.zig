@@ -7,9 +7,17 @@
 const std = @import("std");
 const Io = std.Io;
 const Dir = Io.Dir;
+const build_options = @import("build_options");
 const compat = @import("../compat.zig");
 const FontSynth = @import("FontSynth.zig");
 const FontAtlas = @This();
+
+// Glyph-range gates resolved at compile time from `-Dglyphs=...`.
+// Ascii + Latin-1 + Box + Block are always included (terminal essentials).
+// Geometric Shapes added at extended/full. Cyrillic + Braille only at full.
+const include_geometric: bool = build_options.glyph_budget != .ascii;
+const include_cyrillic: bool = build_options.glyph_budget == .full;
+const include_braille: bool = build_options.glyph_budget == .full;
 
 // ── stb_truetype C bindings ────────────────────────────────────────
 //
@@ -102,16 +110,20 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
 
     if (cell_w == 0 or cell_h == 0) return error.InvalidFontMetrics;
 
-    // Glyph ranges to rasterize:
+    // Glyph ranges to rasterize (always-on first):
     //   ASCII printable:     32-126  (95 glyphs)
     //   Latin-1 Supplement: 160-255  (96 glyphs)
     //   Box Drawing:     0x2500-0x257F (128 glyphs)
     //   Block Elements:  0x2580-0x259F (32 glyphs)
-    //   Cyrillic:        0x0400-0x04FF (256 glyphs)
-    //   Geometric Shapes: 0x25A0-0x25FF (96 glyphs)
-    //   Braille Patterns: 0x2800-0x28FF (256 glyphs)
-    // Total: 959 glyphs
-    const total_glyphs: u32 = 95 + 96 + 128 + 32 + 256 + 96 + 256; // 959
+    // Optional via -Dglyphs:
+    //   Geometric Shapes: 0x25A0-0x25FF (96 glyphs)   [extended, full]
+    //   Cyrillic:        0x0400-0x04FF (256 glyphs)   [full only]
+    //   Braille Patterns: 0x2800-0x28FF (256 glyphs)  [full only]
+    // Totals: 351 (ascii) / 447 (extended) / 959 (full)
+    const total_glyphs: u32 = 95 + 96 + 128 + 32 +
+        (if (include_geometric) 96 else 0) +
+        (if (include_cyrillic) 256 else 0) +
+        (if (include_braille) 256 else 0);
     const glyphs_per_row: u32 = 16;
     const num_rows: u32 = (total_glyphs + glyphs_per_row - 1) / glyphs_per_row;
     const atlas_w = glyphs_per_row * cell_w;
@@ -129,7 +141,8 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     var braille_glyphs: [256]?GlyphInfo = [_]?GlyphInfo{null} ** 256;
     const baseline: i32 = @intFromFloat(f_ascent);
 
-    // Build a flat list of codepoints to rasterize
+    // Build a flat list of codepoints to rasterize. Optional ranges are
+    // gated at comptime so the unselected branches drop out entirely.
     const Codepoint = struct { cp: u21, slot: u32 };
     var codepoints: [total_glyphs]Codepoint = undefined;
     var slot: u32 = 0;
@@ -154,20 +167,25 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
         codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
         slot += 1;
     }
-    // Cyrillic: U+0400-U+04FF
-    for (0x0400..0x0500) |cp| {
-        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-        slot += 1;
+    // The slotting order in glyphSlot() below assumes Geometric occupies
+    // slots 351..447 when included. Cyrillic/Braille follow if include_full.
+    if (include_geometric) {
+        for (0x25A0..0x2600) |cp| {
+            codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
+            slot += 1;
+        }
     }
-    // Geometric Shapes: U+25A0-U+25FF
-    for (0x25A0..0x2600) |cp| {
-        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-        slot += 1;
+    if (include_cyrillic) {
+        for (0x0400..0x0500) |cp| {
+            codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
+            slot += 1;
+        }
     }
-    // Braille Patterns: U+2800-U+2900
-    for (0x2800..0x2900) |cp| {
-        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-        slot += 1;
+    if (include_braille) {
+        for (0x2800..0x2900) |cp| {
+            codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
+            slot += 1;
+        }
     }
 
     for (codepoints[0..slot]) |entry| {
@@ -617,29 +635,45 @@ pub fn deinit(self: *FontAtlas) void {
 
 pub fn getGlyph(self: *const FontAtlas, codepoint: u21) ?GlyphInfo {
     if (codepoint < 256) return self.glyphs[codepoint];
-    if (codepoint >= 0x0400 and codepoint < 0x0500)
-        return self.cyrillic_glyphs[codepoint - 0x0400];
     if (codepoint >= 0x2500 and codepoint < 0x2580)
         return self.box_glyphs[codepoint - 0x2500];
     if (codepoint >= 0x2580 and codepoint < 0x25A0)
         return self.block_glyphs[codepoint - 0x2580];
-    if (codepoint >= 0x25A0 and codepoint < 0x2600)
+    if (include_geometric and codepoint >= 0x25A0 and codepoint < 0x2600)
         return self.geometric_glyphs[codepoint - 0x25A0];
-    if (codepoint >= 0x2800 and codepoint < 0x2900)
+    if (include_cyrillic and codepoint >= 0x0400 and codepoint < 0x0500)
+        return self.cyrillic_glyphs[codepoint - 0x0400];
+    if (include_braille and codepoint >= 0x2800 and codepoint < 0x2900)
         return self.braille_glyphs[codepoint - 0x2800];
     return null;
 }
 
 /// Convert a codepoint to its atlas slot index (for renderer blitting).
 /// Returns null if the codepoint is not in the atlas.
+///
+/// Slot layout MUST match the build order in `init()`. Always-on ranges
+/// occupy slots 0..351 in fixed order. Optional ranges follow in the
+/// order { geometric, cyrillic, braille } — only the included ones
+/// consume slot space, so users with `-Dglyphs=ascii` get an atlas with
+/// no wasted rows for ranges they don't have.
 pub fn glyphSlot(codepoint: u21) ?u32 {
     if (codepoint >= 32 and codepoint < 127) return @as(u32, codepoint - 32);
     if (codepoint >= 160 and codepoint < 256) return @as(u32, codepoint - 160) + 95;
     if (codepoint >= 0x2500 and codepoint < 0x2580) return @as(u32, codepoint - 0x2500) + 95 + 96;
     if (codepoint >= 0x2580 and codepoint < 0x25A0) return @as(u32, codepoint - 0x2580) + 95 + 96 + 128;
-    if (codepoint >= 0x0400 and codepoint < 0x0500) return @as(u32, codepoint - 0x0400) + 95 + 96 + 128 + 32;
-    if (codepoint >= 0x25A0 and codepoint < 0x2600) return @as(u32, codepoint - 0x25A0) + 95 + 96 + 128 + 32 + 256;
-    if (codepoint >= 0x2800 and codepoint < 0x2900) return @as(u32, codepoint - 0x2800) + 95 + 96 + 128 + 32 + 256 + 96;
+
+    comptime var opt_offset: u32 = 95 + 96 + 128 + 32; // = 351
+    if (include_geometric) {
+        if (codepoint >= 0x25A0 and codepoint < 0x2600) return @as(u32, codepoint - 0x25A0) + opt_offset;
+        opt_offset += 96;
+    }
+    if (include_cyrillic) {
+        if (codepoint >= 0x0400 and codepoint < 0x0500) return @as(u32, codepoint - 0x0400) + opt_offset;
+        opt_offset += 256;
+    }
+    if (include_braille) {
+        if (codepoint >= 0x2800 and codepoint < 0x2900) return @as(u32, codepoint - 0x2800) + opt_offset;
+    }
     return null;
 }
 
@@ -818,14 +852,19 @@ test "glyphSlot: Block Elements" {
 }
 
 test "glyphSlot: Cyrillic" {
-    // U+0400 = slot 351 (95+96+128+32)
-    try std.testing.expectEqual(@as(?u32, 351), glyphSlot(0x0400));
-    // U+0410 (А) = slot 367
-    try std.testing.expectEqual(@as(?u32, 367), glyphSlot(0x0410));
-    // U+0430 (а) = slot 399
-    try std.testing.expectEqual(@as(?u32, 399), glyphSlot(0x0430));
-    // U+04FF = slot 606 (last Cyrillic)
-    try std.testing.expectEqual(@as(?u32, 606), glyphSlot(0x04FF));
+    // Slot positions depend on which optional ranges precede Cyrillic:
+    //   .full     → Cyrillic comes after Geometric → starts at 351 + 96 = 447
+    //   .full without Geometric (impossible today) → would be 351
+    //   .ascii / .extended → Cyrillic excluded entirely
+    if (!include_cyrillic) {
+        try std.testing.expectEqual(@as(?u32, null), glyphSlot(0x0400));
+        return;
+    }
+    const base: u32 = 95 + 96 + 128 + 32 + (if (include_geometric) @as(u32, 96) else 0);
+    try std.testing.expectEqual(@as(?u32, base), glyphSlot(0x0400));
+    try std.testing.expectEqual(@as(?u32, base + 0x10), glyphSlot(0x0410));
+    try std.testing.expectEqual(@as(?u32, base + 0x30), glyphSlot(0x0430));
+    try std.testing.expectEqual(@as(?u32, base + 0xFF), glyphSlot(0x04FF));
     // U+0500 = not in atlas
     try std.testing.expectEqual(@as(?u32, null), glyphSlot(0x0500));
 }

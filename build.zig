@@ -9,12 +9,19 @@ pub fn build(b: *std.Build) void {
     // Bump with: make bump-version V=x.y.z (updates here + build.zig.zon)
     const version = "0.6.5";
 
+    // Strip debug info on any release optimize mode. Module-level setting
+    // in Zig 0.17 (Module.CreateOptions.strip). The Makefile previously
+    // post-processed binaries with `strip(1)`; setting it here means a bare
+    // `zig build -Doptimize=ReleaseSafe` produces the same artifact.
+    const want_strip: ?bool = if (optimize == .Debug) null else true;
+
     // ── libteru (core library, pure Zig, no system deps) ─────────────
     const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .strip = want_strip,
     });
     // Vendor include path for hand-declared C bindings (stb_truetype, xdg-shell, miozu-wlr-glue).
     lib_mod.addIncludePath(b.path("vendor"));
@@ -45,12 +52,22 @@ pub fn build(b: *std.Build) void {
     // -Dcompositor=true → build miozu Wayland compositor (links wlroots)
     const enable_compositor = b.option(bool, "compositor", "Build miozu Wayland compositor (links wlroots)") orelse false;
 
+    // ── Font atlas glyph budget ───────────────────────────────────
+    // -Dglyphs=ascii    → 351 glyphs (ASCII + Latin-1 + Box + Block)
+    // -Dglyphs=extended → 447 glyphs (above + Geometric Shapes) [default]
+    // -Dglyphs=full     → 959 glyphs (above + Cyrillic + Braille)
+    // Smaller budgets lower startup time + memory; typical users never
+    // see Cyrillic or Braille in their terminal output.
+    const GlyphBudget = enum { ascii, extended, full };
+    const glyph_budget = b.option(GlyphBudget, "glyphs", "Font atlas glyph budget (default: extended)") orelse .extended;
+
     // Build-time options passed to Zig source via @import("build_options")
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
     build_options.addOption(bool, "enable_x11", enable_x11);
     build_options.addOption(bool, "enable_wayland", enable_wayland);
     build_options.addOption(bool, "enable_compositor", enable_compositor);
+    build_options.addOption(GlyphBudget, "glyph_budget", glyph_budget);
 
     // Attach build_options to library module (needed by McpServer.zig)
     lib_mod.addOptions("build_options", build_options);
@@ -61,6 +78,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .strip = want_strip,
     });
 
     exe_mod.addOptions("build_options", build_options);
@@ -107,6 +125,8 @@ pub fn build(b: *std.Build) void {
         .name = "teru",
         .root_module = exe_mod,
     });
+    // LTO on ReleaseFast/ReleaseSmall — compile step in 0.17 (Compile.zig:177).
+    if (optimize == .ReleaseFast or optimize == .ReleaseSmall) exe.lto = .full;
     b.installArtifact(exe);
 
     // ── run step ─────────────────────────────────────────────────────
@@ -127,6 +147,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .strip = want_strip,
         });
         teruwmctl_mod.addImport("teru", lib_mod);
         teruwmctl_mod.addOptions("build_options", build_options);
@@ -134,6 +155,7 @@ pub fn build(b: *std.Build) void {
             .name = "teruwmctl",
             .root_module = teruwmctl_mod,
         });
+        if (optimize == .ReleaseFast or optimize == .ReleaseSmall) teruwmctl_exe.lto = .full;
         b.installArtifact(teruwmctl_exe);
     }
 
@@ -179,6 +201,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .strip = want_strip,
         });
 
         // Link libteru (lib_mod already carries build_options — don't add again)
@@ -213,6 +236,7 @@ pub fn build(b: *std.Build) void {
             .name = "teruwm",
             .root_module = miozu_mod,
         });
+        if (optimize == .ReleaseFast or optimize == .ReleaseSmall) miozu_exe.lto = .full;
         b.installArtifact(miozu_exe);
 
         const miozu_run = b.addRunArtifact(miozu_exe);
