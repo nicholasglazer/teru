@@ -23,7 +23,7 @@ const Compositor = @import("../render/Compositor.zig");
 /// determines where each pane renders on screen.
 const Multiplexer = @This();
 
-panes: std.ArrayListUnmanaged(Pane),
+panes: std.ArrayList(Pane),
 layout_engine: LayoutEngine,
 active_workspace: u8,
 allocator: Allocator,
@@ -130,8 +130,12 @@ pub fn getActivePaneRect(self: *Multiplexer, screen_width: u32, screen_height: u
         .height = @intCast(@min(screen_height -| padding * 2 -| status_bar_h, std.math.maxInt(u16))),
     };
 
-    const rects = self.layout_engine.calculate(self.active_workspace, screen_rect) catch return null;
-    defer self.allocator.free(rects);
+    // Stack scratch buffer — workspaces hold << 256 nodes in practice.
+    // Mirror the FBA pattern from ServerLayout.zig so render paths stay
+    // allocator-free per vsync.
+    var rect_scratch: [256 * @sizeOf(Rect)]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&rect_scratch);
+    const rects = self.layout_engine.calculateWith(self.active_workspace, screen_rect, fba.allocator()) catch return null;
 
     const has_agents = if (self.graph) |g| g.countAgentsByState().running + g.countAgentsByState().done + g.countAgentsByState().failed > 0 else false;
     const bar_height: u16 = if (has_agents and screen_height > 60) 20 else 0;
@@ -417,8 +421,9 @@ pub fn resizePanePtys(self: *Multiplexer, screen_width: u32, screen_height: u32,
         .height = @intCast(@min(sh, std.math.maxInt(u16))),
     };
 
-    const rects = self.layout_engine.calculate(self.active_workspace, screen) catch return;
-    defer self.allocator.free(rects);
+    var rect_scratch: [256 * @sizeOf(Rect)]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&rect_scratch);
+    const rects = self.layout_engine.calculateWith(self.active_workspace, screen, fba.allocator()) catch return;
 
     for (rects, 0..) |rect, i| {
         if (i >= pane_ids.len) break;
@@ -542,8 +547,9 @@ pub fn renderAllWithSelection(
     } else ws.node_ids.items;
     if (pane_ids.len == 0) return;
 
-    const rects = self.layout_engine.calculate(self.active_workspace, screen_rect) catch return;
-    defer self.allocator.free(rects);
+    var rect_scratch: [256 * @sizeOf(Rect)]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&rect_scratch);
+    const rects = self.layout_engine.calculateWith(self.active_workspace, screen_rect, fba.allocator()) catch return;
 
     const active_id = if (ws.split_root != null) ws.active_node else ws.getActiveNodeId();
 
