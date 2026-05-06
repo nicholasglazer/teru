@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.6.7 (2026-05-06)
+
+Hotfix on top of v0.6.6 — the Ctrl+Shift+V "freeze" fix in v0.6.6
+identified the wrong root cause. This release replaces that workaround
+with the real one.
+
+### Fixes
+
+- **Ctrl+Shift+V no longer hangs claude-code (or any bracketed-paste
+  TUI) on an image clipboard.** Two bugs were compounding:
+
+  1. xclip 0.13 (Arch + Debian as of 2026-05) silently ignores
+     `-t UTF8_STRING -o` and returns the raw image bytes. The MIME
+     filter added in v0.6.6 had zero effect on X11.
+  2. The pasted buffer was 64 KiB, the PTY master is O_NONBLOCK, and
+     `pane.ptyWrite` returned short (~4 KiB). The discarded tail
+     included the closing `\x1b[201~` bracketed-paste marker, so
+     claude-code stayed stuck inside the paste accumulator forever.
+
+  Fix: `looksLikeText()` rejects clipboards that aren't valid UTF-8 or
+  contain NUL / bulk control bytes — image clipboards become a silent
+  no-op. `writeAllToPty()` retries partial writes with a 1 s deadline
+  and explicitly emits `\x1b[201~` if the deadline trips, so a TUI
+  can never be trapped mid-paste.
+
+  Repro: take a screenshot to clipboard, open claude-code inside teru,
+  Ctrl+Shift+V. Before: terminal frozen. After: silent no-op (use
+  Ctrl+V to let claude-code's own handler attach the image).
+
 ## 0.6.6 (2026-05-06)
 
 Performance + clipboard fix release on top of v0.6.5. Idle CPU drops
