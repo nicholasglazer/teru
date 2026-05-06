@@ -1,5 +1,80 @@
 # Changelog
 
+## 0.6.6 (2026-05-06)
+
+Performance + clipboard fix release on top of v0.6.5. Idle CPU drops
+substantially across both binaries; Ctrl+Shift+V no longer freezes
+the terminal when an image is on the clipboard.
+
+### Fixes
+
+- **Ctrl+Shift+V no longer hangs on image clipboards.** `wl-paste` /
+  `xclip` are now invoked with an explicit text MIME type
+  (`text/plain;charset=utf-8` → fallback `text/plain` on Wayland;
+  `UTF8_STRING` → `STRING` on X11). If the clipboard owner only offers
+  an image, both calls return zero bytes and the paste becomes a
+  no-op instead of streaming multi-MB binary into the PTY.
+- **Hard ~2 s deadline on `forkExecCaptureStdout`.** The shared paste
+  helper now uses a non-blocking pipe + `poll()` budget. A hung or
+  flooding clipboard helper is SIGKILLed; we no longer drain extra
+  bytes synchronously after the buffer fills.
+- **Renderer-Debug crashes from a Zig 0.17.0-dev.135 codegen bug.**
+  `@memset(slice_u32, runtime_scalar)` mis-codegens on x86_64 Debug
+  (rep-stosd swaps src/dst). All `[]u32` framebuffer fills now route
+  through `compat.memsetU32` which is a plain `while` loop the
+  compiler gets right. Repro: the `Renderer CPU tier init and render`
+  test in `tier.zig`.
+
+### Performance
+
+- **Deadline-driven poll loops everywhere.** `daemon`, `tui`, and
+  `session-attach` previously polled on fixed cadences (10/20/100 Hz)
+  and woke up to do nothing. They now block until real work
+  arrives. Net ~120-220 idle wakeups/sec eliminated per attached
+  session. MCP listen sockets are part of the daemon poll set so MCP
+  requests wake the daemon directly.
+- **Vectorized cell fills.** `software.zig` now does cell + cursor
+  background fills with `Vec4u32` splat (compiler fuses to AVX2). For
+  a 200×50 grid that's ~160 K per-scanline `@memset` entries
+  collapsed to a tight SIMD loop.
+- **VtParser hot path 2-3× faster** for plain-ASCII output (cat,
+  build logs, streaming). `writeGroundBatch` hoists the row base
+  pointer out of the per-byte loop and tracks dirty rows correctly,
+  so `renderDirty` repaints only the touched rows instead of
+  fall-back-full-frame.
+- **Allocator-free layout calc.** `Multiplexer.getActivePaneRect`,
+  `resizePanePtys`, and `renderAllWithSelection` no longer heap-allocate
+  the `Rect` slice — they use a 256-entry stack scratch buffer
+  through `LayoutEngine.calculateWith`.
+- **DPMS-gated bar tick.** `teruwm`'s 1 s bar tick now stretches to
+  5 s when every output is asleep, eliminating /proc reads on a
+  closed-lid laptop.
+- **Per-vsync PTY poll throttled.** `Output.handleFrame`'s
+  edge-trigger fallback now polls every frame for ≤ 4 frames after
+  input, then every 16th frame as a safety net (~270 ms worst-case
+  latency for missed-event recovery). 16× reduction in idle PTY
+  reads per pane.
+
+### Build
+
+- `-Dglyphs={ascii|extended|full}` chooses the FontAtlas budget
+  (351 / 447 / 959 glyphs). Default `extended` covers ASCII +
+  Latin-1 + Box + Block + Geometric Shapes — what users actually
+  see in 99 % of terminals.
+- `Module.CreateOptions.strip` is set on every release optimize mode,
+  so `zig build -Doptimize=ReleaseFast` emits stripped artifacts
+  without needing the Makefile to post-process.
+- LTO (`Compile.lto = .full`) on `ReleaseFast` and `ReleaseSmall` for
+  teru, teruwm, and teruwmctl.
+
+### Internal
+
+- `std.ArrayListUnmanaged(T)` references migrated to `std.ArrayList(T)`
+  (the unmanaged distinction was merged in Zig 0.17). `page_allocator`
+  → `smp_allocator` in the small-alloc + grow-many-small paths
+  (Session.zig DynWriter, Win32 WindowState).
+- `build.zig.zon` `minimum_zig_version` bumped to `0.17.0-dev`.
+
 ## 0.6.5 (2026-04-19)
 
 Cleanup release on top of v0.6.4. Dead Action variants removed, two
