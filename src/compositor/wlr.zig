@@ -688,6 +688,9 @@ pub extern "c" fn miozu_xwayland_surface_map(surface: *wlr_xwayland_surface) cal
 pub extern "c" fn miozu_xwayland_surface_unmap(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_xwayland_surface_destroy(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_xwayland_surface_request_configure(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_xwayland_surface_is_fixed_size(surface: *wlr_xwayland_surface) callconv(.c) bool;
+pub extern "c" fn miozu_xwayland_surface_has_parent(surface: *wlr_xwayland_surface) callconv(.c) bool;
+pub extern "c" fn miozu_xwayland_surface_is_modal(surface: *wlr_xwayland_surface) callconv(.c) bool;
 
 // ── Custom pixel buffer for terminal panes ─────────────────────
 
