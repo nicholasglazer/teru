@@ -28,6 +28,42 @@ pub const ColorScheme = @import("../config/Config.zig").ColorScheme;
 const Vec4u32 = @Vector(4, u32);
 const Vec4u16 = @Vector(4, u16);
 
+/// Fill a rectangular region of the framebuffer with a constant color.
+/// Used for per-cell background, cursor block, and underline strips —
+/// the inner loop of the renderer (called once per cell × cell_height).
+///
+/// Uses Vec4u32 splat for the 4-wide bulk (compiler fuses to AVX2 256-bit
+/// when available), with a scalar tail for the last 0-3 pixels per row.
+/// For an 8 px wide cell this is 2 vector stores + 0 scalar; for a 256 px
+/// span it's 64 vector stores. Replaces a per-scanline scalar `@memset`
+/// that was 200×50×16 ≈ 160 K function-call entries per frame on a
+/// typical grid.
+inline fn fillRect(
+    fb: []u32,
+    fb_w: usize,
+    x0: usize,
+    y0: usize,
+    x1: usize,
+    y1: usize,
+    color: u32,
+) void {
+    if (x1 <= x0 or y1 <= y0) return;
+    const splat: Vec4u32 = @splat(color);
+    var py: usize = y0;
+    while (py < y1) : (py += 1) {
+        const row_start = py * fb_w;
+        const start = row_start + x0;
+        const end = row_start + x1;
+        if (end > fb.len) break;
+        const dst = fb[start..end];
+        var i: usize = 0;
+        while (i + 4 <= dst.len) : (i += 4) {
+            dst[i..][0..4].* = splat;
+        }
+        while (i < dst.len) : (i += 1) dst[i] = color;
+    }
+}
+
 // ── SoftwareRenderer ───────────────────────────────────────────────
 
 pub const SoftwareRenderer = struct {
@@ -258,15 +294,10 @@ pub const SoftwareRenderer = struct {
                     }
                 }
 
-                // 1. Fill cell rectangle with background color
+                // 1. Fill cell rectangle with background color (Vec4u32 splat)
                 const max_y = @min(screen_y + ch, fb_h);
                 const max_x = @min(screen_x + cw, fb_w);
-
-                for (screen_y..max_y) |py| {
-                    const row_start = py * fb_w;
-                    const dst_slice = self.framebuffer[row_start + screen_x .. row_start + max_x];
-                    @memset(dst_slice, bg);
-                }
+                fillRect(self.framebuffer, fb_w, screen_x, screen_y, max_x, max_y, bg);
 
                 // Bold-is-bright: shift ANSI 0-7 to bright 8-15 when bold
                 if (cell.attrs.bold and self.scheme.bold_is_bright) {
@@ -321,29 +352,18 @@ pub const SoftwareRenderer = struct {
             const cursor_max_x = @min(cx + cw, fb_w);
 
             switch (grid.cursor_shape) {
-                .block => {
-                    for (cy..cursor_max_y) |py| {
-                        const row_start = py * fb_w;
-                        compat.memsetU32(self.framebuffer[row_start + cx .. row_start + cursor_max_x], cursor_color);
-                    }
-                },
+                .block => fillRect(self.framebuffer, fb_w, cx, cy, cursor_max_x, cursor_max_y, cursor_color),
                 .underline => {
                     // Fill bottom 2 rows of the cell
                     const ul_start = if (ch >= 2) cy + ch - 2 else cy;
                     const ul_min = @min(ul_start, fb_h);
-                    for (ul_min..cursor_max_y) |py| {
-                        const row_start = py * fb_w;
-                        compat.memsetU32(self.framebuffer[row_start + cx .. row_start + cursor_max_x], cursor_color);
-                    }
+                    fillRect(self.framebuffer, fb_w, cx, ul_min, cursor_max_x, cursor_max_y, cursor_color);
                 },
                 .bar => {
                     // Fill left 2 columns of the cell
                     const bar_w = @min(@as(usize, 2), cw);
                     const bar_max_x = @min(cx + bar_w, fb_w);
-                    for (cy..cursor_max_y) |py| {
-                        const row_start = py * fb_w;
-                        compat.memsetU32(self.framebuffer[row_start + cx .. row_start + bar_max_x], cursor_color);
-                    }
+                    fillRect(self.framebuffer, fb_w, cx, cy, bar_max_x, cursor_max_y, cursor_color);
                 },
             }
         }
