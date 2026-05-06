@@ -414,6 +414,10 @@ pub fn repaintBorderOnly(self: *TerminalPane) void {
 /// Write input to the terminal's PTY.
 pub fn writeInput(self: *TerminalPane, data: []const u8) void {
     _ = self.pane.ptyWrite(data) catch {};
+    // Reset the per-vsync edge-trigger fallback counter so the next few
+    // frames poll every PTY for the imminent shell echo. After ~4 frames
+    // of silence the fallback drops to one poll per 16 frames (safety net).
+    self.server.frames_since_pty_input = 0;
     // Ensure a frame fires so the frame callback polls for the echo
     // and renders the updated grid. The PTY fd event (edge-triggered
     // epoll) can miss data races; the vsync poll is the fallback.
