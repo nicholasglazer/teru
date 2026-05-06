@@ -395,14 +395,22 @@ pub fn forkExecPipeStdin(argv: [*:null]const ?[*:0]const u8, data: []const u8) v
     _ = std.c.waitpid(@intCast(pid), null, 0);
 }
 
-/// Fork, exec command, capture child's stdout into `buf`. Blocks until child
-/// exits. Returns bytes captured (truncated to `buf.len` — extra child output
-/// is drained so the child doesn't SIGPIPE). Returns 0 on any failure.
+/// Fork, exec command, capture child's stdout into `buf`. Returns bytes
+/// captured (truncated to `buf.len`). Returns 0 on any failure or timeout.
 ///
 /// Used by paste paths that need to sanitise clipboard content before it
 /// hits the PTY. forkExecReadStdout (which dup2s straight into the PTY
 /// master) is not safe for that — pasted bytes go through the parser
 /// unfiltered and a clipboard newline executes the line.
+///
+/// Hardened against:
+///   - **Slow / hung children** — overall deadline of ~2 s (poll-based).
+///     If the child hasn't produced data in time, we SIGKILL it. Prevents
+///     a wl-paste/xclip hang from freezing the terminal event loop.
+///   - **Multi-MB binary clipboards** — once `buf` is full we don't drain
+///     the rest synchronously; we close our read end and SIGKILL the
+///     child. Closing the read end gives the child a SIGPIPE on its next
+///     write, but we kill it explicitly so it can't loop on EAGAIN.
 pub fn forkExecCaptureStdout(argv: [*:null]const ?[*:0]const u8, buf: []u8) usize {
     if (builtin.os.tag == .windows) return 0;
     var pipe_fds: [2]posix.fd_t = undefined;
@@ -428,26 +436,51 @@ pub fn forkExecCaptureStdout(argv: [*:null]const ?[*:0]const u8, buf: []u8) usiz
 
     _ = posix.system.close(write_end);
 
+    // Set the read end to non-blocking so poll governs all reads.
+    const F_GETFL: c_int = 3;
+    const F_SETFL: c_int = 4;
+    const flags = std.c.fcntl(read_end, F_GETFL);
+    if (flags >= 0) _ = std.c.fcntl(read_end, F_SETFL, flags | O_NONBLOCK);
+
+    const overall_deadline_ms: i32 = 2000;
+    const start_ns = monotonicNow();
     var total: usize = 0;
+    var killed = false;
+    const POLLIN: i16 = 0x001;
+
     while (total < buf.len) {
-        const n = posix.read(read_end, buf[total..]) catch break;
+        const elapsed_ms: i32 = @intCast(@divFloor(monotonicNow() - start_ns, 1_000_000));
+        const remaining: i32 = overall_deadline_ms - elapsed_ms;
+        if (remaining <= 0) {
+            killed = true;
+            break;
+        }
+        var pfd = [_]posix.pollfd{.{ .fd = read_end, .events = POLLIN, .revents = 0 }};
+        const ready = posix.poll(&pfd, remaining) catch 0;
+        if (ready == 0) {
+            killed = true;
+            break;
+        }
+        const n = posix.read(read_end, buf[total..]) catch |e| switch (e) {
+            error.WouldBlock => continue,
+            else => break,
+        };
         if (n == 0) break;
         total += n;
     }
-    // Drain anything past buf.len so the child's write side doesn't get
-    // a SIGPIPE on a long clipboard. We just discard.
-    if (total == buf.len) {
-        var sink: [4096]u8 = undefined;
-        while (true) {
-            const n = posix.read(read_end, &sink) catch break;
-            if (n == 0) break;
-        }
+
+    // Refuse to drain unbounded output — close our read end and ensure
+    // the child exits promptly. SIGKILL is fine here: paste tools have no
+    // mutable state to clean up, and waitpid below reaps the corpse.
+    if (total == buf.len or killed) {
+        _ = std.c.kill(@intCast(pid), .KILL);
     }
+
     _ = posix.system.close(read_end);
 
     var status: c_int = 0;
     _ = std.c.waitpid(@intCast(pid), &status, 0);
-    return total;
+    return if (killed) 0 else total;
 }
 
 /// Fork, exec command, read child's stdout into `output_fd`. Blocks until child exits.

@@ -153,14 +153,58 @@ fn linuxCopy(text: []const u8) void {
 }
 
 fn linuxCapture(buf: []u8) usize {
+    // Request a TEXT MIME type explicitly. Without `-t`, wl-paste / xclip
+    // emit whatever the clipboard owner offers — for images that's raw
+    // binary (PNG, JPEG, ...) which can be many MB. Reading + draining
+    // the pipe synchronously on the main thread blocks the event loop
+    // for seconds, manifesting as a "terminal froze on Ctrl+Shift+V"
+    // bug whenever the clipboard has an image but no text representation.
+    //
+    // With explicit text MIME requested:
+    //   - clipboard owner offers text → we get the text (fast, bounded)
+    //   - clipboard owner offers only image → tool exits with no output
+    //   - both → tool returns the text representation (URL, alt text, …)
     return switch (detectLinux()) {
         .wayland => blk: {
-            const argv = [_:null]?[*:0]const u8{ "/usr/bin/wl-paste", "--no-newline" };
-            break :blk compat.forkExecCaptureStdout(&argv, buf);
+            const argv = [_:null]?[*:0]const u8{
+                "/usr/bin/wl-paste",
+                "--no-newline",
+                "--type",
+                "text/plain;charset=utf-8",
+            };
+            const n = compat.forkExecCaptureStdout(&argv, buf);
+            if (n != 0) break :blk n;
+            // Fallback: some senders only advertise plain `text/plain`
+            // (no charset) — try that before giving up.
+            const argv2 = [_:null]?[*:0]const u8{
+                "/usr/bin/wl-paste",
+                "--no-newline",
+                "--type",
+                "text/plain",
+            };
+            break :blk compat.forkExecCaptureStdout(&argv2, buf);
         },
         .x11 => blk: {
-            const argv = [_:null]?[*:0]const u8{ "/usr/bin/xclip", "-selection", "clipboard", "-o" };
-            break :blk compat.forkExecCaptureStdout(&argv, buf);
+            const argv = [_:null]?[*:0]const u8{
+                "/usr/bin/xclip",
+                "-selection",
+                "clipboard",
+                "-t",
+                "UTF8_STRING",
+                "-o",
+            };
+            const n = compat.forkExecCaptureStdout(&argv, buf);
+            if (n != 0) break :blk n;
+            // Fallback for senders that only advertise legacy STRING.
+            const argv2 = [_:null]?[*:0]const u8{
+                "/usr/bin/xclip",
+                "-selection",
+                "clipboard",
+                "-t",
+                "STRING",
+                "-o",
+            };
+            break :blk compat.forkExecCaptureStdout(&argv2, buf);
         },
     };
 }
