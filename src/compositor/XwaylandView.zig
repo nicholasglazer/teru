@@ -123,11 +123,15 @@ fn handleUnmap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     }
 
     if (view.node_id > 0) {
+        const ws_index: ?u8 = if (server.nodes.findById(view.node_id)) |s|
+            server.nodes.workspace[s]
+        else
+            null;
         _ = server.nodes.remove(view.node_id);
         for (&server.layout_engine.workspaces) |*ws| {
             ws.removeNode(view.node_id);
         }
-        server.arrangeworkspace(server.layout_engine.active_workspace);
+        if (ws_index) |w| server.arrangeworkspace(w);
     }
 }
 
@@ -144,10 +148,18 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     }
 
     if (view.node_id > 0) {
+        // Capture workspace before removing — handleDestroy can fire
+        // without a prior unmap on a hard client crash, so the unmap
+        // path wouldn't have arranged.
+        const ws_index: ?u8 = if (server.nodes.findById(view.node_id)) |s|
+            server.nodes.workspace[s]
+        else
+            null;
         _ = server.nodes.remove(view.node_id);
         for (&server.layout_engine.workspaces) |*ws| {
             ws.removeNode(view.node_id);
         }
+        if (ws_index) |w| server.arrangeworkspace(w);
     }
 
     wlr.wl_list_remove(&view.map_listener.link);

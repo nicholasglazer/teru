@@ -90,12 +90,22 @@ pub fn arrangeWorkspace(server: *Server, ws_index: u8) void {
                 // Redraw the scene-rect border frame around wayland +
                 // xwayland surfaces. Size tracks the window's current
                 // geometry; colour tracks focus.
+                //
+                // Smart borders: when the workspace has exactly one
+                // tiled window, suppress the border entirely — there's
+                // no other window to distinguish it from. Mirrors the
+                // TerminalPane.shouldDrawBorder() convention so terminal
+                // panes and xdg/xwayland windows behave identically when
+                // they're the lone item on a workspace.
+                const slot_ws = server.nodes.workspace[slot];
+                const solo = server.nodes.countInWorkspace(slot_ws) <= 1;
+                const bw: u16 = if (solo) 0 else server.wm_config.border_width;
                 const focused = isSlotFocused(server, slot);
                 const color = if (focused)
                     server.wm_config.border_color_focused
                 else
                     server.wm_config.border_color_unfocused;
-                server.nodes.setBorder(slot, server.wm_config.border_width, color);
+                server.nodes.setBorder(slot, bw, color);
             }
         }
     }
