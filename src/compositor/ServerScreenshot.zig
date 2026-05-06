@@ -44,7 +44,7 @@ pub fn takeScreenshotToPath(server: *Server, path: []const u8) bool {
     defer server.zig_allocator.free(pixels);
 
     // Clear to configured background color (visible through gaps).
-    @memset(pixels, server.wm_config.bg_color);
+    teru.compat.memsetU32(pixels, server.wm_config.bg_color);
 
     // Two-pass: tiled first, floating on top. Mirrors wlroots' scene
     // z-order. Without this, float/drag E2E snapshots diverge from

@@ -447,11 +447,11 @@ fn renderBar(self: *Bar, inst: *BarInstance, server: *Server) void {
 
     // Clear bar background
     const total = @min(fb_w * bar_h, cpu.framebuffer.len);
-    @memset(cpu.framebuffer[0..total], s.bg);
+    teru.compat.memsetU32(cpu.framebuffer[0..total], s.bg);
 
     // Separator line
     if (fb_w > 0 and total >= fb_w) {
-        @memset(cpu.framebuffer[0..fb_w], s.selection_bg);
+        teru.compat.memsetU32(cpu.framebuffer[0..fb_w], s.selection_bg);
     }
 
     // Build BarData from compositor state

@@ -504,11 +504,11 @@ fn drawBorder(self: *TerminalPane, color: u32) void {
     if (fb.len < w * h) return; // safety: buffer must match dimensions
 
     // Top 2 rows
-    @memset(fb[0..@min(w * 2, fb.len)], color);
+    compat.memsetU32(fb[0..@min(w * 2, fb.len)], color);
     // Bottom 2 rows
     if (h >= 2) {
         const bot = (h - 2) * w;
-        if (bot + w * 2 <= fb.len) @memset(fb[bot .. bot + w * 2], color);
+        if (bot + w * 2 <= fb.len) compat.memsetU32(fb[bot .. bot + w * 2], color);
     }
     // Left 2 cols + right 2 cols (skip top/bottom 2 rows already filled)
     var y: usize = 2;

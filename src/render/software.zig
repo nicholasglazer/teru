@@ -13,6 +13,7 @@
 //! auto-vectorization on AVX2, SSE4, and NEON.
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Grid = @import("../core/Grid.zig");
 const FontAtlas = @import("FontAtlas.zig");
 const Selection = @import("../core/Selection.zig");
@@ -84,7 +85,7 @@ pub const SoftwareRenderer = struct {
     ) !SoftwareRenderer {
         const pixel_count = @as(usize, width) * @as(usize, height);
         const fb = try allocator.alloc(u32, pixel_count);
-        @memset(fb, scheme.bg);
+        compat.memsetU32(fb, scheme.bg);
 
         return .{
             .framebuffer = fb,
@@ -189,31 +190,28 @@ pub const SoftwareRenderer = struct {
         const has_right_strip = grid_right < fb_w;
         if ((pad > 0 or has_bottom_strip or has_right_strip) and row_min == 0) {
             const bg_fill = self.scheme.bg;
-            // Top padding rows.
-            // NOTE: explicit loop instead of `@memset(self.framebuffer[0..N], bg_fill)`
-            // because Zig 0.17.0-dev.135 mis-codegens this specific pattern in
-            // Debug builds — the rep-stosd lowering swaps source/dest, faulting
-            // at address `bg_fill`. Reproducer: `Renderer CPU tier init and render`
-            // test in tier.zig. ReleaseSafe and explicit loop both work.
+            // Use compat.memsetU32 for all []u32 fills with a runtime scalar:
+            // Zig 0.17.0-dev.135 mis-codegens `@memset(slice_u32, runtime_scalar)`
+            // in Debug builds (rep-stosd src/dst swap → fault at the value's address).
+            // Reproducer: `Renderer CPU tier init and render` test in tier.zig.
             if (pad > 0) {
                 const top_end = @min(pad * fb_w, self.framebuffer.len);
-                var i: usize = 0;
-                while (i < top_end) : (i += 1) self.framebuffer[i] = bg_fill;
+                compat.memsetU32(self.framebuffer[0..top_end], bg_fill);
             }
             // Bottom leftover: from grid_bottom to fb_h (covers both padding and cell-size remainder)
             if (has_bottom_strip) {
                 const bot_start = grid_bottom * fb_w;
                 const bot_end = @min(fb_w * fb_h, self.framebuffer.len);
-                if (bot_start < bot_end) @memset(self.framebuffer[bot_start..bot_end], bg_fill);
+                if (bot_start < bot_end) compat.memsetU32(self.framebuffer[bot_start..bot_end], bg_fill);
             }
             // Left and right strips for each row between top padding and grid bottom.
             // `has_right_strip` covers both padding and cell-size remainder.
             if (pad > 0 or has_right_strip) {
                 for (pad..@min(grid_bottom, fb_h)) |py| {
                     const row_start = py * fb_w;
-                    if (pad > 0) @memset(self.framebuffer[row_start..][0..@min(pad, fb_w)], bg_fill);
+                    if (pad > 0) compat.memsetU32(self.framebuffer[row_start..][0..@min(pad, fb_w)], bg_fill);
                     if (has_right_strip) {
-                        @memset(self.framebuffer[row_start + grid_right .. row_start + fb_w], bg_fill);
+                        compat.memsetU32(self.framebuffer[row_start + grid_right .. row_start + fb_w], bg_fill);
                     }
                 }
             }
@@ -307,7 +305,7 @@ pub const SoftwareRenderer = struct {
                         const row_start = ul_y * fb_w;
                         const ul_end = @min(row_start + max_x, self.framebuffer.len);
                         const ul_start = @min(row_start + screen_x, ul_end);
-                        @memset(self.framebuffer[ul_start..ul_end], ul_color);
+                        compat.memsetU32(self.framebuffer[ul_start..ul_end], ul_color);
                     }
                 }
             }
@@ -326,7 +324,7 @@ pub const SoftwareRenderer = struct {
                 .block => {
                     for (cy..cursor_max_y) |py| {
                         const row_start = py * fb_w;
-                        @memset(self.framebuffer[row_start + cx .. row_start + cursor_max_x], cursor_color);
+                        compat.memsetU32(self.framebuffer[row_start + cx .. row_start + cursor_max_x], cursor_color);
                     }
                 },
                 .underline => {
@@ -335,7 +333,7 @@ pub const SoftwareRenderer = struct {
                     const ul_min = @min(ul_start, fb_h);
                     for (ul_min..cursor_max_y) |py| {
                         const row_start = py * fb_w;
-                        @memset(self.framebuffer[row_start + cx .. row_start + cursor_max_x], cursor_color);
+                        compat.memsetU32(self.framebuffer[row_start + cx .. row_start + cursor_max_x], cursor_color);
                     }
                 },
                 .bar => {
@@ -344,7 +342,7 @@ pub const SoftwareRenderer = struct {
                     const bar_max_x = @min(cx + bar_w, fb_w);
                     for (cy..cursor_max_y) |py| {
                         const row_start = py * fb_w;
-                        @memset(self.framebuffer[row_start + cx .. row_start + bar_max_x], cursor_color);
+                        compat.memsetU32(self.framebuffer[row_start + cx .. row_start + bar_max_x], cursor_color);
                     }
                 },
             }
@@ -401,7 +399,7 @@ pub const SoftwareRenderer = struct {
         self.framebuffer = try self.allocator.alloc(u32, pixel_count);
         self.width = width;
         self.height = height;
-        @memset(self.framebuffer, self.scheme.bg);
+        compat.memsetU32(self.framebuffer, self.scheme.bg);
     }
 
     /// Update the glyph atlas data. The atlas is a single-channel grayscale
