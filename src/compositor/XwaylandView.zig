@@ -59,8 +59,28 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const is_or = wlr.miozu_xwayland_surface_override_redirect(view.surface);
     const class = wlr.miozu_xwayland_surface_class(view.surface);
 
-    if (is_or) {
-        // Override-redirect (menus, tooltips): position at requested coords, don't tile
+    // Auxiliary X11 windows (notifications, dialogs, fixed-size HUDs) are
+    // NOT override-redirect but absolutely must not be tiled — dunst is
+    // the canonical case. Detect the common shapes:
+    //
+    //   - Fixed size_hints (PMinSize == PMaxSize): dunst, dmenu, polybar,
+    //     conky, slock, screenkey, lxqt-policykit-agent, etc.
+    //   - transient_for / modal: file pickers, "About" boxes, file/save
+    //     dialogs, GIMP toolboxes when in single-window mode.
+    //   - Class allowlist: hard-coded fallback for clients that set a
+    //     window-type atom but no size hint (we don't intern atoms here).
+    //
+    // Anything matching is treated like an override-redirect: we honour
+    // its requested position + size and don't put it in the tiling list.
+    const wants_floating = is_or
+        or wlr.miozu_xwayland_surface_is_fixed_size(view.surface)
+        or wlr.miozu_xwayland_surface_has_parent(view.surface)
+        or wlr.miozu_xwayland_surface_is_modal(view.surface)
+        or classIsAlwaysFloating(class);
+
+    if (wants_floating) {
+        // Position at client-requested coords, don't tile, don't put it
+        // in the layout engine's node list.
         const x = wlr.miozu_xwayland_surface_x(view.surface);
         const y = wlr.miozu_xwayland_surface_y(view.surface);
         if (view.scene_tree) |tree| {
@@ -68,7 +88,13 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
                 wlr.wlr_scene_node_set_position(node, x, y);
             }
         }
-        std.debug.print("teruwm: X11 OR surface mapped class='{s}'\n", .{class orelse "none"});
+        std.debug.print("teruwm: X11 floating mapped class='{s}' or={} fixed={} parent={} modal={}\n", .{
+            class orelse "none",
+            is_or,
+            wlr.miozu_xwayland_surface_is_fixed_size(view.surface),
+            wlr.miozu_xwayland_surface_has_parent(view.surface),
+            wlr.miozu_xwayland_surface_is_modal(view.surface),
+        });
     } else {
         // Regular X11 window: tile like XDG surface
         // Check window rules for workspace assignment
@@ -187,4 +213,35 @@ fn handleConfigure(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) v
 
 fn makeListener(comptime func: *const fn (*wlr.wl_listener, ?*anyopaque) callconv(.c) void) wlr.wl_listener {
     return .{ .link = .{ .prev = null, .next = null }, .notify = func };
+}
+
+/// Hard-coded allowlist of X11 WM_CLASS values that should always float.
+/// Matched case-insensitively against `class`. Backstop for clients that
+/// declare _NET_WM_WINDOW_TYPE_NOTIFICATION/etc. but no `size_hints` —
+/// we don't intern X atoms here so a class-name compare is the cheap
+/// path. Add new entries as users hit them.
+fn classIsAlwaysFloating(class_z: ?[*:0]const u8) bool {
+    const class_ptr = class_z orelse return false;
+    const class = std.mem.span(class_ptr);
+    if (class.len == 0) return false;
+    const known = [_][]const u8{
+        "Dunst",                 // dunst notification daemon
+        "dunst",
+        "dmenu",                 // suckless menu
+        "Polybar",               // polybar status bar (rare under teruwm but harmless)
+        "Conky",                 // conky monitor overlay
+        "conky",
+        "screenkey",             // on-screen key display
+        "Screenkey",
+        "Pavucontrol",           // pulseaudio mixer (always intended floating)
+        "lxqt-policykit-agent",  // polkit prompt
+        "Lxpolkit",
+        "polkit-gnome-authentication-agent-1",
+        "Xmessage",              // tiny X message dialogs
+        "feh",                   // image viewer in floating mode
+    };
+    for (known) |k| {
+        if (std.ascii.eqlIgnoreCase(class, k)) return true;
+    }
+    return false;
 }

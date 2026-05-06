@@ -587,6 +587,55 @@ struct wl_signal *miozu_xwayland_surface_request_configure(struct wlr_xwayland_s
     return &s->events.request_configure;
 }
 
+/* ── Float-detection for X11 auxiliary windows ────────────────
+ *
+ * Notifications, menus, dialogs, tooltips, and similar are X11 windows
+ * that are NOT override-redirect (so the existing OR branch in
+ * XwaylandView.handleMap doesn't catch them) but absolutely must NOT
+ * be tiled. The user's notification daemon (dunst) is the canonical
+ * case: dunst maps a regular X11 window with _NET_WM_WINDOW_TYPE_NOTIFICATION
+ * and a fixed size_hints, expecting the WM to honour the requested
+ * geometry. Tiling it stretches it across half the workspace.
+ *
+ * We avoid round-tripping through xcb_intern_atom (which would mean
+ * opening a separate xcb connection to the xwayland display) by
+ * checking the simpler signals wlroots already exposes: size_hints
+ * (fixed size) and `parent` (transient_for, i.e. dialog).
+ *
+ * Atom names like _NET_WM_WINDOW_TYPE_NOTIFICATION are stored in
+ * s->window_type as opaque xcb_atom_t IDs that wlroots doesn't
+ * resolve for us. Apps that set those atoms but don't also set
+ * size_hints / transient_for fall back on the class allowlist on
+ * the Zig side (XwaylandView.zig).
+ */
+
+/* Returns true if the surface declares both PMinSize + PMaxSize hints
+ * with min == max, i.e. the client wants this window to stay at a
+ * fixed size. dunst, dmenu, polybar, conky, slock all do this. */
+bool miozu_xwayland_surface_is_fixed_size(struct wlr_xwayland_surface *s) {
+    if (s == NULL || s->size_hints == NULL) return false;
+    /* xcb size_hints flags — see xcb/icccm.h. */
+    const int32_t P_MIN_SIZE = 1 << 4;
+    const int32_t P_MAX_SIZE = 1 << 5;
+    const xcb_size_hints_t *h = s->size_hints;
+    if ((h->flags & P_MIN_SIZE) == 0) return false;
+    if ((h->flags & P_MAX_SIZE) == 0) return false;
+    return h->min_width == h->max_width && h->min_height == h->max_height
+        && h->min_width > 0 && h->min_height > 0;
+}
+
+/* Returns true if the surface has an X11 transient_for parent.
+ * Modal dialogs, file pickers, "About" boxes etc. all set this. */
+bool miozu_xwayland_surface_has_parent(struct wlr_xwayland_surface *s) {
+    return s != NULL && s->parent != NULL;
+}
+
+/* Returns true if surface->modal is set (_NET_WM_STATE_MODAL).
+ * Backstop for modal dialogs that don't set transient_for. */
+bool miozu_xwayland_surface_is_modal(struct wlr_xwayland_surface *s) {
+    return s != NULL && s->modal;
+}
+
 /* ── Seat keyboard accessor ──────────────────────────────────── */
 
 struct wlr_keyboard *miozu_seat_get_keyboard(struct wlr_seat *s) {
