@@ -54,7 +54,7 @@ pub fn execRestart(server: *Server) void {
     }
 
     // Track fds we cleared FD_CLOEXEC on so we can restore on exec-fail.
-    var cleared_fds: std.ArrayListUnmanaged(i32) = .empty;
+    var cleared_fds: std.ArrayList(i32) = .empty;
     defer cleared_fds.deinit(server.zig_allocator);
 
     // Per-pane data
