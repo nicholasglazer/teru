@@ -116,9 +116,30 @@ pub fn main(init: std.process.Init) !void {
         socket orelse "unknown",
     });
 
+    // ── Graceful shutdown on SIGTERM / SIGINT ───────────────────
+    // Without this, `kill` and Ctrl+C terminate teruwm by the signal's
+    // default action — main's defer chain never runs, so MCP socket
+    // files leak in $XDG_RUNTIME_DIR and clients are not torn down
+    // cleanly. wl_event_loop_add_signal routes the signal through the
+    // event loop; the handler just calls wl_display_terminate, which
+    // returns wl_display_run() and unwinds the defers normally.
+    _ = wlr.wl_event_loop_add_signal(event_loop, @intCast(@intFromEnum(std.posix.SIG.TERM)), handleTerminationSignal, display);
+    _ = wlr.wl_event_loop_add_signal(event_loop, @intCast(@intFromEnum(std.posix.SIG.INT)), handleTerminationSignal, display);
+
     // ── Run event loop ──────────────────────────────────────────
     wlr.wl_display_run(display);
 
     std.debug.print("teruwm: shutting down\n", .{});
+}
+
+/// SIGTERM / SIGINT handler — runs in event-loop context (signalfd).
+/// wl_display_terminate makes wl_display_run() return so main's defer
+/// chain (destroy_clients → display_destroy → server.deinit) runs.
+fn handleTerminationSignal(_: c_int, data: ?*anyopaque) callconv(.c) c_int {
+    if (data) |d| {
+        const display: *wlr.wl_display = @ptrCast(@alignCast(d));
+        wlr.wl_display_terminate(display);
+    }
+    return 0;
 }
 

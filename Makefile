@@ -27,6 +27,17 @@ test: ## Run all tests
 	./tools/fix-crt.sh
 	zig build test $(CRT_FIX_FLAG)
 
+.PHONY: test-wm
+test-wm: ## Run library + compositor inline tests
+	./tools/fix-crt.sh
+	zig build test -Dcompositor $(CRT_FIX_FLAG)
+
+.PHONY: e2e-wm
+e2e-wm: ## Headless teruwm end-to-end MCP test (spawn / tiling / shell-exit / no-spin)
+	./tools/fix-crt.sh
+	zig build -Dcompositor $(CRT_FIX_FLAG)
+	python3 tests/teruwm_e2e.py zig-out/bin/teruwm
+
 # ── Release ─────────────────────────────────────────────────────────
 .PHONY: release
 release: ## Release build (1.3MB, optimized + safety checks)

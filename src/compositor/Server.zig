@@ -1026,6 +1026,10 @@ pub fn deinit(self: *Server) void {
         self.terminal_repeat_src = null;
     }
 
+    // Drain in-flight bar exec widgets — removes their pipe event
+    // sources so execReadable can't fire against a torn-down loop.
+    if (self.bar) |b| b.deinitExecs();
+
     // Free every InhibitorTracker before wl_display_destroy fires
     // inhibitor destroy signals on what would then be stale state.
     // Each tracker unhooks its own listener + drops itself.

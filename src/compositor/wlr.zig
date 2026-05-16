@@ -89,6 +89,9 @@ pub extern "wayland-server" fn wl_display_add_socket_auto(display: *wl_display) 
 
 pub const wl_event_source = opaque {};
 pub extern "wayland-server" fn wl_event_loop_add_fd(loop: *wl_event_loop, fd: c_int, mask: u32, func: *const fn (c_int, u32, ?*anyopaque) callconv(.c) c_int, data: ?*anyopaque) callconv(.c) ?*wl_event_source;
+// Signal source — delivered through the event loop (signalfd-backed),
+// so the callback runs in normal context, not an async signal handler.
+pub extern "wayland-server" fn wl_event_loop_add_signal(loop: *wl_event_loop, signal_number: c_int, func: *const fn (c_int, ?*anyopaque) callconv(.c) c_int, data: ?*anyopaque) callconv(.c) ?*wl_event_source;
 pub extern "wayland-server" fn wl_event_source_remove(source: *wl_event_source) callconv(.c) c_int;
 // Force every Wayland client connection closed and run their destroy
 // listeners. Called before wl_display_destroy at shutdown so the
@@ -114,6 +117,17 @@ pub const WL_EVENT_READABLE: u32 = 0x01;
 pub const WL_EVENT_WRITABLE: u32 = 0x02;
 pub const WL_EVENT_HANGUP: u32 = 0x04;
 pub const WL_EVENT_ERROR: u32 = 0x08;
+
+test "WL_EVENT mask bits match the libwayland ABI" {
+    // wayland-server-core.h. fd handlers (ptyReadable, execReadable)
+    // branch on these — a wrong value silently dead-ends a HANGUP path.
+    // This is the v0.6.10 shell-exit blocker frozen as a regression test:
+    // the handler tested 0x10 when WL_EVENT_HANGUP is 0x04.
+    try std.testing.expectEqual(@as(u32, 0x01), WL_EVENT_READABLE);
+    try std.testing.expectEqual(@as(u32, 0x02), WL_EVENT_WRITABLE);
+    try std.testing.expectEqual(@as(u32, 0x04), WL_EVENT_HANGUP);
+    try std.testing.expectEqual(@as(u32, 0x08), WL_EVENT_ERROR);
+}
 
 /// wl_signal_add is static inline in wayland headers — implement in Zig.
 /// Inserts listener at the end of the signal's listener list.

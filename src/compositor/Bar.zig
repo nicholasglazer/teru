@@ -427,6 +427,16 @@ fn cleanupExec(pe: *PendingExec) void {
     pe.pid = 0;
 }
 
+/// Drain every in-flight exec widget. Called from Server.deinit so a
+/// pending exec's pipe fd can't fire execReadable after the event loop
+/// is torn down. Scene buffers / renderers are left for wlroots'
+/// wl_display_destroy walker (same policy as TerminalPane.deinit).
+pub fn deinitExecs(self: *Bar) void {
+    for (&self.pending_execs) |*pe| {
+        if (pe.fd != -1 or pe.event_source != null) cleanupExec(pe);
+    }
+}
+
 /// Cheap u64 fingerprint of the user-visible bar state. Collisions
 /// are benign (missed repaint on a field that didn't actually move
 /// the displayed value — e.g. sub-microsecond avg-frame drift that
