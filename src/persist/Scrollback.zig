@@ -727,7 +727,7 @@ test "random access within keyframe range" {
     var i: u32 = 0;
     while (i < 200) : (i += 1) {
         var line_buf: [64]u8 = undefined;
-        const slice = std.fmt.bufPrint(&line_buf, "Line {d}\r\n", .{i}) catch unreachable;
+        const slice = std.fmt.bufPrint(&line_buf, "Line {d}\r\n", .{i}) catch |e| return e;
         try sb.pushLine(slice, &grid);
     }
 
@@ -825,7 +825,7 @@ test "range retrieval" {
     // Push 200 lines
     for (0..200) |i| {
         var line_buf: [64]u8 = undefined;
-        const slice = std.fmt.bufPrint(&line_buf, "{d}\r\n", .{i}) catch unreachable;
+        const slice = std.fmt.bufPrint(&line_buf, "{d}\r\n", .{i}) catch |e| return e;
         try sb.pushLine(slice, &grid);
     }
 

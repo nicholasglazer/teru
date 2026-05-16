@@ -148,12 +148,31 @@ pub fn Framework(comptime Impl: type) type {
         /// Silent partial-write is fine here — clients retry on a fresh
         /// connection (this is a single-request socket protocol).
         pub fn handleRequestFd(impl: *Impl, conn_fd: posix.fd_t, config: *const Config) void {
+            const poll_in: i16 = 0x001; // POLLIN
             var req_buf: [max_request]u8 = undefined;
             var total: usize = 0;
+            var stalls: u8 = 0;
 
             while (total < req_buf.len) {
                 const rc = std.c.read(conn_fd, req_buf[total..].ptr, req_buf.len - total);
-                if (rc <= 0) break;
+                if (rc < 0) {
+                    // The accepted fd is non-blocking (ipc.acceptPosix) and
+                    // the event loop wakes us as soon as the *connection*
+                    // is pending — which can precede the client's separate
+                    // send() of the request. A bare read() then hits
+                    // EAGAIN; bailing here silently drops the request
+                    // ~1-in-N under that connect/send race. Wait for the
+                    // bytes instead, bounded so a wedged client can't pin
+                    // the event loop.
+                    stalls += 1;
+                    if (stalls > 8) break;
+                    var pfd = [_]posix.pollfd{.{ .fd = conn_fd, .events = poll_in, .revents = 0 }};
+                    const ready = posix.poll(&pfd, 250) catch 0;
+                    if (ready == 0 or (pfd[0].revents & poll_in) == 0) break;
+                    continue;
+                }
+                if (rc == 0) break; // peer closed
+                stalls = 0;
                 total += @intCast(rc);
 
                 // Framing-specific termination check.

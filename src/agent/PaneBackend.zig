@@ -585,7 +585,7 @@ test "spawn response format" {
     var buf: [512]u8 = undefined;
     const result = std.fmt.bufPrint(&buf,
         \\{{"jsonrpc":"2.0","result":{{"context_id":{d}}},"id":{s}}}
-    , .{ @as(u64, 42), "1" }) catch unreachable;
+    , .{ @as(u64, 42), "1" }) catch |e| return e;
 
     try t.expect(std.mem.indexOf(u8, result, "\"context_id\":42") != null);
     try t.expect(std.mem.indexOf(u8, result, "\"id\":1") != null);
@@ -608,7 +608,7 @@ test "list response format" {
         "team-temporal",
         "implementer",
         "true",
-    }) catch unreachable;
+    }) catch |e| return e;
     pos += entry.len;
 
     const suffix = "]},\"id\":1}";
@@ -630,7 +630,7 @@ test "capture response format" {
 
     const result = std.fmt.bufPrint(&buf,
         \\{{"jsonrpc":"2.0","result":{{"text":"{s}"}},"id":{s}}}
-    , .{ escaped, "3" }) catch unreachable;
+    , .{ escaped, "3" }) catch |e| return e;
 
     try t.expect(std.mem.indexOf(u8, result, "$ ls\\nfile1.txt\\nfile2.txt") != null);
     try t.expect(std.mem.indexOf(u8, result, "\"id\":3") != null);
@@ -642,7 +642,7 @@ test "write response format" {
     var buf: [512]u8 = undefined;
     const result = std.fmt.bufPrint(&buf,
         \\{{"jsonrpc":"2.0","result":{{"ok":true}},"id":{s}}}
-    , .{"2"}) catch unreachable;
+    , .{"2"}) catch |e| return e;
 
     try t.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
     try t.expect(std.mem.indexOf(u8, result, "\"id\":2") != null);
@@ -654,7 +654,7 @@ test "kill response format" {
     var buf: [512]u8 = undefined;
     const result = std.fmt.bufPrint(&buf,
         \\{{"jsonrpc":"2.0","result":{{"ok":true}},"id":{s}}}
-    , .{"4"}) catch unreachable;
+    , .{"4"}) catch |e| return e;
 
     try t.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
     try t.expect(std.mem.indexOf(u8, result, "\"id\":4") != null);
@@ -667,7 +667,7 @@ test "context_exited push notification format" {
     var buf: [256]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf,
         \\{{"jsonrpc":"2.0","method":"context_exited","params":{{"context_id":{d},"exit_code":{d}}}}}
-    , .{ @as(u64, 1), @as(u8, 0) }) catch unreachable;
+    , .{ @as(u64, 1), @as(u8, 0) }) catch |e| return e;
 
     try t.expect(std.mem.indexOf(u8, msg, "\"method\":\"context_exited\"") != null);
     try t.expect(std.mem.indexOf(u8, msg, "\"context_id\":1") != null);
@@ -683,7 +683,7 @@ test "get_self_id null context response format" {
     var buf: [512]u8 = undefined;
     const result = std.fmt.bufPrint(&buf,
         \\{{"jsonrpc":"2.0","result":{{"context_id":null}},"id":{s}}}
-    , .{"6"}) catch unreachable;
+    , .{"6"}) catch |e| return e;
 
     try t.expect(std.mem.indexOf(u8, result, "\"context_id\":null") != null);
     try t.expect(std.mem.indexOf(u8, result, "\"id\":6") != null);
@@ -790,7 +790,7 @@ test "list response includes alive and dead contexts" {
     // alive context
     const entry1 = std.fmt.bufPrint(buf[pos..],
         \\{{"context_id":{d},"metadata":{{"name":"{s}","group":"{s}","role":"{s}"}},"alive":{s}}}
-    , .{ @as(u64, 1), "dev-1", "group-a", "worker", "true" }) catch unreachable;
+    , .{ @as(u64, 1), "dev-1", "group-a", "worker", "true" }) catch |e| return e;
     pos += entry1.len;
 
     buf[pos] = ',';
@@ -799,7 +799,7 @@ test "list response includes alive and dead contexts" {
     // dead context
     const entry2 = std.fmt.bufPrint(buf[pos..],
         \\{{"context_id":{d},"metadata":{{"name":"{s}","group":"{s}","role":"{s}"}},"alive":{s}}}
-    , .{ @as(u64, 2), "dev-2", "group-a", "worker", "false" }) catch unreachable;
+    , .{ @as(u64, 2), "dev-2", "group-a", "worker", "false" }) catch |e| return e;
     pos += entry2.len;
 
     const suffix = "]},\"id\":5}";

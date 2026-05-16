@@ -16,6 +16,7 @@ const png = teru.png;
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 const TerminalPane = @import("TerminalPane.zig");
+const ServerFont = @import("ServerFont.zig");
 const NodeRegistry = @import("Node.zig");
 const tools = teru.McpTools;
 const version = teru.build_options.version;
@@ -259,6 +260,7 @@ const tools_list_body: []const u8 =
     \\{"name":"teruwm_list_workspaces","description":"List workspaces with layout, window count, active status","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"teruwm_switch_workspace","description":"Switch active workspace (0-9)","inputSchema":{"type":"object","properties":{"workspace":{"type":"integer"}},"required":["workspace"]}},
     \\{"name":"teruwm_set_layout","description":"Set layout for a workspace","inputSchema":{"type":"object","properties":{"workspace":{"type":"integer","default":0},"layout":{"type":"string","enum":["master-stack","grid","monocle","dishes","spiral","three-col","columns","accordion"]}},"required":["layout"]}},
+    \\{"name":"teruwm_zoom","description":"Font zoom for the whole compositor — re-rasterizes the shared font atlas and re-fonts every terminal pane + bar. 'in'/'out' step the font size by one pixel; 'reset' restores the configured size. Same effect as Alt+scroll-wheel.","inputSchema":{"type":"object","properties":{"direction":{"type":"string","enum":["in","out","reset"]}},"required":["direction"]}},
     \\{"name":"teruwm_get_config","description":"Get compositor config (gap, border_width, bar settings)","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"teruwm_set_config","description":"Set a compositor config value live. Keys: gap (int), border_width (int), bg_color (hex #rrggbb or 0xaarrggbb).","inputSchema":{"type":"object","properties":{"key":{"type":"string","enum":["gap","border_width","bg_color"]},"value":{"type":"string"}},"required":["key","value"]}},
     \\{"name":"teruwm_screenshot","description":"Capture the full compositor output as PNG. Uses grim if available, otherwise returns error.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Output path (default: /tmp/teruwm-screenshot.png)"}},"required":[]}},
@@ -326,6 +328,7 @@ const tool_table = std.StaticStringMap(F.Thunk).initComptime(.{
     .{ "teruwm_list_workspaces", thunkListWorkspaces },
     .{ "teruwm_switch_workspace", thunkSwitchWorkspace },
     .{ "teruwm_set_layout", thunkSetLayout },
+    .{ "teruwm_zoom", thunkZoom },
     .{ "teruwm_get_config", thunkGetConfig },
     .{ "teruwm_set_config", thunkSetConfig },
     .{ "teruwm_screenshot", thunkScreenshot },
@@ -404,6 +407,27 @@ fn thunkSetLayout(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8)
         return jsonRpcError(buf, id, -32602, "Missing layout");
     const ws = extractNestedJsonInt(p, "workspace") orelse 0;
     return self.toolSetLayout(@intCast(ws), layout_str, buf, id);
+}
+
+fn thunkZoom(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const dir = extractNestedJsonString(p, "direction") orelse
+        return jsonRpcError(buf, id, -32602, "Missing direction");
+    return self.toolZoom(dir, buf, id);
+}
+
+fn toolZoom(self: *WmMcpServer, dir: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+    const target: teru.render.FontAtlas.ZoomTarget =
+        if (std.mem.eql(u8, dir, "in")) .in
+        else if (std.mem.eql(u8, dir, "out")) .out
+        else if (std.mem.eql(u8, dir, "reset")) .reset
+        else return jsonRpcError(buf, id, -32602, "direction must be in, out, or reset");
+    const changed = ServerFont.applyFontZoom(self.server, target);
+    if (changed) self.server.scheduleRender();
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"changed\":{},\"font_size\":{d}}}"}}]}},"id":{s}}}
+    , .{ changed, self.server.font_size, id_str }) catch
+        jsonRpcError(buf, id, -32603, "Internal error");
 }
 
 fn thunkGetConfig(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
