@@ -195,6 +195,11 @@ allow_virtual_input: bool = true,
 /// natural-scrolling convention "scroll down → older content".
 touchpad_scroll_invert: bool = false,
 
+/// Alt+scroll wheel over a focused terminal pane resizes the shared font
+/// (zoom) instead of scrolling scrollback. True by default; set false to
+/// free the Alt+wheel gesture for the focused application.
+alt_scroll_zoom: bool = true,
+
 /// Pixel width of the border-drag hit zone inside each pane. Clicks
 /// within this distance of a pane's edge start a border-resize drag
 /// instead of focusing the pane. 2 is the outer insensitive ring,
@@ -298,21 +303,21 @@ scratchpad_rule_count: u8 = 0,
 /// internally). Fired when the workspace is visited and empty
 /// (xmonad DynamicProjects `projectStartHook` semantics). Null = no
 /// startup action.
-workspace_startup: [10]?[]const u8 = [_]?[]const u8{null} ** 10,
+workspace_startup: [10]?[]const u8 = @splat(null),
 workspace_startup_buf: [10][256]u8 = undefined,
-workspace_startup_len: [10]u16 = [_]u16{0} ** 10,
+workspace_startup_len: [10]u16 = @splat(0),
 
 /// Working directory for panes spawned on workspace N via
 /// spawn_terminal (xmonad `projectDirectory`). Tilde-expanded at
 /// startup. Null = inherit the compositor's CWD.
-workspace_cwd: [10]?[]const u8 = [_]?[]const u8{null} ** 10,
+workspace_cwd: [10]?[]const u8 = @splat(null),
 workspace_cwd_buf: [10][256]u8 = undefined,
-workspace_cwd_len: [10]u16 = [_]u16{0} ** 10,
+workspace_cwd_len: [10]u16 = @splat(0),
 
 /// Which workspaces have already had their startup hook fired. Flips
 /// true on first switch-to-empty; reset when workspace becomes
 /// empty again (so revisit re-runs the hook).
-workspace_startup_fired: [10]bool = [_]bool{false} ** 10,
+workspace_startup_fired: [10]bool = @splat(false),
 
 // ── Keyboard (xkb_rule_names — libxkbcommon) ───────────────────
 //
@@ -540,6 +545,8 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.resize_min_px = std.fmt.parseInt(i32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "touchpad_scroll_invert")) {
         self.touchpad_scroll_invert = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+    } else if (std.mem.eql(u8, key, "alt_scroll_zoom")) {
+        self.alt_scroll_zoom = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "border_drag_insensitive_px")) {
         self.border_drag_insensitive_px = std.fmt.parseInt(i32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "border_drag_zone_px")) {
@@ -937,4 +944,16 @@ test "empty keyboard section leaves all xkb fields null" {
     try std.testing.expect(cfg.getXkbLayout() == null);
     try std.testing.expect(cfg.getXkbVariant() == null);
     try std.testing.expect(cfg.getXkbOptions() == null);
+}
+
+test "alt_scroll_zoom defaults on and parses false" {
+    try std.testing.expect((WmConfig{}).alt_scroll_zoom);
+
+    var off = WmConfig{};
+    off.parse("alt_scroll_zoom = false\n");
+    try std.testing.expect(!off.alt_scroll_zoom);
+
+    var on = WmConfig{};
+    on.parse("alt_scroll_zoom = true\n");
+    try std.testing.expect(on.alt_scroll_zoom);
 }

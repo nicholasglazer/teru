@@ -241,9 +241,11 @@ cursor_blink = true
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `scroll_speed` | integer | `3` | Scroll wheel speed multiplier (pixels per scroll event) |
+| `alt_scroll_zoom` | bool | `true` | `Alt`+scroll wheel resizes the font (zoom) instead of scrolling scrollback. Set `false` to free the gesture for the focused app. Also honoured by teruwm. |
 
 ```conf
 scroll_speed = 5
+alt_scroll_zoom = true
 ```
 
 ### Keybindings

@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.6.10 (2026-05-16)
+
+Production-readiness pass: a new zoom feature, plus two build/runtime
+blockers and a set of latent bugs surfaced by a full-codebase audit and
+a live end-to-end compositor test.
+
+### Features
+
+- **Alt+scroll-wheel font zoom.** Hold Alt and scroll the wheel to resize
+  the terminal font live — scroll up zooms in, down zooms out. Works in
+  both teru (standalone, `windowed.applyFontZoom`) and teruwm (compositor,
+  `ServerFont.applyFontZoom`, which refonts every pane and the bar). teruwm
+  reads the Alt modifier from the seat keyboard in
+  `ServerCursor.handleCursorAxis`; when `alt_scroll_zoom` is set the axis
+  event is consumed as compositor chrome and not forwarded to the client.
+  Configurable via `alt_scroll_zoom` in `teru.conf` and the teruwm config
+  (default on).
+
+### Fixes
+
+- **BLOCKER — the codebase no longer fails to build on current Zig.** Zig
+  `0.17.0-dev.304` removed `std.fmt.bufPrintZ` and `Allocator.dupeZ`; teru
+  used both at 11 sites (`config/Hooks`, `agent/McpBridge`, `agent/forward`,
+  and 8 in `render/BarRenderer`). All migrated to `std.fmt.bufPrintSentinel`
+  / `Allocator.dupeSentinel`. The last green build had run on an older Zig.
+
+- **BLOCKER — teruwm no longer spins at 100% CPU.** A bar with an `exec`
+  widget (the default bottom bar has them) leaked a wlroots event source on
+  every refresh: `Bar.cleanupExec` closed the command's pipe fd but never
+  called `wl_event_source_remove` — the fd-handler return value the code
+  relied on is ignored by libwayland. The orphaned source sat in epoll at
+  permanent EOF/HUP and every event-loop dispatch re-fired its handler,
+  pegging a core at 100% and leaking one pipe fd per tick until
+  file-descriptor exhaustion. `cleanupExec` now removes the source before
+  closing the fd; exec pipes are created `FD_CLOEXEC` so a sibling widget's
+  `fork()` cannot pin them open; and a dead HANGUP branch testing the wrong
+  bitmask (`0x10` — `WL_EVENT_HANGUP` is `0x04`) was removed. Verified live:
+  idle CPU dropped from 99% to ~0.5%.
+
+- **BLOCKER — exiting a shell in a teruwm pane no longer hangs the
+  compositor.** When a shell exits, the PTY master fd goes to permanent
+  EOF. `ptyReadable` tested `mask & 0x10` for hang-up, but
+  `WL_EVENT_HANGUP` is `0x04` — the branch was dead, so
+  `handleTerminalExit` (its only caller) was unreachable: the dead pane
+  was never reaped, the level-triggered fd re-fired every dispatch, and
+  the compositor spun at 100% CPU with a zombie pane on screen.
+  Detection is now correct *and* robust — a Linux PTY master never
+  raises HANGUP when its slave closes (it stays readable; `read()`
+  returns `EIO`), so after a no-data read `ptyReadable` probes child
+  liveness via `waitpid(WNOHANG)`. `handleTerminalExit` was itself
+  incomplete (it unregistered the pane but never freed it or closed the
+  PTY fd — a per-exit memory + fd leak, hidden by the dead caller); it
+  now does the full `tp.deinit` + `destroy` teardown and re-seats
+  keyboard focus on a surviving pane. Verified live: `exit` removes the
+  pane, focus follows, CPU stays at idle.
+
+- **Compositor shutdown could crash on a held key.** `Server.deinit`
+  tears down the keybind-repeat and bar-tick timers so a late tick
+  can't fire against half-destroyed state — but missed
+  `terminal_repeat_src` (armed while a key autorepeats into a terminal).
+  `terminalRepeatTick` does not check `shutting_down`, so a tick landing
+  during `wl_display_destroy` would dereference a freed pane. The timer
+  is now removed alongside its two siblings.
+
+- **Five framebuffer fills could segfault in Debug builds.** `@memset` on a
+  `[]u32` slice with a runtime colour mis-codegens on x86_64 (the rep-stosd
+  lowering faults at the value's address) — still present on Zig
+  `0.17.0-dev.304`. Four sites in `render/Compositor.zig` and one in
+  `modes/windowed.zig` did a bare `@memset`; all now route through
+  `compat.memsetU32`.
+
+- **Silent error swallows now log.** Six `catch {}` blocks — pane
+  `grid.resize` failures and a Wayland SHM-buffer recreate — discarded
+  recoverable errors with no trace. They now emit `std.log.warn` with the
+  error name. The SHM site's misleading "keep old buffer" comment was
+  corrected.
+
 ## 0.6.9 (2026-05-06)
 
 teruwm fix — X11 notifications, dialogs, and fixed-size HUDs now float

@@ -618,9 +618,11 @@ pub const WaylandWindow = struct {
             if (new_w != self.width or new_h != self.height) {
                 self.width = new_w;
                 self.height = new_h;
-                // Recreate SHM buffer for new size — best-effort: keep old buffer on failure
+                // Recreate the SHM buffer for the new size. The old buffer is
+                // freed first, so a failed recreate leaves no buffer until the
+                // next configure event — log rather than swallow silently.
                 self.destroyShmBuffer();
-                self.createShmBuffer(new_w, new_h) catch {};
+                self.createShmBuffer(new_w, new_h) catch |e| std.log.warn("SHM buffer recreate failed on resize: {s}", .{@errorName(e)});
                 return .{ .resize = .{ .width = new_w, .height = new_h } };
             }
         }

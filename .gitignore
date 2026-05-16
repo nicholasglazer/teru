@@ -1,11 +1,13 @@
 zig-out/
 .zig-cache/
 zig-cache/
+.cache/
 *.o
 *.a
 *.so
 *.dylib
 zig-socket-test*
+__pycache__/
 
 # Claude Code local settings (not shared)
 .claude/settings.local.json
@@ -14,3 +16,8 @@ zig-socket-test*
 # Internal docs (plans, roadmap, drafts, specs)
 docs/.internal/
 .internal/
+
+# Sibling repos / non-source dirs that live in the working tree
+homebrew-teru/
+scoop-teru/
+blog-drafts/

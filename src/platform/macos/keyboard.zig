@@ -148,7 +148,7 @@ const NSEventModifierFlagCommand: u32 = 1 << 20;
 /// IOKit keycode -> unshifted ASCII character (US ANSI layout).
 /// 0 means no printable mapping (modifier key, special key, etc).
 const iokit_to_char: [128]u8 = blk: {
-    var table = [_]u8{0} ** 128;
+    var table: [128]u8 = @splat(0);
     table[kVK_ANSI_A] = 'a';
     table[kVK_ANSI_S] = 's';
     table[kVK_ANSI_D] = 'd';
@@ -202,7 +202,7 @@ const iokit_to_char: [128]u8 = blk: {
 
 /// IOKit keycode -> shifted ASCII character (US ANSI layout).
 const iokit_to_char_shifted: [128]u8 = blk: {
-    var table = [_]u8{0} ** 128;
+    var table: [128]u8 = @splat(0);
     // Letters -> uppercase
     table[kVK_ANSI_A] = 'A';
     table[kVK_ANSI_S] = 'S';
@@ -260,7 +260,7 @@ const iokit_to_char_shifted: [128]u8 = blk: {
 /// IOKit keycode -> XKB keysym for special (non-printable) keys.
 /// 0 means no special keysym (check iokit_to_char instead).
 const iokit_to_keysym: [128]u32 = blk: {
-    var table = [_]u32{0} ** 128;
+    var table: [128]u32 = @splat(0);
     table[kVK_Return] = XKB_KEY_Return;
     table[kVK_Tab] = XKB_KEY_Tab;
     table[kVK_Delete] = XKB_KEY_BackSpace;

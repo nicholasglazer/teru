@@ -167,7 +167,7 @@ pub const PromptMark = enum {
 
 /// OSC 8 hyperlink storage. Max URI length 256 bytes.
 pub const HyperlinkEntry = struct {
-    uri: [256]u8 = [_]u8{0} ** 256,
+    uri: [256]u8 = @splat(0),
     uri_len: u16 = 0,
     active: bool = false,
 };
@@ -209,7 +209,7 @@ pen_hyperlink_id: u8 = 0,
 
 /// Hyperlink URI table. Index 0 is unused (means "no link").
 /// Slots are reused when a link is closed (OSC 8;; with empty URI).
-hyperlinks: [256]HyperlinkEntry = [_]HyperlinkEntry{.{}} ** 256,
+hyperlinks: [256]HyperlinkEntry = @splat(.{}),
 hyperlink_next_id: u8 = 1,
 
 /// Saved cursor state (ESC 7 / ESC[s).

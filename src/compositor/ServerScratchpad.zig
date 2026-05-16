@@ -212,7 +212,7 @@ fn spawn(server: *Server, name: []const u8, ws: u8) ?u16 {
     // `Pane.init`'s fork/execvp to use them; the child inherits the
     // full address space on fork, so execvp sees valid pointers.
     var argv_storage: [16][256:0]u8 = undefined;
-    var argv_ptrs: [17]?[*:0]const u8 = [_]?[*:0]const u8{null} ** 17;
+    var argv_ptrs: [17]?[*:0]const u8 = @splat(null);
     const cfg = buildSpawnConfig(server, name, &argv_storage, &argv_ptrs);
 
     const tp = TerminalPane.createFloating(server, rows, cols, cfg) orelse return null;

@@ -56,11 +56,11 @@ pub fn rampColor(v: i64, warning: i64, critical: i64, inverted: bool, s: anytype
 pub const BarData = struct {
     // Workspace state
     workspace_active: u8 = 0,
-    workspace_has_nodes: [10]bool = [_]bool{false} ** 10,
+    workspace_has_nodes: [10]bool = @splat(false),
     /// Urgency flag per workspace — set iff any node on that workspace
     /// has its `urgent` bit set (via xdg_activation_v1). Rendered as a
     /// visible marker on the bar pill.
-    workspace_urgent: [10]bool = [_]bool{false} ** 10,
+    workspace_urgent: [10]bool = @splat(false),
     workspace_names: [10][]const u8 = [_][]const u8{
         "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
     },
@@ -520,7 +520,7 @@ fn readCpuPct() ?u32 {
     // Parse "cpu  user nice system idle iowait irq softirq steal ..."
     if (!std.mem.startsWith(u8, data, "cpu ")) return null;
     var it = std.mem.tokenizeAny(u8, data[4..], " \t\n");
-    var fields: [8]u64 = .{0} ** 8;
+    var fields: [8]u64 = @splat(0);
     var nf: usize = 0;
     while (it.next()) |tok| : (nf += 1) {
         if (nf >= fields.len) break;
@@ -587,7 +587,7 @@ fn readCpuTempC() ?u32 {
     var i: u8 = 0;
     while (i < 8) : (i += 1) {
         var name_path_buf: [64]u8 = undefined;
-        const name_path = std.fmt.bufPrintZ(&name_path_buf, "/sys/class/hwmon/hwmon{d}/name", .{i}) catch continue;
+        const name_path = std.fmt.bufPrintSentinel(&name_path_buf, "/sys/class/hwmon/hwmon{d}/name", .{i}, 0) catch continue;
         const fd = libc.open(name_path.ptr, 0, 0);
         if (fd < 0) continue;
         var name_buf: [32]u8 = undefined;
@@ -605,7 +605,7 @@ fn readCpuTempC() ?u32 {
         if (!is_cpu) continue;
 
         var temp_path_buf: [64]u8 = undefined;
-        const temp_path = std.fmt.bufPrintZ(&temp_path_buf, "/sys/class/hwmon/hwmon{d}/temp1_input", .{i}) catch continue;
+        const temp_path = std.fmt.bufPrintSentinel(&temp_path_buf, "/sys/class/hwmon/hwmon{d}/temp1_input", .{i}, 0) catch continue;
         const tfd = libc.open(temp_path.ptr, 0, 0);
         if (tfd < 0) continue;
         defer _ = libc.close(tfd);
@@ -653,7 +653,7 @@ fn readBattery() ?Battery {
     var i: u8 = 0;
     while (i < 4) : (i += 1) {
         var cap_path_buf: [96]u8 = undefined;
-        const cap_path = std.fmt.bufPrintZ(&cap_path_buf, "/sys/class/power_supply/BAT{d}/capacity", .{i}) catch continue;
+        const cap_path = std.fmt.bufPrintSentinel(&cap_path_buf, "/sys/class/power_supply/BAT{d}/capacity", .{i}, 0) catch continue;
         const fd = libc.open(cap_path.ptr, 0, 0);
         if (fd < 0) continue;
         defer _ = libc.close(fd);
@@ -663,7 +663,7 @@ fn readBattery() ?Battery {
         const pct = std.fmt.parseInt(u8, std.mem.trimEnd(u8, buf[0..@as(usize, @intCast(n))], " \n\t"), 10) catch continue;
 
         var st_path_buf: [96]u8 = undefined;
-        const st_path = std.fmt.bufPrintZ(&st_path_buf, "/sys/class/power_supply/BAT{d}/status", .{i}) catch return .{ .percent = pct, .charging = false };
+        const st_path = std.fmt.bufPrintSentinel(&st_path_buf, "/sys/class/power_supply/BAT{d}/status", .{i}, 0) catch return .{ .percent = pct, .charging = false };
         const sfd = libc.open(st_path.ptr, 0, 0);
         if (sfd < 0) return .{ .percent = pct, .charging = false };
         defer _ = libc.close(sfd);
@@ -754,7 +754,7 @@ fn readWatts() ?Power {
     while (i < 4) : (i += 1) {
         // Try power_now first (most direct)
         var pn_buf: [64]u8 = undefined;
-        const pn_path = std.fmt.bufPrintZ(&pn_buf, "/sys/class/power_supply/BAT{d}/power_now", .{i}) catch continue;
+        const pn_path = std.fmt.bufPrintSentinel(&pn_buf, "/sys/class/power_supply/BAT{d}/power_now", .{i}, 0) catch continue;
         if (readSysfsInt(pn_path)) |uw| {
             const charging = isCharging(i);
             return .{ .watts = @as(f32, @floatFromInt(uw)) / 1_000_000.0, .charging = charging };
@@ -762,8 +762,8 @@ fn readWatts() ?Power {
         // Fallback: current_now * voltage_now (both µ)
         var cn_buf: [64]u8 = undefined;
         var vn_buf: [64]u8 = undefined;
-        const cn_path = std.fmt.bufPrintZ(&cn_buf, "/sys/class/power_supply/BAT{d}/current_now", .{i}) catch continue;
-        const vn_path = std.fmt.bufPrintZ(&vn_buf, "/sys/class/power_supply/BAT{d}/voltage_now", .{i}) catch continue;
+        const cn_path = std.fmt.bufPrintSentinel(&cn_buf, "/sys/class/power_supply/BAT{d}/current_now", .{i}, 0) catch continue;
+        const vn_path = std.fmt.bufPrintSentinel(&vn_buf, "/sys/class/power_supply/BAT{d}/voltage_now", .{i}, 0) catch continue;
         const current = readSysfsInt(cn_path) orelse continue;
         const voltage = readSysfsInt(vn_path) orelse continue;
         // current µA × voltage µV = 10^-12 W, divide by 1e12 for W
@@ -775,7 +775,7 @@ fn readWatts() ?Power {
 
 fn isCharging(bat_idx: u8) bool {
     var buf: [64]u8 = undefined;
-    const path = std.fmt.bufPrintZ(&buf, "/sys/class/power_supply/BAT{d}/status", .{bat_idx}) catch return false;
+    const path = std.fmt.bufPrintSentinel(&buf, "/sys/class/power_supply/BAT{d}/status", .{bat_idx}, 0) catch return false;
     const fd = libc.open(path.ptr, 0, 0);
     if (fd < 0) return false;
     defer _ = libc.close(fd);

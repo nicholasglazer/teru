@@ -128,7 +128,7 @@ border_inactive: u32 = 0xFF3E4359, // inactive pane border
 attention_color: u32 = 0xFFEB3137, // workspace attention indicator
 
 // ANSI palette overrides (color0-color15). null = use default from ColorScheme.
-ansi_colors: [16]?u32 = .{null} ** 16,
+ansi_colors: [16]?u32 = @splat(null),
 
 // Terminal
 scrollback_lines: u32 = 10000,
@@ -166,6 +166,7 @@ bold_is_bright: bool = false,
 term: ?[]const u8 = null,
 scroll_speed: u32 = 3,
 touchpad_scroll_invert: bool = false,
+alt_scroll_zoom: bool = true, // Alt+scroll wheel adjusts font size
 copy_on_select: bool = true,
 bell: Bell = .visual,
 tab_width: u8 = 8,
@@ -192,12 +193,12 @@ bar_center: ?[]const u8 = null, // format string (null = layout + title)
 bar_right: ?[]const u8 = null, // format string (null = dimensions)
 
 // Per-workspace config (10 workspaces, 1-indexed in config, 0-indexed in array)
-workspace_layouts: [10]?LayoutEngine.Layout = .{null} ** 10,
-workspace_ratios: [10]?f32 = .{null} ** 10,
-workspace_names: [10]?[]const u8 = .{null} ** 10,
+workspace_layouts: [10]?LayoutEngine.Layout = @splat(null),
+workspace_ratios: [10]?f32 = @splat(null),
+workspace_names: [10]?[]const u8 = @splat(null),
 // Per-workspace layout lists (layouts = master-stack, grid, monocle)
 workspace_layout_lists: [10][LayoutEngine.max_layouts]LayoutEngine.Layout = undefined,
-workspace_layout_counts: [10]u8 = .{0} ** 10,
+workspace_layout_counts: [10]u8 = @splat(0),
 
 // Keybindings (loaded from [keybinds.*] sections or keybinds.conf)
 keybinds: Keybinds.Keybinds = .{},
@@ -546,6 +547,8 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         self.scroll_speed = std.fmt.parseInt(u32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "touchpad_scroll_invert")) {
         self.touchpad_scroll_invert = parseBool(value) orelse return;
+    } else if (std.mem.eql(u8, key, "alt_scroll_zoom")) {
+        self.alt_scroll_zoom = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "copy_on_select")) {
         self.copy_on_select = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "bell")) {
@@ -595,7 +598,7 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
             self.selection_bg = scheme.selection_bg;
             self.border_active = scheme.border_active;
             self.border_inactive = scheme.border_inactive;
-            self.ansi_colors = [_]?u32{null} ** 16;
+            self.ansi_colors = @splat(null);
             for (scheme.ansi, 0..) |c, i| self.ansi_colors[i] = c;
         }
     } else if (key.len >= 6 and key.len <= 7 and std.mem.startsWith(u8, key, "color")) {

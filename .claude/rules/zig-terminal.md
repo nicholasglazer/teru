@@ -61,9 +61,9 @@ Every function that does file/network/timer I/O MUST accept `io: std.Io`. Thread
 
 **Always prefer `init.gpa`** from `std.process.Init` — it's already wired to `DebugAllocator` in Debug and `smp_allocator` in Release. Manual `DebugAllocator{}` instantiation is forbidden. Only fall back to `std.heap.smp_allocator` directly in callbacks/global state where `Init` isn't reachable (Win32 WndProc, signal handlers).
 
-### @memset codegen bug (Zig 0.17.0-dev.135)
+### @memset codegen bug
 
-`@memset(slice_u32, runtime_scalar)` mis-codegens in Debug builds on x86_64 — the rep-stosd lowering swaps source/dest and faults at the value's address. **All `[]u32` framebuffer fills must go through `compat.memsetU32(buf, value)`** (in `src/compat.zig`). Repro: `Renderer CPU tier init and render` test in `tier.zig`. ReleaseSafe and the explicit while loop both work; once Zig fixes the codegen we can collapse the helper to a direct `@memset`.
+`@memset(slice_u32, runtime_scalar)` mis-codegens in Debug builds on x86_64 — the rep-stosd lowering swaps source/dest and faults at the value's address. Still present as of Zig 0.17.0-dev.304 (verified). **All `[]u32` framebuffer fills with a runtime color must go through `compat.memsetU32(buf, value)`** (in `src/compat.zig`). Repro: `Renderer CPU tier init and render` test in `tier.zig` segfaults at the bg-color address with a bare `@memset`. `@memset` on `[]u8` or with a comptime value is fine.
 
 ### compat.zig (minimal -- only 4 things)
 Only these belong in compat.zig (no io needed):
@@ -203,6 +203,6 @@ make install PREFIX=/usr  # custom prefix
 8. **DON'T use GPU APIs** -- CPU SIMD only
 9. **DON'T add external Zig packages** -- use std or implement it
 10. **DON'T use `@cImport` for new C bindings** -- hand-declare externs
-11. **DON'T use `compat.MemWriter`/`compat.DynWriter` in new code** -- use `std.Io.Writer.fixed(buf)` (fixed buffer) and `std.Io.Writer.Allocating.init(gpa)` (growable) from the native 0.17 std.Io. The compat helpers are kept transitional only.
+11. **`compat.MemWriter`/`MemReader`/`DynWriter` are for binary serialization** -- they expose `writeInt`/`readInt`/`readByte`, which native `std.Io.Writer`/`Reader` do not. Use them for the session / scrollback binary formats. For text or streaming output, use native `std.Io.Writer.fixed(buf)` / `std.Io.Writer.Allocating.init(gpa)`.
 12. **DON'T use `std.heap.page_allocator` for small allocs** -- it's one mmap per allocation in 0.17. Use `init.gpa` or `std.heap.smp_allocator`.
-13. **DON'T use bare `@memset` on `[]u32` with a runtime scalar** -- routes through `compat.memsetU32` because of the 0.17.0-dev.135 codegen bug.
+13. **DON'T use bare `@memset` on `[]u32` with a runtime scalar** -- routes through `compat.memsetU32` because of the codegen bug (still live on 0.17.0-dev.304).

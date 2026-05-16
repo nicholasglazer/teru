@@ -207,7 +207,7 @@ fn discoverSocket() ?[]const u8 {
     var dir_buf: [128]u8 = undefined;
     const dir_path = std.fmt.bufPrint(&dir_buf, "/run/user/{d}", .{uid}) catch return null;
 
-    const dir_z = std.fmt.bufPrintZ(&discovered_path, "{s}", .{dir_path}) catch return null;
+    const dir_z = std.fmt.bufPrintSentinel(&discovered_path, "{s}", .{dir_path}, 0) catch return null;
     const dir = std.c.opendir(dir_z.ptr) orelse return null;
     defer _ = std.c.closedir(dir);
 

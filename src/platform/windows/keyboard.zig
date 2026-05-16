@@ -97,7 +97,7 @@ pub const Keyboard = struct {
     /// Initialize keyboard with zeroed state.
     pub fn init() !Keyboard {
         return .{
-            .key_state = [_]u8{0} ** 256,
+            .key_state = @splat(0),
             .dead_key_state = 0,
         };
     }
@@ -113,7 +113,7 @@ pub const Keyboard = struct {
 
     /// Reset all key state. Call on focus-in to clear stuck modifiers.
     pub fn resetState(self: *Keyboard) void {
-        self.key_state = [_]u8{0} ** 256;
+        self.key_state = @splat(0);
         self.dead_key_state = 0;
     }
 

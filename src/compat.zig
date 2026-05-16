@@ -5,7 +5,7 @@
 //!   - nanoTimestamp() — clock_gettime(REALTIME) for code without Io access
 //!   - getenv() — convenience wrapper around std.c.getenv
 //!   - forkExec*() — process spawning with PTY/pipe setup
-//!   - memsetU32() — workaround for Zig 0.17.0-dev.135 @memset codegen bug
+//!   - memsetU32() — workaround for the @memset([]u32, runtime) codegen bug
 //!
 //! File I/O has been migrated to native std.Io.Dir / std.Io.File APIs.
 
@@ -38,17 +38,16 @@ const win32 = if (builtin.os.tag == .windows) struct {
     extern "kernel32" fn Sleep(dwMilliseconds: u32) callconv(.c) void;
 } else undefined;
 
-// ── @memset codegen bug workaround (Zig 0.17.0-dev.135) ──────────
+// ── @memset codegen bug workaround ───────────────────────────────
 //
-// Zig 0.17.0-dev.135+9df02121d mis-codegens `@memset(slice_u32, runtime_scalar)`
-// on x86_64 Debug builds: the rep-stosd lowering swaps source/dest, faulting
-// at the address of `value`. ReleaseSafe and an explicit while loop both work.
+// `@memset(slice_u32, runtime_scalar)` mis-codegens on x86_64 Debug
+// builds: the rep-stosd lowering swaps source/dest and faults at the
+// address of `value`. Still present as of Zig 0.17.0-dev.304 — verified:
+// reverting this helper to a bare `@memset` segfaults the `Renderer CPU
+// tier init and render` test in tier.zig at the bg-color address.
 //
-// All `[]u32` framebuffer fills with a runtime color must go through this
-// helper. Repro: `Renderer CPU tier init and render` test in tier.zig.
-//
-// Once Zig fixes the codegen bug, this can be replaced with `@memset(buf, value)`
-// at every callsite. Centralizing here keeps the workaround in one place.
+// All `[]u32` framebuffer fills with a runtime color must go through
+// this helper. ReleaseSafe and the explicit while loop both work.
 pub fn memsetU32(buf: []u32, value: u32) void {
     var i: usize = 0;
     while (i < buf.len) : (i += 1) buf[i] = value;

@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     // ── Single source of truth for version ────────────────────────
     // Propagated to all modules via build_options.version.
     // Bump with: make bump-version V=x.y.z (updates here + build.zig.zon)
-    const version = "0.6.9";
+    const version = "0.6.10";
 
     // Strip debug info on any release optimize mode. Module-level setting
     // in Zig 0.17 (Module.CreateOptions.strip). The Makefile previously
@@ -262,6 +262,9 @@ pub fn build(b: *std.Build) void {
         wm_test_mod.linkSystemLibrary("wayland-server", .{});
         wm_test_mod.linkSystemLibrary("xkbcommon", .{});
         wm_test_mod.linkSystemLibrary("pixman-1", .{});
+        // miozu-wlr-glue.c calls libinput_device_config_* — mirror
+        // miozu_mod's link so the wm test binary resolves those symbols.
+        wm_test_mod.linkSystemLibrary("input", .{});
         wm_test_mod.addCSourceFile(.{
             .file = b.path("vendor/stb_truetype.c"),
             .flags = &.{"-DSTB_TRUETYPE_IMPLEMENTATION"},

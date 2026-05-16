@@ -24,7 +24,7 @@ screen: *TuiScreen,
 allocator: Allocator,
 daemon_fd: posix.fd_t,
 /// Track last-sent pane sizes to avoid redundant resizes
-last_pane_sizes: [64]PaneSize = .{PaneSize{}} ** 64,
+last_pane_sizes: [64]PaneSize = @splat(.{}),
 last_pane_count: usize = 0,
 
 const PaneSize = struct { id: u64 = 0, rows: u16 = 0, cols: u16 = 0 };
@@ -114,7 +114,7 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
 
             // Also resize local grid to match
             if (mux.getPaneById(pane_id)) |pane| {
-                pane.grid.resize(mux.allocator, content_rows, content_cols) catch {};
+                pane.grid.resize(mux.allocator, content_rows, content_cols) catch |e| std.log.warn("local grid resize failed: {s}", .{@errorName(e)});
             }
         }
     }

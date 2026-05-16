@@ -152,7 +152,9 @@ teruwmctl scratchpad term       # show 'term' again
 | `$mod+Ctrl+Shift+R` | **Hot-restart** compositor (PTYs survive) |
 | `$mod+Shift+Q` | Quit compositor |
 
-## Font zoom (teru standalone)
+## Font zoom
+
+### Keyboard (teru standalone)
 
 | Key | Action |
 |-----|--------|
@@ -160,8 +162,21 @@ teruwmctl scratchpad term       # show 'term' again
 | `$mod+_` | Zoom in (+1 px) — shift + minus, same key |
 | `$mod+\` | Reset zoom |
 
-In **teruwm** these chords are unbound — compositor-level font zoom
-doesn't exist; `$mod+=` is master resize instead (see the pane table).
+In **teruwm** these chords are unbound — `$mod+=` is master resize
+instead (see the pane table). The compositor has no keyboard font-zoom
+chord; use the mouse wheel below.
+
+### Mouse wheel (teru standalone + teruwm)
+
+| Input | Action |
+|-------|--------|
+| `Alt` + scroll up | Zoom in (+1 px) |
+| `Alt` + scroll down | Zoom out (-1 px) |
+
+Works in both binaries while a terminal is focused. In teruwm the new
+font size is applied to every terminal pane and both bars. Disable with
+`alt_scroll_zoom = false` (`teru.conf` for standalone, the teruwm config
+file for the compositor).
 
 ## Modes
 

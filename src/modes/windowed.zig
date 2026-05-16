@@ -139,6 +139,78 @@ fn computeIdleTimeoutMs(
     return t;
 }
 
+/// Which direction a font-zoom step goes. `.reset` returns to `config.font_size`.
+/// Aliased from FontAtlas so the standalone and compositor zoom paths share
+/// one definition (and `render.FontAtlas.zoomedFontSize`).
+const ZoomTarget = render.FontAtlas.ZoomTarget;
+
+/// Apply one font-size zoom step: re-rasterize the glyph atlas, refresh the
+/// renderer, re-grid every pane, and arm the deferred variant-atlas rebuild.
+/// Shared by the keyboard zoom keybinds and Alt+scroll-wheel zoom so the two
+/// input paths can never drift. Returns true if the font size actually
+/// changed (caller should force a redraw); false if already at the target
+/// size or the atlas re-rasterization failed.
+fn applyFontZoom(
+    target: ZoomTarget,
+    allocator: std.mem.Allocator,
+    win: *platform.Platform,
+    config: *const Config,
+    mux: *Multiplexer,
+    atlas: *render.FontAtlas,
+    renderer: *render.tier.Renderer,
+    font_size: *u16,
+    padding: u32,
+    status_bar_h: *u32,
+    grid_cols: *u16,
+    grid_rows: *u16,
+    zoom_pending_resize: *bool,
+    zoom_timestamp: *i128,
+) bool {
+    const new_size = render.FontAtlas.zoomedFontSize(target, font_size.*, config.font_size);
+    if (new_size == font_size.*) return false;
+
+    const new_atlas = atlas.rasterizeAtSize(new_size) catch return false;
+    atlas.deinit();
+    atlas.* = new_atlas;
+    font_size.* = new_size;
+
+    // Variant atlases are stale until the deferred rebuild runs — clear them
+    // so the renderer falls back to the base atlas in the meantime.
+    switch (renderer.*) {
+        .cpu => |*cpu| {
+            cpu.glyph_atlas_bold = &.{};
+            cpu.glyph_atlas_italic = &.{};
+            cpu.glyph_atlas_bold_italic = &.{};
+        },
+        .tty => {},
+    }
+    renderer.updateAtlas(atlas.atlas_data, atlas.atlas_width, atlas.atlas_height);
+    switch (renderer.*) {
+        .cpu => |*cpu| {
+            cpu.cell_width = atlas.cell_width;
+            cpu.cell_height = atlas.cell_height;
+        },
+        .tty => {},
+    }
+    status_bar_h.* = if (config.show_status_bar) atlas.cell_height + 4 else 0;
+
+    const sz = win.getSize();
+    grid_cols.* = @intCast((sz.width -| padding * 2) / atlas.cell_width);
+    grid_rows.* = @intCast((sz.height -| padding * 2 -| status_bar_h.*) / atlas.cell_height);
+    for (mux.panes.items) |*pane| {
+        if (grid_rows.* != pane.grid.rows or grid_cols.* != pane.grid.cols) {
+            pane.grid.resize(allocator, grid_rows.*, grid_cols.*) catch |e| std.log.warn("pane grid resize failed: {s}", .{@errorName(e)});
+            pane.linkVt(allocator);
+        }
+        pane.grid.dirty = true;
+    }
+    mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h.*);
+
+    zoom_pending_resize.* = true;
+    zoom_timestamp.* = compat.monotonicNow();
+    return true;
+}
+
 pub fn run(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, wm_class: ?[]const u8) !void {
     return runImpl(allocator, io, restore, null, wm_class);
 }
@@ -290,19 +362,19 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
     // Set env vars so Claude Code instances know about teru's sockets
     if (pane_backend) |*pb| {
         const path = pb.getSocketPath();
-        var env_buf: [128:0]u8 = [_:0]u8{0} ** 128;
+        var env_buf: [128:0]u8 = @splat(0);
         @memcpy(env_buf[0..path.len], path);
         _ = common.setenv("CLAUDE_PANE_BACKEND_SOCKET", &env_buf, 1);
     }
     if (hook_listener) |*hl| {
         const path = hl.getSocketPath();
-        var env_buf: [128:0]u8 = [_:0]u8{0} ** 128;
+        var env_buf: [128:0]u8 = @splat(0);
         @memcpy(env_buf[0..path.len], path);
         _ = common.setenv("TERU_HOOK_SOCKET", &env_buf, 1);
     }
     if (mcp) |*m| {
         const path = m.getSocketPath();
-        var env_buf: [128:0]u8 = [_:0]u8{0} ** 128;
+        var env_buf: [128:0]u8 = @splat(0);
         @memcpy(env_buf[0..path.len], path);
         _ = common.setenv("TERU_MCP_SOCKET", &env_buf, 1);
     }
@@ -787,7 +859,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                         grid_rows = @intCast((sz.height -| padding * 2 -| status_bar_h) / atlas.cell_height);
                                         for (mux.panes.items) |*pane| {
                                             if (grid_rows != pane.grid.rows or grid_cols != pane.grid.cols) {
-                                                pane.grid.resize(allocator, grid_rows, grid_cols) catch {};
+                                                pane.grid.resize(allocator, grid_rows, grid_cols) catch |e| std.log.warn("pane grid resize failed: {s}", .{@errorName(e)});
                                                 pane.linkVt(allocator);
                                             }
                                             pane.grid.dirty = true;
@@ -797,51 +869,13 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                         continue;
                                     }
                                     if (action == .zoom_in or action == .zoom_out or action == .zoom_reset) {
-                                        const new_size: u16 = if (action == .zoom_in)
-                                            font_size +| 1
-                                        else if (action == .zoom_reset)
-                                            config.font_size
-                                        else
-                                            @max(6, font_size -| 1);
-                                        if (new_size != font_size) {
-                                            const new_atlas = atlas.rasterizeAtSize(new_size) catch continue;
-                                            atlas.deinit();
-                                            atlas = new_atlas;
-                                            font_size = new_size;
-
-                                            switch (renderer) {
-                                                .cpu => |*cpu| {
-                                                    cpu.glyph_atlas_bold = &.{};
-                                                    cpu.glyph_atlas_italic = &.{};
-                                                    cpu.glyph_atlas_bold_italic = &.{};
-                                                },
-                                                .tty => {},
-                                            }
-
-                                            renderer.updateAtlas(atlas.atlas_data, atlas.atlas_width, atlas.atlas_height);
-                                            switch (renderer) {
-                                                .cpu => |*cpu| {
-                                                    cpu.cell_width = atlas.cell_width;
-                                                    cpu.cell_height = atlas.cell_height;
-                                                },
-                                                .tty => {},
-                                            }
-                                            status_bar_h = if (config.show_status_bar) atlas.cell_height + 4 else 0;
-
-                                            const sz = win.getSize();
-                                            grid_cols = @intCast((sz.width -| padding * 2) / atlas.cell_width);
-                                            grid_rows = @intCast((sz.height -| padding * 2 -| status_bar_h) / atlas.cell_height);
-                                            for (mux.panes.items) |*pane| {
-                                                if (grid_rows != pane.grid.rows or grid_cols != pane.grid.cols) {
-                                                    pane.grid.resize(allocator, grid_rows, grid_cols) catch {};
-                                                    pane.linkVt(allocator);
-                                                }
-                                                pane.grid.dirty = true;
-                                            }
-                                            mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
-
-                                            zoom_pending_resize = true;
-                                            zoom_timestamp = compat.monotonicNow();
+                                        const target: ZoomTarget = switch (action) {
+                                            .zoom_in => .in,
+                                            .zoom_out => .out,
+                                            else => .reset,
+                                        };
+                                        if (applyFontZoom(target, allocator, &win, &config, &mux, &atlas, &renderer, &font_size, padding, &status_bar_h, &grid_cols, &grid_rows, &zoom_pending_resize, &zoom_timestamp)) {
+                                            force_redraw = true;
                                         }
                                     }
                                     continue;
@@ -974,11 +1008,18 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                         .copy_on_select = config.copy_on_select,
                         .scroll_speed = config.scroll_speed,
                         .touchpad_scroll_invert = config.touchpad_scroll_invert,
+                        .alt_scroll_zoom = config.alt_scroll_zoom,
                         .word_delimiters = config.word_delimiters orelse " \t{}[]()\"'`,;:@",
                         .show_status_bar = config.show_status_bar,
                     };
                     const sz = win.getSize();
                     const result = mouse_handler.handleMousePress(&mux, mouse, &selection, &ms, lp, cfg, allocator, sz.width, sz.height);
+                    if (result.zoom != .none) {
+                        const target: ZoomTarget = if (result.zoom == .in) .in else .out;
+                        if (applyFontZoom(target, allocator, &win, &config, &mux, &atlas, &renderer, &font_size, padding, &status_bar_h, &grid_cols, &grid_rows, &zoom_pending_resize, &zoom_timestamp)) {
+                            force_redraw = true;
+                        }
+                    }
                     if (result.panes_changed) {
                         const sz2 = win.getSize();
                         mux.resizePanePtys(sz2.width, sz2.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
@@ -1005,6 +1046,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                         .copy_on_select = config.copy_on_select,
                         .scroll_speed = config.scroll_speed,
                         .touchpad_scroll_invert = config.touchpad_scroll_invert,
+                        .alt_scroll_zoom = config.alt_scroll_zoom,
                         .word_delimiters = config.word_delimiters orelse " \t{}[]()\"'`,;:@",
                         .show_status_bar = config.show_status_bar,
                     };
@@ -1346,7 +1388,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                 if (ux >= cpu.width or ux >= ux_end) continue;
                                 const row_start = uy * cpu.width;
                                 if (row_start + ux_end <= cpu.framebuffer.len) {
-                                    @memset(cpu.framebuffer[row_start + ux .. row_start + ux_end], cpu.scheme.cursor);
+                                    compat.memsetU32(cpu.framebuffer[row_start + ux .. row_start + ux_end], cpu.scheme.cursor);
                                 }
                             }
                         }

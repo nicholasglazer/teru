@@ -65,7 +65,7 @@ fn scanFor(out: *[256]u8, prefix: []const u8, exclude_prefix: ?[]const u8) ?[]co
         std.fmt.bufPrint(&dir_buf, "/run/user/{d}", .{uid}) catch return null;
 
     var z_buf: [128]u8 = undefined;
-    const dir_z = std.fmt.bufPrintZ(&z_buf, "{s}", .{dir_path}) catch return null;
+    const dir_z = std.fmt.bufPrintSentinel(&z_buf, "{s}", .{dir_path}, 0) catch return null;
     const dir = std.c.opendir(dir_z.ptr) orelse return null;
     defer _ = std.c.closedir(dir);
 

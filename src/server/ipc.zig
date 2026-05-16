@@ -358,8 +358,8 @@ test "buildPath: POSIX format" {
 
 test "buildPath: returns null for overflow" {
     var buf: [256]u8 = undefined;
-    const long_name = "a" ** 250;
-    const path = buildPath(&buf, "session", long_name);
+    const long_name: [250]u8 = @splat('a');
+    const path = buildPath(&buf, "session", &long_name);
     try std.testing.expect(path == null);
 }
 

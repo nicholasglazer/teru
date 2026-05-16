@@ -404,7 +404,7 @@ test "sendMessage: payload exceeds max_payload" {
     defer _ = posix.system.close(fds[1]);
 
     // 70000 bytes exceeds max_payload (65536), sendMessage must return false.
-    const oversized = [_]u8{0xAA} ** 70000;
+    const oversized: [70000]u8 = @splat(0xAA);
     try std.testing.expect(!sendMessage(fds[0], .output, &oversized));
 }
 

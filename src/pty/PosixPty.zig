@@ -189,7 +189,7 @@ extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int
 
 fn setChildEnv(cols: u16, rows: u16, term_override: ?[]const u8) void {
     if (term_override) |term_val| {
-        var term_buf: [64:0]u8 = [_:0]u8{0} ** 64;
+        var term_buf: [64:0]u8 = @splat(0);
         const tlen = @min(term_val.len, term_buf.len - 1);
         @memcpy(term_buf[0..tlen], term_val[0..tlen]);
         _ = setenv("TERM", &term_buf, 1);
@@ -200,8 +200,8 @@ fn setChildEnv(cols: u16, rows: u16, term_override: ?[]const u8) void {
     _ = setenv("TERM_PROGRAM", "teru", 1);
     _ = setenv("TERM_PROGRAM_VERSION", @ptrCast(build_options.version.ptr), 1);
 
-    var cols_buf: [8:0]u8 = [_:0]u8{0} ** 8;
-    var rows_buf: [8:0]u8 = [_:0]u8{0} ** 8;
+    var cols_buf: [8:0]u8 = @splat(0);
+    var rows_buf: [8:0]u8 = @splat(0);
     _ = std.fmt.bufPrint(&cols_buf, "{d}", .{cols}) catch {};
     _ = std.fmt.bufPrint(&rows_buf, "{d}", .{rows}) catch {};
     _ = setenv("COLUMNS", &cols_buf, 1);

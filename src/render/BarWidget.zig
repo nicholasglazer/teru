@@ -52,7 +52,7 @@ pub const Widget = struct {
     // For exec: refresh interval in seconds
     interval: u32 = 5,
     // Cached output (evaluated at runtime)
-    cache: [max_exec_output]u8 = [_]u8{0} ** max_exec_output,
+    cache: [max_exec_output]u8 = @splat(0),
     cache_len: u8 = 0,
     last_eval: i128 = 0,
 };

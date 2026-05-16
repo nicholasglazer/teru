@@ -77,6 +77,7 @@ test {
     _ = Pane;
     _ = Multiplexer;
     _ = Selection;
+    _ = mouse;
     _ = Clipboard;
     _ = KeyHandler;
     _ = SignalManager;

@@ -156,6 +156,45 @@ fn createBarInstance(server: *Server, allocator: std.mem.Allocator, width: u32, 
     };
 }
 
+/// Re-adopt the server's shared font atlas after a font-size zoom.
+/// Resizes both bar buffers to the new cell-derived height (`cell_h + 4`)
+/// and re-points the renderers at the new atlas. Unlike `create`, this
+/// preserves widget layout and per-bar `.enabled` state. Caller reflows
+/// tiling (`arrangeworkspace`) and repaints (`render`) afterwards.
+pub fn refont(self: *Bar, server: *Server) void {
+    const fa = server.font_atlas orelse return;
+    if (fa.cell_width == 0 or fa.cell_height == 0) return;
+    const new_h: u32 = fa.cell_height + 4;
+
+    refontInstance(&self.top, fa, self.output_width, new_h, 0);
+    refontInstance(&self.bottom, fa, self.output_width, new_h, @intCast(self.output_height -| new_h));
+
+    self.bar_height = new_h;
+    self.dirty = true; // force a repaint — signature alone won't catch the resize
+}
+
+/// Resize one bar instance's pixel buffer to `width × height`, re-point its
+/// renderer at `fa`, and move its scene node to `y_pos`.
+fn refontInstance(inst: *BarInstance, fa: *const teru.render.FontAtlas, width: u32, height: u32, y_pos: c_int) void {
+    if (width == 0 or height == 0) return;
+    if (!wlr.miozu_pixel_buffer_resize(inst.pixel_buffer, @intCast(width), @intCast(height))) return;
+    const data = wlr.miozu_pixel_buffer_data(inst.pixel_buffer) orelse return;
+
+    inst.renderer.framebuffer = data[0 .. @as(usize, width) * @as(usize, height)];
+    inst.renderer.width = width;
+    inst.renderer.height = height;
+    inst.renderer.cell_width = fa.cell_width;
+    inst.renderer.cell_height = fa.cell_height;
+    inst.renderer.glyph_atlas = fa.atlas_data;
+    inst.renderer.atlas_width = fa.atlas_width;
+    inst.renderer.atlas_height = fa.atlas_height;
+
+    wlr.wlr_scene_buffer_set_dest_size(inst.scene_buffer, @intCast(width), @intCast(height));
+    if (wlr.miozu_scene_buffer_node(inst.scene_buffer)) |node| {
+        wlr.wlr_scene_node_set_position(node, 0, y_pos);
+    }
+}
+
 /// Show/hide each bar's scene node to match `.enabled`.
 /// Call this after toggling `bar.top.enabled` or `bar.bottom.enabled`.
 pub fn updateVisibility(self: *Bar) void {
@@ -259,6 +298,16 @@ fn refreshSectionExecs(self: *Bar, section: *Section, server: *Server, now_ns: i
         const read_fd = pipe_fds[0];
         const write_fd = pipe_fds[1];
 
+        // FD_CLOEXEC on both ends so a sibling exec widget's fork() does
+        // not inherit this round's pipe fds and pin them open past its
+        // own execve. The child's dup2(write_fd, STDOUT) below makes a
+        // fresh non-CLOEXEC fd 1, so the command's stdout still flows.
+        const FD_CLOEXEC: c_int = 1;
+        for ([_]posix.fd_t{ read_fd, write_fd }) |pf| {
+            const fdflags = std.c.fcntl(pf, posix.F.GETFD);
+            if (fdflags >= 0) _ = std.c.fcntl(pf, posix.F.SETFD, fdflags | FD_CLOEXEC);
+        }
+
         // Fork
         const pid = std.os.linux.fork();
         if (pid < 0) {
@@ -328,12 +377,9 @@ fn addPendingExec(self: *Bar, fd: posix.fd_t, pid: i32, widget: *BarWidget.Widge
 }
 
 fn execReadable(fd: c_int, mask: u32, data: ?*anyopaque) callconv(.c) c_int {
-    const pe: *PendingExec = @ptrCast(@alignCast(data orelse return 1));
-
-    if (mask & 0x10 != 0) { // WL_EVENT_HANGUP
-        cleanupExec(pe);
-        return 1;
-    }
+    const pe: *PendingExec = @ptrCast(@alignCast(data orelse return 0));
+    _ = mask; // the single read() below distinguishes data / EOF / EAGAIN —
+    // no need to branch on READABLE vs HANGUP (they co-occur at EOF anyway).
 
     // Read whatever the child has written so far. The pipe is O_NONBLOCK
     // so we'll get EAGAIN if there's nothing yet (shouldn't happen since
@@ -357,7 +403,9 @@ fn execReadable(fd: c_int, mask: u32, data: ?*anyopaque) callconv(.c) c_int {
     }
 
     cleanupExec(pe);
-    return 1; // remove event source
+    // libwayland ignores the return value of an fd source's callback —
+    // cleanupExec() is what removes the source (wl_event_source_remove).
+    return 0;
 }
 
 fn isExecWhitespace(c: u8) bool {
@@ -365,10 +413,18 @@ fn isExecWhitespace(c: u8) bool {
 }
 
 fn cleanupExec(pe: *PendingExec) void {
-    _ = posix.system.close(pe.fd);
-    _ = std.c.waitpid(pe.pid, null, std.c.W.NOHANG);
-    pe.fd = -1;
+    // Remove the source from the wlroots event loop FIRST. Returning a
+    // value from execReadable() does not do this — libwayland ignores
+    // fd-handler return values. Skipping wl_event_source_remove leaks
+    // the source: the pipe sits in epoll at permanent EOF/HUP, every
+    // dispatch re-fires execReadable, and the compositor spins at 100%
+    // CPU while leaking one pipe fd per exec until fd exhaustion.
+    if (pe.event_source) |es| _ = wlr.wl_event_source_remove(es);
     pe.event_source = null;
+    if (pe.fd != -1) _ = posix.system.close(pe.fd);
+    if (pe.pid != 0) _ = std.c.waitpid(pe.pid, null, std.c.W.NOHANG);
+    pe.fd = -1;
+    pe.pid = 0;
 }
 
 /// Cheap u64 fingerprint of the user-visible bar state. Collisions

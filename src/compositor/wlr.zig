@@ -107,7 +107,13 @@ pub extern "wayland-server" fn wl_event_source_timer_update(
     source: *wl_event_source,
     ms_delay: c_int,
 ) callconv(.c) c_int;
+// libwayland event-mask bits (wayland-server-core.h). Only READABLE is
+// passed to wl_event_loop_add_fd; HANGUP/ERROR are never requested but
+// epoll always reports them, so fd handlers must test for them.
 pub const WL_EVENT_READABLE: u32 = 0x01;
+pub const WL_EVENT_WRITABLE: u32 = 0x02;
+pub const WL_EVENT_HANGUP: u32 = 0x04;
+pub const WL_EVENT_ERROR: u32 = 0x08;
 
 /// wl_signal_add is static inline in wayland headers — implement in Zig.
 /// Inserts listener at the end of the signal's listener list.
