@@ -18,6 +18,7 @@ pub const ProcessGraph = @import("graph/ProcessGraph.zig");
 pub const protocol = @import("agent/protocol.zig");
 pub const HookHandler = @import("agent/HookHandler.zig");
 pub const McpServer = @import("agent/McpServer.zig");
+pub const McpServerTools = @import("agent/McpServerTools.zig");
 pub const McpDispatch = @import("agent/McpDispatch.zig");
 pub const McpBridge = @import("agent/McpBridge.zig");
 pub const McpTools = @import("agent/McpTools.zig");
@@ -65,6 +66,7 @@ test {
     _ = protocol;
     _ = HookHandler;
     _ = McpServer;
+    _ = McpServerTools;
     _ = McpDispatch;
     _ = McpBridge;
     _ = in_band;
