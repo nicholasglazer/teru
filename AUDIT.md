@@ -125,3 +125,22 @@ compositor that pegged a CPU core on two of its most common operations** — a
 default bar-widget refresh, and closing a terminal. Only running teruwm
 surfaced them. M5 is no longer "coverage debt" — it is the systemic fix, and
 it is the one item that should block the *next* release, not this one.
+
+## Resolution (v0.6.11)
+
+Every follow-up item above was addressed in the v0.6.11 release:
+
+- **M5** — `tests/teruwm_e2e.py`, a headless-wlroots harness, now asserts
+  spawn / tiling / zoom / shell-exit / no-CPU-spin / clean shutdown over
+  MCP. Its idle-bar and shell-exit checks are the regression guards for
+  the two spin blockers; it found a real MCP-server connect/send race in
+  the process.
+- **LOW** — teruwm unlinks its MCP socket files and handles `SIGTERM` /
+  `SIGINT` so shutdown runs the defer chain; `Bar.deinitExecs` drains
+  in-flight exec widgets; `catch unreachable` in two test fixtures became
+  `catch |e| return e`.
+- **M4** — the three remaining god-files were split into thin-delegator
+  modules: `Server.zig` 2183 → 1305, `WmMcpServer.zig` 1693 → 361,
+  `McpServer.zig` 1676 → 381. (`VtParser`, `Grid`, and `windowed.zig`
+  were left cohesive by design — splitting them trades clarity for line
+  count.)
