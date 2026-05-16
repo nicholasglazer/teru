@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.6.11 (2026-05-16)
+
+Post-audit hardening plus a maintainability pass. Closes the M5 (test
+coverage) and LOW follow-ups from the v0.6.10 audit, fixes an MCP-server
+race the new end-to-end harness caught, and completes M4 — the god-file
+split.
+
+### Fixes
+
+- **MCP server dropped requests under a connect/send race.**
+  `McpFramework.handleRequestFd` read the accepted connection once; when
+  the server accepted before the client's separate `send()` landed, the
+  non-blocking `read()` hit `EAGAIN` and the request was dropped (~1 in N
+  under load). It now polls for the body, bounded so a wedged client
+  cannot pin the event loop. Affects both the teru and teruwm MCP servers.
+
+- **`kill` / Ctrl+C now shut teruwm down cleanly.** The compositor had no
+  `SIGTERM` / `SIGINT` handler, so a signal killed the process by default
+  action — clients were not torn down and the MCP socket files leaked.
+  teruwm now installs `wl_event_loop_add_signal` handlers that call
+  `wl_display_terminate`, so `main`'s defer chain runs: clients destroyed,
+  sockets unlinked.
+
+- **In-flight bar exec widgets are drained on shutdown.** `Bar.deinitExecs`
+  now cancels any pending `exec`-widget pipe source at teardown, so a
+  late-firing `execReadable` cannot run against a destroyed event loop.
+
+### Features
+
+- **`teruwm_zoom` MCP tool.** Exposes the Alt+scroll font-zoom path
+  (`in` / `out` / `reset`) over MCP, so font size is scriptable and
+  reachable from the end-to-end harness.
+
+### Internal
+
+- **God-file split (M4).** The three largest source files were broken into
+  thin-delegator modules with no behaviour change — the public method
+  surface is preserved via delegators and `pub const` re-exports:
+  `Server.zig` 2183 → 1305 (new `ServerProcess`, `ServerRepeat`,
+  `ServerConfig`, `ServerWindow`), `WmMcpServer.zig` 1693 → 361 (new
+  `WmMcpTools`), `McpServer.zig` 1676 → 381 (new `McpServerTools`).
+
+- **Test coverage (M5).** New `tests/teruwm_e2e.py` headless-wlroots E2E
+  harness asserts spawn / tiling / zoom / shell-exit / no-CPU-spin / clean
+  shutdown over MCP — the idle-bar and shell-exit checks are regression
+  guards for the v0.6.10 spin blockers, and it caught the MCP race above.
+  Added a `WL_EVENT` mask-bit inline test (guards the `0x10`-vs-`0x04`
+  HANGUP-constant class of bug); two test fixtures' `catch unreachable` is
+  now `catch |e| return e`, so a failed `bufPrint` reports as a test
+  failure instead of a panic.
+
+### Tests
+
+517 library + 16 compositor inline tests pass; E2E harness green 8/8.
+
 ## 0.6.10 (2026-05-16)
 
 Production-readiness pass: a new zoom feature, plus two build/runtime
