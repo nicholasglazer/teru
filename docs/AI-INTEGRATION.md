@@ -12,8 +12,8 @@ For the full tool-by-tool reference (inputs, outputs, examples) see
 
 | Layer | What it's for | Protocol | File |
 |---|---|---|---|
-| **teru MCP** (19 tools) | Script a running terminal: panes, scrollback, sessions, broadcast, config live-edit | JSON-RPC 2.0 over Unix socket | `src/agent/McpServer.zig` |
-| **teruwm MCP** (24 tools) | Script a running compositor: windows, workspaces, bars, push widgets, hot-restart | JSON-RPC 2.0 over Unix socket | `src/compositor/WmMcpServer.zig` |
+| **teru MCP** (20 tools) | Script a running terminal: panes, scrollback, sessions, broadcast, config live-edit | JSON-RPC 2.0 over Unix socket | `src/agent/McpServer.zig` |
+| **teruwm MCP** (37 tools) | Script a running compositor: windows, workspaces, bars, push widgets, hot-restart | JSON-RPC 2.0 over Unix socket | `src/compositor/WmMcpServer.zig` |
 | **CustomPaneBackend** | Let Claude Code spawn/manage panes natively (no tmux) | 7-op JSON-RPC | `src/agent/PaneBackend.zig` |
 | **OSC 9999** | Let any running process declare itself an AI agent (border color, status bar) | VT escape sequences | `src/agent/protocol.zig` |
 
@@ -42,7 +42,7 @@ red = failed. Status-bar shows agent counts.
 
 ## 2. teru MCP — script a terminal
 
-19 tools. Socket `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock`.
+20 tools. Socket `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock`.
 
 Use when you want to read another pane's scrollback, type into a pane,
 ask "is the build done yet?", move a pane between workspaces, or save a
@@ -68,7 +68,7 @@ tolerates the target being down — the first tool call returns a clean
 JSON-RPC error instead of hanging.
 
 Every tool documented with params and behavior in
-[MCP-API.md](MCP-API.md#teru-terminal-mcp--19-tools). Categories:
+[MCP-API.md](MCP-API.md#teru-terminal-mcp--20-tools). Categories:
 
 - **Panes**: list / create / close / focus / read / send_input / send_keys / wait_for / scroll / get_state / broadcast
 - **Workspaces & layouts**: switch_workspace / set_layout
@@ -79,7 +79,7 @@ Every tool documented with params and behavior in
 
 ## 3. teruwm MCP — script the compositor
 
-24 tools. Socket `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock`. Separate
+37 tools. Socket `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock`. Separate
 process, separate socket.
 
 Use when you want to spawn windows, switch workspaces, change layouts,
@@ -246,7 +246,7 @@ printf '\e]9999;query;id=1;tool=teru_list_panes\x07' > /dev/tty
 
 ### Current scope
 
-Tools exposed: all 56 tools. As of v0.4.19, teru's MCP transparently
+Tools exposed: all 57 tools. As of v0.4.19, teru's MCP transparently
 forwards `teruwm_*` tool calls to the running teruwm socket. Agents
 running inside a teru pane under teruwm can use the same `teru-query`
 helper for compositor control:
