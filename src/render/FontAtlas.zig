@@ -133,12 +133,12 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     @memset(atlas_data, 0);
 
     // Initialize glyph tables
-    var glyphs: [256]?GlyphInfo = [_]?GlyphInfo{null} ** 256;
-    var box_glyphs: [128]?GlyphInfo = [_]?GlyphInfo{null} ** 128;
-    var block_glyphs: [32]?GlyphInfo = [_]?GlyphInfo{null} ** 32;
-    var cyrillic_glyphs: [256]?GlyphInfo = [_]?GlyphInfo{null} ** 256;
-    var geometric_glyphs: [96]?GlyphInfo = [_]?GlyphInfo{null} ** 96;
-    var braille_glyphs: [256]?GlyphInfo = [_]?GlyphInfo{null} ** 256;
+    var glyphs: [256]?GlyphInfo = @splat(null);
+    var box_glyphs: [128]?GlyphInfo = @splat(null);
+    var block_glyphs: [32]?GlyphInfo = @splat(null);
+    var cyrillic_glyphs: [256]?GlyphInfo = @splat(null);
+    var geometric_glyphs: [96]?GlyphInfo = @splat(null);
+    var braille_glyphs: [256]?GlyphInfo = @splat(null);
     const baseline: i32 = @intFromFloat(f_ascent);
 
     // Build a flat list of codepoints to rasterize. Optional ranges are
@@ -283,6 +283,25 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     };
 }
 
+/// Direction of a font-size zoom step. `.reset` returns to the config size.
+pub const ZoomTarget = enum { in, out, reset };
+
+/// Smallest font size a zoom-out is allowed to reach — below this glyphs
+/// stop being legible and `rasterizeAtSize` risks `error.InvalidFontMetrics`.
+pub const min_font_size: u16 = 6;
+
+/// Compute the font size after one zoom step. Pure — the standalone
+/// terminal (windowed mode) and the compositor share this so their zoom
+/// behaviour can never drift. `current` is the live size; `config_size`
+/// is the size to restore on `.reset`.
+pub fn zoomedFontSize(target: ZoomTarget, current: u16, config_size: u16) u16 {
+    return switch (target) {
+        .in => current +| 1,
+        .out => @max(min_font_size, current -| 1),
+        .reset => config_size,
+    };
+}
+
 /// Re-rasterize the atlas at a new font size using the already-loaded font data.
 /// No file I/O — pure CPU rasterization from memory. Returns a new atlas;
 /// caller must deinit the old one.
@@ -319,12 +338,12 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
     const atlas_data = try self.allocator.alloc(u8, atlas_w * atlas_h);
     @memset(atlas_data, 0);
 
-    var glyphs: [256]?GlyphInfo = [_]?GlyphInfo{null} ** 256;
-    var box_glyphs: [128]?GlyphInfo = [_]?GlyphInfo{null} ** 128;
-    var block_glyphs: [32]?GlyphInfo = [_]?GlyphInfo{null} ** 32;
-    var cyrillic_glyphs: [256]?GlyphInfo = [_]?GlyphInfo{null} ** 256;
-    var geometric_glyphs: [96]?GlyphInfo = [_]?GlyphInfo{null} ** 96;
-    var braille_glyphs: [256]?GlyphInfo = [_]?GlyphInfo{null} ** 256;
+    var glyphs: [256]?GlyphInfo = @splat(null);
+    var box_glyphs: [128]?GlyphInfo = @splat(null);
+    var block_glyphs: [32]?GlyphInfo = @splat(null);
+    var cyrillic_glyphs: [256]?GlyphInfo = @splat(null);
+    var geometric_glyphs: [96]?GlyphInfo = @splat(null);
+    var braille_glyphs: [256]?GlyphInfo = @splat(null);
     const baseline: i32 = @intFromFloat(f_ascent);
 
     const Codepoint = struct { cp: u21, slot: u32 };
@@ -825,6 +844,22 @@ test "glyphSlot: ASCII range" {
     try std.testing.expectEqual(@as(?u32, 94), glyphSlot(126));
     // DEL (127) = not in atlas
     try std.testing.expectEqual(@as(?u32, null), glyphSlot(127));
+}
+
+test "zoomedFontSize: in/out step by one, reset to config" {
+    try std.testing.expectEqual(@as(u16, 17), zoomedFontSize(.in, 16, 14));
+    try std.testing.expectEqual(@as(u16, 15), zoomedFontSize(.out, 16, 14));
+    try std.testing.expectEqual(@as(u16, 14), zoomedFontSize(.reset, 16, 14));
+}
+
+test "zoomedFontSize: zoom-out clamps at min_font_size" {
+    try std.testing.expectEqual(min_font_size, zoomedFontSize(.out, min_font_size, 14));
+    try std.testing.expectEqual(min_font_size, zoomedFontSize(.out, min_font_size + 1, 14));
+}
+
+test "zoomedFontSize: zoom-in saturates instead of overflowing" {
+    const max = std.math.maxInt(u16);
+    try std.testing.expectEqual(max, zoomedFontSize(.in, max, 14));
 }
 
 test "glyphSlot: Latin-1 Supplement" {

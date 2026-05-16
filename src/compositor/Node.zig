@@ -38,26 +38,26 @@ pub const Kind = enum(u8) {
 // or render, never during tiling math.
 
 // Hot path: touched every layout recalculation
-pos_x: [max_nodes]i32 = [_]i32{0} ** max_nodes,
-pos_y: [max_nodes]i32 = [_]i32{0} ** max_nodes,
-width: [max_nodes]u32 = [_]u32{0} ** max_nodes,
-height: [max_nodes]u32 = [_]u32{0} ** max_nodes,
+pos_x: [max_nodes]i32 = @splat(0),
+pos_y: [max_nodes]i32 = @splat(0),
+width: [max_nodes]u32 = @splat(0),
+height: [max_nodes]u32 = @splat(0),
 
 // Warm path: touched on workspace switch and focus change
-kind: [max_nodes]Kind = [_]Kind{.empty} ** max_nodes,
-node_id: [max_nodes]u64 = [_]u64{0} ** max_nodes,
-workspace: [max_nodes]u8 = [_]u8{0} ** max_nodes,
-floating: [max_nodes]bool = [_]bool{false} ** max_nodes,
+kind: [max_nodes]Kind = @splat(.empty),
+node_id: [max_nodes]u64 = @splat(0),
+workspace: [max_nodes]u8 = @splat(0),
+floating: [max_nodes]bool = @splat(false),
 
 // Cold path: touched only on render or surface interaction
-scene_tree: [max_nodes]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** max_nodes,
-xdg_toplevel: [max_nodes]?*wlr.wlr_xdg_toplevel = [_]?*wlr.wlr_xdg_toplevel{null} ** max_nodes,
+scene_tree: [max_nodes]?*wlr.wlr_scene_tree = @splat(null),
+xdg_toplevel: [max_nodes]?*wlr.wlr_xdg_toplevel = @splat(null),
 // Populated for XWayland-backed nodes. When non-null, applyRect drives
 // wlr_xwayland_surface_configure instead of xdg_toplevel_set_size —
 // without this, Emacs / Steam / GIMP stay at their default pre-map size
 // (usually a single pixel in the top-left corner) no matter how the
 // tiling engine lays them out.
-xwayland_surface: [max_nodes]?*wlr.wlr_xwayland_surface = [_]?*wlr.wlr_xwayland_surface{null} ** max_nodes,
+xwayland_surface: [max_nodes]?*wlr.wlr_xwayland_surface = @splat(null),
 
 // Four scene_rect nodes that draw a border frame around wayland /
 // xwayland surfaces. Terminal panes draw their border inside their
@@ -65,24 +65,24 @@ xwayland_surface: [max_nodes]?*wlr.wlr_xwayland_surface = [_]?*wlr.wlr_xwayland_
 // xwayland clients the same visual. Index 0..3 = top, right, bottom,
 // left. Null entries mean no border (border_width = 0 or
 // allocation failed at create time).
-border_rects: [max_nodes][4]?*wlr.wlr_scene_rect = [_][4]?*wlr.wlr_scene_rect{[_]?*wlr.wlr_scene_rect{null} ** 4} ** max_nodes,
+border_rects: [max_nodes][4]?*wlr.wlr_scene_rect = @splat(@splat(null)),
 // Back-pointer to the XdgView owning this slot. Stored as *anyopaque
 // to avoid a Node↔XdgView import cycle (XdgView imports Server imports
 // Node). Click-to-focus + Win+X need this to resolve the node_id under
 // the cursor to the XdgView* that focusView/closeFocused operate on.
-xdg_view: [max_nodes]?*anyopaque = [_]?*anyopaque{null} ** max_nodes,
+xdg_view: [max_nodes]?*anyopaque = @splat(null),
 
 // Identity: touched on MCP queries, name lookups, config rule matching
-name: [max_nodes][32]u8 = [_][32]u8{[_]u8{0} ** 32} ** max_nodes,
-name_len: [max_nodes]u8 = [_]u8{0} ** max_nodes,
-group_id: [max_nodes]u8 = [_]u8{0} ** max_nodes, // 0=none, 1-255=group index
-app_id: [max_nodes][64]u8 = [_][64]u8{[_]u8{0} ** 64} ** max_nodes,
-app_id_len: [max_nodes]u8 = [_]u8{0} ** max_nodes,
+name: [max_nodes][32]u8 = @splat(@splat(0)),
+name_len: [max_nodes]u8 = @splat(0),
+group_id: [max_nodes]u8 = @splat(0), // 0=none, 1-255=group index
+app_id: [max_nodes][64]u8 = @splat(@splat(0)),
+app_id_len: [max_nodes]u8 = @splat(0),
 
 // Urgency bit — set by xdg_activation_v1 when a hidden client
 // requests focus. Cleared on focus gain. Bar renders an indicator
 // on workspaces containing any urgent node.
-urgent: [max_nodes]bool = [_]bool{false} ** max_nodes,
+urgent: [max_nodes]bool = @splat(false),
 
 // Per-workspace urgent count. Maintained incrementally by
 // markUrgent / clearUrgent / moveSlotToWorkspace / remove so
@@ -90,7 +90,7 @@ urgent: [max_nodes]bool = [_]bool{false} ** max_nodes,
 // once per pill × 10 pills × 60 Hz on the bar render path. Index
 // in [0..10); HIDDEN_WS (0xFF) doesn't participate — hidden
 // scratchpads are not shown in bar pills.
-urgent_count_per_ws: [10]u16 = [_]u16{0} ** 10,
+urgent_count_per_ws: [10]u16 = @splat(0),
 
 /// node_id → slot index. Maintained by addSurface / addTerminal /
 /// remove; findById answers in O(1) rather than scanning 256 slots
@@ -103,8 +103,8 @@ by_id: std.AutoHashMapUnmanaged(u64, u16) = .empty,
 // by the xmonad NamedScratchpad pattern. Toggling a scratchpad flips
 // its `workspace` between HIDDEN_WS and the currently-focused real
 // workspace. Same name used on repeat toggles to find the same node.
-scratchpad_name: [max_nodes][max_scratchpad_name]u8 = [_][max_scratchpad_name]u8{[_]u8{0} ** max_scratchpad_name} ** max_nodes,
-scratchpad_name_len: [max_nodes]u8 = [_]u8{0} ** max_nodes,
+scratchpad_name: [max_nodes][max_scratchpad_name]u8 = @splat(@splat(0)),
+scratchpad_name_len: [max_nodes]u8 = @splat(0),
 
 // Bookkeeping
 count: u16 = 0,

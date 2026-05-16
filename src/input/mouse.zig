@@ -29,6 +29,9 @@ const MASTER_RATIO_MIN: f32 = 0.15;
 const MASTER_RATIO_MAX: f32 = 0.85;
 
 const SHIFT_MASK: u32 = 1; // XCB ShiftMask
+/// Alt/Mod1 modifier mask, resolved per-OS at comptime (X11/XKB 8, macOS
+/// NSEventModifierFlagOption, Win32 MOD_ALT). Used for Alt+scroll-wheel zoom.
+const ALT_MASK: u32 = platform_types.keycodes.ALT_MASK;
 
 /// Persistent mouse state tracked across events.
 pub const MouseState = struct {
@@ -64,9 +67,15 @@ pub const MouseConfig = struct {
     copy_on_select: bool,
     scroll_speed: u32,
     touchpad_scroll_invert: bool,
+    /// Alt+scroll wheel adjusts font size instead of scrolling scrollback.
+    alt_scroll_zoom: bool,
     word_delimiters: []const u8,
     show_status_bar: bool,
 };
+
+/// Font-zoom request surfaced by a mouse event (Alt+scroll wheel).
+/// `.none` means the event did not ask for a zoom.
+pub const ZoomRequest = enum { none, in, out };
 
 /// Result from mouse press handling — tells main.zig what side effects to apply.
 pub const PressResult = struct {
@@ -76,6 +85,8 @@ pub const PressResult = struct {
     panes_changed: bool = false,
     /// Grid needs redraw
     dirty: bool = false,
+    /// Font-zoom step requested (Alt+scroll wheel); caller re-rasterizes.
+    zoom: ZoomRequest = .none,
 };
 
 /// Result from mouse release handling.
@@ -355,6 +366,18 @@ fn handleClickToFocus(mux: *Multiplexer, allocator: std.mem.Allocator, mouse_x: 
 
 // ── Main Event Handlers ──────────────────────────────────────────
 
+/// Decide whether a mouse press is an Alt+scroll-wheel font-zoom request.
+/// Pure: depends only on the config flag, the modifier mask, and the button.
+/// `scroll_up` zooms in, `scroll_down` zooms out; any other button is `.none`.
+fn zoomRequestFor(cfg: MouseConfig, mouse: platform_types.MouseEvent) ZoomRequest {
+    if (!cfg.alt_scroll_zoom or mouse.modifiers & ALT_MASK == 0) return .none;
+    return switch (mouse.button) {
+        .scroll_up => .in,
+        .scroll_down => .out,
+        else => .none,
+    };
+}
+
 /// Handle a mouse press event.
 pub fn handleMousePress(
     mux: *Multiplexer,
@@ -367,6 +390,15 @@ pub fn handleMousePress(
     win_width: u32,
     win_height: u32,
 ) PressResult {
+    // Alt+scroll wheel → font zoom. A teru-chrome action: intercepted before
+    // PTY mouse reporting so an app with mouse tracking on (vim, less) does
+    // not also receive the scroll event.
+    switch (zoomRequestFor(cfg, mouse)) {
+        .in => return .{ .consumed = true, .zoom = .in },
+        .out => return .{ .consumed = true, .zoom = .out },
+        .none => {},
+    }
+
     // Mouse reporting to PTY (modes 1000/1002/1003)
     if (reportMousePress(mux, mouse, lp, ms)) {
         return .{ .consumed = true };
@@ -665,4 +697,36 @@ test "LayoutParams: struct fields" {
 test "constants: ratio bounds" {
     try std.testing.expect(MASTER_RATIO_MIN < MASTER_RATIO_MAX);
     try std.testing.expect(DOUBLE_CLICK_NS > 0);
+}
+
+fn testMouseConfig(alt_scroll_zoom: bool) MouseConfig {
+    return .{
+        .copy_on_select = false,
+        .scroll_speed = 3,
+        .touchpad_scroll_invert = false,
+        .alt_scroll_zoom = alt_scroll_zoom,
+        .word_delimiters = " ",
+        .show_status_bar = false,
+    };
+}
+
+fn testMouseEvent(button: platform_types.MouseButton, modifiers: u32) platform_types.MouseEvent {
+    return .{ .x = 0, .y = 0, .button = button, .modifiers = modifiers };
+}
+
+test "zoomRequestFor: Alt+scroll maps to a zoom direction" {
+    const cfg = testMouseConfig(true);
+    try std.testing.expectEqual(ZoomRequest.in, zoomRequestFor(cfg, testMouseEvent(.scroll_up, ALT_MASK)));
+    try std.testing.expectEqual(ZoomRequest.out, zoomRequestFor(cfg, testMouseEvent(.scroll_down, ALT_MASK)));
+}
+
+test "zoomRequestFor: ignored without Alt, when disabled, or for non-scroll buttons" {
+    // No Alt held → plain scroll, not a zoom.
+    try std.testing.expectEqual(ZoomRequest.none, zoomRequestFor(testMouseConfig(true), testMouseEvent(.scroll_up, 0)));
+    // alt_scroll_zoom disabled → Alt+scroll falls through to scrollback.
+    try std.testing.expectEqual(ZoomRequest.none, zoomRequestFor(testMouseConfig(false), testMouseEvent(.scroll_up, ALT_MASK)));
+    // Alt+click is not a zoom — only the wheel zooms.
+    try std.testing.expectEqual(ZoomRequest.none, zoomRequestFor(testMouseConfig(true), testMouseEvent(.left, ALT_MASK)));
+    // Shift+scroll (different modifier) is not a zoom.
+    try std.testing.expectEqual(ZoomRequest.none, zoomRequestFor(testMouseConfig(true), testMouseEvent(.scroll_up, platform_types.keycodes.SHIFT_MASK)));
 }

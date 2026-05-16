@@ -35,7 +35,7 @@ graph: ?*ProcessGraph = null,
 spawn_config: Pane.SpawnConfig = .{},
 
 // Notification state
-notification: [64]u8 = [_]u8{0} ** 64,
+notification: [64]u8 = @splat(0),
 notification_len: u8 = 0,
 notification_time: i128 = 0,
 notification_duration_ns: i128 = 5_000_000_000,
@@ -434,7 +434,7 @@ pub fn resizePanePtys(self: *Multiplexer, screen_width: u32, screen_height: u32,
             const new_rows: u16 = @intCast(@max(1, content.height / @as(u16, @intCast(cell_height))));
             pane.ptyResize(new_rows, new_cols);
             if (new_rows != pane.grid.rows or new_cols != pane.grid.cols) {
-                pane.grid.resize(self.allocator, new_rows, new_cols) catch {};
+                pane.grid.resize(self.allocator, new_rows, new_cols) catch |e| std.log.warn("pane grid resize failed: {s}", .{@errorName(e)});
                 pane.linkVt(self.allocator);
             }
             pane.grid.dirty = true;

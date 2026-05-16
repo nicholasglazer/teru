@@ -54,7 +54,7 @@ pub fn setHook(self: *Hooks, event: HookEvent, value: []const u8) void {
     const field = self.fieldPtr(event);
     // Free any previous value
     if (field.*) |prev| self.allocator.free(prev);
-    field.* = self.allocator.dupeZ(u8, value) catch null;
+    field.* = self.allocator.dupeSentinel(u8, value, 0) catch null;
 }
 
 /// Execute a hook command asynchronously (fork+exec, don't wait).

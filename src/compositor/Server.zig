@@ -64,6 +64,8 @@ layout_engine: LayoutEngine,
 nodes: NodeRegistry,
 keybinds: KB = .{},
 font_atlas: ?*teru.render.FontAtlas = null, // shared across all terminal panes
+font_size: u16 = 16, // live font size — mutated by Alt+scroll zoom (ServerFont)
+font_size_base: u16 = 16, // config font size — the `.reset` zoom target
 next_node_id: u64 = 1,
 focused_view: ?*XdgView = null,
 focused_terminal: ?*TerminalPane = null,
@@ -87,7 +89,7 @@ drag_terminal: ?*TerminalPane = null,
 // Exactly one of focused_terminal, focused_view, focused_xwayland is
 // non-null at any time — focus helpers null the other two.
 focused_xwayland: ?*wlr.wlr_xwayland_surface = null,
-terminal_panes: [NodeRegistry.max_nodes]?*TerminalPane = [_]?*TerminalPane{null} ** NodeRegistry.max_nodes,
+terminal_panes: [NodeRegistry.max_nodes]?*TerminalPane = @splat(null),
 terminal_count: u16 = 0,
 /// node_id → *TerminalPane index. Rebuilt by spawn/close; read by
 /// terminalPaneById + setSlotVisible so visibility recomputation
@@ -112,12 +114,12 @@ primary_output: ?*wlr.wlr_output = null,
 
 outputs: std.ArrayList(*Output) = .empty,
 focused_output: ?*Output = null,
-workspace_trees: [10]?*wlr.wlr_scene_tree = [_]?*wlr.wlr_scene_tree{null} ** 10,
+workspace_trees: [10]?*wlr.wlr_scene_tree = @splat(null),
 
 // Active XKB layout name (for the {keymap} bar widget).
 // Stored as a static buffer because the xkb string can outlive
 // the keymap it came from between reads.
-active_keymap_name_buf: [64]u8 = [_]u8{0} ** 64,
+active_keymap_name_buf: [64]u8 = @splat(0),
 active_keymap_name: []const u8 = "",
 
 // Every keyboard device seen via setupKeyboard. Append-only while the
@@ -145,8 +147,7 @@ arrange_scratch_buf: [16 * 1024]u8 = undefined,
 /// Push widgets registered via MCP. Referenced by bar format strings
 /// with `{widget:name}`. Fixed-size array; slot 0..N with `.used=false`
 /// are empty. No heap allocation. Not persisted across hot-restart.
-push_widgets: [teru.render.PushWidget.max_widgets]teru.render.PushWidget.PushWidget =
-    [_]teru.render.PushWidget.PushWidget{.{}} ** teru.render.PushWidget.max_widgets,
+push_widgets: [teru.render.PushWidget.max_widgets]teru.render.PushWidget.PushWidget = @splat(.{}),
 /// Count of `push_widgets[i].used == true`. Maintained incrementally
 /// by setPushWidget / deletePushWidget so barSignature and
 /// countPushWidgets are O(1).
@@ -189,8 +190,8 @@ prev_workspace: ?u8 = null,
 // to those actions, this array resolves to the shell command.
 // Populated from `[keybind]` config section entries of the form
 // `Mod+Return = spawn:teru`.
-spawn_table: [32][256]u8 = [_][256]u8{[_]u8{0} ** 256} ** 32,
-spawn_table_len: [32]u16 = [_]u16{0} ** 32,
+spawn_table: [32][256]u8 = @splat(@splat(0)),
+spawn_table_len: [32]u16 = @splat(0),
 
 // User-defined scratchpad chord names. Paired with scratchpad_0..7
 // Action variants. Populated from `[keybind]` entries of the form
@@ -198,8 +199,8 @@ spawn_table_len: [32]u16 = [_]u16{0} ** 32,
 // defaults (term / term2 / htop / help) bound to Super+T,
 // Super+Shift+T, Super+H, Super+Shift+H — see applyDefaultScratchpads
 // below.
-scratchpad_table: [8][32]u8 = [_][32]u8{[_]u8{0} ** 32} ** 8,
-scratchpad_table_len: [8]u8 = [_]u8{0} ** 8,
+scratchpad_table: [8][32]u8 = @splat(@splat(0)),
+scratchpad_table_len: [8]u8 = @splat(0),
 
 // Permanently-disabled scene tree used to park scratchpad nodes when
 // toggled off. See getOrCreateHiddenTree() for rationale — we can't
@@ -664,6 +665,8 @@ pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem
         const fa = allocator.create(teru.render.FontAtlas) catch return;
         fa.* = atlas;
         self.font_atlas = fa;
+        self.font_size = config.font_size;
+        self.font_size_base = config.font_size;
         std.debug.print("teruwm: font loaded ({d}x{d} cells)\n", .{ fa.cell_width, fa.cell_height });
     } else |err| {
         std.debug.print("teruwm: font init failed: {}, using fallback\n", .{err});
@@ -1013,6 +1016,14 @@ pub fn deinit(self: *Server) void {
     if (self.bar_tick_src) |src| {
         _ = wlr.wl_event_source_remove(src);
         self.bar_tick_src = null;
+    }
+    // terminal_repeat_src is created lazily by armTerminalRepeat and is
+    // only *disarmed* (not removed) by cancelTerminalRepeat, so it can
+    // still be live here. terminalRepeatTick does not check shutting_down —
+    // a tick firing during wl_display_destroy would deref a freed pane.
+    if (self.terminal_repeat_src) |src| {
+        _ = wlr.wl_event_source_remove(src);
+        self.terminal_repeat_src = null;
     }
 
     // Free every InhibitorTracker before wl_display_destroy fires
@@ -1686,17 +1697,6 @@ pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
     // startup-fired flag so the next visit re-runs its startup hook.
     for (0..10) |ws_i| self.resetWorkspaceStartupIfEmpty(@intCast(ws_i));
 
-    // Remove event source
-    if (tp.event_source) |es| {
-        _ = wlr.wl_event_source_remove(es);
-        tp.event_source = null;
-    }
-
-    // Hide scene buffer
-    if (wlr.miozu_scene_buffer_node(tp.scene_buffer)) |node| {
-        wlr.wlr_scene_node_set_enabled(node, false);
-    }
-
     // Remove from terminal_panes array. Scratchpads since v0.4.18 live
     // here too (they're regular panes with a scratchpad_name tag) —
     // single loop covers both cases.
@@ -1709,14 +1709,35 @@ pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
     }
     _ = self.pane_index.remove(tp.node_id);
 
-    // Clear focus if this was focused
-    if (self.focused_terminal == tp) {
-        self.focused_terminal = null;
-        self.updateFocusedTerminal();
-    }
+    // Drop the dangling focus pointer before tp is freed below.
+    // updateFocusedTerminal() is deferred until after the re-tile.
+    if (self.focused_terminal == tp) self.focused_terminal = null;
 
-    // Re-tile
-    self.arrangeworkspace(self.layout_engine.active_workspace);
+    // Free the pane. tp.deinit removes the PTY event source, hides +
+    // detaches the scene buffer, frees the grid/scrollback and closes
+    // the PTY master fd; destroy() releases the struct. Mirrors
+    // closeNode — must come after the unregistration above so nothing
+    // dereferences a freed pane. (Previously this function only hid the
+    // scene node and leaked the pane + its PTY fd on every shell exit —
+    // unnoticed because its sole caller, ptyReadable's HANGUP branch,
+    // was dead code.)
+    tp.deinit(self.zig_allocator);
+    self.zig_allocator.destroy(tp);
+
+    // Re-tile, then move focus onto a surviving pane. removeNode above
+    // cleared the workspace's active_node (it pointed at the exited
+    // pane), and for split-tree layouts getActiveNodeId() then yields
+    // null — so updateFocusedTerminal would give up and leave keyboard
+    // focus null until the user manually refocuses. Re-seat active_node
+    // on a survivor first so focus follows the exit.
+    const aws_idx = self.layout_engine.active_workspace;
+    self.arrangeworkspace(aws_idx);
+    const aws = &self.layout_engine.workspaces[aws_idx];
+    if (aws.active_node == null and aws.node_ids.items.len > 0) {
+        const idx = @min(aws.active_index, aws.node_ids.items.len - 1);
+        aws.active_node = aws.node_ids.items[idx];
+    }
+    self.updateFocusedTerminal();
     if (self.bar) |b| _ = b.render(self);
 }
 

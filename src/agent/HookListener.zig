@@ -46,7 +46,7 @@ socket_path: [108]u8,
 socket_path_len: usize,
 
 /// Ring buffer of queued events (main loop drains this).
-queue: [MAX_QUEUED]?QueuedEvent = [_]?QueuedEvent{null} ** MAX_QUEUED,
+queue: [MAX_QUEUED]?QueuedEvent = @splat(null),
 queue_head: usize = 0,
 queue_tail: usize = 0,
 
@@ -62,7 +62,7 @@ pub fn init(allocator: std.mem.Allocator) !HookListener {
 
     const server = ipc.listen(path) catch return error.SocketFailed;
 
-    var path_buf: [108]u8 = [_]u8{0} ** 108;
+    var path_buf: [108]u8 = @splat(0);
     const path_len = @min(path.len, path_buf.len);
     @memcpy(path_buf[0..path_len], path[0..path_len]);
 

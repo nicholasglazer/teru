@@ -92,7 +92,7 @@ pub fn renderPaneIntoRect(
 
             for (screen_y..max_y) |py| {
                 const row_start = py * fb_w;
-                @memset(renderer.framebuffer[row_start + screen_x .. row_start + max_x], bg);
+                compat.memsetU32(renderer.framebuffer[row_start + screen_x .. row_start + max_x], bg);
             }
 
             // Bold-is-bright: shift ANSI 0-7 to bright 8-15 when bold
@@ -303,15 +303,15 @@ pub fn renderAgentStatusBar(
 
         var offset: usize = 0;
         if (running_w > 0) {
-            @memset(row[offset..][0..running_w], scheme.ansi[6]); // cyan
+            compat.memsetU32(row[offset..][0..running_w], scheme.ansi[6]); // cyan
             offset += running_w;
         }
         if (done_w > 0) {
-            @memset(row[offset..][0..done_w], scheme.ansi[2]); // green
+            compat.memsetU32(row[offset..][0..done_w], scheme.ansi[2]); // green
             offset += done_w;
         }
         if (failed_w > 0) {
-            @memset(row[offset..][0..failed_w], scheme.ansi[1]); // red
+            compat.memsetU32(row[offset..][0..failed_w], scheme.ansi[1]); // red
         }
     }
 }

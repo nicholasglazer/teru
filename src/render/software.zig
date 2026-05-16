@@ -226,10 +226,7 @@ pub const SoftwareRenderer = struct {
         const has_right_strip = grid_right < fb_w;
         if ((pad > 0 or has_bottom_strip or has_right_strip) and row_min == 0) {
             const bg_fill = self.scheme.bg;
-            // Use compat.memsetU32 for all []u32 fills with a runtime scalar:
-            // Zig 0.17.0-dev.135 mis-codegens `@memset(slice_u32, runtime_scalar)`
-            // in Debug builds (rep-stosd src/dst swap → fault at the value's address).
-            // Reproducer: `Renderer CPU tier init and render` test in tier.zig.
+            // []u32 runtime fills route through compat.memsetU32 — see compat.zig.
             if (pad > 0) {
                 const top_end = @min(pad * fb_w, self.framebuffer.len);
                 compat.memsetU32(self.framebuffer[0..top_end], bg_fill);

@@ -46,11 +46,11 @@ const Context = struct {
     pane_id: u64,
     graph_node_id: u64,
     alive: bool,
-    name: [64]u8 = [_]u8{0} ** 64,
+    name: [64]u8 = @splat(0),
     name_len: usize = 0,
-    group: [64]u8 = [_]u8{0} ** 64,
+    group: [64]u8 = @splat(0),
     group_len: usize = 0,
-    role: [64]u8 = [_]u8{0} ** 64,
+    role: [64]u8 = @splat(0),
     role_len: usize = 0,
 };
 
@@ -65,7 +65,7 @@ graph: *ProcessGraph,
 allocator: Allocator,
 
 /// Context table (small fixed array, no heap allocation)
-contexts: [max_contexts]?Context = [_]?Context{null} ** max_contexts,
+contexts: [max_contexts]?Context = @splat(null),
 next_context_id: u64 = 1,
 
 /// Partial line buffer for NDJSON reading (accumulates bytes until newline)
@@ -761,7 +761,7 @@ test "metadata fields truncated to 64 bytes" {
     };
 
     // Create a string longer than 64 bytes
-    const long_name = "a" ** 100;
+    const long_name: [100]u8 = @splat('a');
     const name_len = @min(long_name.len, ctx.name.len);
     @memcpy(ctx.name[0..name_len], long_name[0..name_len]);
     ctx.name_len = name_len;

@@ -88,7 +88,7 @@ pub const WorkspaceDef = struct {
     layout: Layout = .master_stack,
     ratio: f32 = 0.55,
     index: u8 = 0,
-    panes: [max_panes_per_workspace]PaneDef = [_]PaneDef{.{}} ** max_panes_per_workspace,
+    panes: [max_panes_per_workspace]PaneDef = @splat(.{}),
     pane_count: u8 = 0,
 
     pub fn deinit(self: *WorkspaceDef, allocator: Allocator) void {
@@ -103,7 +103,7 @@ pub const WorkspaceDef = struct {
 pub const SessionDef = struct {
     name: []const u8 = "",
     description: []const u8 = "",
-    workspaces: [max_workspaces]WorkspaceDef = [_]WorkspaceDef{.{}} ** max_workspaces,
+    workspaces: [max_workspaces]WorkspaceDef = @splat(.{}),
     workspace_count: u8 = 0,
     allocator: Allocator,
 

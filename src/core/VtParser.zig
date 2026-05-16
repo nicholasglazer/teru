@@ -53,7 +53,7 @@ response_fn: ?*const fn (data: []const u8, ctx: ?*anyopaque) void = null,
 response_ctx: ?*anyopaque = null,
 
 /// CSI parameter accumulation
-params: [MAX_PARAMS]u16 = [_]u16{0} ** MAX_PARAMS,
+params: [MAX_PARAMS]u16 = @splat(0),
 param_count: u8 = 0,
 /// CSI prefix byte ('?', '>', '=', '<', or 0 for none)
 csi_prefix: u8 = 0,
@@ -61,11 +61,11 @@ csi_prefix: u8 = 0,
 intermediate: u8 = 0,
 
 /// OSC string buffer
-osc_buf: [MAX_OSC_LEN]u8 = [_]u8{0} ** MAX_OSC_LEN,
+osc_buf: [MAX_OSC_LEN]u8 = @splat(0),
 osc_len: u16 = 0,
 
 /// Parsed title from OSC 0
-title: [MAX_OSC_LEN]u8 = [_]u8{0} ** MAX_OSC_LEN,
+title: [MAX_OSC_LEN]u8 = @splat(0),
 title_len: u16 = 0,
 title_changed: bool = false,
 
@@ -797,7 +797,7 @@ pub fn consumeAgentEvent(self: *VtParser) ?[]const u8 {
 // ── CSI dispatch ─────────────────────────────────────────────────
 
 fn resetCsiState(self: *VtParser) void {
-    self.params = [_]u16{0} ** MAX_PARAMS;
+    self.params = @splat(0);
     self.param_count = 0;
     self.csi_prefix = 0;
     self.intermediate = 0;

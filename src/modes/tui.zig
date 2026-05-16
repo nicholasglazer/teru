@@ -123,7 +123,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
             const rd = daemon_proto.encodeResize(cr, term_cols);
             @memcpy(rbuf[8..12], &rd);
             _ = daemon_proto.sendMessage(sock, .resize, &rbuf);
-            pane.grid.resize(allocator, cr, term_cols) catch {};
+            pane.grid.resize(allocator, cr, term_cols) catch |e| std.log.warn("pane grid resize failed: {s}", .{@errorName(e)});
             pane.grid.clearScreen(2);
             pane.grid.cursor_row = 0;
             pane.grid.cursor_col = 0;

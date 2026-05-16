@@ -626,8 +626,8 @@ test "sessionSocketPath: generates expected format" {
 test "sessionSocketPath: long name returns null" {
     var buf: [socket_path_max]u8 = undefined;
     // 100 char name should overflow the 108-byte sun_path
-    const long_name = "a" ** 100;
-    const path = sessionSocketPath(long_name, &buf);
+    const long_name: [100]u8 = @splat('a');
+    const path = sessionSocketPath(&long_name, &buf);
     try std.testing.expect(path == null);
 }
 

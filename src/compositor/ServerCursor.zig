@@ -33,6 +33,7 @@ const Server = @import("Server.zig");
 const XdgView = @import("XdgView.zig");
 const NodeRegistry = @import("Node.zig");
 const Focus = @import("ServerFocus.zig");
+const ServerFont = @import("ServerFont.zig");
 
 // ── Signal handlers ──────────────────────────────────────────
 
@@ -72,6 +73,19 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
 
     const orientation = wlr.miozu_pointer_axis_orientation(event);
     const delta = wlr.miozu_pointer_axis_delta(event);
+
+    // Alt+scroll wheel → font zoom. A compositor-chrome action: when a
+    // native terminal pane is focused and Alt is held, the wheel resizes
+    // the shared font instead of scrolling scrollback, and the event is
+    // not forwarded to any client. Scroll up zooms in, down zooms out
+    // (independent of touchpad_scroll_invert — matches standalone teru).
+    if (orientation == 0 and server.wm_config.alt_scroll_zoom and
+        server.focused_terminal != null and delta != 0 and readAltHeld(server))
+    {
+        const target: teru.render.FontAtlas.ZoomTarget = if (delta < 0) .in else .out;
+        _ = ServerFont.applyFontZoom(server, target);
+        return;
+    }
 
     if (orientation == 0 and server.focused_terminal != null) {
         const tp = server.focused_terminal.?;
@@ -202,6 +216,14 @@ fn readSuperHeld(server: *Server, override: ?bool) bool {
     const keyboard = wlr.miozu_seat_get_keyboard(server.seat) orelse return false;
     const xkb_st = wlr.miozu_keyboard_xkb_state(keyboard) orelse return false;
     return wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_LOGO, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
+}
+
+/// Read whether Alt (Mod1) is currently held, from live xkb state.
+/// Used by the Alt+scroll-wheel font-zoom path in `handleCursorAxis`.
+fn readAltHeld(server: *Server) bool {
+    const keyboard = wlr.miozu_seat_get_keyboard(server.seat) orelse return false;
+    const xkb_st = wlr.miozu_keyboard_xkb_state(keyboard) orelse return false;
+    return wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_ALT, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
 }
 
 /// Phase B — Super+click initiates move (LEFT) or resize (RIGHT) on

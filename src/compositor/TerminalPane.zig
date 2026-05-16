@@ -473,6 +473,28 @@ pub fn resize(self: *TerminalPane, pixel_w: u32, pixel_h: u32) void {
     self.render();
 }
 
+/// Re-adopt the server's shared font atlas after a font-size zoom.
+/// Updates the renderer's cell metrics + glyph atlas, then re-grids to the
+/// current framebuffer with the new cell size. The pixel rect is unchanged
+/// here — `arrangeWorkspace` reflows pane positions/sizes afterwards (and
+/// re-grids again only if the bar-height change shifted this pane's rect).
+pub fn refont(self: *TerminalPane) void {
+    const fa = self.server.font_atlas orelse return;
+    if (fa.cell_width == 0 or fa.cell_height == 0) return;
+
+    self.renderer.cell_width = fa.cell_width;
+    self.renderer.cell_height = fa.cell_height;
+    self.renderer.glyph_atlas = fa.atlas_data;
+    self.renderer.atlas_width = fa.atlas_width;
+    self.renderer.atlas_height = fa.atlas_height;
+
+    const new_cols: u16 = @intCast(@max(1, self.renderer.width / fa.cell_width));
+    const new_rows: u16 = @intCast(@max(1, self.renderer.height / fa.cell_height));
+    self.pane.resize(self.server.zig_allocator, new_rows, new_cols) catch return;
+    self.pane.grid.markAllDirty();
+    self.render();
+}
+
 /// Render the terminal grid into the pixel buffer + draw border.
 pub fn render(self: *TerminalPane) void {
     const sel_ptr: ?*const Selection = if (self.selection.active) &self.selection else null;
@@ -565,7 +587,15 @@ pub fn setPosition(self: *TerminalPane, x: i32, y: i32) void {
 
 fn ptyReadable(_: c_int, mask: u32, data: ?*anyopaque) callconv(.c) c_int {
     const tp: *TerminalPane = @ptrCast(@alignCast(data orelse return 0));
-    if (mask & 0x10 != 0) { // WL_EVENT_HANGUP
+    // Shell exited / fd error → tear the pane down. handleTerminalExit
+    // removes this event source; without it the level-triggered fd
+    // re-fires every dispatch and the compositor spins at 100% CPU.
+    // wlroots reports HANGUP/ERROR for pipes, but a Linux PTY master
+    // whose slave has closed stays EPOLLIN-readable (read() returns EIO)
+    // and never raises HANGUP — the live-shell probe after poll() below
+    // is what actually catches an exited shell. (The original test was
+    // `mask & 0x10`, which can never be true: WL_EVENT_HANGUP is 0x04.)
+    if (mask & (wlr.WL_EVENT_HANGUP | wlr.WL_EVENT_ERROR) != 0) {
         tp.server.handleTerminalExit(tp);
         return 0;
     }
@@ -583,6 +613,12 @@ fn ptyReadable(_: c_int, mask: u32, data: ?*anyopaque) callconv(.c) c_int {
         } else if (tp.server.primary_output) |output| {
             wlr.wlr_output_schedule_frame(output);
         }
+    } else if (!tp.pane.isAlive()) {
+        // Woke readable but the read produced nothing and the child is
+        // gone — the PTY master is at EOF/EIO. Tear down here, else the
+        // level-triggered fd re-fires forever and the compositor spins.
+        tp.server.handleTerminalExit(tp);
+        return 0;
     }
     return 0;
 }

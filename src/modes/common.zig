@@ -67,7 +67,7 @@ pub const setenv = if (builtin.os.tag == .windows) struct {
 // one module-level mutable.
 
 pub var cli_no_bar: bool = false;
-pub var cli_exec_argv_buf: [64]?[*:0]const u8 = .{null} ** 64;
+pub var cli_exec_argv_buf: [64]?[*:0]const u8 = @splat(null);
 pub var cli_exec_argv: ?[*:null]const ?[*:0]const u8 = null;
 
 // ── stdout helpers ────────────────────────────────────────────
@@ -92,9 +92,9 @@ pub fn outFmt(buf: []u8, comptime fmt: []const u8, args: anytype) void {
 
 pub const RestoreInfo = struct {
     pane_count: u16,
-    workspace_panes: [10]u16 = .{0} ** 10,
-    workspace_layouts: [10]u8 = .{0} ** 10,
-    workspace_ratios: [10]f32 = .{0.55} ** 10,
+    workspace_panes: [10]u16 = @splat(0),
+    workspace_layouts: [10]u8 = @splat(0),
+    workspace_ratios: [10]f32 = @splat(0.55),
     active_workspace: u8 = 0,
 };
 

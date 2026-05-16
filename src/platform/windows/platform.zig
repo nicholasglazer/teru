@@ -80,7 +80,7 @@ const PAINTSTRUCT = extern struct {
     rcPaint: RECT = .{},
     fRestore: BOOL = 0,
     fIncUpdate: BOOL = 0,
-    rgbReserved: [32]BYTE = [_]BYTE{0} ** 32,
+    rgbReserved: [32]BYTE = @splat(0),
 };
 
 const BITMAPINFOHEADER = extern struct {
@@ -288,7 +288,7 @@ pub const Win32Window = struct {
         const hinstance = GetModuleHandleW(null);
 
         // Convert title to wide string (UTF-16, ASCII subset)
-        var wide_title: [256:0]u16 = [_:0]u16{0} ** 256;
+        var wide_title: [256:0]u16 = @splat(0);
         const len = @min(title.len, 255);
         for (0..len) |i| {
             wide_title[i] = title[i]; // ASCII subset
@@ -467,7 +467,7 @@ pub const Win32Window = struct {
 
     /// Set window title. Converts UTF-8 to UTF-16 (ASCII subset).
     pub fn setTitle(self: *Win32Window, title: []const u8) void {
-        var wide_title: [256:0]u16 = [_:0]u16{0} ** 256;
+        var wide_title: [256:0]u16 = @splat(0);
         const len = @min(title.len, 255);
         for (0..len) |i| {
             // Handle ASCII subset; non-ASCII bytes become '?'
