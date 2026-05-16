@@ -21,6 +21,10 @@ const Layout = @import("ServerLayout.zig");
 const Scratchpad = @import("ServerScratchpad.zig");
 const Restart = @import("ServerRestart.zig");
 const Screenshot = @import("ServerScreenshot.zig");
+const Process = @import("ServerProcess.zig");
+const Repeat = @import("ServerRepeat.zig");
+const Config = @import("ServerConfig.zig");
+const Window = @import("ServerWindow.zig");
 const teru = @import("teru");
 const LayoutEngine = teru.LayoutEngine;
 const Keybinds = teru.Keybinds;
@@ -658,134 +662,10 @@ fn registerListeners(self: *Server) void {
     }
 }
 
-/// Apply loaded config to server state: font, colors, keybinds, workspace layouts, bars.
+/// Apply loaded config to server state: font, colors, keybinds,
+/// workspace layouts, bars. Implementation in ServerConfig.zig.
 pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem.Allocator, io: std.Io) void {
-    // ── Font atlas from config ──────────────────────────────
-    if (teru.render.FontAtlas.init(allocator, config.font_path, config.font_size, io)) |atlas| {
-        const fa = allocator.create(teru.render.FontAtlas) catch return;
-        fa.* = atlas;
-        self.font_atlas = fa;
-        self.font_size = config.font_size;
-        self.font_size_base = config.font_size;
-        std.debug.print("teruwm: font loaded ({d}x{d} cells)\n", .{ fa.cell_width, fa.cell_height });
-    } else |err| {
-        std.debug.print("teruwm: font init failed: {}, using fallback\n", .{err});
-    }
-
-    // ── Keybinds: set mod to Super (compositor), load unified defaults + media ──
-    self.keybinds.mod_key = Mods.SUPER;
-    self.keybinds.loadDefaults(); // uses mod_key = Super for all $mod bindings
-    self.keybinds.loadMediaDefaults(); // XF86 media keys (no modifier)
-    self.keybinds.loadScratchpadDefaults(); // Super+T, Super+Shift+T → scratchpad_0, scratchpad_1
-    self.applyDefaultScratchpadNames(); // seed scratchpad_table[0..1]
-    // applyDefaultScratchpadRules runs later, *after* wm_config.load
-    // — otherwise load() would overwrite the rule table with its own
-    // default-init values. Deferred to the post-load hook below.
-    // Apply user overrides from teru.conf on top
-    // (config.keybinds were parsed with the old mod — we re-load with Super)
-
-    // ── Launcher ($PATH scan) ─────────────────────────────────
-    self.launcher.init();
-
-    // ── Per-workspace layouts from config ────────────────────
-    for (0..10) |i| {
-        if (config.workspace_layout_counts[i] > 0) {
-            self.layout_engine.workspaces[i].setLayouts(
-                config.workspace_layout_lists[i][0..config.workspace_layout_counts[i]],
-            );
-        } else if (config.workspace_layouts[i]) |layout| {
-            self.layout_engine.workspaces[i].layout = layout;
-        }
-        if (config.workspace_ratios[i]) |ratio| {
-            self.layout_engine.workspaces[i].master_ratio = ratio;
-        }
-        if (config.workspace_names[i]) |name| {
-            self.layout_engine.workspaces[i].name = name;
-        }
-    }
-
-    // ── Color scheme for terminal pane rendering ─────────────
-    // Stored on server, applied to each TerminalPane's SoftwareRenderer
-
-    // ── teruwm-specific config (~/.config/teruwm/config) ────
-    self.wm_config = WmConfig.load(io);
-    if (self.wm_config.rule_count > 0) {
-        std.debug.print("teruwm: loaded {d} window rules\n", .{self.wm_config.rule_count});
-    }
-
-    // ── User-defined spawn chords from [keybind] section ────
-    self.applyWmSpawnChords();
-
-    // ── User-defined scratchpad chords from [keybind] section ──
-    self.applyWmScratchpadChords();
-
-    // ── Default scratchpad geometry rules (xmonad parity) ──
-    // Runs AFTER wm_config.load so user's `[scratchpad.NAME]` rules
-    // are already in wm_config.scratchpad_rules — the default seeder
-    // only fills in names the user hasn't customised.
-    self.applyDefaultScratchpadRules();
-}
-
-/// Resolve each `[keybind] chord = spawn:cmd` entry into a spawn_table
-/// slot and install the binding in the keybinds table.
-fn applyWmSpawnChords(self: *Server) void {
-    var slot: u8 = 0;
-    for (self.wm_config.spawn_chords[0..self.wm_config.spawn_chord_count]) |*entry| {
-        if (slot >= self.spawn_table.len) break;
-
-        // Parse the chord ("Mod+Return") via the shared trigger parser
-        const trig = Keybinds.parseTriggerWithMod(entry.getChord(), self.keybinds.mod_key) orelse {
-            std.debug.print("teruwm: skipping bad keybind chord '{s}'\n", .{entry.getChord()});
-            continue;
-        };
-
-        // Store cmd in spawn_table[slot]
-        const cmd = entry.getCmd();
-        const n = @min(cmd.len, self.spawn_table[slot].len);
-        @memcpy(self.spawn_table[slot][0..n], cmd[0..n]);
-        self.spawn_table_len[slot] = @intCast(n);
-
-        // Map to spawn_N action
-        const first_tag: u8 = @intFromEnum(Keybinds.Action.spawn_0);
-        const action: Keybinds.Action = @enumFromInt(first_tag + slot);
-
-        // Install in normal mode (shared works too but normal is the daily path)
-        _ = self.keybinds.add(.normal, trig.mods, trig.key, action);
-        slot += 1;
-    }
-    if (slot > 0) {
-        std.debug.print("teruwm: loaded {d} spawn chords\n", .{slot});
-    }
-}
-
-/// Resolve each `[keybind] chord = scratchpad:name` entry. User config
-/// entries take precedence over defaults: if a chord matches a default
-/// binding's chord we reuse the same slot (`addBinding` already
-/// overwrites same-chord mappings), but we first store the name in
-/// the next free table slot and bind `scratchpad_<slot>` to the chord.
-fn applyWmScratchpadChords(self: *Server) void {
-    var slot: u8 = 0;
-    for (self.wm_config.scratchpad_chords[0..self.wm_config.scratchpad_chord_count]) |*entry| {
-        if (slot >= self.scratchpad_table.len) break;
-
-        const trig = Keybinds.parseTriggerWithMod(entry.getChord(), self.keybinds.mod_key) orelse {
-            std.debug.print("teruwm: skipping bad scratchpad chord '{s}'\n", .{entry.getChord()});
-            continue;
-        };
-
-        const name = entry.getName();
-        const n = @min(name.len, self.scratchpad_table[slot].len);
-        @memcpy(self.scratchpad_table[slot][0..n], name[0..n]);
-        self.scratchpad_table_len[slot] = @intCast(n);
-
-        const first_tag: u8 = @intFromEnum(Keybinds.Action.scratchpad_0);
-        const action: Keybinds.Action = @enumFromInt(first_tag + slot);
-        _ = self.keybinds.add(.normal, trig.mods, trig.key, action);
-        slot += 1;
-    }
-    if (slot > 0) {
-        std.debug.print("teruwm: loaded {d} scratchpad chords\n", .{slot});
-    }
+    Config.applyConfig(self, config, allocator, io);
 }
 
 /// Scene graph root — the parent tree of every mapped node (terminals,
@@ -813,185 +693,29 @@ pub fn getOrCreateHiddenTree(self: *Server) ?*wlr.wlr_scene_tree {
     return tree;
 }
 
-/// Pre-seed scratchpad_table[0..3] with the names the default
-/// loadScratchpadDefaults() chords point at. Called once during init,
-/// before the user's [keybind] entries are applied — users who
-/// override a default chord get their own name in the next free
-/// slot, but these defaults stay live for any chord they didn't
-/// rebind.
-fn applyDefaultScratchpadNames(self: *Server) void {
-    // Only 2 default-bound chords: Super+T → terminalBR, Super+Shift+T
-    // → terminalSR. Matches user's xmonad Mod+T / Mod+Shift+T bindings.
-    // terminalBL/SL are registered as rules (reachable via MCP or
-    // user-added config chord) but don't consume a default keybind.
-    const defaults = [_][]const u8{ "terminalBR", "terminalSR" };
-    for (defaults, 0..) |name, slot| {
-        const n = @min(name.len, self.scratchpad_table[slot].len);
-        @memcpy(self.scratchpad_table[slot][0..n], name[0..n]);
-        self.scratchpad_table_len[slot] = @intCast(n);
-    }
-}
-
-/// Pre-register 4 named scratchpad rules matching the user's xmonad
-/// layout (Scratchpads.hs). User's `[scratchpad.NAME]` config sections
-/// look these up by name — existing rules are mutated in place, new
-/// names are appended. So adding `[scratchpad.terminalBR] w = 70%` in
-/// the user's config replaces only the width field; x/y/h stay at
-/// xmonad defaults.
-fn applyDefaultScratchpadRules(self: *Server) void {
-    const defaults = [_]struct {
-        name: []const u8,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-    }{
-        // terminalBR — big right: h=78%, w=57%, l=42%, t=3%
-        .{ .name = "terminalBR", .x = 0.42, .y = 0.03, .w = 0.57, .h = 0.78 },
-        // terminalSR — small right: h=15%, w=57%, l=42%, t=83%
-        .{ .name = "terminalSR", .x = 0.42, .y = 0.83, .w = 0.57, .h = 0.15 },
-        // terminalBL — big left: h=62%, w=40%, l=1%, t=3%
-        .{ .name = "terminalBL", .x = 0.01, .y = 0.03, .w = 0.40, .h = 0.62 },
-        // terminalSL — small left: h=31%, w=40%, l=1%, t=67%
-        .{ .name = "terminalSL", .x = 0.01, .y = 0.67, .w = 0.40, .h = 0.31 },
-    };
-    for (defaults) |d| {
-        // resolveScratchpadRule either finds or appends.
-        const idx = self.wm_config.resolveScratchpadRule(d.name) orelse continue;
-        const rule = &self.wm_config.scratchpad_rules[idx];
-        if (!rule.has_rect) {
-            rule.x = d.x;
-            rule.y = d.y;
-            rule.w = d.w;
-            rule.h = d.h;
-            rule.has_rect = true;
-        }
-    }
-}
-
-/// Look up per-name scratchpad rule by scratchpad name. Returns null
-/// if no explicit rule — caller should fall back to global centered
-/// rect.
+/// Look up per-name scratchpad rule. Implementation in ServerConfig.zig.
 pub fn scratchpadRuleFor(self: *const Server, name: []const u8) ?*const WmConfig.ScratchpadRule {
-    var i: u8 = 0;
-    while (i < self.wm_config.scratchpad_rule_count) : (i += 1) {
-        const r = &self.wm_config.scratchpad_rules[i];
-        if (std.mem.eql(u8, r.getName(), name)) return r;
-    }
-    return null;
+    return Config.scratchpadRuleFor(self, name);
 }
 
-/// Return the scratchpad name for action `a` (which must be one of
-/// scratchpad_0..7). Empty string if unbound.
+/// Scratchpad name for action `a` (scratchpad_0..7). Impl in ServerConfig.zig.
 pub fn scratchpadNameFor(self: *const Server, a: Keybinds.Action) []const u8 {
-    const first: u8 = @intFromEnum(Keybinds.Action.scratchpad_0);
-    const tag: u8 = @intFromEnum(a);
-    if (tag < first or tag >= first + self.scratchpad_table.len) return "";
-    const slot = tag - first;
-    return self.scratchpad_table[slot][0..self.scratchpad_table_len[slot]];
+    return Config.scratchpadNameFor(self, a);
 }
 
-/// Apply teruwm bar config to the bar instance (called after bar creation).
+/// Apply teruwm bar config to the bar instance. Impl in ServerConfig.zig.
 pub fn applyWmBar(self: *Server) void {
-    if (self.bar) |b| {
-        const wc = &self.wm_config;
-        b.configure(
-            wc.bar_top_left,
-            wc.bar_top_center,
-            wc.bar_top_right,
-            wc.bar_bottom_left,
-            wc.bar_bottom_center,
-            wc.bar_bottom_right,
-        );
-    }
+    Config.applyWmBar(self);
 }
 
 pub fn startMcp(self: *Server) void {
     self.wm_mcp = WmMcpServer.init(self);
 }
 
-/// Reload compositor config from disk and re-apply live.
-/// Called by Mod+Shift+R keybind or teruwm_reload_config MCP tool.
+/// Reload compositor config from disk and re-apply live (Mod+Shift+R /
+/// teruwm_reload_config MCP tool). Implementation in ServerConfig.zig.
 pub fn reloadWmConfig(self: *Server) void {
-    // Re-read config file (requires io — use a dummy Io for file access)
-    // Use libc fopen/fread to reload config (no Io needed)
-    self.wm_config = WmConfig.loadWithLibc();
-
-    // Re-apply bar configuration — widget layout or thresholds may
-    // have changed in ways the signature hash doesn't detect
-    // (widgets.count alone can't express a widget's internal fmt).
-    // Force a repaint.
-    if (self.bar) |b| {
-        b.configure(
-            self.wm_config.bar_top_left,
-            self.wm_config.bar_top_center,
-            self.wm_config.bar_top_right,
-            self.wm_config.bar_bottom_left,
-            self.wm_config.bar_bottom_center,
-            self.wm_config.bar_bottom_right,
-        );
-        b.dirty = true;
-        _ = b.render(self);
-    }
-
-    // Apply new background color to the scene rect
-    if (self.bg_rect) |rect| {
-        const col = self.wm_config.bg_color;
-        const rgba: [4]f32 = .{
-            @as(f32, @floatFromInt((col >> 16) & 0xFF)) / 255.0,
-            @as(f32, @floatFromInt((col >> 8) & 0xFF)) / 255.0,
-            @as(f32, @floatFromInt(col & 0xFF)) / 255.0,
-            @as(f32, @floatFromInt((col >> 24) & 0xFF)) / 255.0,
-        };
-        wlr.wlr_scene_rect_set_color(rect, &rgba);
-    }
-
-    // Re-arrange all workspaces with new gap
-    for (0..10) |wi| {
-        const ws = &self.layout_engine.workspaces[wi];
-        if (ws.node_ids.items.len > 0) {
-            self.arrangeworkspace(@intCast(wi));
-        }
-    }
-
-    // Re-apply keymap to *every* attached keyboard so [keyboard] edits
-    // take effect without reconnecting devices. Laptops typically have
-    // a built-in keyboard plus one external dock keyboard — refreshing
-    // only the seat's active one (which is whichever key was last hit)
-    // leaves the other stuck on the old layout.
-    //
-    // Build the keymap once and hand the same ref to each device. wlroots
-    // retains its own ref in wlr_keyboard_set_keymap, so we unref once
-    // at the end.
-    const new_keymap = blk: {
-        if (self.wm_config.hasXkbOverrides()) {
-            const names = wlr.XkbRuleNames{
-                .rules = self.wm_config.getXkbRules(),
-                .model = self.wm_config.getXkbModel(),
-                .layout = self.wm_config.getXkbLayout(),
-                .variant = self.wm_config.getXkbVariant(),
-                .options = self.wm_config.getXkbOptions(),
-            };
-            if (wlr.xkb_keymap_new_from_names(self.xkb_ctx, &names, 0)) |km| break :blk km;
-            std.debug.print("teruwm: [keyboard] config invalid on reload, keeping previous keymap\n", .{});
-            break :blk null;
-        }
-        break :blk wlr.xkb_keymap_new_from_names(self.xkb_ctx, null, 0);
-    };
-    if (new_keymap) |km| {
-        defer wlr.xkb_keymap_unref(km);
-        for (self.keyboards.items) |kb| {
-            _ = wlr.wlr_keyboard_set_keymap(kb.wlr_keyboard, km);
-        }
-        // Refresh the bar widget from the seat's active keyboard (or any
-        // keyboard if the seat has none yet — the name is identical after
-        // a bulk reapply).
-        const refresh_kb = wlr.miozu_seat_get_keyboard(self.seat) orelse
-            (if (self.keyboards.items.len > 0) self.keyboards.items[0].wlr_keyboard else null);
-        if (refresh_kb) |rkb| self.refreshActiveKeymap(rkb);
-    }
-
-    std.debug.print("teruwm: config reloaded (gap={d}, border={d}, bg=0x{x:0>8})\n", .{ self.wm_config.gap, self.wm_config.border_width, self.wm_config.bg_color });
+    Config.reloadWmConfig(self);
 }
 
 /// Hot-restart entry point. Implementation lives in ServerRestart.zig
@@ -1377,142 +1101,28 @@ pub fn renderLauncherBar(self: *Server) void {
     }
 }
 
-// ── Workspace visibility ──────────────────────────────────────
-
-/// Show or hide all nodes in a workspace.
-pub fn setWorkspaceVisibility(self: *Server, ws: u8, visible: bool) void {
-    const ws_nodes = self.layout_engine.workspaces[ws].node_ids.items;
-    for (ws_nodes) |nid| {
-        // Terminal panes
-        if (self.terminalPaneById(nid)) |tp| tp.setVisible(visible);
-        // External views: handled by the scene tree (XdgView nodes)
-        if (self.nodes.findById(nid)) |slot| {
-            if (self.nodes.kind[slot] == .wayland_surface) {
-                if (self.nodes.scene_tree[slot]) |tree| {
-                    if (wlr.miozu_scene_tree_node(tree)) |node| {
-                        wlr.wlr_scene_node_set_enabled(node, visible);
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ── Float toggle ────────────────────────────────────────────
-
-/// Snap the focused node back into the tiling layout if it was floating.
-/// Tile → floating is NOT the keybind's job; floats are created by
-/// Mod+drag with the mouse (a grab in ServerCursor). That rule matches
-/// xmonad / bspwm: keyboard-only users never accidentally escape the
-/// layout, mouse users get a dedicated physical gesture for floats.
-/// No-op if the focused node is already tiled.
-pub fn toggleFloat(self: *Server) void {
-    // Determine the focused node ID
-    const nid: u64 = if (self.focused_terminal) |tp|
-        tp.node_id
-    else if (self.focused_view) |view|
-        view.node_id
-    else
-        return;
-
-    const slot = self.nodes.findById(nid) orelse return;
-    const ws = self.layout_engine.active_workspace;
-
-    if (!self.nodes.floating[slot]) return; // already tiled — nothing to do
-
-    self.nodes.floating[slot] = false;
-    self.layout_engine.workspaces[ws].addNode(self.zig_allocator, nid) catch {};
-    self.arrangeworkspace(ws);
-    std.debug.print("teruwm: unfloat node={d}\n", .{nid});
-
-    if (self.bar) |b| _ = b.render(self);
-}
-
-// ── Fullscreen ───────────────────────────────────────────────
-
-/// Toggle the focused node (terminal OR Wayland client) to fill the
-/// entire output. Before v0.5.1 this bailed early for xdg views because
-/// it only read `focused_terminal` — so Mod+F did nothing on Chrome /
-/// Firefox / any native-Wayland client. Now resolves the target via
-/// focused_terminal OR focused_view and expands either one.
-pub fn toggleFullscreen(self: *Server) void {
-    if (self.fullscreen_node != null) {
-        // ── Exit fullscreen ──
-        self.fullscreen_node = null;
-
-        // Restore bar visibility
-        if (self.bar) |b| {
-            b.top.enabled = self.fullscreen_prev_bar_top;
-            b.bottom.enabled = self.fullscreen_prev_bar_bottom;
-            if (b.top.enabled) {
-                if (wlr.miozu_scene_buffer_node(b.top.scene_buffer)) |node| {
-                    wlr.wlr_scene_node_set_enabled(node, true);
-                }
-            }
-            if (b.bottom.enabled) {
-                if (wlr.miozu_scene_buffer_node(b.bottom.scene_buffer)) |node| {
-                    wlr.wlr_scene_node_set_enabled(node, true);
-                }
-            }
-        }
-
-        // Show all panes in the active workspace
-        const ws = self.layout_engine.active_workspace;
-        self.setWorkspaceVisibility(ws, true);
-
-        // Re-tile (respects bar height again)
-        self.arrangeworkspace(ws);
-        if (self.bar) |b| _ = b.render(self);
-
-        std.debug.print("teruwm: fullscreen off\n", .{});
-        return;
-    }
-
-    // ── Enter fullscreen ──
-    // Target = focused terminal OR focused xdg view. Either way we
-    // expand its node to the full output.
-    const target_id: u64 = if (self.focused_terminal) |tp|
-        tp.node_id
-    else if (self.focused_view) |v|
-        v.node_id
-    else
-        return;
-
-    self.fullscreen_node = target_id;
-
-    // Save and hide bars
-    if (self.bar) |b| {
-        self.fullscreen_prev_bar_top = b.top.enabled;
-        self.fullscreen_prev_bar_bottom = b.bottom.enabled;
-        if (wlr.miozu_scene_buffer_node(b.top.scene_buffer)) |node| {
-            wlr.wlr_scene_node_set_enabled(node, false);
-        }
-        if (wlr.miozu_scene_buffer_node(b.bottom.scene_buffer)) |node| {
-            wlr.wlr_scene_node_set_enabled(node, false);
-        }
-    }
-
-    // Hide everything except the fullscreened node. recomputeVisibility
-    // now observes fullscreen_node as an override, so one O(N) pass
-    // covers terminals + xdg views on every output — no double loop.
-    self.recomputeVisibility();
-
-    // Expand focused pane to fill entire output (no bar, no gaps).
-    // For terminals we also resize the SW renderer framebuffer so the
-    // cell grid expands to match; for xdg clients, applyRect sends the
-    // xdg_toplevel_set_size configure.
-    const dims_fs = self.activeOutputDims();
-    const out_w: u32 = dims_fs.w;
-    const out_h: u32 = dims_fs.h;
-    if (self.focused_terminal) |tp| {
-        tp.resize(out_w, out_h);
-        tp.setPosition(0, 0);
-    } else if (self.nodes.findById(target_id)) |slot| {
-        self.nodes.applyRect(slot, 0, 0, out_w, out_h);
-    }
-
-    std.debug.print("teruwm: fullscreen on node={d}\n", .{target_id});
-}
+// ── Window & workspace lifecycle (ServerWindow.zig) ────────────
+// Thin re-exports; node lookup, close paths, float/fullscreen,
+// workspace placement, visibility recompute, multi-output focus.
+pub const setWorkspaceVisibility = Window.setWorkspaceVisibility;
+pub const toggleFloat = Window.toggleFloat;
+pub const toggleFullscreen = Window.toggleFullscreen;
+pub const nodeAtPoint = Window.nodeAtPoint;
+pub const activeOutputDims = Window.activeOutputDims;
+pub const terminalPaneById = Window.terminalPaneById;
+pub const clearFocusRefs = Window.clearFocusRefs;
+pub const closeNode = Window.closeNode;
+pub const closeFocused = Window.closeFocused;
+pub const handleTerminalExit = Window.handleTerminalExit;
+pub const updateFocusedTerminal = Window.updateFocusedTerminal;
+pub const activeWorkspace = Window.activeWorkspace;
+pub const outputShowing = Window.outputShowing;
+pub const focusWorkspace = Window.focusWorkspace;
+pub const moveNodeToWorkspace = Window.moveNodeToWorkspace;
+pub const recomputeVisibility = Window.recomputeVisibility;
+pub const focusNextOutput = Window.focusNextOutput;
+pub const cycleFocusAll = Window.cycleFocusAll;
+pub const focusXwaylandSurface = Window.focusXwaylandSurface;
 
 // ── Scratchpads (xmonad NamedScratchpad model) ────────────────
 //
@@ -1538,482 +1148,24 @@ pub fn toggleScratchpad(self: *Server, index: u8) void {
     Scratchpad.toggleNumbered(self, index);
 }
 
-// ── Terminal lifecycle ─────────────────────────────────────────
-
-/// Handle terminal pane exit (shell process died).
-/// Close a window (terminal pane or XDG view) by node_id.
-/// Returns true if a window was closed.
-/// Hit-test: return the node_id of the pane whose rect contains (x, y),
-/// or null. Floating panes win over tiled because they render on top in
-/// the scene graph. Linear scan — fine given the node count budget.
-pub fn nodeAtPoint(self: *const Server, x: f64, y: f64) ?u64 {
-    var best_floating: ?u64 = null;
-    var best_tiled: ?u64 = null;
-    const ix: i32 = @intFromFloat(x);
-    const iy: i32 = @intFromFloat(y);
-    const cur_ws = self.layout_engine.active_workspace;
-
-    for (0..NodeRegistry.max_nodes) |slot| {
-        if (self.nodes.kind[slot] == .empty) continue;
-        if (self.nodes.workspace[slot] != cur_ws) continue;
-        const px = self.nodes.pos_x[slot];
-        const py = self.nodes.pos_y[slot];
-        const pw: i32 = @intCast(self.nodes.width[slot]);
-        const ph: i32 = @intCast(self.nodes.height[slot]);
-        if (ix < px or ix >= px + pw) continue;
-        if (iy < py or iy >= py + ph) continue;
-        if (self.nodes.floating[slot]) {
-            best_floating = self.nodes.node_id[slot];
-        } else {
-            best_tiled = self.nodes.node_id[slot];
-        }
-    }
-    return best_floating orelse best_tiled;
-}
-
-/// Dimensions of the currently-focused output (or first connected if
-/// no focus yet). Replaces miozu_output_layout_first_* which always
-/// returned the first output in layout order — wrong under multi-head
-/// for callers that mean "the output the user is looking at".
-///
-/// Returns 1920×1080 fallback when no outputs are connected (same as
-/// the previous glue helper). Several callers do (w - x)/2 arithmetic
-/// that would underflow u32 at w=0; 1920×1080 is the "drawing on a
-/// virtual display" best guess.
-pub fn activeOutputDims(self: *const Server) struct { w: u32, h: u32 } {
-    const out: *wlr.wlr_output = if (self.focused_output) |o|
-        o.wlr_output
-    else if (self.outputs.items.len > 0)
-        self.outputs.items[0].wlr_output
-    else
-        return .{ .w = 1920, .h = 1080 };
-    return .{
-        .w = @intCast(@max(1, wlr.miozu_output_width(out))),
-        .h = @intCast(@max(1, wlr.miozu_output_height(out))),
-    };
-}
-
-/// Find the TerminalPane with the given node_id. Still O(n) over the
-/// fixed-size array, but keeps the lookup in one place — callers that
-/// only need a node_id → *TerminalPane mapping shouldn't hand-roll the
-/// nested slot/tp scan.
-pub fn terminalPaneById(self: *const Server, node_id: u64) ?*TerminalPane {
-    return self.pane_index.get(node_id);
-}
-
-/// Null every Server pointer that references the node being torn down.
-/// Call BEFORE freeing the pane / view — a reentrant render or any code
-/// that dereferences focused_terminal / focused_view touches freed memory
-/// otherwise. `last_pointer_surface` is handled by the View's unmap/
-/// destroy handlers since it's keyed on wlr_surface, not node_id.
-pub fn clearFocusRefs(self: *Server, node_id: u64) void {
-    Focus.clearFocusRefs(self, node_id);
-}
-
-pub fn closeNode(self: *Server, node_id: u64) bool {
-    // Try terminal pane first
-    for (&self.terminal_panes, 0..) |*slot, i| {
-        _ = i;
-        if (slot.*) |tp| {
-            if (tp.node_id == node_id) {
-                const ws = if (self.nodes.findById(node_id)) |s| self.nodes.workspace[s] else self.layout_engine.active_workspace;
-                self.layout_engine.workspaces[ws].removeNode(node_id);
-                if (self.nodes.findById(node_id)) |_| _ = self.nodes.remove(node_id);
-
-                self.clearFocusRefs(node_id);
-
-                tp.deinit(self.zig_allocator);
-                self.zig_allocator.destroy(tp);
-                slot.* = null;
-                self.terminal_count -|= 1;
-                self.arrangeworkspace(ws);
-                self.updateFocusedTerminal();
-                if (self.bar) |b| _ = b.render(self);
-                return true;
-            }
-        }
-    }
-
-    // XDG view: find the view with matching node_id and send close request.
-    // Defensive: the view may already be gone (the client crashed /
-    // unmapped between the MCP caller's list_windows and this call);
-    // dereferencing view.toplevel then feeds a dead wl_resource to
-    // wl_resource_post_event, which aborts. Cross-check NodeRegistry
-    // before touching the toplevel.
-    if (self.focused_view) |view| {
-        if (view.node_id == node_id and self.nodes.findById(node_id) != null) {
-            self.clearFocusRefs(node_id);
-            wlr.wlr_xdg_toplevel_send_close(view.toplevel);
-            return true;
-        }
-    }
-    // Search all XDG views for node_id match (walk the scene? no tracking, so
-    // we need to iterate differently). For now, handle only focused_view —
-    // MCP callers close by node_id through NodeRegistry instead.
-    return false;
-}
-
-/// Close whatever window is currently focused (terminal pane or XDG view).
-/// Bound to Win+X. No-op if nothing focused.
-pub fn closeFocused(self: *Server) void {
-    if (self.focused_view) |view| {
-        self.clearFocusRefs(view.node_id);
-        std.debug.print("teruwm: closeFocused → xdg view node={d}\n", .{view.node_id});
-        wlr.wlr_xdg_toplevel_send_close(view.toplevel);
-        return;
-    }
-    if (self.focused_xwayland) |xw| {
-        // X11 client: wlr_xwayland_surface_close sends WM_DELETE_WINDOW
-        // which most XWayland apps (Emacs, GIMP, Steam) listen for.
-        std.debug.print("teruwm: closeFocused → xwayland surface\n", .{});
-        wlr.wlr_xwayland_surface_close(xw);
-        return;
-    }
-    if (self.focused_terminal) |tp| {
-        std.debug.print("teruwm: closeFocused → terminal node={d}\n", .{tp.node_id});
-        _ = self.closeNode(tp.node_id);
-        return;
-    }
-    // Neither focused_terminal nor focused_view — telemetry for the
-    // "can't close last pane" symptom. Either focus is stale (action
-    // dispatched before updateFocusedTerminal ran after the previous
-    // close) or the workspace is legitimately empty. Print the state
-    // so we can see which one it is in live logs.
-    const ws = self.layout_engine.getActiveWorkspace();
-    std.debug.print(
-        "teruwm: closeFocused with no focus — ws={d} tiled_count={d} terminal_count={d}\n",
-        .{ self.layout_engine.active_workspace, ws.node_ids.items.len, self.terminal_count },
-    );
-}
-
-pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
-    std.debug.print("teruwm: terminal exited node={d}\n", .{tp.node_id});
-
-    self.clearFocusRefs(tp.node_id);
-
-    // Remove from node registry and tiling engine
-    _ = self.nodes.remove(tp.node_id);
-    for (&self.layout_engine.workspaces) |*ws| {
-        ws.removeNode(tp.node_id);
-    }
-
-    // DynamicProjects: if this empties any workspace, reset its
-    // startup-fired flag so the next visit re-runs its startup hook.
-    for (0..10) |ws_i| self.resetWorkspaceStartupIfEmpty(@intCast(ws_i));
-
-    // Remove from terminal_panes array. Scratchpads since v0.4.18 live
-    // here too (they're regular panes with a scratchpad_name tag) —
-    // single loop covers both cases.
-    for (&self.terminal_panes) |*slot| {
-        if (slot.* == tp) {
-            slot.* = null;
-            self.terminal_count -= 1;
-            break;
-        }
-    }
-    _ = self.pane_index.remove(tp.node_id);
-
-    // Drop the dangling focus pointer before tp is freed below.
-    // updateFocusedTerminal() is deferred until after the re-tile.
-    if (self.focused_terminal == tp) self.focused_terminal = null;
-
-    // Free the pane. tp.deinit removes the PTY event source, hides +
-    // detaches the scene buffer, frees the grid/scrollback and closes
-    // the PTY master fd; destroy() releases the struct. Mirrors
-    // closeNode — must come after the unregistration above so nothing
-    // dereferences a freed pane. (Previously this function only hid the
-    // scene node and leaked the pane + its PTY fd on every shell exit —
-    // unnoticed because its sole caller, ptyReadable's HANGUP branch,
-    // was dead code.)
-    tp.deinit(self.zig_allocator);
-    self.zig_allocator.destroy(tp);
-
-    // Re-tile, then move focus onto a surviving pane. removeNode above
-    // cleared the workspace's active_node (it pointed at the exited
-    // pane), and for split-tree layouts getActiveNodeId() then yields
-    // null — so updateFocusedTerminal would give up and leave keyboard
-    // focus null until the user manually refocuses. Re-seat active_node
-    // on a survivor first so focus follows the exit.
-    const aws_idx = self.layout_engine.active_workspace;
-    self.arrangeworkspace(aws_idx);
-    const aws = &self.layout_engine.workspaces[aws_idx];
-    if (aws.active_node == null and aws.node_ids.items.len > 0) {
-        const idx = @min(aws.active_index, aws.node_ids.items.len - 1);
-        aws.active_node = aws.node_ids.items[idx];
-    }
-    self.updateFocusedTerminal();
-    if (self.bar) |b| _ = b.render(self);
-}
-
-// ── Focus management ──────────────────────────────────────────
-
-/// Update focused_terminal to match the LayoutEngine's active node.
-/// Also updates visual focus indicators (border color).
-///
-/// Prefer `ws.active_node` over `getActiveNodeId()`: floating panes are
-/// removed from `node_ids.items` (the tiled list) so `getActiveNodeId`
-/// can't see them. `active_node` is the explicit authoritative focus
-/// target set by `teruwm_focus_window` and friends — it works for both
-/// tiled and floating panes.
-pub fn updateFocusedTerminal(self: *Server) void {
-    Focus.updateFocusedTerminal(self);
-}
-
-// ── Multi-output: the 3-rule architecture (v0.4.20) ──────────
-//
-// R1: Node.workspace is identity (already in NodeRegistry).
-// R2: Output.workspace is a viewport (stored per-Output).
-// R3: Visibility is derived via recomputeVisibility().
-//
-// All workspace-level mutations go through focusWorkspace (viewport)
-// or moveNodeToWorkspace (identity). Call recomputeVisibility after
-// each mutation — it's O(max_nodes), sub-microsecond, no allocation.
-
-/// Which workspace the focused output currently shows. Shim for
-/// legacy call sites that read `layout_engine.active_workspace`.
-pub fn activeWorkspace(self: *const Server) u8 {
-    if (self.focused_output) |out| return out.workspace;
-    return self.layout_engine.active_workspace;
-}
-
-/// Return the output currently showing `ws`, if any. Null means the
-/// workspace is orphaned (nodes on it stay hidden until some output
-/// takes it). Multi-output invariant: at most one output per ws.
-pub fn outputShowing(self: *const Server, ws: u8) ?*Output {
-    for (self.outputs.items) |out| {
-        if (out.workspace == ws) return out;
-    }
-    return null;
-}
-
-/// **The only mutation path for Output.workspace.** Handles xmonad
-/// pull-swap: if `target` is already visible on another output, that
-/// output takes the focused output's previous workspace. All four
-/// cases (identity, collision, no-op, first-show) live in one path.
-pub fn focusWorkspace(self: *Server, target: u8) void {
-    Focus.focusWorkspace(self, target);
-}
-
-/// Move a node (pane or Wayland client) to a different workspace.
-/// Orthogonal to Output.workspace: just flips Node.workspace, then
-/// recomputes visibility and re-arranges affected outputs.
-pub fn moveNodeToWorkspace(self: *Server, nid: u64, target: u8) void {
-    if (target >= 10) return;
-    const slot = self.nodes.findById(nid) orelse return;
-    const from = self.nodes.workspace[slot];
-    if (from == target) return;
-
-    // If the node we're moving was the focused terminal and the target
-    // workspace isn't visible anywhere, the pane becomes invisible —
-    // we must drop focus so subsequent keystrokes don't silently feed
-    // an off-screen PTY. updateFocusedTerminal (called below) picks a
-    // new focus target on the now-visible workspace.
-    const was_focused_nid = if (self.focused_terminal) |tp| tp.node_id else 0;
-    const was_focused = (was_focused_nid == nid);
-
-    // Update node identity. Workspace list bookkeeping: remove from old
-    // node_ids (if it was tiled there), add to new.
-    self.nodes.moveSlotToWorkspace(slot, target);
-    self.layout_engine.workspaces[from].removeNode(nid);
-    if (!self.nodes.floating[slot]) {
-        self.layout_engine.workspaces[target].addNode(self.zig_allocator, nid) catch |e| {
-            std.debug.print("teruwm: moveNodeToWorkspace addNode failed: {s}\n", .{@errorName(e)});
-        };
-    }
-
-    // Re-arrange every output showing either ws (cheap: N ≤ 4).
-    for (self.outputs.items) |out| {
-        if (out.workspace == from or out.workspace == target) {
-            self.arrangeworkspace(out.workspace);
-        }
-    }
-    self.recomputeVisibility();
-
-    if (was_focused) {
-        // Focused pane moved. If target workspace isn't shown anywhere,
-        // the pane is now invisible; refresh focus to whatever's on the
-        // current workspace instead (or null if empty).
-        if (self.outputShowing(target) == null) {
-            self.focused_terminal = null;
-            self.updateFocusedTerminal();
-        }
-    }
-    self.emitMcpEventKind("node_moved", ",\"node_id\":{d},\"from\":{d},\"to\":{d}", .{ nid, from, target });
-
-    // Repaint the bar immediately. Otherwise the workspace-occupancy
-    // pills only update when the next frame callback happens to detect
-    // a signature change — felt like a noticeable lag after Mod+Shift+N.
-    if (self.bar) |b| {
-        b.dirty = true;
-        _ = b.render(self);
-    }
-}
-
-/// Rule 3: a node renders iff some output currently shows its
-/// workspace. Called after any R1 or R2 mutation. Single-output
-/// case: identical to the legacy setWorkspaceVisibility toggle.
-pub fn recomputeVisibility(self: *Server) void {
-    // Iterate active slots only — Node.by_id has exactly `nodes.count`
-    // entries, so on realistic workloads (<20 panes) this is ~13x
-    // fewer iterations than scanning all 256.
-    var it = self.nodes.by_id.valueIterator();
-    while (it.next()) |slot_ptr| {
-        const slot = slot_ptr.*;
-        const ws = self.nodes.workspace[slot];
-        if (ws == NodeRegistry.HIDDEN_WS) {
-            self.setSlotVisible(slot, false);
-            continue;
-        }
-        // Fullscreen takes precedence: every node but the fullscreened
-        // one is hidden, regardless of which output shows its workspace.
-        if (self.fullscreen_node) |fs_nid| {
-            self.setSlotVisible(slot, self.nodes.node_id[slot] == fs_nid);
-            continue;
-        }
-        const visible = self.outputShowing(ws) != null;
-        self.setSlotVisible(slot, visible);
-    }
-}
-
-fn setSlotVisible(self: *Server, slot: u16, visible: bool) void {
-    // Terminal panes: O(1) index lookup (see pane_index).
-    if (self.nodes.kind[slot] == .terminal) {
-        if (self.terminalPaneById(self.nodes.node_id[slot])) |tp| {
-            tp.setVisible(visible);
-        }
-        return;
-    }
-    if (self.nodes.kind[slot] == .wayland_surface) {
-        if (self.nodes.scene_tree[slot]) |tree| {
-            if (wlr.miozu_scene_tree_node(tree)) |node| {
-                wlr.wlr_scene_node_set_enabled(node, visible);
-            }
-        }
-    }
-}
-
-/// Cycle focus to the next connected output (keybind action).
-pub fn focusNextOutput(self: *Server) void {
-    Focus.focusNextOutput(self);
-}
-
-/// Cycle focus across every node on the current workspace (including
-/// floating). Win+J = forward, Win+K = backward.
-pub fn cycleFocusAll(self: *Server, forward: bool) void {
-    Focus.cycleFocusAll(self, forward);
-}
-
-pub fn focusXwaylandSurface(self: *Server, xw: *wlr.wlr_xwayland_surface) void {
-    Focus.focusXwaylandSurface(self, xw);
-}
-
-/// True if holding the keybind should keep firing the action. Excludes
-/// toggles / one-shots — repeating those either does nothing or (worse)
-/// bounces state back and forth (float_toggle, launcher_toggle). The
-/// whitelist is what an xmonad/sway user holds to tune the layout:
-/// resize, focus/swap cycle, master-count, zoom, workspace step.
-fn isRepeatableAction(action: KBAction) bool {
-    return switch (action) {
-        .resize_shrink_w, .resize_grow_w, .resize_shrink_h, .resize_grow_h,
-        .pane_focus_next, .pane_focus_prev,
-        .pane_swap_next, .pane_swap_prev,
-        .pane_rotate_slaves_up, .pane_rotate_slaves_down,
-        .master_count_inc, .master_count_dec,
-        .workspace_next_nonempty, .workspace_toggle_last,
-        => true,
-        else => false,
-    };
-}
-
-/// Timer callback that re-dispatches the armed keybind action. Returns
-/// 0 from wayland-server's callback ABI; the timer stays armed with
-/// whatever `update(ms)` set last.
-fn keybindRepeatTick(data: ?*anyopaque) callconv(.c) c_int {
-    const self: *Server = @ptrCast(@alignCast(data orelse return 0));
-    const action = self.keybind_repeat_action orelse return 0;
-    // Dispatch through the same path a fresh press would. executeAction
-    // is in ServerInput; we go through a Server method to keep the
-    // cross-module boundary clean.
-    _ = self.executeAction(action);
-    if (self.keybind_repeat_src) |src| {
-        _ = wlr.wl_event_source_timer_update(src, self.keybind_repeat_rate_ms);
-    }
-    return 0;
-}
-
-/// Arm the repeat timer for an action attached to `keycode`. Cancels
-/// any prior repeat first — pressing a new keybind while holding the
-/// old one replaces the target.
+/// Arm the keybind-action repeat timer for `keycode`. See ServerRepeat.zig.
 pub fn armKeybindRepeat(self: *Server, action: KBAction, keycode: u32) void {
-    if (!isRepeatableAction(action)) {
-        self.cancelKeybindRepeat();
-        return;
-    }
-    if (self.keybind_repeat_src == null) {
-        const loop = self.event_loop orelse return;
-        self.keybind_repeat_src = wlr.wl_event_loop_add_timer(loop, keybindRepeatTick, @ptrCast(self));
-        if (self.keybind_repeat_src == null) return;
-    }
-    self.keybind_repeat_keycode = keycode;
-    self.keybind_repeat_action = action;
-    if (self.keybind_repeat_src) |src| {
-        _ = wlr.wl_event_source_timer_update(src, self.keybind_repeat_delay_ms);
-    }
+    Repeat.armKeybindRepeat(self, action, keycode);
 }
 
-/// Disarm the repeat timer. Called on key release (matching keycode),
-/// modifier-state change, or different key press.
+/// Disarm the keybind repeat timer.
 pub fn cancelKeybindRepeat(self: *Server) void {
-    if (self.keybind_repeat_src) |src| {
-        _ = wlr.wl_event_source_timer_update(src, 0);
-    }
-    self.keybind_repeat_keycode = 0;
-    self.keybind_repeat_action = null;
+    Repeat.cancelKeybindRepeat(self);
 }
 
-/// Re-send the stored terminal input bytes to the currently focused
-/// pane. Rearms itself for the next tick unless canceled.
-fn terminalRepeatTick(data: ?*anyopaque) callconv(.c) c_int {
-    const self: *Server = @ptrCast(@alignCast(data orelse return 0));
-    if (self.terminal_repeat_len == 0) return 0;
-    if (self.focused_terminal) |tp| {
-        tp.writeInput(self.terminal_repeat_bytes[0..self.terminal_repeat_len]);
-    }
-    if (self.terminal_repeat_src) |src| {
-        _ = wlr.wl_event_source_timer_update(src, self.keybind_repeat_rate_ms);
-    }
-    return 0;
-}
-
-/// Arm the terminal-input repeat timer. Called from the key press
-/// path in ServerInput.handleKeyEvent after bytes are written to the
-/// focused terminal. Cancels any prior repeat first — typing a new
-/// character while holding an old one replaces the target, same
-/// semantics as libinput/xkb repeat for Wayland clients.
+/// Arm the terminal-input repeat timer. See ServerRepeat.zig.
 pub fn armTerminalRepeat(self: *Server, keycode: u32, bytes: []const u8) void {
-    if (bytes.len == 0 or bytes.len > self.terminal_repeat_bytes.len) {
-        self.cancelTerminalRepeat();
-        return;
-    }
-    if (self.terminal_repeat_src == null) {
-        const loop = self.event_loop orelse return;
-        self.terminal_repeat_src = wlr.wl_event_loop_add_timer(loop, terminalRepeatTick, @ptrCast(self));
-        if (self.terminal_repeat_src == null) return;
-    }
-    @memcpy(self.terminal_repeat_bytes[0..bytes.len], bytes);
-    self.terminal_repeat_len = @intCast(bytes.len);
-    self.terminal_repeat_keycode = keycode;
-    if (self.terminal_repeat_src) |src| {
-        _ = wlr.wl_event_source_timer_update(src, self.keybind_repeat_delay_ms);
-    }
+    Repeat.armTerminalRepeat(self, keycode, bytes);
 }
 
+/// Disarm the terminal-input repeat timer.
 pub fn cancelTerminalRepeat(self: *Server) void {
-    if (self.terminal_repeat_src) |src| {
-        _ = wlr.wl_event_source_timer_update(src, 0);
-    }
-    self.terminal_repeat_len = 0;
-    self.terminal_repeat_keycode = 0;
+    Repeat.cancelTerminalRepeat(self);
 }
 
 // ── Bar reactivity tick (v0.6.6) ─────────────────────────────
@@ -2122,44 +1274,14 @@ pub fn applyFocusOpacity(self: *Server) void {
 
 // ── Process spawning ───────────────────────────────────────────
 
-/// Spawn a shell command detached from the compositor (double-fork to avoid zombies).
-/// Uses /bin/sh -c to handle commands with arguments and pipes. Inherits the
-/// compositor's environment so children see WAYLAND_DISPLAY, DISPLAY (Xwayland),
-/// HOME, etc.
+/// Spawn a shell command detached from the compositor. See ServerProcess.zig.
 pub fn spawnProcess(_: *Server, cmd: [*:0]const u8) void {
-    const pid = std.os.linux.fork();
-    if (pid == 0) {
-        const pid2 = std.os.linux.fork();
-        if (pid2 == 0) {
-            // Grandchild: exec via shell to handle args/pipes
-            const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", cmd, null };
-            const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
-            _ = std.posix.system.execve("/bin/sh", &argv, @ptrCast(envp));
-            std.os.linux.exit(1);
-        }
-        std.os.linux.exit(0);
-    }
-    if (pid > 0) {
-        // Reap the intermediate child. It does exit(0) right after the
-        // second fork, so this blocks for microseconds — effectively
-        // never. WNOHANG would race against the kernel scheduler and
-        // leak a zombie when the exit hasn't been processed yet.
-        _ = std.c.waitpid(@intCast(pid), null, 0);
-    }
+    Process.spawnProcess(cmd);
 }
 
-/// Same as `spawnProcess` but takes a non-nul-terminated slice. Copies into
-/// a stack buffer and nul-terminates. Commands longer than 511 bytes are
-/// truncated (matches the config parser's bound).
-pub fn spawnShell(self: *Server, cmd: []const u8) void {
-    var buf: [512:0]u8 = undefined;
-    if (cmd.len >= buf.len) {
-        std.debug.print("teruwm: spawnShell command truncated ({d} > 512)\n", .{cmd.len});
-    }
-    const n = @min(cmd.len, buf.len);
-    @memcpy(buf[0..n], cmd[0..n]);
-    buf[n] = 0;
-    self.spawnProcess(@ptrCast(&buf));
+/// Spawn a shell command from a non-nul-terminated slice. See ServerProcess.zig.
+pub fn spawnShell(_: *Server, cmd: []const u8) void {
+    Process.spawnShell(cmd);
 }
 
 /// Shell-spawn screenshot. Delegates to ServerScreenshot.zig.
