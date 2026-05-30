@@ -233,7 +233,19 @@ pub fn spawnPaneWithCommand(self: *Multiplexer, rows: u16, cols: u16, command: [
 
     const sb = Scrollback.init(self.allocator, .{ .keyframe_interval = 100 });
 
-    var pty = try Pty.spawn(.{ .rows = rows, .cols = cols, .shell = command, .cwd = cwd });
+    // Run the command line via `/bin/sh -c` so arguments, pipes, and env
+    // expansion work — a bare shell path (e.g. "/bin/zsh") still execs fine.
+    // Pty.spawn execve()s `.shell` as a LITERAL argv[0] path, so passing a
+    // multi-word command there fails with ENOENT — every custom-command path
+    // (MCP teru_create_pane, .tsess templates, the Claude-Code agent backend)
+    // was silently broken. exec_argv routes through execvp(/bin/sh) instead.
+    var cmd_z: [4096]u8 = undefined;
+    if (command.len >= cmd_z.len) return error.CommandTooLong;
+    @memcpy(cmd_z[0..command.len], command);
+    cmd_z[command.len] = 0;
+    const cmd_ptr: [*:0]const u8 = @ptrCast(&cmd_z);
+    const sh_argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", cmd_ptr, null };
+    var pty = try Pty.spawn(.{ .rows = rows, .cols = cols, .exec_argv = &sh_argv, .cwd = cwd });
     errdefer pty.deinit();
 
     // Set PTY master to non-blocking (Windows ConPTY uses PeekNamedPipe)
@@ -780,6 +792,38 @@ test "Multiplexer pollPtys" {
     var buf: [4096]u8 = undefined;
     // Should not crash; may or may not have output
     _ = mux.pollPtys(&buf);
+}
+
+fn gridContainsText(grid: *const Grid, needle: []const u8) bool {
+    var line: [4096]u8 = undefined;
+    var n: usize = 0;
+    for (grid.cells) |cell| {
+        if (n >= line.len) break;
+        line[n] = if (cell.char >= 32 and cell.char < 127) @intCast(cell.char) else ' ';
+        n += 1;
+    }
+    return std.mem.indexOf(u8, line[0..n], needle) != null;
+}
+
+test "spawnPaneWithCommand runs a multi-word command (H8: agent exec via /bin/sh -c)" {
+    var mux = Multiplexer.init(t.allocator);
+    defer mux.deinit();
+
+    // A command WITH an argument — the exact case that used to fail with
+    // ENOENT because the whole string was execve'd as a literal argv[0] path.
+    // If the marker prints, the `/bin/sh -c` exec path works.
+    const id = try mux.spawnPaneWithCommand(8, 40, "echo TERU_SPAWN_MARKER", null);
+    const pane = mux.getPaneById(id).?;
+
+    var buf: [4096]u8 = undefined;
+    var found = false;
+    var attempts: u32 = 0;
+    while (attempts < 100 and !found) : (attempts += 1) {
+        _ = pane.readAndProcess(&buf) catch 0;
+        found = gridContainsText(&pane.grid, "TERU_SPAWN_MARKER");
+        if (!found) compat.sleepNs(10_000_000); // 10ms; ~1s total budget
+    }
+    try t.expect(found);
 }
 
 test "Multiplexer renderAll with single pane" {

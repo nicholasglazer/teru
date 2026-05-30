@@ -174,10 +174,12 @@ pub fn checkExits(self: *PaneBackend) void {
 
         // Check if the pane's process is still alive
         const pane = self.multiplexer.getPaneById(ctx.pane_id) orelse {
-            // Pane was removed externally
+            // Pane was removed externally. The exit push IS the client's
+            // observation — reclaim the slot so the fixed 64-entry table
+            // can't fill with dead entries and silently drop later spawns.
             self.pushContextExited(ctx.context_id, 255);
-            slot.*.?.alive = false;
             self.graph.markFinished(ctx.graph_node_id, 255);
+            slot.* = null;
             continue;
         };
 
@@ -188,8 +190,8 @@ pub fn checkExits(self: *PaneBackend) void {
             else
                 0;
             self.pushContextExited(ctx.context_id, exit_code);
-            slot.*.?.alive = false;
             self.graph.markFinished(ctx.graph_node_id, exit_code);
+            slot.* = null; // reclaim — see note above
         }
     }
 }
@@ -241,15 +243,12 @@ fn handleSpawn(self: *PaneBackend, body: []const u8, id: ?[]const u8, buf: []u8)
     const group = extractJsonString(params, "group") orelse "default";
     const role = extractJsonString(params, "role") orelse "worker";
 
-    // Construct shell command: /bin/sh -c "argv contents"
-    // The argv field in JSON is expected to be a string for v1
-    // (e.g., "claude --agent backend-dev")
-    var cmd_buf: [2048]u8 = undefined;
-    const cmd = std.fmt.bufPrint(&cmd_buf, "/bin/sh -c \"{s}\"", .{argv_cmd}) catch
-        return jsonRpcError(buf, id, -32603, "Command too long");
-
-    // Spawn a pane with the custom command
-    const pane_id = self.multiplexer.spawnPaneWithCommand(24, 80, cmd, cwd) catch
+    // Spawn a pane running the agent command (e.g. "claude --agent backend-dev").
+    // spawnPaneWithCommand runs it via `/bin/sh -c`, so pass the RAW command
+    // line. The previous `/bin/sh -c "{argv}"` pre-wrap was then execve'd as a
+    // literal path (`/bin/sh -c "..."` as argv[0]) → ENOENT → the agent never
+    // ran, while still returning a successful-looking context_id.
+    const pane_id = self.multiplexer.spawnPaneWithCommand(24, 80, argv_cmd, cwd) catch
         return jsonRpcError(buf, id, -32603, "Spawn failed");
 
     // Register in process graph
@@ -289,12 +288,21 @@ fn handleSpawn(self: *PaneBackend, body: []const u8, id: ?[]const u8, buf: []u8)
     @memcpy(ctx.role[0..role_len], role[0..role_len]);
     ctx.role_len = role_len;
 
-    // Store in first free slot
+    // Store in first free slot. If the table is full, undo the spawn —
+    // otherwise we'd orphan a live pane + graph node behind a fake-success
+    // response and the caller could never reach it.
+    var stored = false;
     for (&self.contexts) |*slot| {
         if (slot.* == null) {
             slot.* = ctx;
+            stored = true;
             break;
         }
+    }
+    if (!stored) {
+        self.multiplexer.closePane(pane_id);
+        self.graph.remove(graph_node_id);
+        return jsonRpcError(buf, id, -32603, "Context table full");
     }
 
     const id_str = id orelse "null";
@@ -407,11 +415,13 @@ fn handleKill(self: *PaneBackend, body: []const u8, id: ?[]const u8, buf: []u8) 
     self.multiplexer.closePane(ctx.pane_id);
     self.graph.markFinished(ctx.graph_node_id, 0);
 
-    // Mark context as dead
+    // Reclaim the context slot — the kill was client-initiated, so the
+    // exit is already observed; freeing the slot keeps the table from
+    // filling with dead entries.
     for (&self.contexts) |*slot| {
-        if (slot.*) |*c| {
+        if (slot.*) |c| {
             if (c.context_id == context_id) {
-                c.alive = false;
+                slot.* = null;
                 break;
             }
         }
