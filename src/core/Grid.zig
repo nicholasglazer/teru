@@ -207,6 +207,12 @@ pen_attrs: Attrs = .{},
 /// Active hyperlink ID (0 = none). Set by OSC 8; applied to new cells.
 pen_hyperlink_id: u8 = 0,
 
+/// DECAWM (auto-wrap mode). When false (`ESC[?7l`), writing past the right
+/// margin overwrites the last column instead of wrapping. Kept on the Grid
+/// (not just VtParser) so the non-ASCII Grid.write path honours it too;
+/// VtParser mirrors its mode bit here on DECSET/DECRST 7.
+auto_wrap: bool = true,
+
 /// Hyperlink URI table. Index 0 is unused (means "no link").
 /// Slots are reused when a link is closed (OSC 8;; with empty URI).
 hyperlinks: [256]HyperlinkEntry = @splat(.{}),
@@ -278,9 +284,15 @@ pub fn cellAtConst(self: *const Grid, row: u16, col: u16) *const Cell {
 pub fn write(self: *Grid, char: u21) void {
     const wrap_col: u16 = @intCast(self.getRightMargin());
     if (self.cursor_col >= wrap_col) {
-        // Wrap: move to left margin of next line
-        self.cursor_col = @intCast(self.getLeftMargin());
-        self.cursorDown();
+        if (self.auto_wrap) {
+            // Wrap: move to left margin of next line
+            self.cursor_col = @intCast(self.getLeftMargin());
+            self.cursorDown();
+        } else {
+            // DECAWM reset (ESC[?7l): overwrite the rightmost column in place;
+            // the cursor does not advance past the right margin (xterm).
+            self.cursor_col = wrap_col -| 1;
+        }
     }
 
     const cell = self.cellAt(self.cursor_row, self.cursor_col);
@@ -288,6 +300,7 @@ pub fn write(self: *Grid, char: u21) void {
     cell.fg = self.pen_fg;
     cell.bg = self.pen_bg;
     cell.attrs = self.pen_attrs;
+    cell.hyperlink_id = self.pen_hyperlink_id; // OSC 8 link, matching writeGroundBatch
 
     self.cursor_col += 1;
     self.markRowDirty(self.cursor_row);

@@ -243,17 +243,23 @@ fn writeGroundBatch(self: *VtParser, run: []const u8) void {
 
     for (run) |byte| {
         if (col >= rm) {
-            col = lm;
-            // Sync cursor before cursorDown so scroll/scroll-region logic
-            // sees the wrapped position. cursorDown may scroll the screen,
-            // change rows, or just advance the row index.
-            grid.cursor_col = col;
-            grid.cursor_row = row;
-            grid.cursorDown();
-            row = @min(grid.cursor_row, grid.rows -| 1);
-            row_cells = grid.cells[@as(usize, row) * cols ..][0..cols];
-            if (row < dirty_min) dirty_min = row;
-            if (row > dirty_max) dirty_max = row;
+            if (self.auto_wrap) {
+                col = lm;
+                // Sync cursor before cursorDown so scroll/scroll-region logic
+                // sees the wrapped position. cursorDown may scroll the screen,
+                // change rows, or just advance the row index.
+                grid.cursor_col = col;
+                grid.cursor_row = row;
+                grid.cursorDown();
+                row = @min(grid.cursor_row, grid.rows -| 1);
+                row_cells = grid.cells[@as(usize, row) * cols ..][0..cols];
+                if (row < dirty_min) dirty_min = row;
+                if (row > dirty_max) dirty_max = row;
+            } else {
+                // DECAWM reset (ESC[?7l): overwrite the rightmost column in
+                // place; no wrap, cursor stays at the right margin (xterm).
+                col = rm -| 1;
+            }
         }
         const c: usize = @min(col, cols -| 1);
         const cell = &row_cells[c];
@@ -605,7 +611,10 @@ fn handleCsiIntermediate(self: *VtParser, byte: u8) void {
             // Another intermediate byte (rare, ignore)
         },
         0x40...0x7E => {
-            // Final byte with intermediate
+            // Final byte with an intermediate. Besides DECSCUSR (SP q), the
+            // common ones are DECRQM ($ p, request mode) and DECSTR (! p, soft
+            // reset). Before this branch only handled SP q, so DECRQM's
+            // responder was dead code and DECSTR was silently dropped.
             if (self.intermediate == ' ' and byte == 'q') {
                 // DECSCUSR — set cursor shape
                 const n = self.getParam(0, 1);
@@ -615,6 +624,25 @@ fn handleCsiIntermediate(self: *VtParser, byte: u8) void {
                     5, 6 => .bar,
                     else => .block,
                 };
+            } else if (self.intermediate == '!' and byte == 'p') {
+                // DECSTR — soft terminal reset. Reset the modes/attributes teru
+                // models; leave the screen contents and cursor position alone.
+                self.grid.pen_fg = .default;
+                self.grid.pen_bg = .default;
+                self.grid.pen_attrs = .{};
+                self.grid.pen_hyperlink_id = 0;
+                self.auto_wrap = true;
+                self.grid.auto_wrap = true;
+                self.cursor_visible = true;
+                self.app_cursor_keys = false;
+                self.bracketed_paste = false;
+                self.sync_output = false;
+                self.mouse_tracking = .none;
+            } else if (self.intermediate == '$') {
+                // DECRQM ($ p) etc. — dispatch through the normal CSI handler
+                // so the existing responder (dispatchCsiPrivate, guarded on
+                // intermediate == '$') actually fires. Params are still intact.
+                self.dispatchCsi(byte);
             }
             self.state = .ground;
         },
@@ -986,7 +1014,10 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
         'h' => { // DECSET
             switch (mode) {
                 1 => self.app_cursor_keys = true, // DECCKM
-                7 => self.auto_wrap = true, // DECAWM
+                7 => { // DECAWM
+                    self.auto_wrap = true;
+                    self.grid.auto_wrap = true; // mirror so Grid.write honours it
+                },
                 12 => {}, // Cursor blink — accepted, no visual effect yet
                 25 => self.cursor_visible = true, // show cursor
                 47, 1047, 1049 => { // Alt screen on
@@ -1014,7 +1045,10 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
         'l' => { // DECRST
             switch (mode) {
                 1 => self.app_cursor_keys = false, // DECCKM
-                7 => self.auto_wrap = false, // DECAWM
+                7 => { // DECAWM
+                    self.auto_wrap = false;
+                    self.grid.auto_wrap = false; // mirror so Grid.write honours it
+                },
                 12 => {}, // Cursor blink off — accepted
                 25 => self.cursor_visible = false, // hide cursor
                 47, 1047, 1049 => { // Alt screen off
@@ -1942,8 +1976,62 @@ test "auto-wrap mode" {
     try std.testing.expect(parser.auto_wrap); // on by default
     parser.feed("\x1b[?7l");
     try std.testing.expect(!parser.auto_wrap);
+    try std.testing.expect(!grid.auto_wrap); // mirrored to the grid
     parser.feed("\x1b[?7h");
     try std.testing.expect(parser.auto_wrap);
+    try std.testing.expect(grid.auto_wrap);
+}
+
+test "auto-wrap off overwrites last column without wrapping" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 24, 80);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    // DECAWM off, cursor to last column (CUP row 1, col 80 → 0-indexed 0,79).
+    parser.feed("\x1b[?7l\x1b[1;80H");
+    parser.feed("ABC");
+    // No wrap: cursor stays on row 0; the last column holds the final char.
+    try std.testing.expectEqual(@as(u16, 0), grid.cursor_row);
+    try std.testing.expectEqual(@as(u21, 'C'), grid.cellAtConst(0, 79).char);
+
+    // Sanity: with autowrap back on, the same overflow wraps to the next row.
+    parser.feed("\x1b[?7h\x1b[1;80H");
+    parser.feed("XY");
+    try std.testing.expectEqual(@as(u16, 1), grid.cursor_row);
+}
+
+test "DECRQM reports mode state; DECSTR soft-resets" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 24, 80);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    const Cap = struct {
+        buf: [128]u8 = undefined,
+        len: usize = 0,
+        fn cb(data: []const u8, ctx: ?*anyopaque) void {
+            const c: *@This() = @ptrCast(@alignCast(ctx.?));
+            const n = @min(data.len, c.buf.len - c.len);
+            @memcpy(c.buf[c.len..][0..n], data[0..n]);
+            c.len += n;
+        }
+    };
+    var cap = Cap{};
+    parser.response_fn = Cap.cb;
+    parser.response_ctx = &cap;
+
+    // Enable bracketed paste, then DECRQM (? 2004 $ p) must report "set" (1).
+    parser.feed("\x1b[?2004h");
+    parser.feed("\x1b[?2004$p");
+    try std.testing.expectEqualStrings("\x1b[?2004;1$y", cap.buf[0..cap.len]);
+
+    // DECSTR (! p) soft-resets bracketed paste; DECRQM then reports "reset" (2).
+    cap.len = 0;
+    parser.feed("\x1b[!p");
+    try std.testing.expect(!parser.bracketed_paste);
+    parser.feed("\x1b[?2004$p");
+    try std.testing.expectEqualStrings("\x1b[?2004;2$y", cap.buf[0..cap.len]);
 }
 
 test "unknown CSI sequences are silently absorbed" {
