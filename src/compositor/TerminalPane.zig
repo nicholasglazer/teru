@@ -253,7 +253,7 @@ pub fn createRestored(server: *Server, ws: u8, pane: *Pane) ?*TerminalPane {
         server.nodes.setName(s, auto_name);
     }
 
-    // Add to terminal_panes array (pane_index registration happens in init)
+    // Add to terminal_panes array.
     for (server.terminal_panes, 0..) |maybe, i| {
         if (maybe == null) {
             server.terminal_panes[i] = tp;
@@ -261,6 +261,13 @@ pub fn createRestored(server: *Server, ws: u8, pane: *Pane) ?*TerminalPane {
             break;
         }
     }
+
+    // pane_index registration: this path does NOT go through initWithSpawn
+    // (it builds tp inline above), so unlike create*/createFloating it must
+    // register here. Without it, terminalPaneById() returns null for every
+    // hot-restart-restored pane, silently breaking visibility recompute,
+    // cursor drag/resize and scratchpad toggle (the v0.6.4 bug class).
+    server.pane_index.put(server.zig_allocator, tp.node_id, tp) catch {};
 
     tp.render();
     return tp;

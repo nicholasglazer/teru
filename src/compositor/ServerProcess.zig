@@ -13,6 +13,12 @@ pub fn spawnProcess(cmd: [*:0]const u8) void {
     if (pid == 0) {
         const pid2 = std.os.linux.fork();
         if (pid2 == 0) {
+            // Close every inherited fd >= 3 before exec. The compositor keeps
+            // PTY masters NON-CLOEXEC on purpose (they must survive hot-restart
+            // execve), and also holds DRM/wlroots/MCP-socket fds — none of which
+            // a spawned helper should inherit. A leaked PTY master copy also
+            // keeps a closed pane's shell alive (it never receives SIGHUP).
+            closeInheritedFds();
             // Grandchild: exec via shell to handle args/pipes.
             const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", cmd, null };
             const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
@@ -27,6 +33,17 @@ pub fn spawnProcess(cmd: [*:0]const u8) void {
         // never. WNOHANG would race the kernel scheduler and leak a
         // zombie when the exit hasn't been processed yet.
         _ = std.c.waitpid(@intCast(pid), null, 0);
+    }
+}
+
+/// Close every fd >= 3 in the current (grand)child before exec. Bounded by
+/// the RLIMIT_NOFILE soft default (1024 on systemd systems; teruwm never
+/// raises it). Direct close() syscalls only — runs post-fork/pre-exec, so it
+/// must not allocate. Closing an unused fd is a harmless EBADF.
+fn closeInheritedFds() void {
+    var fd: i32 = 3;
+    while (fd < 1024) : (fd += 1) {
+        _ = std.os.linux.close(fd);
     }
 }
 

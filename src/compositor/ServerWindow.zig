@@ -115,11 +115,15 @@ pub fn toggleFullscreen(self: *Server) void {
             }
         }
 
-        // Show all panes in the active workspace
-        const ws = self.layout_engine.active_workspace;
-        setWorkspaceVisibility(self, ws, true);
+        // Re-show every node via the derived-visibility pass. Unlike the
+        // tiled-only setWorkspaceVisibility, this covers floating windows and
+        // shown scratchpads (which enter-fullscreen hid via recomputeVisibility)
+        // across all outputs, and observes fullscreen_node == null. Symmetric
+        // with the enter path.
+        recomputeVisibility(self);
 
         // Re-tile (respects bar height again)
+        const ws = self.layout_engine.active_workspace;
         self.arrangeworkspace(ws);
         if (self.bar) |b| _ = b.render(self);
 
@@ -252,7 +256,11 @@ pub fn closeNode(self: *Server, node_id: u64) bool {
         if (slot.*) |tp| {
             if (tp.node_id == node_id) {
                 const ws = if (self.nodes.findById(node_id)) |s| self.nodes.workspace[s] else self.layout_engine.active_workspace;
-                self.layout_engine.workspaces[ws].removeNode(node_id);
+                // A parked scratchpad has ws == HIDDEN_WS (255); indexing the
+                // [10]Workspace array with it is OOB. Remove from every
+                // workspace like handleTerminalExit does — node ids are unique
+                // so the extra removeNode calls are harmless no-ops.
+                for (&self.layout_engine.workspaces) |*w| w.removeNode(node_id);
                 if (self.nodes.findById(node_id)) |_| _ = self.nodes.remove(node_id);
 
                 clearFocusRefs(self, node_id);
@@ -261,7 +269,7 @@ pub fn closeNode(self: *Server, node_id: u64) bool {
                 self.zig_allocator.destroy(tp);
                 slot.* = null;
                 self.terminal_count -|= 1;
-                self.arrangeworkspace(ws);
+                if (ws < self.layout_engine.workspaces.len) self.arrangeworkspace(ws);
                 updateFocusedTerminal(self);
                 if (self.bar) |b| _ = b.render(self);
                 return true;
@@ -449,7 +457,10 @@ pub fn moveNodeToWorkspace(self: *Server, nid: u64, target: u8) void {
     // Update node identity. Workspace list bookkeeping: remove from old
     // node_ids (if it was tiled there), add to new.
     self.nodes.moveSlotToWorkspace(slot, target);
-    self.layout_engine.workspaces[from].removeNode(nid);
+    // `from` is HIDDEN_WS (255) for a parked scratchpad — only `target` was
+    // range-checked above. Guard the source index against the [10]Workspace
+    // array. (moveSlotToWorkspace already handled the 255→target identity.)
+    if (from < self.layout_engine.workspaces.len) self.layout_engine.workspaces[from].removeNode(nid);
     if (!self.nodes.floating[slot]) {
         self.layout_engine.workspaces[target].addNode(self.zig_allocator, nid) catch |e| {
             std.debug.print("teruwm: moveNodeToWorkspace addNode failed: {s}\n", .{@errorName(e)});
