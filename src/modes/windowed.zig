@@ -1127,6 +1127,40 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
         else
             mux.pollPtys(&pty_buf);
 
+        // Reap local panes whose shell exited on its own (the common
+        // `exit` / Ctrl-D case). Without this the hung-up PTY master stays
+        // poll-ready forever, so the event loop busy-spins at 100% CPU with a
+        // zombie pane on screen — the standalone-teru analog of the teruwm
+        // shell-exit blocker (see AUDIT.md, fixed only for the compositor).
+        // Daemon mode is excluded: the daemon reaps its own panes
+        // (Daemon.checkPaneAlive) and the client's panes are remote-backed.
+        if (daemon_fd == null) {
+            var pi: usize = 0;
+            var reaped = false;
+            while (pi < mux.panes.items.len) {
+                const p = &mux.panes.items[pi];
+                if (p.backend == .local and !p.isAlive()) {
+                    const before = mux.panes.items.len;
+                    mux.closePane(p.id); // full teardown (immortal panes respawn)
+                    hooks.fire(.close);
+                    reaped = true;
+                    // closePane removes the pane (len shrinks, next pane slides
+                    // into pi) unless it was immortal and got respawned (len
+                    // unchanged) — only then advance.
+                    if (mux.panes.items.len == before) pi += 1;
+                } else pi += 1;
+            }
+            if (reaped) {
+                if (mux.panes.items.len == 0) {
+                    running = false;
+                    continue;
+                }
+                const sz = win.getSize();
+                mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
+                force_redraw = true;
+            }
+        }
+
         // If new lines were added to scrollback, adjust scroll_offset and
         // selection to keep them pinned to the same content.
         if (had_output) {

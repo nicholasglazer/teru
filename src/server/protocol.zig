@@ -139,12 +139,34 @@ pub fn recvMessage(fd: posix.fd_t, header_out: *Header, payload_buf: []u8) ?[]co
     if (hdr.len == 0) return payload_buf[0..0];
     if (hdr.len > payload_buf.len) return null; // payload too large
 
+    // Once the header is consumed we are committed to this frame. On a
+    // non-blocking socket the body may not have fully arrived yet — a 64 KB
+    // grid-sync frame routinely spans multiple AF_UNIX segments, and the two
+    // writeAll() calls in sendMessage (header, then payload) can land in
+    // separate reads. Treating EAGAIN as fatal here would discard the header
+    // plus any partial body and permanently desync the stream (the next call
+    // reads mid-body bytes as a fresh header). Wait (bounded) for readability
+    // and finish the body instead.
     const payload_len: usize = hdr.len;
     var total: usize = 0;
     while (total < payload_len) {
         const rc = std.c.read(fd, payload_buf[total..].ptr, payload_len - total);
-        if (rc <= 0) return null; // EOF or error
-        total += @intCast(rc);
+        if (rc > 0) {
+            total += @intCast(rc);
+            continue;
+        }
+        if (rc == 0) return null; // EOF mid-frame
+        switch (posix.errno(rc)) {
+            .AGAIN, .INTR => {
+                // Body not fully here yet — block until the fd is readable
+                // again rather than abandoning a half-read frame. The 2s cap
+                // is a dead-peer guard (a stalled local socket is broken).
+                var pfd = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
+                const pr = posix.poll(&pfd, 2000) catch return null;
+                if (pr == 0) return null; // timed out — peer stalled mid-frame
+            },
+            else => return null, // real error
+        }
     }
 
     return payload_buf[0..payload_len];
