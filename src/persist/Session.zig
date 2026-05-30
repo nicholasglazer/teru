@@ -220,6 +220,11 @@ pub fn deserialize(reader: anytype, allocator: Allocator) !Session {
 
     // Node count
     const count = try reader.readInt(u32, .little);
+    // Guard against a corrupt/truncated file: a garbage u32 (e.g. 0xFFFFFFFF)
+    // would otherwise drive a multi-GB allocation. No real session approaches
+    // this — panes are bounded and the graph tracks at most a few thousand.
+    const max_session_nodes: u32 = 100_000;
+    if (count > max_session_nodes) return error.InvalidSession;
 
     // Allocate nodes
     const nodes = try allocator.alloc(SerializedNode, count);

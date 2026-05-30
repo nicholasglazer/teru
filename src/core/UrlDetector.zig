@@ -185,19 +185,30 @@ pub fn openUrl(url: []const u8) void {
         null,
     };
 
+    // Double-fork so the opener (and the browser it spawns) reparents to
+    // init and never lingers as a zombie in the long-running terminal /
+    // compositor. A single fork with no waitpid leaked one defunct PID per
+    // URL click. Mirrors compat.forkExec, but keeps stdout/stderr on
+    // /dev/null so xdg-open's chatter can't corrupt the terminal.
     const pid = compat.posixFork();
     if (pid < 0) return;
     if (pid == 0) {
-        const devnull = posix.system.open("/dev/null", .{ .ACCMODE = .WRONLY }, @as(std.posix.mode_t, 0));
-        if (devnull >= 0) {
-            _ = std.c.dup2(devnull, posix.STDOUT_FILENO);
-            _ = std.c.dup2(devnull, posix.STDERR_FILENO);
-            _ = posix.system.close(devnull);
+        const pid2 = compat.posixFork();
+        if (pid2 == 0) {
+            const devnull = posix.system.open("/dev/null", .{ .ACCMODE = .WRONLY }, @as(std.posix.mode_t, 0));
+            if (devnull >= 0) {
+                _ = std.c.dup2(devnull, posix.STDOUT_FILENO);
+                _ = std.c.dup2(devnull, posix.STDERR_FILENO);
+                _ = posix.system.close(devnull);
+            }
+            const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
+            _ = posix.system.execve(argv[0].?, &argv, @ptrCast(envp));
+            compat.posixExit(1);
         }
-        const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
-        _ = posix.system.execve(argv[0].?, &argv, @ptrCast(envp));
-        compat.posixExit(1);
+        compat.posixExit(0);
     }
+    // Reap the instantly-exiting middle child (microsecond no-op).
+    _ = std.c.waitpid(@intCast(pid), null, 0);
 }
 
 /// Find a URL at a specific grid position.

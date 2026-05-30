@@ -209,9 +209,6 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
             }
             // Mouse events from TuiInput
             if (tui_input.last_mouse) |mouse| {
-                var dbg: [128]u8 = undefined;
-                const dbg_msg = std.fmt.bufPrint(&dbg, "MOUSE: col={d} row={d} btn={d} rel={}\n", .{ mouse.col, mouse.row, mouse.button, mouse.release }) catch "";
-                _ = std.c.write(2, dbg_msg.ptr, dbg_msg.len);
                 tui_input.last_mouse = null;
                 if (!mouse.release and mouse.button == 0) {
                     // Left click → focus pane under cursor
@@ -219,16 +216,10 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
                     const pane_ids = active_ws.node_ids.items;
                     const LE_Rect = @import("../tiling/LayoutEngine.zig").Rect;
                     const sr = LE_Rect{ .x = 0, .y = 0, .width = screen.width, .height = if (screen.height > 1) screen.height - 1 else screen.height };
-                    var dbg2: [256]u8 = undefined;
-                    const dbg2_msg = std.fmt.bufPrint(&dbg2, "HIT: panes={d} screen={d}x{d} active_idx={d}\n", .{ pane_ids.len, screen.width, screen.height, active_ws.active_index }) catch "";
-                    _ = std.c.write(2, dbg2_msg.ptr, dbg2_msg.len);
                     const rects = mux.layout_engine.calculate(mux.active_workspace, sr) catch null;
                     if (rects) |rs| {
                         defer allocator.free(rs);
                         for (rs, 0..) |rect, idx| {
-                            var dbg3: [256]u8 = undefined;
-                            const dbg3_msg = std.fmt.bufPrint(&dbg3, "  rect[{d}]: x={d} y={d} w={d} h={d}\n", .{ idx, rect.x, rect.y, rect.width, rect.height }) catch "";
-                            _ = std.c.write(2, dbg3_msg.ptr, dbg3_msg.len);
                             if (mouse.col >= rect.x and mouse.col < rect.x + rect.width and
                                 mouse.row >= rect.y and mouse.row < rect.y + rect.height)
                             {
