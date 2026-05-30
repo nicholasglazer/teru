@@ -175,9 +175,27 @@ pub fn extractJsonObject(json: []const u8, key: []const u8) ?[]const u8 {
     if (i >= json.len or json[i] != '{') return null;
     var depth: u32 = 0;
     var j = i;
+    var in_string = false;
+    var escaped = false;
     while (j < json.len) : (j += 1) {
-        if (json[j] == '{') depth += 1;
-        if (json[j] == '}') {
+        const ch = json[j];
+        // Skip braces inside string values — a value like "echo }" would
+        // otherwise unbalance the depth counter and cut the object short.
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (ch == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (ch == '"') {
+            in_string = !in_string;
+            continue;
+        }
+        if (in_string) continue;
+        if (ch == '{') depth += 1;
+        if (ch == '}') {
             depth -= 1;
             if (depth == 0) return json[i .. j + 1];
         }
@@ -331,6 +349,15 @@ test "extractNestedJsonInt" {
     const lines = extractNestedJsonInt(json, "lines");
     try t.expect(lines != null);
     try t.expectEqual(@as(u64, 20), lines.?);
+}
+
+test "extractJsonObject skips braces inside string values" {
+    // A '}' inside a string value must not close the object early.
+    const json = "{\"params\":{\"name\":\"x\",\"arguments\":{\"cmd\":\"echo }\",\"n\":2}}}";
+    const obj = extractJsonObject(json, "arguments").?;
+    try t.expectEqualStrings("{\"cmd\":\"echo }\",\"n\":2}", obj);
+    // extractNestedJsonInt scopes via extractJsonObject, so it must still find n.
+    try t.expectEqual(@as(u64, 2), extractNestedJsonInt(json, "n").?);
 }
 
 test "extractNestedJsonString" {

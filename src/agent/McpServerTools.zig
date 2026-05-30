@@ -344,8 +344,12 @@ fn toolSendInput(self: *McpServer, pane_id: u64, text: []const u8, buf: []u8, id
     const pane = self.multiplexer.getPaneById(pane_id) orelse
         return tools.jsonRpcError(buf, id, -32602, "Pane not found");
 
-    // Unescape JSON string sequences before writing to PTY
+    // Unescape JSON string sequences before writing to PTY. Unescaping only
+    // shrinks (or keeps) length, so text.len <= buffer means it fits. Reject
+    // over-long input explicitly instead of silently truncating it.
     var unesc: [4096]u8 = undefined;
+    if (text.len > unesc.len)
+        return tools.jsonRpcError(buf, id, -32602, "text too long (max 4096 bytes per call)");
     const unesc_text = tools.unescapeJson(text, &unesc);
 
     _ = pane.ptyWrite(unesc_text) catch
