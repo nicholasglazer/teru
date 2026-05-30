@@ -498,6 +498,17 @@ fn checkPaneAlive(self: *Daemon) void {
             if (rc > 0) {
                 // Child exited
                 self.hooks.fire(.close);
+                const dead_id = pane.id;
+                // Mirror Multiplexer.closePane: clear the dead id from every
+                // workspace's flat list AND split tree first. Workspace.removeNode
+                // is what resets active_node/master_id when they point at this
+                // pane — skipping it (as this path did) leaves a freed pane id
+                // live in the layout, so getActivePane()/node lists rot for any
+                // long-lived daemon whose shells exit.
+                for (&self.mux.layout_engine.workspaces) |*ws| {
+                    ws.removeNode(dead_id);
+                    ws.removeNodeFromTree(dead_id);
+                }
                 pane.deinit(self.allocator);
                 _ = self.mux.panes.orderedRemove(i);
                 // Re-link remaining panes after removal
