@@ -582,8 +582,15 @@ pub const WaylandWindow = struct {
     }
 
     pub fn pollEvents(self: *WaylandWindow) ?Event {
-        // Dispatch pending Wayland events (non-blocking)
-        _ = wl_display_dispatch_pending(self.display);
+        // Dispatch pending Wayland events (non-blocking). A negative return
+        // means the display connection is in a fatal error state (compositor
+        // exited / protocol error); without surfacing it, a HUP'd display fd
+        // makes poll() return instantly forever and the loop spins at 100%
+        // CPU. Treat it as a close request (the loop ends on .close).
+        if (wl_display_dispatch_pending(self.display) < 0) {
+            self.is_open = false;
+            return .close;
+        }
 
         // Flush outgoing requests and prepare readable events
         if (wl_display_prepare_read(self.display) == 0) {

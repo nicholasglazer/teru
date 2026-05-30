@@ -194,7 +194,13 @@ const XCB_CW_CURSOR: u32 = 0x4000;
 const XCB_EVENT_MASK_POINTER_MOTION: u32 = 0x40; // motion without button held
 
 // ── XCB-SHM extern functions ──────────────────────────────────────────
+const xcb_generic_error_t = opaque {};
 extern "xcb-shm" fn xcb_shm_attach(conn: *xcb_connection_t, shmseg: xcb_shm_seg_t, shmid: u32, read_only: u8) callconv(.c) xcb_void_cookie_t;
+// Checked attach + request_check: probe MIT-SHM availability synchronously so
+// remote X (where shmget/shmat succeed locally but the server-side attach
+// fails) falls back to the socket path instead of rendering nothing.
+extern "xcb-shm" fn xcb_shm_attach_checked(conn: *xcb_connection_t, shmseg: xcb_shm_seg_t, shmid: u32, read_only: u8) callconv(.c) xcb_void_cookie_t;
+extern "xcb" fn xcb_request_check(conn: *xcb_connection_t, cookie: xcb_void_cookie_t) callconv(.c) ?*xcb_generic_error_t;
 extern "xcb-shm" fn xcb_shm_detach(conn: *xcb_connection_t, shmseg: xcb_shm_seg_t) callconv(.c) xcb_void_cookie_t;
 extern "xcb-shm" fn xcb_shm_put_image(conn: *xcb_connection_t, drawable: xcb_window_t, gc: xcb_gcontext_t, total_width: u16, total_height: u16, src_x: u16, src_y: u16, src_width: u16, src_height: u16, dst_x: i16, dst_y: i16, depth: u8, format: u8, send_event: u8, shmseg: xcb_shm_seg_t, offset: u32) callconv(.c) xcb_void_cookie_t;
 
@@ -358,6 +364,14 @@ pub const X11Window = struct {
     }
 
     pub fn pollEvents(self: *X11Window) ?Event {
+        // A dead X server (crash, `kill`, SSH X-forward drop) leaves the
+        // display fd permanently HUP'd, so poll() returns instantly forever
+        // and the main loop pegs a core at 100% CPU. Detect the broken
+        // connection and ask the loop to quit (it treats .close as done).
+        if (xcb_connection_has_error(self.connection) != 0) {
+            self.is_open = false;
+            return .close;
+        }
         const raw_event = xcb_poll_for_event(self.connection) orelse return null;
         defer std.c.free(raw_event);
         const XCB_EVENT_RESPONSE_TYPE_MASK: u8 = 0x7f; // strips sent_event flag
@@ -513,10 +527,18 @@ pub const X11Window = struct {
         // Mark for deletion when all processes detach
         _ = shmctl(shmid_val, IPC_RMID, null);
 
-        // Attach to X server
+        // Attach to the X server, CHECKED. shmget/shmat above succeed even on
+        // a remote DISPLAY (SSH X-forward), but the server-side attach fails
+        // when MIT-SHM is unavailable; xcb_request_check round-trips so we
+        // learn synchronously. On failure leave use_shm = false and fall back
+        // to xcb_put_image (the socket path), which renders on remote X.
         const seg = xcb_generate_id(self.connection);
-        _ = xcb_shm_attach(self.connection, seg, @bitCast(shmid_val), 0);
-        _ = xcb_flush(self.connection);
+        const cookie = xcb_shm_attach_checked(self.connection, seg, @bitCast(shmid_val), 0);
+        if (xcb_request_check(self.connection, cookie)) |err| {
+            std.c.free(err);
+            if (ptr) |p| _ = shmdt(@ptrCast(p)); // release our local view (segment already IPC_RMID'd)
+            return; // use_shm stays false
+        }
 
         self.shm_seg = seg;
         self.shm_ptr = @ptrCast(@alignCast(ptr));
