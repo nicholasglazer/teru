@@ -87,7 +87,10 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
         return;
     }
 
-    if (orientation == 0 and server.focused_terminal != null) {
+    // delta != 0: a touchpad scroll-stop arrives as a 0-delta axis event;
+    // without this guard it scrolled the focused terminal by 3 lines. A 0
+    // delta falls through to the seat notify below (axis-stop for clients).
+    if (orientation == 0 and delta != 0 and server.focused_terminal != null) {
         const tp = server.focused_terminal.?;
         const max_offset: u32 = @intCast(tp.pane.scrollback.total_lines);
         if (max_offset > 0) {
