@@ -81,7 +81,8 @@ pub const SoftwareRenderer = struct {
     cursor_color: u32, // configurable cursor block color (ARGB)
     padding: u32, // pixels of padding around content
     scheme: ColorScheme, // runtime color scheme (palette + semantic colors)
-    cursor_blink_on: bool = true, // toggled by blink timer
+    cursor_blink_on: bool = true, // toggled by blink timer (teruwm: reused as "this pane is focused")
+    cursor_visible: bool = true, // DECTCEM (ESC[?25l hides); set by the caller from VtParser.cursor_visible
     last_cursor_row: u16 = 0, // previous cursor row (for dirty tracking)
     allocator: std.mem.Allocator,
 
@@ -339,8 +340,13 @@ pub const SoftwareRenderer = struct {
             }
         }
 
-        // 3. Draw cursor at cursor position (shape from grid.cursor_shape)
-        if (grid.cursor_row < grid.rows and grid.cursor_col < grid.cols) {
+        // 3. Draw cursor at cursor position (shape from grid.cursor_shape).
+        // Gated on DECTCEM (cursor_visible) — teruwm panes used to draw the
+        // cursor unconditionally, ignoring ESC[?25l — and on cursor_blink_on
+        // (blink/focus, set by the caller; defaults on).
+        if (self.cursor_visible and self.cursor_blink_on and
+            grid.cursor_row < grid.rows and grid.cursor_col < grid.cols)
+        {
             const cx: usize = @as(usize, grid.cursor_col) * cw + self.padding;
             const cy: usize = @as(usize, grid.cursor_row) * ch + self.padding;
             const cursor_color: u32 = self.cursor_color;

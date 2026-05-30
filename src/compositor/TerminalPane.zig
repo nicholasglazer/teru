@@ -376,6 +376,11 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     const sel_ptr: ?*const Selection = if (self.selection.active) &self.selection else null;
     const so: u32 = self.pane.scroll_offset;
     const sbl: u32 = if (grid.scrollback) |sb| @intCast(sb.lineCount()) else 0;
+    // Honour DECTCEM (ESC[?25l): the teruwm SoftwareRenderer path drew the
+    // cursor unconditionally, so a hidden cursor still showed. (Focus-based
+    // hollowing of unfocused panes is left to a follow-up — it needs focus
+    // changes to repaint the cursor cell, which repaintBorderOnly does not.)
+    self.renderer.cursor_visible = self.pane.vt.cursor_visible;
     self.renderer.renderDirtyWithSelection(grid, sel_ptr, so, sbl);
 
     const border: c_int = if (self.shouldDrawBorder()) blk: {
