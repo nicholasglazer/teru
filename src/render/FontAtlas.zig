@@ -19,6 +19,56 @@ const include_geometric: bool = build_options.glyph_budget != .ascii;
 const include_cyrillic: bool = build_options.glyph_budget == .full;
 const include_braille: bool = build_options.glyph_budget == .full;
 
+/// One codepoint's flat slot in the atlas grid.
+const Codepoint = struct { cp: u21, slot: u32 };
+
+/// Total glyph slots for the active `-Dglyphs` budget. SINGLE SOURCE OF TRUTH:
+/// atlas dimensions, glyphSlot() offsets, and every rasterizer derive from it.
+/// ascii=351, extended=447, full=959.
+const atlas_total_glyphs: u32 = 95 + 96 + 128 + 32 +
+    (if (include_geometric) 96 else 0) +
+    (if (include_cyrillic) 256 else 0) +
+    (if (include_braille) 256 else 0);
+
+/// Fill `buf` with the budget-gated codepoint→slot list in the canonical order
+/// glyphSlot() resolves: ASCII, Latin-1, Box, Block, [Geometric], [Cyrillic],
+/// [Braille]. Returns the count (== atlas_total_glyphs). Shared by init() and
+/// every re-raster path (zoom / variant) so they cannot drift in count or
+/// order — divergence here caused a heap overflow in non-full builds plus
+/// wrong-glyph corruption after a font zoom (fixed 2026-05).
+fn buildAtlasCodepoints(buf: []Codepoint) u32 {
+    var slot: u32 = 0;
+    for (32..127) |cp| {
+        buf[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    }
+    for (160..256) |cp| {
+        buf[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    }
+    for (0x2500..0x2580) |cp| {
+        buf[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    }
+    for (0x2580..0x25A0) |cp| {
+        buf[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    }
+    if (include_geometric) for (0x25A0..0x2600) |cp| {
+        buf[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    };
+    if (include_cyrillic) for (0x0400..0x0500) |cp| {
+        buf[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    };
+    if (include_braille) for (0x2800..0x2900) |cp| {
+        buf[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    };
+    return slot;
+}
+
 // ── stb_truetype C bindings ────────────────────────────────────────
 //
 // Hand-declared per .claude/rules/zig-terminal.md anti-pattern #10.
@@ -120,10 +170,7 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     //   Cyrillic:        0x0400-0x04FF (256 glyphs)   [full only]
     //   Braille Patterns: 0x2800-0x28FF (256 glyphs)  [full only]
     // Totals: 351 (ascii) / 447 (extended) / 959 (full)
-    const total_glyphs: u32 = 95 + 96 + 128 + 32 +
-        (if (include_geometric) 96 else 0) +
-        (if (include_cyrillic) 256 else 0) +
-        (if (include_braille) 256 else 0);
+    const total_glyphs: u32 = atlas_total_glyphs;
     const glyphs_per_row: u32 = 16;
     const num_rows: u32 = (total_glyphs + glyphs_per_row - 1) / glyphs_per_row;
     const atlas_w = glyphs_per_row * cell_w;
@@ -141,52 +188,11 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     var braille_glyphs: [256]?GlyphInfo = @splat(null);
     const baseline: i32 = @intFromFloat(f_ascent);
 
-    // Build a flat list of codepoints to rasterize. Optional ranges are
-    // gated at comptime so the unselected branches drop out entirely.
-    const Codepoint = struct { cp: u21, slot: u32 };
-    var codepoints: [total_glyphs]Codepoint = undefined;
-    var slot: u32 = 0;
-
-    // ASCII printable: 32-126
-    for (32..127) |cp| {
-        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-        slot += 1;
-    }
-    // Latin-1 Supplement: 160-255
-    for (160..256) |cp| {
-        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-        slot += 1;
-    }
-    // Box Drawing: U+2500-U+257F
-    for (0x2500..0x2580) |cp| {
-        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-        slot += 1;
-    }
-    // Block Elements: U+2580-U+259F
-    for (0x2580..0x25A0) |cp| {
-        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-        slot += 1;
-    }
-    // The slotting order in glyphSlot() below assumes Geometric occupies
-    // slots 351..447 when included. Cyrillic/Braille follow if include_full.
-    if (include_geometric) {
-        for (0x25A0..0x2600) |cp| {
-            codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-            slot += 1;
-        }
-    }
-    if (include_cyrillic) {
-        for (0x0400..0x0500) |cp| {
-            codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-            slot += 1;
-        }
-    }
-    if (include_braille) {
-        for (0x2800..0x2900) |cp| {
-            codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-            slot += 1;
-        }
-    }
+    // Build the flat codepoint→slot list (budget-gated, canonical order).
+    // Shared with the zoom/variant rasterizers via buildAtlasCodepoints so
+    // they can never drift in count or order.
+    var codepoints: [atlas_total_glyphs]Codepoint = undefined;
+    const slot = buildAtlasCodepoints(&codepoints);
 
     for (codepoints[0..slot]) |entry| {
         const col = entry.slot % glyphs_per_row;
@@ -329,7 +335,7 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
 
     if (cell_w == 0 or cell_h == 0) return error.InvalidFontMetrics;
 
-    const total_glyphs: u32 = 95 + 96 + 128 + 32 + 256 + 96 + 256; // 959
+    const total_glyphs: u32 = atlas_total_glyphs;
     const glyphs_per_row: u32 = 16;
     const num_rows: u32 = (total_glyphs + glyphs_per_row - 1) / glyphs_per_row;
     const atlas_w = glyphs_per_row * cell_w;
@@ -346,16 +352,8 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
     var braille_glyphs: [256]?GlyphInfo = @splat(null);
     const baseline: i32 = @intFromFloat(f_ascent);
 
-    const Codepoint = struct { cp: u21, slot: u32 };
-    var codepoints: [total_glyphs]Codepoint = undefined;
-    var slot: u32 = 0;
-    for (32..127) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
-    for (160..256) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
-    for (0x2500..0x2580) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
-    for (0x2580..0x25A0) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
-    for (0x0400..0x0500) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
-    for (0x25A0..0x2600) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
-    for (0x2800..0x2900) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
+    var codepoints: [atlas_total_glyphs]Codepoint = undefined;
+    const slot = buildAtlasCodepoints(&codepoints);
 
     for (codepoints[0..slot]) |entry| {
         const col = entry.slot % glyphs_per_row;
@@ -475,40 +473,11 @@ pub fn loadVariant(self: *const FontAtlas, allocator: std.mem.Allocator, font_pa
     const ah = self.atlas_height;
     const glyphs_per_row: u32 = 16;
 
-    // Build same codepoint list as init
-    const total_glyphs: u32 = 95 + 96 + 128 + 32 + 256 + 96 + 256; // 959
-    const Codepoint = struct { cp: u21, slot: u32 };
-    var codepoints: [total_glyphs]Codepoint = undefined;
-    var slot: u32 = 0;
-
-    for (32..127) |cp| {
-        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-        slot += 1;
-    }
-    for (160..256) |cp| {
-        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-        slot += 1;
-    }
-    for (0x2500..0x2580) |cp| {
-        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-        slot += 1;
-    }
-    for (0x2580..0x25A0) |cp| {
-        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-        slot += 1;
-    }
-    for (0x0400..0x0500) |cp| {
-        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-        slot += 1;
-    }
-    for (0x25A0..0x2600) |cp| {
-        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-        slot += 1;
-    }
-    for (0x2800..0x2900) |cp| {
-        codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot };
-        slot += 1;
-    }
+    // Same budget-gated codepoint list / order as init() — shared helper so a
+    // non-full build's variant atlas is sized to the real glyph count (not a
+    // hardcoded 959) and slots line up with glyphSlot().
+    var codepoints: [atlas_total_glyphs]Codepoint = undefined;
+    const slot = buildAtlasCodepoints(&codepoints);
 
     for (codepoints[0..slot]) |entry| {
         const col = entry.slot % glyphs_per_row;
@@ -580,17 +549,8 @@ pub fn rasterizeVariant(self: *const FontAtlas, allocator: std.mem.Allocator, va
     const ah = self.atlas_height;
     const glyphs_per_row: u32 = 16;
 
-    const total_glyphs: u32 = 95 + 96 + 128 + 32 + 256 + 96 + 256; // 959
-    const Codepoint = struct { cp: u21, slot: u32 };
-    var codepoints: [total_glyphs]Codepoint = undefined;
-    var slot: u32 = 0;
-    for (32..127) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
-    for (160..256) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
-    for (0x2500..0x2580) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
-    for (0x2580..0x25A0) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
-    for (0x0400..0x0500) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
-    for (0x25A0..0x2600) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
-    for (0x2800..0x2900) |cp| { codepoints[slot] = .{ .cp = @intCast(cp), .slot = slot }; slot += 1; }
+    var codepoints: [atlas_total_glyphs]Codepoint = undefined;
+    const slot = buildAtlasCodepoints(&codepoints);
 
     for (codepoints[0..slot]) |entry| {
         const col = entry.slot % glyphs_per_row;
@@ -909,4 +869,21 @@ test "glyphSlot: out of range" {
     try std.testing.expectEqual(@as(?u32, null), glyphSlot(0x4E2D));
     // Emoji - not in atlas
     try std.testing.expectEqual(@as(?u32, null), glyphSlot(0x1F600));
+}
+
+test "atlas builder and glyphSlot agree (no count/order drift)" {
+    // Regression guard: the atlas rasterizers (init, zoom, bold/italic variant)
+    // and glyphSlot() MUST agree on count and slot order. When they diverged
+    // (hardcoded 959 + Cyrillic-before-Geometric), non-full builds overflowed
+    // the variant atlas and a font zoom rendered the wrong glyphs.
+    var buf: [atlas_total_glyphs]Codepoint = undefined;
+    const n = buildAtlasCodepoints(&buf);
+    try std.testing.expectEqual(atlas_total_glyphs, n);
+    for (buf[0..n]) |entry| {
+        // Every rasterized slot is addressable within the budget-sized atlas.
+        try std.testing.expect(entry.slot < atlas_total_glyphs);
+        // glyphSlot() resolves the same codepoint to the same slot the
+        // rasterizer wrote it to — otherwise the renderer reads a wrong glyph.
+        try std.testing.expectEqual(@as(?u32, entry.slot), glyphSlot(entry.cp));
+    }
 }

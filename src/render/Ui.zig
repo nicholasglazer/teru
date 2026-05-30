@@ -452,6 +452,12 @@ pub fn renderScrollOverlay(
     // Parses SGR escape sequences to preserve fg/bg colors and attributes.
     var line: u32 = 0;
     while (line < lines_to_show) : (line += 1) {
+        // lines_to_show can include one synthetic "pixel-extra" line past
+        // scroll_offset on a smooth-scroll boundary (and scroll_offset may be
+        // 0 while scroll_pixel > 0). That line has no backing scrollback row;
+        // skip it before the unsigned subtraction below, which would otherwise
+        // underflow-panic in safe builds (`scroll_offset - 1 - line` < 0).
+        if (line >= scroll_offset) continue;
         const sb_offset = scroll_offset - 1 - line;
         const text = sb.getLineByOffset(sb_offset) orelse continue;
 
