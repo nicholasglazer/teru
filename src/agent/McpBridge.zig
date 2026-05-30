@@ -216,6 +216,11 @@ fn discoverSocket() ?[]const u8 {
         const name = std.mem.sliceTo(name_ptr, 0);
         if (!std.mem.startsWith(u8, name, "teru-mcp-")) continue;
         if (!std.mem.endsWith(u8, name, ".sock")) continue;
+        // Skip the event-push socket (teru-mcp-events-$PID.sock) — the stdio
+        // proxy needs the REQUEST socket (teru-mcp-$PID.sock). Both match the
+        // prefix/suffix above, and readdir order is arbitrary, so without this
+        // the proxy could bind to the events socket and never get responses.
+        if (std.mem.startsWith(u8, name, "teru-mcp-events-")) continue;
 
         const full = std.fmt.bufPrint(&discovered_path, "{s}/{s}", .{ dir_path, name }) catch continue;
         return full;
