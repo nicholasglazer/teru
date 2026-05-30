@@ -569,8 +569,12 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
 /// working. Unknown keys are silently ignored.
 fn applyThreshold(self: *WmConfig, key: []const u8, value: []const u8) void {
     const t = &self.bar_thresholds;
-    const val_u16 = std.fmt.parseInt(u16, value, 10) catch return;
+    // Parse the wider type first as the gate, then derive u16. The old order
+    // bailed the whole function on a u16-overflowing value, so a perf_us
+    // threshold above 65535 (a normal value, microseconds) silently dropped
+    // every threshold including the u32 perf ones.
     const val_u32 = std.fmt.parseInt(u32, value, 10) catch return;
+    const val_u16: u16 = std.math.cast(u16, val_u32) orelse std.math.maxInt(u16);
 
     const eqi = std.mem.eql;
     // CPU

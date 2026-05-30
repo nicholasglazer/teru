@@ -212,7 +212,10 @@ fn stripSgrToColumns(text: []const u8, col_start: u16, col_end: u16, buf: []u8) 
     var i: usize = 0;
 
     while (i < text.len) {
-        if (i + 2 < text.len and text[i] == 0x1b and text[i + 1] == '[') {
+        // i + 1 (not i + 2): we only need ESC and '['. The stricter bound
+        // missed a truncated trailing "\x1b[" at end-of-line, leaking a
+        // literal '[' into the copied text.
+        if (i + 1 < text.len and text[i] == 0x1b and text[i + 1] == '[') {
             i += 2;
             while (i < text.len) : (i += 1) {
                 if (text[i] == 'm' or (text[i] >= 0x40 and text[i] <= 0x7E)) {
