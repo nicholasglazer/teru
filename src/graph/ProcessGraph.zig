@@ -53,6 +53,13 @@ pub const Node = struct {
 
     pub fn deinit(self: *Node, allocator: Allocator) void {
         self.children.deinit(allocator);
+        // name + agent meta strings are graph-owned (duped in spawn) — free them.
+        allocator.free(self.name);
+        if (self.agent) |a| {
+            allocator.free(a.group);
+            allocator.free(a.role);
+            if (a.task) |t| allocator.free(t);
+        }
     }
 };
 
@@ -90,17 +97,46 @@ pub fn spawn(self: *ProcessGraph, opts: struct {
     agent: ?AgentMeta = null,
 }) !NodeId {
     const id = self.next_id;
+
+    // The graph OWNS its strings: callers routinely pass transient buffers
+    // (hook events freed by defer, PaneBackend line_buf, VtParser
+    // agent_event_buf). Storing borrowed slices left dangling pointers that
+    // findAgentByName / agentsInGroup / markFinished later read (UAF).
+    const name_owned = try self.allocator.dupe(u8, opts.name);
+    errdefer self.allocator.free(name_owned);
+
+    var agent_owned: ?AgentMeta = null;
+    errdefer if (agent_owned) |a| {
+        self.allocator.free(a.group);
+        self.allocator.free(a.role);
+        if (a.task) |t| self.allocator.free(t);
+    };
+    if (opts.agent) |a| {
+        const g = try self.allocator.dupe(u8, a.group);
+        errdefer self.allocator.free(g);
+        const r = try self.allocator.dupe(u8, a.role);
+        errdefer self.allocator.free(r);
+        const t: ?[]const u8 = if (a.task) |tt| try self.allocator.dupe(u8, tt) else null;
+        agent_owned = .{
+            .group = g,
+            .role = r,
+            .task = t,
+            .progress = a.progress,
+            .parent_agent = a.parent_agent,
+        };
+    }
+
     self.next_id += 1;
 
     var node = Node{
         .id = id,
-        .name = opts.name,
+        .name = name_owned,
         .kind = opts.kind,
         .state = .running,
         .parent = opts.parent,
         .pid = opts.pid,
         .started_at = compat.nanoTimestamp(),
-        .agent = opts.agent,
+        .agent = agent_owned,
         .workspace = opts.workspace,
     };
 
@@ -200,7 +236,11 @@ pub fn reparent(self: *ProcessGraph, id: NodeId, new_parent: ?NodeId) !void {
 pub fn updateAgentStatus(self: *ProcessGraph, id: NodeId, task: ?[]const u8, progress: ?f32) void {
     if (self.nodes.getPtr(id)) |node| {
         if (node.agent) |*agent| {
-            agent.task = task;
+            // task is graph-owned: free the previous one, dupe the new one.
+            // Callers pass transient buffers (OSC event scratch); borrowing
+            // would dangle on the next event.
+            if (agent.task) |old| self.allocator.free(old);
+            agent.task = if (task) |t| (self.allocator.dupe(u8, t) catch null) else null;
             agent.progress = progress;
         }
     }
@@ -373,6 +413,49 @@ test "findAgentByName" {
     try std.testing.expectEqual(@as(?NodeId, null), graph.findAgentByName("nonexistent"));
     // Shell nodes are not agents — should not be found
     try std.testing.expectEqual(@as(?NodeId, null), graph.findAgentByName("shell"));
+}
+
+test "spawn owns its strings (no UAF when caller buffer is reused)" {
+    const allocator = std.testing.allocator;
+    var graph = ProcessGraph.init(allocator);
+    defer graph.deinit();
+
+    // Simulate the real callers (hook event / PaneBackend line_buf / OSC
+    // agent_event_buf): names and agent meta come from a transient buffer
+    // that is overwritten right after spawn returns.
+    var name_buf: [32]u8 = undefined;
+    var group_buf: [32]u8 = undefined;
+    var role_buf: [32]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "backend-dev", .{}) catch unreachable;
+    const group = std.fmt.bufPrint(&group_buf, "team-x", .{}) catch unreachable;
+    const role = std.fmt.bufPrint(&role_buf, "implementer", .{}) catch unreachable;
+
+    const id = try graph.spawn(.{
+        .name = name,
+        .kind = .agent,
+        .agent = .{ .group = group, .role = role },
+    });
+
+    // Scribble over the caller's buffers — a borrowed-slice graph would now
+    // see garbage; an owning graph is unaffected.
+    @memset(&name_buf, 'Z');
+    @memset(&group_buf, 'Z');
+    @memset(&role_buf, 'Z');
+
+    try std.testing.expectEqualStrings("backend-dev", graph.getNode(id).?.name);
+    try std.testing.expectEqual(id, graph.findAgentByName("backend-dev").?);
+    var gbuf: [4]NodeId = undefined;
+    try std.testing.expectEqual(@as(usize, 1), graph.agentsInGroup("team-x", &gbuf));
+
+    // task is also owned: updateAgentStatus must dupe + free without leaking.
+    var task_buf: [32]u8 = undefined;
+    const task = std.fmt.bufPrint(&task_buf, "compiling", .{}) catch unreachable;
+    graph.updateAgentStatus(id, task, 0.5);
+    @memset(&task_buf, 'Z');
+    try std.testing.expectEqualStrings("compiling", graph.getNode(id).?.agent.?.task.?);
+    // Replacing the task must free the previous one (testing.allocator checks).
+    graph.updateAgentStatus(id, "linking", 0.9);
+    try std.testing.expectEqualStrings("linking", graph.getNode(id).?.agent.?.task.?);
 }
 
 test "countAgentsByState" {
