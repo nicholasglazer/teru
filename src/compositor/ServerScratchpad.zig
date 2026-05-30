@@ -82,11 +82,14 @@ pub fn defaultRect(server: *const Server) ScratchRect {
     const dims = server.activeOutputDims();
     const out_w: u32 = dims.w;
     const out_h: u32 = dims.h;
-    const w: u32 = out_w * server.wm_config.scratchpad_width_pct / 100;
-    const h: u32 = out_h * server.wm_config.scratchpad_height_pct / 100;
+    // Clamp to the output size: a scratchpad_*_pct > 100 (config typo) would
+    // make w > out_w, so (out_w - w) underflows u32 and @intCast panics /
+    // places the window off-screen. @min + saturating subtraction keep it sane.
+    const w: u32 = @min(out_w * server.wm_config.scratchpad_width_pct / 100, out_w);
+    const h: u32 = @min(out_h * server.wm_config.scratchpad_height_pct / 100, out_h);
     return .{
-        .x = @intCast((out_w - w) / 2),
-        .y = @intCast((out_h - h) / 2),
+        .x = @intCast((out_w -| w) / 2),
+        .y = @intCast((out_h -| h) / 2),
         .w = w,
         .h = h,
     };

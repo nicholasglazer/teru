@@ -169,7 +169,15 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
         var pane = Pane.initWithPty(allocator, rows, cols, server.next_node_id, spawn_config, pty) catch continue;
         _ = &pane;
 
-        const tp = TerminalPane.createRestored(server, ws, &pane) orelse continue;
+        const tp = TerminalPane.createRestored(server, ws, &pane) orelse {
+            // createRestored does NOT free the caller-owned Pane on its
+            // failure paths. Without this, a scene/renderer alloc failure
+            // mid-restore leaks the Grid + Scrollback AND the inherited PTY
+            // master fd (whose FD_CLOEXEC was cleared to survive exec) —
+            // i.e. an orphaned shell that never receives SIGHUP/EOF.
+            pane.deinit(allocator);
+            continue;
+        };
         _ = tp;
 
         server.next_node_id += 1;
