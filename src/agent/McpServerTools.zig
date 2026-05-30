@@ -43,6 +43,13 @@ else
     -1;
 const F = @import("McpFramework.zig").Framework(McpServer);
 
+/// Clamp an untrusted u64 JSON int down to u32 so an oversized count param
+/// (e.g. `lines: 9999999999`) can't trip an illegal-narrowing @intCast panic
+/// in the shipped ReleaseSafe build (which would abort the whole terminal).
+fn clampU32(v: u64) u32 {
+    return @intCast(@min(v, std.math.maxInt(u32)));
+}
+
 pub fn callListPanes(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     _ = params;
     return toolListPanes(self, buf, id);
@@ -51,7 +58,7 @@ pub fn callReadOutput(self: *McpServer, params: []const u8, buf: []u8, id: ?[]co
     const pane_id = tools.extractNestedJsonInt(params, "pane_id") orelse
         return tools.jsonRpcError(buf, id, -32602, "Missing pane_id");
     const lines = tools.extractNestedJsonInt(params, "lines") orelse 50;
-    return toolReadOutput(self, pane_id, @intCast(lines), buf, id);
+    return toolReadOutput(self, pane_id, clampU32(lines), buf, id);
 }
 pub fn callGetGraph(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     _ = params;
@@ -66,6 +73,7 @@ pub fn callSendInput(self: *McpServer, params: []const u8, buf: []u8, id: ?[]con
 }
 pub fn callCreatePane(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const workspace = tools.extractNestedJsonInt(params, "workspace") orelse 0;
+    if (workspace > 9) return tools.jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
     const dir_str = tools.extractNestedJsonString(params, "direction");
     const is_horizontal = if (dir_str) |d| std.mem.eql(u8, d, "horizontal") else false;
     const command = tools.extractNestedJsonString(params, "command");
@@ -75,6 +83,7 @@ pub fn callCreatePane(self: *McpServer, params: []const u8, buf: []u8, id: ?[]co
 pub fn callBroadcast(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const workspace = tools.extractNestedJsonInt(params, "workspace") orelse
         return tools.jsonRpcError(buf, id, -32602, "Missing workspace");
+    if (workspace > 9) return tools.jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
     const text = tools.extractNestedJsonString(params, "text") orelse
         return tools.jsonRpcError(buf, id, -32602, "Missing text");
     return toolBroadcast(self, @intCast(workspace), text, buf, id);
@@ -102,6 +111,7 @@ pub fn callClosePane(self: *McpServer, params: []const u8, buf: []u8, id: ?[]con
 pub fn callSwitchWorkspace(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const workspace = tools.extractNestedJsonInt(params, "workspace") orelse
         return tools.jsonRpcError(buf, id, -32602, "Missing workspace");
+    if (workspace > 9) return tools.jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
     return toolSwitchWorkspace(self, @intCast(workspace), buf, id);
 }
 pub fn callScroll(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -109,7 +119,7 @@ pub fn callScroll(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const 
         return tools.jsonRpcError(buf, id, -32602, "Missing pane_id");
     const direction = tools.extractNestedJsonString(params, "direction") orelse "up";
     const lines = tools.extractNestedJsonInt(params, "lines") orelse 10;
-    return toolScroll(self, @intCast(pane_id), direction, @intCast(lines), buf, id);
+    return toolScroll(self, pane_id, direction, clampU32(lines), buf, id);
 }
 pub fn callWaitFor(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const pane_id = tools.extractNestedJsonInt(params, "pane_id") orelse
@@ -117,12 +127,13 @@ pub fn callWaitFor(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const
     const pattern = tools.extractNestedJsonString(params, "pattern") orelse
         return tools.jsonRpcError(buf, id, -32602, "Missing pattern");
     const lines = tools.extractNestedJsonInt(params, "lines") orelse 20;
-    return toolWaitFor(self, @intCast(pane_id), pattern, @intCast(lines), buf, id);
+    return toolWaitFor(self, pane_id, pattern, clampU32(lines), buf, id);
 }
 pub fn callSetLayout(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const layout_str = tools.extractNestedJsonString(params, "layout") orelse
         return tools.jsonRpcError(buf, id, -32602, "Missing layout");
     const workspace = tools.extractNestedJsonInt(params, "workspace") orelse 0;
+    if (workspace > 9) return tools.jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
     return toolSetLayout(self, @intCast(workspace), layout_str, buf, id);
 }
 pub fn callSetConfig(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -878,9 +889,12 @@ fn toolWaitFor(self: *McpServer, pane_id: u64, pattern: []const u8, lines: u32, 
 
     const grid = &pane.grid;
 
-    // Retry up to 10 times with 50ms sleeps (500ms total) to let PTY output arrive
-    var attempt: u32 = 0;
-    while (attempt < 10) : (attempt += 1) {
+    // Non-blocking: a single PTY drain + scan, then return immediately. The
+    // tool schema documents this as non-blocking; the agent polls/retries.
+    // The old 10×50ms sleep loop blocked the single-threaded event loop —
+    // render, keyboard/mouse, PTY reads, all MCP/hook polling — for up to
+    // 500ms on one call (violates the project's "never block the loop" rule).
+    {
         // Force a PTY read so the grid is up-to-date
         var pty_buf: [8192]u8 = undefined;
         _ = pane.readAndProcess(&pty_buf) catch 0;
@@ -925,8 +939,6 @@ fn toolWaitFor(self: *McpServer, pane_id: u64, pattern: []const u8, lines: u32, 
             }
         }
 
-        // Not found this attempt — sleep 50ms and retry
-        compat.sleepNs(50_000_000); // 50ms
     }
 
     return std.fmt.bufPrint(buf,

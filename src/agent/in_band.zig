@@ -108,23 +108,35 @@ fn overridePaneId(
     out: []protocol.QueryArg,
     pane_id_str: []const u8,
 ) []const protocol.QueryArg {
+    // Emit the forced pane_id FIRST and DROP any caller-supplied pane_id.
+    // The downstream extractor (extractNestedJsonInt) is first-match, so a
+    // leading forced pane_id wins even if a duplicate were somehow injected.
+    // Rewriting in place (the old behaviour) left the caller's pane_id at its
+    // original position, which a JSON-key-injection could move ahead of the
+    // forced one — letting an agent read another pane's scrollback.
     var n: usize = 0;
-    var saw_pane_id = false;
+    out[n] = .{ .key = "pane_id", .value = pane_id_str };
+    n += 1;
     for (args_in) |a| {
         if (n >= out.len) break;
-        if (std.mem.eql(u8, a.key, "pane_id")) {
-            out[n] = .{ .key = a.key, .value = pane_id_str };
-            saw_pane_id = true;
-        } else {
-            out[n] = a;
-        }
-        n += 1;
-    }
-    if (!saw_pane_id and n < out.len) {
-        out[n] = .{ .key = "pane_id", .value = pane_id_str };
+        if (std.mem.eql(u8, a.key, "pane_id")) continue; // drop caller's
+        out[n] = a;
         n += 1;
     }
     return out[0..n];
+}
+
+/// True only for plain identifier keys ([A-Za-z0-9_]). buildJsonRpcRequest
+/// emits keys unescaped, so a key containing '"' ':' or ',' could forge extra
+/// JSON structure (e.g. a second `pane_id`) and bypass the pane-scoping guard.
+fn isPlainKey(key: []const u8) bool {
+    if (key.len == 0) return false;
+    for (key) |c| {
+        const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or c == '_';
+        if (!ok) return false;
+    }
+    return true;
 }
 
 /// Build a small JSON-RPC error and frame it as a DCS reply.
@@ -188,6 +200,10 @@ fn buildJsonRpcRequest(tool: []const u8, id: []const u8, args: []const protocol.
     var pos: usize = 0;
     pos += (std.fmt.bufPrint(buf[pos..], "{{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{{\"name\":\"{s}\",\"arguments\":{{", .{tool}) catch return null).len;
     for (args, 0..) |arg, i| {
+        // Reject any key that isn't a plain identifier. Keys are emitted
+        // unescaped below; a forged key like `x":50,"pane_id` would otherwise
+        // inject a second structural token and defeat the pane-scoping guard.
+        if (!isPlainKey(arg.key)) return null;
         if (i > 0) {
             if (pos >= buf.len) return null;
             buf[pos] = ',';
@@ -344,9 +360,10 @@ test "overridePaneId — injects pane_id when absent" {
     };
     const result = overridePaneId(&args_in, &out, "7");
     try std.testing.expectEqual(@as(usize, 2), result.len);
-    try std.testing.expectEqualStrings("lines", result[0].key);
-    try std.testing.expectEqualStrings("pane_id", result[1].key);
-    try std.testing.expectEqualStrings("7", result[1].value);
+    // pane_id is forced FIRST now so first-match extraction always returns it.
+    try std.testing.expectEqualStrings("pane_id", result[0].key);
+    try std.testing.expectEqualStrings("7", result[0].value);
+    try std.testing.expectEqualStrings("lines", result[1].key);
 }
 
 test "overridePaneId — empty input still gets pane_id" {
@@ -356,4 +373,33 @@ test "overridePaneId — empty input still gets pane_id" {
     try std.testing.expectEqual(@as(usize, 1), result.len);
     try std.testing.expectEqualStrings("pane_id", result[0].key);
     try std.testing.expectEqualStrings("42", result[0].value);
+}
+
+test "in-band pane scoping cannot be bypassed (cross-pane exfil guard)" {
+    var out: [protocol.max_query_args + 1]protocol.QueryArg = undefined;
+    var req_buf: [max_request]u8 = undefined;
+
+    // 1. A caller-supplied pane_id is dropped; the forced caller id wins.
+    //    extractNestedJsonInt is first-match, so the forced id must be first.
+    const args1 = [_]protocol.QueryArg{
+        .{ .key = "lines", .value = "50" },
+        .{ .key = "pane_id", .value = "99" },
+    };
+    const forced1 = overridePaneId(&args1, &out, "2");
+    var pane_id_keys: usize = 0;
+    for (forced1) |a| {
+        if (std.mem.eql(u8, a.key, "pane_id")) pane_id_keys += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), pane_id_keys);
+    const req1 = buildJsonRpcRequest("teru_read_output", "1", forced1, &req_buf).?;
+    try std.testing.expectEqual(@as(?u64, 2), McpTools.extractNestedJsonInt(req1, "pane_id"));
+
+    // 2. A forged structural key (the real attack: a key that closes the
+    //    value and opens a second "pane_id":99) is rejected outright — the
+    //    whole request is dropped rather than reaching the dispatcher.
+    const args2 = [_]protocol.QueryArg{
+        .{ .key = "x\":50,\"pane_id", .value = "99" },
+    };
+    const forced2 = overridePaneId(&args2, &out, "2");
+    try std.testing.expect(buildJsonRpcRequest("teru_read_output", "1", forced2, &req_buf) == null);
 }
