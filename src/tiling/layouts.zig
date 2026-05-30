@@ -26,11 +26,15 @@ pub fn masterStackN(allocator: Allocator, count: usize, screen: Rect, ratio: f32
     const sc_u: usize = count - mc_u;
 
     // If every pane is a master, the stack region collapses — full width.
+    // Clamp ratio: a corrupt/hand-edited .tsess can carry master_ratio far
+    // outside [0,1] (SessionDef.parse does not clamp). Without this, width*ratio
+    // can exceed u16 range → illegal @intFromFloat, and master_w > width →
+    // underflow on the residual. Mirrors the tree path (Workspace.layoutNode).
     const master_w: u16 = if (sc_u == 0)
         screen.width
     else
-        @intFromFloat(@as(f32, @floatFromInt(screen.width)) * ratio);
-    const stack_w: u16 = screen.width - master_w;
+        @intFromFloat(@as(f32, @floatFromInt(screen.width)) * std.math.clamp(ratio, 0.0, 1.0));
+    const stack_w: u16 = screen.width -| master_w;
 
     // Split the master column into mc_u vertical cells (even, with
     // remainder spread across the first N cells).
@@ -122,7 +126,7 @@ pub fn dishes(allocator: Allocator, count: usize, screen: Rect, ratio: f32) ![]R
         return rects;
     }
 
-    const master_h: u16 = @intFromFloat(@as(f32, @floatFromInt(screen.height)) * ratio);
+    const master_h: u16 = @intFromFloat(@as(f32, @floatFromInt(screen.height)) * std.math.clamp(ratio, 0.0, 1.0));
     const stack_h: u16 = screen.height -| master_h;
     const stack_count: u16 = @intCast(count - 1);
 
@@ -187,14 +191,14 @@ pub fn threeCol(allocator: Allocator, count: usize, screen: Rect, ratio: f32) ![
     }
 
     if (count == 2) {
-        const master_w: u16 = @intFromFloat(@as(f32, @floatFromInt(screen.width)) * ratio);
+        const master_w: u16 = @intFromFloat(@as(f32, @floatFromInt(screen.width)) * std.math.clamp(ratio, 0.0, 1.0));
         const side_w: u16 = screen.width -| master_w;
         rects[0] = .{ .x = screen.x, .y = screen.y, .width = master_w, .height = screen.height };
         rects[1] = .{ .x = screen.x +| master_w, .y = screen.y, .width = side_w, .height = screen.height };
         return rects;
     }
 
-    const master_w: u16 = @intFromFloat(@as(f32, @floatFromInt(screen.width)) * ratio);
+    const master_w: u16 = @intFromFloat(@as(f32, @floatFromInt(screen.width)) * std.math.clamp(ratio, 0.0, 1.0));
     const side_total: u16 = screen.width -| master_w;
     const left_w: u16 = side_total / 2;
     const right_w: u16 = side_total -| left_w;
