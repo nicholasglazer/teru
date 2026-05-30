@@ -74,7 +74,13 @@ keyframe_interval: u32,
 keyframes: ArrayList(Keyframe),
 deltas: ArrayList(Delta),
 
-total_lines: u64,
+total_lines: u64, // count of currently-stored lines (decremented on trim)
+/// Monotonic absolute line counter for assigning keyframe/delta line_numbers.
+/// MUST NOT be derived from total_lines: trimOldest decrements total_lines, so
+/// reusing it for line_number assignment made the counter run backwards after a
+/// trim — colliding with still-stored line_numbers and re-triggering keyframe
+/// boundaries (which breaks trimOldest's range math and getLine/getRange).
+next_line_number: u64 = 0,
 total_bytes_stored: u64,
 total_bytes_equivalent: u64,
 
@@ -124,7 +130,7 @@ pub fn pushLine(self: *Scrollback, vt_bytes: []const u8, grid: *const Grid) !voi
         if (!self.trimOldest()) break; // nothing left to trim
     }
 
-    const line_num = self.total_lines;
+    const line_num = self.next_line_number;
 
     // Store keyframe at interval boundaries
     if (line_num % @as(u64, self.keyframe_interval) == 0) {
@@ -147,7 +153,8 @@ pub fn pushLine(self: *Scrollback, vt_bytes: []const u8, grid: *const Grid) !voi
     // Track equivalent expanded cost: cols * sizeof(Cell)
     self.total_bytes_equivalent += @as(u64, grid.cols) * @sizeOf(Grid.Cell);
 
-    self.total_lines += 1;
+    self.total_lines += 1; // stored count
+    self.next_line_number += 1; // monotonic absolute counter (never decremented)
 }
 
 // ── Retrieval ───────────────────────────────────────────────────
@@ -157,7 +164,11 @@ pub fn pushLine(self: *Scrollback, vt_bytes: []const u8, grid: *const Grid) !voi
 ///   2. Restoring the grid from that keyframe
 ///   3. Replaying VT deltas from keyframe+1 through line_number
 pub fn getLine(self: *const Scrollback, line_number: u64, grid: *Grid, vt_parser: *VtParser) !void {
-    if (line_number >= self.total_lines) return error.LineOutOfRange;
+    // Bound by the absolute counter, not the stored count: line_numbers are
+    // absolute, so after a trim total_lines (a count) is smaller than the
+    // newest line_number. Older (trimmed) lines are rejected by findKeyframe
+    // returning null below.
+    if (line_number >= self.next_line_number) return error.LineOutOfRange;
 
     // Find the nearest keyframe at or before line_number
     const kf_idx = self.findKeyframe(line_number) orelse return error.NoKeyframe;
@@ -185,8 +196,8 @@ pub fn getLine(self: *const Scrollback, line_number: u64, grid: *Grid, vt_parser
 /// After this call, the grid contains the result of replaying all
 /// VT commands from the nearest keyframe through the end line.
 pub fn getRange(self: *const Scrollback, start: u64, end: u64, grid: *Grid, vt_parser: *VtParser) !void {
-    if (start >= self.total_lines) return error.LineOutOfRange;
-    const clamped_end = @min(end, self.total_lines);
+    if (start >= self.next_line_number) return error.LineOutOfRange;
+    const clamped_end = @min(end, self.next_line_number);
     if (start >= clamped_end) return error.InvalidRange;
 
     // Find keyframe at or before start
@@ -766,6 +777,45 @@ test "trim oldest when exceeding max" {
     try std.testing.expect(sb.total_lines <= sb.max_lines);
     // Should still have keyframes
     try std.testing.expect(sb.keyframes.items.len > 0);
+}
+
+test "line_number stays monotonic across trims (no backwards collision)" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 4, 10);
+    defer grid.deinit(allocator);
+
+    var sb = Scrollback.init(allocator, .{
+        .keyframe_interval = 5,
+        .max_lines = 20,
+        .max_bytes = 50 * 1024 * 1024,
+    });
+    defer sb.deinit();
+
+    // Push well past max_lines so several trims happen. Each line is tagged
+    // with its index so we can prove the index→content mapping survives.
+    var i: u32 = 0;
+    while (i < 60) : (i += 1) {
+        var buf: [16]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "L{d}\r\n", .{i}) catch unreachable;
+        try sb.pushLine(line, &grid);
+    }
+
+    // Stored count is bounded; the absolute counter reflects all 60 pushes.
+    try std.testing.expect(sb.total_lines <= sb.max_lines);
+    try std.testing.expectEqual(@as(u64, 60), sb.next_line_number);
+
+    // line_numbers must be strictly increasing (the bug made the counter run
+    // backwards after a trim, producing duplicates that broke trimOldest's
+    // range math and findKeyframe's binary search).
+    for (sb.deltas.items[1..], 1..) |d, k| {
+        try std.testing.expect(d.line_number > sb.deltas.items[k - 1].line_number);
+    }
+    for (sb.keyframes.items[1..], 1..) |kf, k| {
+        try std.testing.expect(kf.line_number > sb.keyframes.items[k - 1].line_number);
+    }
+
+    // The index-based render accessor still maps offset 0 → the newest line.
+    try std.testing.expectEqualStrings("L59\r\n", sb.getLineByOffset(0).?);
 }
 
 test "empty lines compress maximally" {
