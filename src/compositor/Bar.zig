@@ -583,10 +583,6 @@ fn buildBarData(_: *Bar, server: *Server) BarData {
     // the renderer filters by `used` and matches on name.
     data.push_widgets = &server.push_widgets;
 
-    // Populate sysfs/proc cache fields so widget renderers read from
-    // cache instead of doing synchronous I/O on the event loop.
-    BarRenderer.populateBarDataCache(&data);
-
     return data;
 }
 
