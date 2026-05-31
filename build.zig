@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     // ── Single source of truth for version ────────────────────────
     // Propagated to all modules via build_options.version.
     // Bump with: make bump-version V=x.y.z (updates here + build.zig.zon)
-    const version = "0.6.11";
+    const version = "0.7.0";
 
     // Strip debug info on any release optimize mode. Module-level setting
     // in Zig 0.17 (Module.CreateOptions.strip). The Makefile previously

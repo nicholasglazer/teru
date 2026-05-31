@@ -1,5 +1,90 @@
 # Changelog
 
+## 0.7.0 (2026-05-31)
+
+A large hardening release triggered by a Zig toolchain bump to
+`0.17.0-dev.420`. A full line-by-line re-audit of both binaries (and a
+second pass cross-referencing every std API against the real dev.420
+stdlib source) fixed **6 critical + 22 high** findings plus ~22 mediums,
+modernised the code for dev.420, and added 9 regression tests. Builds
+clean and all 542 tests + the headless teruwm E2E pass on dev.420.
+
+> Note: `zig-master-bin 0.17.0-dev.420` ships an upstream stdlib typo
+> (`std/os/linux.zig:8552`, `arch_bits` should be `native_arch`) that
+> breaks the build of any termios user on x86_64. teru's own source needs
+> no changes; build with a fixed Zig or the documented one-line patch.
+
+### Security
+
+- **In-band MCP cross-pane exfiltration closed.** An agent using the
+  OSC-9999 in-band channel could forge a second `pane_id` via JSON-key
+  injection (`x":50,"pane_id`) and read another pane's scrollback (sudo
+  prompts, SSH sessions). The forced `pane_id` is now emitted first and
+  caller-supplied ones dropped, and non-identifier arg keys are rejected.
+
+### Fixes (critical)
+
+- **Font-atlas heap overflow on the default build.** The zoom/variant
+  rasterizers hardcoded a 959-glyph count and a divergent range order, so
+  setting `font_bold`/`font_italic` on the default `-Dglyphs=extended`
+  build overflowed the variant atlas (and a font zoom rendered wrong
+  glyphs). All four paths now share one budget-aware codepoint builder.
+- **Heap use-after-free in the process graph.** `ProcessGraph.spawn`
+  stored borrowed name/agent strings; callers pass transient buffers. The
+  graph now owns (dupes/frees) its strings.
+- **OOB on hidden scratchpads.** `closeNode` / `moveNodeToWorkspace`
+  indexed the `[10]Workspace` array with `HIDDEN_WS` (255) for a parked
+  scratchpad — reachable via MCP. Both guarded.
+- **Scroll-overlay underflow panic** on a common smooth-scroll boundary.
+
+### Fixes (high)
+
+- **Standalone teru / daemon / dead-display 100%-CPU spins.** A shell
+  exiting on its own left a hung-up PTY poll-ready forever; a dead X /
+  Wayland display did the same. Reaping sweeps + connection-error
+  detection fix all three (the standalone analogs of the v0.6.10
+  compositor blocker).
+- **Agent / MCP / `.tsess` commands now actually run.** `spawnPaneWithCommand`
+  execve'd the whole command string as a literal path; multi-word commands
+  silently ENOENT'd. Now run via `/bin/sh -c` (and honour `spawn_config`).
+- **Untrusted MCP input no longer panics** (workspace/int range guards),
+  **`teru_wait_for` no longer blocks the event loop** 500 ms, **URL-open
+  no longer leaks a zombie** per click, **PaneBackend context slots are
+  reaped**, hot-restart **no longer leaks panes/PTY fds**, fullscreen-exit
+  restores floating windows, restored panes register in `pane_index`,
+  layout ratios are clamped (corrupt `.tsess`), the daemon↔client wire no
+  longer desyncs on a partial read, spawned helpers no longer inherit the
+  compositor's PTY masters, X11 SHM falls back on remote displays, and
+  Shift+click URL works on macOS.
+
+### Fixes (medium, selected)
+
+- teruwm panes honour DECTCEM (`ESC[?25l` cursor-hide); DECAWM
+  (`ESC[?7l`) is honoured; CSI-intermediate sequences dispatch (DECRQM
+  responds, DECSTR soft-resets); OSC-8 links apply on the non-ASCII path.
+- Scrollback `line_number` stays monotonic across trims; `repaintBorderOnly`
+  is actually border-only (was full-pane damage on every focus change);
+  ProcessGraph growth is bounded; session deserialize + scratchpad rects
+  are clamped against corrupt input; the daemon's `fds→pane` map can't go
+  stale mid-loop; hook requests spanning TCP segments are read in full;
+  several JSON/threshold/SGR parsing edge cases.
+
+### dev.420 modernization
+
+- **`@memset([]u32, runtime)` codegen bug is fixed upstream** — verified
+  live; `compat.memsetU32` now uses `@memset` (SIMD lowering) in the
+  render hot path instead of a scalar loop.
+- Migrated 146 deprecated `std.mem.indexOf*` → `find*` and
+  `std.fs.max_path_bytes` → `std.Io.Dir.max_path_bytes`.
+- Replaced hardcoded POSIX literals with arch-portable std constants
+  (`SA.RESTART`, `SO.PEERCRED` — the socket-peer auth check was wrong off
+  x86_64 — `F.GETFL/SETFL`, `W.NOHANG`, `W.EXITSTATUS`).
+
+### Internal
+
+- Removed dead `populateBarDataCache` (+ 9 write-only `BarData` fields).
+- Full audit recorded in `AUDIT-2026-05-30-dev420.md`.
+
 ## 0.6.11 (2026-05-16)
 
 Post-audit hardening plus a maintainability pass. Closes the M5 (test
