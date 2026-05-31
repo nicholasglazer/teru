@@ -45,20 +45,25 @@ pub fn spawn(opts: SpawnOptions) !WinPty {
     var stdin_write: HANDLE = undefined;
     if (CreatePipe(&stdin_read, &stdin_write, null, 0) == 0)
         return error.PipeCreationFailed;
-    errdefer {
+    errdefer _ = CloseHandle(stdin_write); // parent side — always cleaned on error
+    // Child side (stdin_read) is closed manually after CreatePseudoConsole. Guard
+    // its pre-close cleanup with a flag so the manual close isn't doubled (a
+    // double CloseHandle on an error path after line ~73 was the bug).
+    var stdin_read_open = true;
+    errdefer if (stdin_read_open) {
         _ = CloseHandle(stdin_read);
-        _ = CloseHandle(stdin_write);
-    }
+    };
 
     // stdout pipe: child writes to stdout_write, parent reads from stdout_read
     var stdout_read: HANDLE = undefined;
     var stdout_write: HANDLE = undefined;
     if (CreatePipe(&stdout_read, &stdout_write, null, 0) == 0)
         return error.PipeCreationFailed;
-    errdefer {
-        _ = CloseHandle(stdout_read);
+    errdefer _ = CloseHandle(stdout_read); // parent side — always cleaned on error
+    var stdout_write_open = true;
+    errdefer if (stdout_write_open) {
         _ = CloseHandle(stdout_write);
-    }
+    };
 
     // ── 2. Create pseudo console ─────────────────────────────────
     const size = makeCoord(opts.cols, opts.rows);
@@ -69,9 +74,12 @@ pub fn spawn(opts: SpawnOptions) !WinPty {
 
     // The ConPTY now owns the child-side pipe endpoints.  Close them
     // in the parent so only ConPTY holds them; when the console closes
-    // the pipes will properly break.
+    // the pipes will properly break. Disarm the guarded errdefers so a
+    // later error path doesn't close these handles a second time.
     _ = CloseHandle(stdin_read);
+    stdin_read_open = false;
     _ = CloseHandle(stdout_write);
+    stdout_write_open = false;
 
     // ── 3. Set up STARTUPINFOEX with ConPTY attribute ────────────
     var attr_size: usize = 0;

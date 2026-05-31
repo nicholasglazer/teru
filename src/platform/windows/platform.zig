@@ -193,6 +193,7 @@ extern "user32" fn DispatchMessageW(lpMsg: *const MSG) callconv(.c) LRESULT;
 extern "user32" fn DefWindowProcW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.c) LRESULT;
 extern "user32" fn PostQuitMessage(nExitCode: INT) callconv(.c) void;
 extern "user32" fn GetClientRect(hWnd: HWND, lpRect: *RECT) callconv(.c) BOOL;
+extern "user32" fn ScreenToClient(hWnd: HWND, lpPoint: *POINT) callconv(.c) BOOL;
 extern "user32" fn InvalidateRect(hWnd: HWND, lpRect: ?*const RECT, bErase: BOOL) callconv(.c) BOOL;
 extern "user32" fn BeginPaint(hWnd: HWND, lpPaint: *PAINTSTRUCT) callconv(.c) HDC;
 extern "user32" fn EndPaint(hWnd: HWND, lpPaint: *const PAINTSTRUCT) callconv(.c) BOOL;
@@ -622,14 +623,15 @@ pub const Win32Window = struct {
             // ── Mouse wheel ─────────────────────────────────────────
             WM_MOUSEWHEEL => {
                 const delta = GET_WHEEL_DELTA_WPARAM(wparam);
-                const mx = GET_X_LPARAM(lparam);
-                const my = GET_Y_LPARAM(lparam);
-                // Note: WM_MOUSEWHEEL coords are screen-relative, not client-relative.
-                // TODO: convert to client coords via ScreenToClient on Windows
+                // WM_MOUSEWHEEL reports SCREEN coords; the rest of the input
+                // path (like WM_MOUSEMOVE/WM_*BUTTON) uses client coords.
+                // Convert so the scroll lands on the pane under the cursor.
+                var pt = POINT{ .x = GET_X_LPARAM(lparam), .y = GET_Y_LPARAM(lparam) };
+                _ = ScreenToClient(hwnd, &pt);
                 const button: MouseButton = if (delta > 0) .scroll_up else .scroll_down;
                 state.pending_event = .{ .mouse_press = .{
-                    .x = if (mx >= 0) @intCast(mx) else 0,
-                    .y = if (my >= 0) @intCast(my) else 0,
+                    .x = if (pt.x >= 0) @intCast(pt.x) else 0,
+                    .y = if (pt.y >= 0) @intCast(pt.y) else 0,
                     .button = button,
                     .modifiers = getKeyModifiers(),
                 } };
