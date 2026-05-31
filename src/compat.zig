@@ -38,19 +38,20 @@ const win32 = if (builtin.os.tag == .windows) struct {
     extern "kernel32" fn Sleep(dwMilliseconds: u32) callconv(.c) void;
 } else undefined;
 
-// ── @memset codegen bug workaround ───────────────────────────────
+// ── @memset for []u32 framebuffer fills ──────────────────────────
 //
-// `@memset(slice_u32, runtime_scalar)` mis-codegens on x86_64 Debug
-// builds: the rep-stosd lowering swaps source/dest and faults at the
-// address of `value`. Still present as of Zig 0.17.0-dev.304 — verified:
-// reverting this helper to a bare `@memset` segfaults the `Renderer CPU
-// tier init and render` test in tier.zig at the bg-color address.
+// History: `@memset(slice_u32, runtime_scalar)` used to mis-codegen on
+// x86_64 Debug builds (rep-stosd lowering swapped source/dest and faulted
+// at the address of `value`), so this helper was a hand-rolled while loop.
+// That codegen bug is FIXED as of Zig 0.17.0-dev.420 — verified: routing
+// this through bare `@memset` runs the full Debug suite (incl. the
+// `Renderer CPU tier init and render` repro in tier.zig) clean, no segfault.
 //
-// All `[]u32` framebuffer fills with a runtime color must go through
-// this helper. ReleaseSafe and the explicit while loop both work.
+// Kept as a single point of control: all `[]u32` framebuffer fills with a
+// runtime color still go through it, so if the codegen bug ever resurfaces
+// (another arch / a future zig) it can be reverted to the loop in one place.
 pub fn memsetU32(buf: []u32, value: u32) void {
-    var i: usize = 0;
-    while (i < buf.len) : (i += 1) buf[i] = value;
+    @memset(buf, value);
 }
 
 // ── In-memory stream (replaces removed std.io.fixedBufferStream) ──
