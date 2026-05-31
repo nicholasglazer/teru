@@ -43,7 +43,10 @@ pub fn deinit(self: *ConfigWatcher) void {
             _ = posix.system.close(self.fd);
         },
         .macos => {
-            if (self.fd >= 0) _ = posix.system.close(self.fd);
+            if (self.fd >= 0) _ = posix.system.close(self.fd); // kqueue
+            // On macOS `wd` holds the watched file fd (initKqueue), not an
+            // inotify descriptor — it was leaked on every deinit.
+            if (self.wd >= 0) _ = posix.system.close(self.wd);
         },
         else => {},
     }
