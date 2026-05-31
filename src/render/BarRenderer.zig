@@ -93,19 +93,6 @@ pub const BarData = struct {
     // for the ≤32-slot budget. Slots with `.used = false` are skipped.
     push_widgets: []const PushWidget = &.{},
 
-    // Cached sysfs/proc values. Populated by the compositor via
-    // populateBarDataCache() before rendering. Widget renderers read
-    // these when the module-level `cache_valid` flag is set; standalone
-    // teru never sets that flag, so renderers use the legacy I/O path.
-    mem_used_pct: u32 = 0,
-    cpu_pct: u32 = 0,
-    cpu_temp_c: ?u32 = null,
-    battery_percent: u8 = 0,
-    battery_charging: bool = false,
-    battery_present: bool = false,
-    watts: f32 = 0.0,
-    watts_charging: bool = false,
-    watts_present: bool = false,
 };
 
 // ── Sysfs/proc cache ──────────────────────────────────────────────
@@ -206,20 +193,6 @@ pub fn refreshCachedData(now_ns: i128) bool {
 fn approxEq(a: f32, b: f32) bool {
     const diff = if (a > b) a - b else b - a;
     return diff < 0.05;
-}
-
-/// Copy module-level cache values into a BarData struct so widget
-/// renderers can read them without touching the module-level vars.
-pub fn populateBarDataCache(data: *BarData) void {
-    data.mem_used_pct = cache_mem_pct;
-    data.cpu_pct = cache_cpu_pct;
-    data.cpu_temp_c = cache_cpu_temp_c;
-    data.battery_percent = cache_battery_percent;
-    data.battery_charging = cache_battery_charging;
-    data.battery_present = cache_battery_present;
-    data.watts = cache_watts;
-    data.watts_charging = cache_watts_charging;
-    data.watts_present = cache_watts_present;
 }
 
 /// Linear scan over the ≤32-slot push widget array. Short-circuits on
