@@ -187,12 +187,26 @@ pub const Keyboard = struct {
 /// free() — the caller copies it into Server.active_keymap_name_buf.
 var keymap_raw_buf: [32]u8 = undefined;
 
+/// Cache of the last (keymap, layout) we extracted a code for. handleModifiers
+/// calls refreshActiveKeymap on EVERY modifier event, but the layout code only
+/// changes when the layout group (or the keymap object) changes — so this
+/// avoids serializing the entire ~tens-of-KB keymap to a heap string (and a
+/// bar repaint) on every Shift/Ctrl/Alt press.
+var cached_keymap_ptr: ?*wlr.xkb_keymap = null;
+var cached_layout_idx: u32 = std.math.maxInt(u32);
+
 /// Read the effective XKB layout CODE ("us", "ua", "us(dvorak)") from
 /// the given keyboard and stash a copy in `active_keymap_name`.
 pub fn refreshActiveKeymap(server: *Server, keyboard: *wlr.wlr_keyboard) void {
     const st = wlr.miozu_keyboard_xkb_state(keyboard) orelse return;
     const keymap = wlr.xkb_state_get_keymap(st) orelse return;
     const layout_idx = wlr.xkb_state_serialize_layout(st, wlr.XKB_STATE_LAYOUT_EFFECTIVE);
+
+    // Nothing relevant changed since the last call — skip the expensive
+    // extractLayoutCode (full-keymap serialize) and the bar repaint below.
+    if (keymap == cached_keymap_ptr and layout_idx == cached_layout_idx) return;
+    cached_keymap_ptr = keymap;
+    cached_layout_idx = layout_idx;
 
     const short = extractLayoutCode(keymap, layout_idx);
     const name_slice: []const u8 = if (short.len > 0)
