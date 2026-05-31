@@ -326,7 +326,7 @@ fn jsonEscape(dst: []u8, src: []const u8) []const u8 {
 fn handlePromptsGet(self: *McpServer, body: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     _ = self;
     const id_str = id orelse "null";
-    const params_start = std.mem.indexOf(u8, body, "\"params\"") orelse
+    const params_start = std.mem.find(u8, body, "\"params\"") orelse
         return tools.jsonRpcError(buf, id, -32602, "Missing params");
     const params_body = body[params_start..];
     const name = tools.extractNestedJsonString(params_body, "name") orelse

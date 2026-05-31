@@ -473,7 +473,7 @@ pub fn parseTriggerWithMod(trigger: []const u8, mod_key: Mods) ?ParsedTrigger {
     var remaining = trigger;
 
     // Strip inline comment
-    if (std.mem.indexOf(u8, remaining, "#")) |idx| {
+    if (std.mem.find(u8, remaining, "#")) |idx| {
         remaining = std.mem.trim(u8, remaining[0..idx], " \t");
     }
 
@@ -589,11 +589,11 @@ pub const Keybinds = struct {
     /// Parse a single keybind line: "alt+j = pane:focus_next"
     /// Also supports: "XF86AudioMute = exec:wpctl ..." and "keycode:44 = ..."
     pub fn parseLine(self: *Keybinds, mode: Mode, line: []const u8) void {
-        const eq_idx = std.mem.indexOf(u8, line, "=") orelse return;
+        const eq_idx = std.mem.find(u8, line, "=") orelse return;
         const lhs = std.mem.trim(u8, line[0..eq_idx], " \t");
         const rhs_raw = if (eq_idx + 1 < line.len) line[eq_idx + 1 ..] else "";
         var rhs = std.mem.trim(u8, rhs_raw, " \t");
-        if (std.mem.indexOf(u8, rhs, "#")) |hash| {
+        if (std.mem.find(u8, rhs, "#")) |hash| {
             rhs = std.mem.trim(u8, rhs[0..hash], " \t");
         }
 

@@ -116,7 +116,7 @@ pub fn forwardRequest(body: []const u8, out: []u8) ?[]const u8 {
     // Strip the HTTP header. On empty/invalid header the response is
     // treated as "forward failed"; callers should fall through to
     // "Unknown tool" rather than return garbage.
-    const body_start = std.mem.indexOf(u8, raw[0..total], "\r\n\r\n") orelse return null;
+    const body_start = std.mem.find(u8, raw[0..total], "\r\n\r\n") orelse return null;
     const payload = raw[body_start + 4 .. total];
     if (payload.len > out.len) return null;
     @memcpy(out[0..payload.len], payload);

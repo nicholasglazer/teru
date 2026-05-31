@@ -96,8 +96,8 @@ pub fn run(io: std.Io, target: Target) !void {
         if (line.len == 0) continue;
 
         // Drop notifications (no id field) — server doesn't emit responses.
-        if (std.mem.indexOf(u8, line, "\"id\"") == null or
-            std.mem.indexOf(u8, line, "\"notifications/") != null)
+        if (std.mem.find(u8, line, "\"id\"") == null or
+            std.mem.find(u8, line, "\"notifications/") != null)
         {
             continue;
         }
@@ -126,7 +126,7 @@ pub fn run(io: std.Io, target: Target) !void {
             continue;
         }
 
-        if (read_only and std.mem.indexOf(u8, line, "\"tools/list\"") != null) {
+        if (read_only and std.mem.find(u8, line, "\"tools/list\"") != null) {
             var filter_buf: [max_response]u8 = undefined;
             if (filterToolsList(resp, &filter_buf)) |filtered| {
                 _ = std.c.write(stdoutFd(), filtered.ptr, filtered.len);
@@ -182,7 +182,7 @@ fn readResponse(conn: *ipc.IpcHandle, buf: []u8) []const u8 {
         const n = conn.read(buf[total..]) catch break;
         if (n == 0) break;
         total += n;
-        if (std.mem.indexOfScalar(u8, buf[0..total], '\n') != null) break;
+        if (std.mem.findScalar(u8, buf[0..total], '\n') != null) break;
     }
     // Trim the trailing newline (and optional \r) if present.
     var end = total;
@@ -244,17 +244,17 @@ const write_tool_names = [_][]const u8{
 };
 
 fn isBlockedToolCall(line: []const u8) bool {
-    if (std.mem.indexOf(u8, line, "\"tools/call\"") == null) return false;
+    if (std.mem.find(u8, line, "\"tools/call\"") == null) return false;
     for (write_tool_names) |n| {
         var needle_buf: [64]u8 = undefined;
         const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\"", .{n}) catch continue;
-        if (std.mem.indexOf(u8, line, needle) != null) return true;
+        if (std.mem.find(u8, line, needle) != null) return true;
     }
     return false;
 }
 
 fn rejectToolCall(line: []const u8, buf: []u8) ?[]const u8 {
-    const id_start = std.mem.indexOf(u8, line, "\"id\":") orelse return null;
+    const id_start = std.mem.find(u8, line, "\"id\":") orelse return null;
     const after = line[id_start + 5 ..];
     const id_end = blk: {
         var end: usize = 0;
@@ -278,9 +278,9 @@ fn filterToolsList(resp: []const u8, out: []u8) ?[]const u8 {
     // Find the tools array — we emit it verbatim minus any object whose
     // "name" matches a write tool.
     const tools_key = "\"tools\":[";
-    const arr_start = std.mem.indexOf(u8, resp, tools_key) orelse return null;
+    const arr_start = std.mem.find(u8, resp, tools_key) orelse return null;
     const body_start = arr_start + tools_key.len;
-    const body_end = std.mem.lastIndexOfScalar(u8, resp, ']') orelse return null;
+    const body_end = std.mem.findScalarLast(u8, resp, ']') orelse return null;
     if (body_end <= body_start) return null;
 
     // Copy prefix
@@ -313,7 +313,7 @@ fn filterToolsList(resp: []const u8, out: []u8) ?[]const u8 {
         for (write_tool_names) |n| {
             var needle_buf: [64]u8 = undefined;
             const needle = std.fmt.bufPrint(&needle_buf, "\"name\":\"{s}\"", .{n}) catch continue;
-            if (std.mem.indexOf(u8, obj, needle) != null) {
+            if (std.mem.find(u8, obj, needle) != null) {
                 is_write = true;
                 break;
             }
@@ -364,8 +364,8 @@ test "rejectToolCall preserves id" {
     var buf: [512]u8 = undefined;
     const line = "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"teru_send_input\"},\"id\":42}";
     const err = rejectToolCall(line, &buf) orelse return error.NoReject;
-    try std.testing.expect(std.mem.indexOf(u8, err, "\"id\":42") != null);
-    try std.testing.expect(std.mem.indexOf(u8, err, "Read-only") != null);
+    try std.testing.expect(std.mem.find(u8, err, "\"id\":42") != null);
+    try std.testing.expect(std.mem.find(u8, err, "Read-only") != null);
 }
 
 test "filterToolsList strips write tools" {
@@ -377,7 +377,7 @@ test "filterToolsList strips write tools" {
         "]},\"id\":1}";
     var out: [2048]u8 = undefined;
     const filtered = filterToolsList(resp, &out) orelse return error.FilterFailed;
-    try std.testing.expect(std.mem.indexOf(u8, filtered, "teru_list_panes") != null);
-    try std.testing.expect(std.mem.indexOf(u8, filtered, "teru_get_graph") != null);
-    try std.testing.expect(std.mem.indexOf(u8, filtered, "teru_send_input") == null);
+    try std.testing.expect(std.mem.find(u8, filtered, "teru_list_panes") != null);
+    try std.testing.expect(std.mem.find(u8, filtered, "teru_get_graph") != null);
+    try std.testing.expect(std.mem.find(u8, filtered, "teru_send_input") == null);
 }

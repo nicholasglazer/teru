@@ -660,7 +660,7 @@ fn toolSetConfig(_: *McpServer, key: []const u8, value: []const u8, buf: []u8, i
         var pos: usize = 0;
         while (pos < file_len) {
             // Find end of current line
-            const line_end = std.mem.indexOfScalar(u8, file_buf[pos..file_len], '\n') orelse (file_len - pos);
+            const line_end = std.mem.findScalar(u8, file_buf[pos..file_len], '\n') orelse (file_len - pos);
             const line = file_buf[pos .. pos + line_end];
 
             // Check if this line starts with our key
@@ -922,7 +922,7 @@ fn toolWaitFor(self: *McpServer, pane_id: u64, pattern: []const u8, lines: u32, 
             }
             while (len > 0 and line_buf[len - 1] == ' ') len -= 1;
 
-            if (len > 0 and std.mem.indexOf(u8, line_buf[0..len], pattern) != null) {
+            if (len > 0 and std.mem.find(u8, line_buf[0..len], pattern) != null) {
             // Found — return the matching line
             // JSON-escape the line content
             var escaped: [1024]u8 = undefined;
@@ -1035,9 +1035,9 @@ fn extractNestedJsonArray(json: []const u8, key: []const u8) ?[]const u8 {
     const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\":", .{key}) catch return null;
 
     // Search in "arguments" first, then top-level
-    const search_start = if (std.mem.indexOf(u8, json, "\"arguments\"")) |ap| ap else 0;
-    const key_pos = std.mem.indexOf(u8, json[search_start..], needle) orelse
-        std.mem.indexOf(u8, json, needle) orelse return null;
+    const search_start = if (std.mem.find(u8, json, "\"arguments\"")) |ap| ap else 0;
+    const key_pos = std.mem.find(u8, json[search_start..], needle) orelse
+        std.mem.find(u8, json, needle) orelse return null;
 
     const after_key = search_start + key_pos + needle.len;
 
@@ -1127,7 +1127,7 @@ fn findPaneWorkspace(self: *McpServer, pane_id: u64) u8 {
 fn extractJsonId(json: []const u8) ?[]const u8 {
     // Extract the "id" field value (could be number or string)
     const needle = "\"id\":";
-    const pos = std.mem.indexOf(u8, json, needle) orelse return null;
+    const pos = std.mem.find(u8, json, needle) orelse return null;
     const after = pos + needle.len;
 
     var i = after;
@@ -1233,18 +1233,18 @@ test "jsonEscapeString" {
 test "jsonRpcError" {
     var buf: [512]u8 = undefined;
     const result = tools.jsonRpcError(&buf, "1", -32601, "Method not found");
-    try t.expect(std.mem.indexOf(u8, result, "-32601") != null);
-    try t.expect(std.mem.indexOf(u8, result, "Method not found") != null);
-    try t.expect(std.mem.indexOf(u8, result, "\"id\":1") != null);
+    try t.expect(std.mem.find(u8, result, "-32601") != null);
+    try t.expect(std.mem.find(u8, result, "Method not found") != null);
+    try t.expect(std.mem.find(u8, result, "\"id\":1") != null);
 }
 
 test "initialize method returns valid JSON via framework" {
     var buf: [max_response]u8 = undefined;
     const req = "{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"id\":1}";
     const result = F.dispatch(undefined, req, &buf, &McpServer.framework_config);
-    try t.expect(std.mem.indexOf(u8, result, "protocolVersion") != null);
-    try t.expect(std.mem.indexOf(u8, result, "teru") != null);
-    try t.expect(std.mem.indexOf(u8, result, "\"id\":1") != null);
+    try t.expect(std.mem.find(u8, result, "protocolVersion") != null);
+    try t.expect(std.mem.find(u8, result, "teru") != null);
+    try t.expect(std.mem.find(u8, result, "\"id\":1") != null);
 }
 
 test "resolveKey named keys" {

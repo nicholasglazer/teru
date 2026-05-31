@@ -225,7 +225,7 @@ fn dispatchLine(self: *PaneBackend, line: []const u8) void {
 
 fn handleSpawn(self: *PaneBackend, body: []const u8, id: ?[]const u8, buf: []u8) []const u8 {
     // Extract params
-    const params_start = std.mem.indexOf(u8, body, "\"params\"") orelse
+    const params_start = std.mem.find(u8, body, "\"params\"") orelse
         return jsonRpcError(buf, id, -32602, "Missing params");
     const params = body[params_start..];
 
@@ -313,7 +313,7 @@ fn handleSpawn(self: *PaneBackend, body: []const u8, id: ?[]const u8, buf: []u8)
 }
 
 fn handleWrite(self: *PaneBackend, body: []const u8, id: ?[]const u8, buf: []u8) []const u8 {
-    const params_start = std.mem.indexOf(u8, body, "\"params\"") orelse
+    const params_start = std.mem.find(u8, body, "\"params\"") orelse
         return jsonRpcError(buf, id, -32602, "Missing params");
     const params = body[params_start..];
 
@@ -340,7 +340,7 @@ fn handleWrite(self: *PaneBackend, body: []const u8, id: ?[]const u8, buf: []u8)
 }
 
 fn handleCapture(self: *PaneBackend, body: []const u8, id: ?[]const u8, buf: []u8) []const u8 {
-    const params_start = std.mem.indexOf(u8, body, "\"params\"") orelse
+    const params_start = std.mem.find(u8, body, "\"params\"") orelse
         return jsonRpcError(buf, id, -32602, "Missing params");
     const params = body[params_start..];
 
@@ -401,7 +401,7 @@ fn handleCapture(self: *PaneBackend, body: []const u8, id: ?[]const u8, buf: []u
 }
 
 fn handleKill(self: *PaneBackend, body: []const u8, id: ?[]const u8, buf: []u8) []const u8 {
-    const params_start = std.mem.indexOf(u8, body, "\"params\"") orelse
+    const params_start = std.mem.find(u8, body, "\"params\"") orelse
         return jsonRpcError(buf, id, -32602, "Missing params");
     const params = body[params_start..];
 
@@ -573,9 +573,9 @@ test "extractJsonId null" {
 test "jsonRpcError format" {
     var buf: [512]u8 = undefined;
     const result = jsonRpcError(&buf, "1", -32601, "Method not found");
-    try t.expect(std.mem.indexOf(u8, result, "-32601") != null);
-    try t.expect(std.mem.indexOf(u8, result, "Method not found") != null);
-    try t.expect(std.mem.indexOf(u8, result, "\"id\":1") != null);
+    try t.expect(std.mem.find(u8, result, "-32601") != null);
+    try t.expect(std.mem.find(u8, result, "Method not found") != null);
+    try t.expect(std.mem.find(u8, result, "\"id\":1") != null);
 }
 
 test "jsonEscapeString" {
@@ -597,8 +597,8 @@ test "spawn response format" {
         \\{{"jsonrpc":"2.0","result":{{"context_id":{d}}},"id":{s}}}
     , .{ @as(u64, 42), "1" }) catch |e| return e;
 
-    try t.expect(std.mem.indexOf(u8, result, "\"context_id\":42") != null);
-    try t.expect(std.mem.indexOf(u8, result, "\"id\":1") != null);
+    try t.expect(std.mem.find(u8, result, "\"context_id\":42") != null);
+    try t.expect(std.mem.find(u8, result, "\"id\":1") != null);
 }
 
 test "list response format" {
@@ -626,10 +626,10 @@ test "list response format" {
     pos += suffix.len;
 
     const result = buf[0..pos];
-    try t.expect(std.mem.indexOf(u8, result, "\"context_id\":1") != null);
-    try t.expect(std.mem.indexOf(u8, result, "\"name\":\"backend-dev\"") != null);
-    try t.expect(std.mem.indexOf(u8, result, "\"group\":\"team-temporal\"") != null);
-    try t.expect(std.mem.indexOf(u8, result, "\"alive\":true") != null);
+    try t.expect(std.mem.find(u8, result, "\"context_id\":1") != null);
+    try t.expect(std.mem.find(u8, result, "\"name\":\"backend-dev\"") != null);
+    try t.expect(std.mem.find(u8, result, "\"group\":\"team-temporal\"") != null);
+    try t.expect(std.mem.find(u8, result, "\"alive\":true") != null);
 }
 
 test "capture response format" {
@@ -642,8 +642,8 @@ test "capture response format" {
         \\{{"jsonrpc":"2.0","result":{{"text":"{s}"}},"id":{s}}}
     , .{ escaped, "3" }) catch |e| return e;
 
-    try t.expect(std.mem.indexOf(u8, result, "$ ls\\nfile1.txt\\nfile2.txt") != null);
-    try t.expect(std.mem.indexOf(u8, result, "\"id\":3") != null);
+    try t.expect(std.mem.find(u8, result, "$ ls\\nfile1.txt\\nfile2.txt") != null);
+    try t.expect(std.mem.find(u8, result, "\"id\":3") != null);
 }
 
 // ── Spec Section 4.4.2: write response format ──────────────────
@@ -654,8 +654,8 @@ test "write response format" {
         \\{{"jsonrpc":"2.0","result":{{"ok":true}},"id":{s}}}
     , .{"2"}) catch |e| return e;
 
-    try t.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
-    try t.expect(std.mem.indexOf(u8, result, "\"id\":2") != null);
+    try t.expect(std.mem.find(u8, result, "\"ok\":true") != null);
+    try t.expect(std.mem.find(u8, result, "\"id\":2") != null);
 }
 
 // ── Spec Section 4.4.4: kill response format ────────────────────
@@ -666,8 +666,8 @@ test "kill response format" {
         \\{{"jsonrpc":"2.0","result":{{"ok":true}},"id":{s}}}
     , .{"4"}) catch |e| return e;
 
-    try t.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
-    try t.expect(std.mem.indexOf(u8, result, "\"id\":4") != null);
+    try t.expect(std.mem.find(u8, result, "\"ok\":true") != null);
+    try t.expect(std.mem.find(u8, result, "\"id\":4") != null);
 }
 
 // ── Spec Section 4.4.7: context_exited push notification format ─
@@ -679,11 +679,11 @@ test "context_exited push notification format" {
         \\{{"jsonrpc":"2.0","method":"context_exited","params":{{"context_id":{d},"exit_code":{d}}}}}
     , .{ @as(u64, 1), @as(u8, 0) }) catch |e| return e;
 
-    try t.expect(std.mem.indexOf(u8, msg, "\"method\":\"context_exited\"") != null);
-    try t.expect(std.mem.indexOf(u8, msg, "\"context_id\":1") != null);
-    try t.expect(std.mem.indexOf(u8, msg, "\"exit_code\":0") != null);
+    try t.expect(std.mem.find(u8, msg, "\"method\":\"context_exited\"") != null);
+    try t.expect(std.mem.find(u8, msg, "\"context_id\":1") != null);
+    try t.expect(std.mem.find(u8, msg, "\"exit_code\":0") != null);
     // Per spec: "NOT a request-response -- it is a server-initiated message with no id field"
-    try t.expect(std.mem.indexOf(u8, msg, "\"id\"") == null);
+    try t.expect(std.mem.find(u8, msg, "\"id\"") == null);
 }
 
 // ── Spec Section 4.4.6: get_self_id null context ────────────────
@@ -695,8 +695,8 @@ test "get_self_id null context response format" {
         \\{{"jsonrpc":"2.0","result":{{"context_id":null}},"id":{s}}}
     , .{"6"}) catch |e| return e;
 
-    try t.expect(std.mem.indexOf(u8, result, "\"context_id\":null") != null);
-    try t.expect(std.mem.indexOf(u8, result, "\"id\":6") != null);
+    try t.expect(std.mem.find(u8, result, "\"context_id\":null") != null);
+    try t.expect(std.mem.find(u8, result, "\"id\":6") != null);
 }
 
 // ── Spec Section 4.4.8: Error responses ─────────────────────────
@@ -704,35 +704,35 @@ test "get_self_id null context response format" {
 test "jsonRpcError format: -32600 Invalid request" {
     var buf: [512]u8 = undefined;
     const result = jsonRpcError(&buf, "1", -32600, "Invalid request");
-    try t.expect(std.mem.indexOf(u8, result, "-32600") != null);
-    try t.expect(std.mem.indexOf(u8, result, "Invalid request") != null);
+    try t.expect(std.mem.find(u8, result, "-32600") != null);
+    try t.expect(std.mem.find(u8, result, "Invalid request") != null);
 }
 
 test "jsonRpcError format: -32601 Method not found" {
     var buf: [512]u8 = undefined;
     const result = jsonRpcError(&buf, "1", -32601, "Method not found");
-    try t.expect(std.mem.indexOf(u8, result, "-32601") != null);
-    try t.expect(std.mem.indexOf(u8, result, "Method not found") != null);
+    try t.expect(std.mem.find(u8, result, "-32601") != null);
+    try t.expect(std.mem.find(u8, result, "Method not found") != null);
 }
 
 test "jsonRpcError format: -32602 Invalid params" {
     var buf: [512]u8 = undefined;
     const result = jsonRpcError(&buf, "1", -32602, "Invalid params");
-    try t.expect(std.mem.indexOf(u8, result, "-32602") != null);
-    try t.expect(std.mem.indexOf(u8, result, "Invalid params") != null);
+    try t.expect(std.mem.find(u8, result, "-32602") != null);
+    try t.expect(std.mem.find(u8, result, "Invalid params") != null);
 }
 
 test "jsonRpcError format: -32603 Internal error" {
     var buf: [512]u8 = undefined;
     const result = jsonRpcError(&buf, "1", -32603, "Internal error");
-    try t.expect(std.mem.indexOf(u8, result, "-32603") != null);
-    try t.expect(std.mem.indexOf(u8, result, "Internal error") != null);
+    try t.expect(std.mem.find(u8, result, "-32603") != null);
+    try t.expect(std.mem.find(u8, result, "Internal error") != null);
 }
 
 test "jsonRpcError with null id" {
     var buf: [512]u8 = undefined;
     const result = jsonRpcError(&buf, null, -32601, "Method not found");
-    try t.expect(std.mem.indexOf(u8, result, "\"id\":null") != null);
+    try t.expect(std.mem.find(u8, result, "\"id\":null") != null);
 }
 
 // ── Spec Section 4.4: JSON-RPC 2.0 protocol ────────────────────
@@ -817,10 +817,10 @@ test "list response includes alive and dead contexts" {
     pos += suffix.len;
 
     const result = buf[0..pos];
-    try t.expect(std.mem.indexOf(u8, result, "\"alive\":true") != null);
-    try t.expect(std.mem.indexOf(u8, result, "\"alive\":false") != null);
-    try t.expect(std.mem.indexOf(u8, result, "\"context_id\":1") != null);
-    try t.expect(std.mem.indexOf(u8, result, "\"context_id\":2") != null);
+    try t.expect(std.mem.find(u8, result, "\"alive\":true") != null);
+    try t.expect(std.mem.find(u8, result, "\"alive\":false") != null);
+    try t.expect(std.mem.find(u8, result, "\"context_id\":1") != null);
+    try t.expect(std.mem.find(u8, result, "\"context_id\":2") != null);
 }
 
 // ── Spec: JSON escape for control characters ────────────────────

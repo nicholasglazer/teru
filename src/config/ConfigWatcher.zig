@@ -94,7 +94,7 @@ fn pollInotify(self: *ConfigWatcher) bool {
             const name_start = offset + @sizeOf(linux.inotify_event);
             const name_end = @min(name_start + name_len, n);
             const name_bytes = buf[name_start..name_end];
-            const name = if (std.mem.indexOfScalar(u8, name_bytes, 0)) |nul| name_bytes[0..nul] else name_bytes;
+            const name = if (std.mem.findScalar(u8, name_bytes, 0)) |nul| name_bytes[0..nul] else name_bytes;
             if (std.mem.eql(u8, name, target)) return true;
         }
         offset += @sizeOf(linux.inotify_event) + name_len;

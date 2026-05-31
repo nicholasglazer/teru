@@ -314,7 +314,7 @@ fn loadThemeFile(self: *Config, allocator: Allocator, io: Io, name: []const u8) 
         const line = std.mem.trim(u8, raw_line, &std.ascii.whitespace);
         if (line.len == 0 or line[0] == '#') continue;
 
-        const eq_pos = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const eq_pos = std.mem.findScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq_pos], &std.ascii.whitespace);
         const value = std.mem.trim(u8, line[eq_pos + 1 ..], &std.ascii.whitespace);
         if (key.len == 0 or value.len == 0) continue;
@@ -415,7 +415,7 @@ fn parseWithDepth(self: *Config, allocator: Allocator, content: []const u8, io: 
 
         // Section header: [section_name]
         if (line[0] == '[') {
-            if (std.mem.indexOfScalar(u8, line, ']')) |end| {
+            if (std.mem.findScalar(u8, line, ']')) |end| {
                 current_section = line[1..end];
                 // Check for [keybinds.MODE]
                 if (std.mem.startsWith(u8, current_section.?, "keybinds.")) {
@@ -442,7 +442,7 @@ fn parseWithDepth(self: *Config, allocator: Allocator, content: []const u8, io: 
         }
 
         // Split on first '='
-        const eq_pos = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const eq_pos = std.mem.findScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq_pos], &std.ascii.whitespace);
         const value = std.mem.trim(u8, line[eq_pos + 1 ..], &std.ascii.whitespace);
 

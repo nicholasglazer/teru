@@ -205,7 +205,7 @@ fn updateFilter(self: *Launcher) void {
     // Also include substring matches after prefix matches
     for (0..self.count) |i| {
         if (!std.mem.startsWith(u8, self.entries[i], q) and
-            std.mem.indexOf(u8, self.entries[i], q) != null)
+            std.mem.find(u8, self.entries[i], q) != null)
         {
             self.filtered[self.filtered_count] = @intCast(i);
             self.filtered_count += 1;

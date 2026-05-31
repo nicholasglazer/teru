@@ -223,9 +223,9 @@ pub fn isSafeFilename(name: []const u8) bool {
 pub fn isSafeScreenshotPath(path: []const u8) bool {
     if (path.len == 0) return false;
     // Reject null bytes
-    if (std.mem.indexOfScalar(u8, path, 0) != null) return false;
+    if (std.mem.findScalar(u8, path, 0) != null) return false;
     // Reject `..` segments
-    if (std.mem.indexOf(u8, path, "..")) |_| return false;
+    if (std.mem.find(u8, path, "..")) |_| return false;
     // Must be under /tmp or start with HOME
     const home = getenv("HOME") orelse return false;
     if (std.mem.eql(u8, path, "/tmp") or std.mem.startsWith(u8, path, "/tmp/")) {
@@ -548,7 +548,7 @@ pub fn ensureDirC(path: []const u8) void {
 /// Ensure the parent directory of `path` exists (mkdir -p on dirname).
 /// No-op if `path` has no slash or its parent is "/".
 pub fn ensureParentDirC(path: []const u8) void {
-    const last_slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return;
+    const last_slash = std.mem.findScalarLast(u8, path, '/') orelse return;
     if (last_slash == 0) return;
     mkdirAllTo(path[0..last_slash]);
 }
@@ -580,7 +580,7 @@ pub fn readProcCmdline(pid: c_int, buf: []u8) []const u8 {
 }
 
 fn mkdirAllTo(path: []const u8) void {
-    var path_z: [std.fs.max_path_bytes:0]u8 = undefined;
+    var path_z: [std.Io.Dir.max_path_bytes:0]u8 = undefined;
     if (path.len >= path_z.len) return;
     var i: usize = 1;
     while (i < path.len) : (i += 1) {

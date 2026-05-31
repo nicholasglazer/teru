@@ -72,7 +72,7 @@ pub fn extractJsonString(json: []const u8, key: []const u8) ?[]const u8 {
     var needle_buf: [64]u8 = undefined;
     const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\":", .{key}) catch return null;
 
-    const key_pos = std.mem.indexOf(u8, json, needle) orelse return null;
+    const key_pos = std.mem.find(u8, json, needle) orelse return null;
     const after_key = key_pos + needle.len;
 
     // Skip whitespace
@@ -95,7 +95,7 @@ pub fn extractJsonString(json: []const u8, key: []const u8) ?[]const u8 {
 pub fn extractNestedJsonString(json: []const u8, key: []const u8) ?[]const u8 {
     // Same as extractJsonString but searches for the key within "arguments" or at top level
     // First try within "arguments" block
-    if (std.mem.indexOf(u8, json, "\"arguments\"")) |args_pos| {
+    if (std.mem.find(u8, json, "\"arguments\"")) |args_pos| {
         if (extractJsonString(json[args_pos..], key)) |val| return val;
     }
     return extractJsonString(json, key);
@@ -108,9 +108,9 @@ pub fn extractNestedJsonInt(json: []const u8, key: []const u8) ?u64 {
     const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\":", .{key}) catch return null;
 
     // Search in "arguments" first, then top-level
-    const search_start = if (std.mem.indexOf(u8, json, "\"arguments\"")) |ap| ap else 0;
-    const key_pos = std.mem.indexOf(u8, json[search_start..], needle) orelse
-        std.mem.indexOf(u8, json, needle) orelse return null;
+    const search_start = if (std.mem.find(u8, json, "\"arguments\"")) |ap| ap else 0;
+    const key_pos = std.mem.find(u8, json[search_start..], needle) orelse
+        std.mem.find(u8, json, needle) orelse return null;
 
     const after_key = search_start + key_pos + needle.len;
 
@@ -131,7 +131,7 @@ pub fn extractNestedJsonInt(json: []const u8, key: []const u8) ?u64 {
 pub fn extractJsonInt(json: []const u8, key: []const u8) ?u64 {
     var needle_buf: [64]u8 = undefined;
     const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\":", .{key}) catch return null;
-    const key_pos = std.mem.indexOf(u8, json, needle) orelse return null;
+    const key_pos = std.mem.find(u8, json, needle) orelse return null;
     var i = key_pos + needle.len;
     while (i < json.len and (json[i] == ' ' or json[i] == '\t')) : (i += 1) {}
     if (i >= json.len) return null;
@@ -148,13 +148,13 @@ pub fn extractJsonInt(json: []const u8, key: []const u8) ?u64 {
 /// Returns null only when no `"id":` key is present.
 pub fn extractJsonId(json: []const u8) ?[]const u8 {
     const needle = "\"id\":";
-    const pos = std.mem.indexOf(u8, json, needle) orelse return null;
+    const pos = std.mem.find(u8, json, needle) orelse return null;
     var i = pos + needle.len;
     while (i < json.len and (json[i] == ' ' or json[i] == '\t')) : (i += 1) {}
     if (i >= json.len) return null;
 
     if (json[i] == '"') {
-        const end = std.mem.indexOfPos(u8, json, i + 1, "\"") orelse return null;
+        const end = std.mem.findPos(u8, json, i + 1, "\"") orelse return null;
         return json[i .. end + 1];
     }
     if (json[i] == 'n') return "null";
@@ -169,7 +169,7 @@ pub fn extractJsonId(json: []const u8) ?[]const u8 {
 pub fn extractJsonObject(json: []const u8, key: []const u8) ?[]const u8 {
     var search_buf: [64]u8 = undefined;
     const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":", .{key}) catch return null;
-    const pos = std.mem.indexOf(u8, json, needle) orelse return null;
+    const pos = std.mem.find(u8, json, needle) orelse return null;
     var i = pos + needle.len;
     while (i < json.len and (json[i] == ' ' or json[i] == '\t')) : (i += 1) {}
     if (i >= json.len or json[i] != '{') return null;
@@ -210,7 +210,7 @@ pub fn extractNestedJsonIntSigned(json: []const u8, key: []const u8) ?i64 {
     const args = extractJsonObject(json, "arguments") orelse json;
     var search_buf: [64]u8 = undefined;
     const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":", .{key}) catch return null;
-    const start = (std.mem.indexOf(u8, args, needle) orelse return null) + needle.len;
+    const start = (std.mem.find(u8, args, needle) orelse return null) + needle.len;
     var i = start;
     while (i < args.len and args[i] == ' ') : (i += 1) {}
     if (i >= args.len) return null;
@@ -235,7 +235,7 @@ pub fn extractJsonStringOwned(json: []const u8, key: []const u8, allocator: std.
 /// wire protocol.
 pub fn findHttpBody(data: []const u8) ?usize {
     const sep = "\r\n\r\n";
-    if (std.mem.indexOf(u8, data, sep)) |pos| return pos + sep.len;
+    if (std.mem.find(u8, data, sep)) |pos| return pos + sep.len;
     return null;
 }
 
@@ -244,8 +244,8 @@ pub fn findHttpBody(data: []const u8) ?usize {
 /// missing / malformed.
 pub fn parseHttpContentLength(data: []const u8) ?usize {
     const needle = "Content-Length: ";
-    const start = (std.mem.indexOf(u8, data, needle) orelse return null) + needle.len;
-    const end = std.mem.indexOfPos(u8, data, start, "\r\n") orelse return null;
+    const start = (std.mem.find(u8, data, needle) orelse return null) + needle.len;
+    const end = std.mem.findPos(u8, data, start, "\r\n") orelse return null;
     return std.fmt.parseInt(usize, data[start..end], 10) catch null;
 }
 
@@ -399,9 +399,9 @@ test "jsonEscapeString quotes and backslash" {
 test "jsonRpcError" {
     var buf: [512]u8 = undefined;
     const result = jsonRpcError(&buf, "1", -32601, "Method not found");
-    try t.expect(std.mem.indexOf(u8, result, "-32601") != null);
-    try t.expect(std.mem.indexOf(u8, result, "Method not found") != null);
-    try t.expect(std.mem.indexOf(u8, result, "\"id\":1") != null);
+    try t.expect(std.mem.find(u8, result, "-32601") != null);
+    try t.expect(std.mem.find(u8, result, "Method not found") != null);
+    try t.expect(std.mem.find(u8, result, "\"id\":1") != null);
 }
 
 test "lineMatchesKey" {

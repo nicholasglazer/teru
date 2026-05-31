@@ -425,7 +425,7 @@ fn parse(self: *WmConfig, content: []const u8) void {
 
         // Section header: [section_name]
         if (line[0] == '[') {
-            if (std.mem.indexOfScalar(u8, line, ']')) |end| {
+            if (std.mem.findScalar(u8, line, ']')) |end| {
                 const sec_name = line[1..end];
                 // Parse `[workspace.N]` with embedded index.
                 if (std.mem.startsWith(u8, sec_name, "workspace.")) {
@@ -464,7 +464,7 @@ fn parse(self: *WmConfig, content: []const u8) void {
         }
 
         // Split on first '='
-        const eq_pos = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const eq_pos = std.mem.findScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq_pos], &std.ascii.whitespace);
         const value = std.mem.trim(u8, line[eq_pos + 1 ..], &std.ascii.whitespace);
 

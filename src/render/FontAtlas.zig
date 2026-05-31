@@ -753,7 +753,7 @@ fn findMonospaceFont(allocator: std.mem.Allocator, io: Io) ![]const u8 {
 /// Fast file existence check via libc access() — avoids Io vtable overhead.
 fn accessFast(path: []const u8) bool {
     // Need null-terminated path for C access()
-    var buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    var buf: [std.Io.Dir.max_path_bytes:0]u8 = undefined;
     if (path.len >= buf.len) return false;
     @memcpy(buf[0..path.len], path);
     buf[path.len] = 0;

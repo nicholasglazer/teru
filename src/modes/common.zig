@@ -150,7 +150,7 @@ pub fn autoStartDaemon() bool {
 ///   3. ./examples/NAME.tsess
 /// Returns null if not found.
 pub fn resolveTemplatePath(io: std.Io, name: []const u8, buf: *[512]u8) ?[]const u8 {
-    if (std.mem.indexOf(u8, name, "/") != null or std.mem.endsWith(u8, name, ".tsess")) {
+    if (std.mem.find(u8, name, "/") != null or std.mem.endsWith(u8, name, ".tsess")) {
         if (name.len < buf.len) {
             @memcpy(buf[0..name.len], name);
             return buf[0..name.len];

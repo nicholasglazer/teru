@@ -93,7 +93,7 @@ pub fn spawn(opts: SpawnOptions) !Pty {
 
         // Change directory if specified
         if (opts.cwd) |cwd| {
-            var cwd_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+            var cwd_buf: [std.Io.Dir.max_path_bytes:0]u8 = undefined;
             if (cwd.len < cwd_buf.len) {
                 @memcpy(cwd_buf[0..cwd.len], cwd);
                 cwd_buf[cwd.len] = 0;
@@ -107,7 +107,7 @@ pub fn spawn(opts: SpawnOptions) !Pty {
             _ = execvp(exec_argv[0].?, exec_argv);
         } else {
             const env = opts.env orelse std.c.environ;
-            var shell_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+            var shell_buf: [std.Io.Dir.max_path_bytes:0]u8 = undefined;
             @memcpy(shell_buf[0..shell.len], shell);
             shell_buf[shell.len] = 0;
             const shell_z: [*:0]const u8 = &shell_buf;

@@ -186,7 +186,7 @@ test "tools_list_body is a bracketed array and includes every tool" {
     try std.testing.expectEqual(@as(u8, '['), tools_list_body[0]);
     try std.testing.expectEqual(@as(u8, ']'), tools_list_body[tools_list_body.len - 1]);
     for (tools) |t| {
-        try std.testing.expect(std.mem.indexOf(u8, tools_list_body, t.name) != null);
+        try std.testing.expect(std.mem.find(u8, tools_list_body, t.name) != null);
     }
 }
 

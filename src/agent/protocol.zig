@@ -207,7 +207,7 @@ pub fn parsePayload(payload: []const u8) ?AgentEvent {
     // Remaining fields are key=value pairs. For .query, any field that
     // isn't `id` or `tool` is collected into query_args.
     while (iter.next()) |field| {
-        if (std.mem.indexOfScalar(u8, field, '=')) |eq_pos| {
+        if (std.mem.findScalar(u8, field, '=')) |eq_pos| {
             const key = field[0..eq_pos];
             const value = field[eq_pos + 1 ..];
 

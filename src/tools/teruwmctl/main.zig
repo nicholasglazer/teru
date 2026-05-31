@@ -532,7 +532,7 @@ fn runAndPrint(body: []const u8) !void {
     // JSON-RPC error → stderr + exit 1. Conservative string search;
     // full parse would need std.json. The server always places
     // `"error":{` at a fixed depth, so substring match is reliable.
-    if (std.mem.indexOf(u8, resp, "\"error\":{") != null) {
+    if (std.mem.find(u8, resp, "\"error\":{") != null) {
         _ = std.c.write(2, resp.ptr, resp.len);
         out("\n");
         std.process.exit(1);
@@ -607,7 +607,7 @@ fn unescapeJsonString(s: []const u8, out_buf: []u8) ?[]const u8 {
 /// JSON walking — because the server's output format is known-stable.
 fn extractContentText(resp: []const u8) ?[]const u8 {
     const marker = "\"text\":\"";
-    const start = std.mem.indexOf(u8, resp, marker) orelse return null;
+    const start = std.mem.find(u8, resp, marker) orelse return null;
     const body_start = start + marker.len;
     // Walk forward looking for the unescaped closing quote.
     var i = body_start;
@@ -640,7 +640,7 @@ fn runWatch() !void {
         std.process.exit(2);
     };
 
-    if (std.mem.indexOf(u8, resp, "\"error\":{") != null) {
+    if (std.mem.find(u8, resp, "\"error\":{") != null) {
         _ = std.c.write(2, resp.ptr, resp.len);
         out("\n");
         std.process.exit(1);
@@ -694,10 +694,10 @@ fn runWatch() !void {
 /// practice, so a naive search works fine.
 fn extractSocketField(escaped_payload: []const u8) ?[]const u8 {
     const marker = "\\\"socket\\\":\\\"";
-    const start = std.mem.indexOf(u8, escaped_payload, marker) orelse return null;
+    const start = std.mem.find(u8, escaped_payload, marker) orelse return null;
     const body_start = start + marker.len;
     const end_marker = "\\\"";
-    const end_rel = std.mem.indexOf(u8, escaped_payload[body_start..], end_marker) orelse return null;
+    const end_rel = std.mem.find(u8, escaped_payload[body_start..], end_marker) orelse return null;
     return escaped_payload[body_start .. body_start + end_rel];
 }
 
