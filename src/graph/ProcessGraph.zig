@@ -88,6 +88,30 @@ pub fn deinit(self: *ProcessGraph) void {
 
 // ── Operations ───────────────────────────────────────────────────
 
+/// Cap on retained nodes. markFinished never removes nodes, so a long-lived
+/// session that spawns many shells/agents would grow the map unbounded; before
+/// adding past the cap we evict the oldest finished LEAF node.
+const max_nodes: usize = 1024;
+
+/// Evict the oldest finished node that has no children (a leaf) — removing a
+/// node with children would leave their `.parent` dangling. No-op if none.
+fn evictOldestFinishedLeaf(self: *ProcessGraph) void {
+    var oldest_id: ?NodeId = null;
+    var oldest_ts: i128 = std.math.maxInt(i128);
+    var it = self.nodes.iterator();
+    while (it.next()) |e| {
+        const n = e.value_ptr;
+        if (n.state == .finished and n.children.items.len == 0) {
+            const ts = n.ended_at orelse n.started_at;
+            if (ts < oldest_ts) {
+                oldest_ts = ts;
+                oldest_id = e.key_ptr.*;
+            }
+        }
+    }
+    if (oldest_id) |id| self.remove(id);
+}
+
 pub fn spawn(self: *ProcessGraph, opts: struct {
     name: []const u8,
     kind: NodeKind = .shell,
@@ -96,6 +120,7 @@ pub fn spawn(self: *ProcessGraph, opts: struct {
     workspace: u8 = 1,
     agent: ?AgentMeta = null,
 }) !NodeId {
+    if (self.nodes.count() >= max_nodes) self.evictOldestFinishedLeaf();
     const id = self.next_id;
 
     // The graph OWNS its strings: callers routinely pass transient buffers
@@ -456,6 +481,24 @@ test "spawn owns its strings (no UAF when caller buffer is reused)" {
     // Replacing the task must free the previous one (testing.allocator checks).
     graph.updateAgentStatus(id, "linking", 0.9);
     try std.testing.expectEqualStrings("linking", graph.getNode(id).?.agent.?.task.?);
+}
+
+test "graph growth is bounded — evicts oldest finished leaf past the cap" {
+    const allocator = std.testing.allocator;
+    var graph = ProcessGraph.init(allocator);
+    defer graph.deinit();
+
+    // Fill to the cap with finished leaf nodes (no children → evictable).
+    var i: usize = 0;
+    while (i < max_nodes) : (i += 1) {
+        const id = try graph.spawn(.{ .name = "n", .kind = .process });
+        graph.markFinished(id, 0);
+    }
+    try std.testing.expectEqual(max_nodes, graph.nodeCount());
+
+    // Each further spawn evicts an old finished leaf instead of growing.
+    _ = try graph.spawn(.{ .name = "fresh", .kind = .process });
+    try std.testing.expect(graph.nodeCount() <= max_nodes);
 }
 
 test "countAgentsByState" {
