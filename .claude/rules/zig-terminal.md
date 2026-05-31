@@ -67,7 +67,7 @@ Every function that does file/network/timer I/O MUST accept `io: std.Io`. Thread
 
 ### compat.zig (minimal -- only 4 things)
 Only these belong in compat.zig (no io needed):
-1. `compat.nanoTimestamp()` -- vDSO clock_gettime
+1. `compat.nanoTimestamp()` -- libc clock_gettime(REALTIME) (may route via vDSO)
 2. `compat.getenv()` -- libc wrapper
 3. `compat.forkExec*()` -- complex fork+dup2+exec for PTY/clipboard
 4. `compat.MemWriter/MemReader/DynWriter` -- in-memory serialization
@@ -203,6 +203,6 @@ make install PREFIX=/usr  # custom prefix
 8. **DON'T use GPU APIs** -- CPU SIMD only
 9. **DON'T add external Zig packages** -- use std or implement it
 10. **DON'T use `@cImport` for new C bindings** -- hand-declare externs
-11. **`compat.MemWriter`/`MemReader`/`DynWriter` are for binary serialization** -- they expose `writeInt`/`readInt`/`readByte`, which native `std.Io.Writer`/`Reader` do not. Use them for the session / scrollback binary formats. For text or streaming output, use native `std.Io.Writer.fixed(buf)` / `std.Io.Writer.Allocating.init(gpa)`.
+11. **`compat.MemWriter`/`MemReader`/`DynWriter` are the binary-serialization codepath** for the session / scrollback formats. As of 0.17.0-dev.420 native `std.Io.Writer`/`Reader` DO expose `writeInt`/`takeInt` and `.fixed`/`.Allocating` (so the "native lacks the API" rationale is outdated) — they're retained as one stable format codepath, not migrated to avoid churning the on-disk binary format. For text or streaming output, use native `std.Io.Writer.fixed(buf)` / `std.Io.Writer.Allocating.init(gpa)`.
 12. **DON'T use `std.heap.page_allocator` for small allocs** -- it's one mmap per allocation in 0.17. Use `init.gpa` or `std.heap.smp_allocator`.
 13. **Route `[]u32` framebuffer fills through `compat.memsetU32`** -- the codegen bug that required a hand loop is fixed on 0.17.0-dev.420 (the helper now just calls `@memset`), but keep using the helper as the single revert point.
