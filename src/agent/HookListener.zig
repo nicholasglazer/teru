@@ -96,6 +96,27 @@ pub fn getSocketPath(self: *const HookListener) []const u8 {
 
 // ── Poll (called from main event loop) ─────────────────────────────
 
+/// True once `data` holds a complete HTTP request: headers terminated by a
+/// blank line, plus a body of at least Content-Length bytes (0 if absent).
+fn requestComplete(data: []const u8) bool {
+    const hdr_end = std.mem.indexOf(u8, data, "\r\n\r\n") orelse return false;
+    const body_start = hdr_end + 4;
+    const hdrs = data[0..hdr_end];
+    var content_length: usize = 0;
+    var i: usize = 0;
+    while (i + 15 <= hdrs.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(hdrs[i .. i + 15], "content-length:")) {
+            var j = i + 15;
+            while (j < hdrs.len and (hdrs[j] == ' ' or hdrs[j] == '\t')) j += 1;
+            while (j < hdrs.len and hdrs[j] >= '0' and hdrs[j] <= '9') : (j += 1) {
+                content_length = content_length * 10 + (hdrs[j] - '0');
+            }
+            break;
+        }
+    }
+    return data.len >= body_start + content_length;
+}
+
 /// Accept and process one pending connection. Non-blocking.
 pub fn poll(self: *HookListener) void {
     // Accept connection
@@ -103,14 +124,29 @@ pub fn poll(self: *HookListener) void {
     const client_fd = client.rawFd();
     defer client.close();
 
-    // Read HTTP request (small — hook payloads are typically <2KB)
+    // Read the full HTTP request. Hook POSTs are small and usually arrive in
+    // one segment, but a larger tool_input can span TCP segments; reading once
+    // and breaking on EAGAIN truncated the body and dropped the connection.
+    // Stop as soon as the Content-Length body is complete (so a complete
+    // request adds no latency), else wait briefly for the next segment.
     var buf: [RECV_BUF_SIZE]u8 = undefined;
     var total: usize = 0;
     while (total < buf.len) {
+        if (total > 0 and requestComplete(buf[0..total])) break;
         const n_raw = posix.system.read(client_fd, @ptrCast(buf[total..].ptr), buf.len - total);
-        if (n_raw <= 0) break;
-        const n: usize = @intCast(n_raw);
-        total += n;
+        if (n_raw > 0) {
+            total += @intCast(n_raw);
+            continue;
+        }
+        if (n_raw == 0) break; // peer closed
+        switch (posix.errno(n_raw)) {
+            .AGAIN, .INTR => {
+                var pfd = [_]posix.pollfd{.{ .fd = client_fd, .events = posix.POLL.IN, .revents = 0 }};
+                const pr = posix.poll(&pfd, 200) catch break;
+                if (pr == 0) break; // 200ms with no more data — proceed with what we have
+            },
+            else => break,
+        }
     }
     if (total == 0) return;
 
