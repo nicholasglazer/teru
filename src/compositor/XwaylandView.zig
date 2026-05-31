@@ -135,6 +135,16 @@ fn handleUnmap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const server = view.server;
     view.mapped = false;
 
+    // Destroy the scene tree — handleMap recreates it on the next map. Without
+    // this, an unmap→remap (menus, tooltips, dialogs that hide/show) leaked the
+    // old tree and stacked a second one for the same surface. wlr_scene_node_destroy
+    // also drops the node's internal surface-destroy listener, so the later
+    // surface-destroy won't double-free.
+    if (view.scene_tree) |tree| {
+        if (wlr.miozu_scene_tree_node(tree)) |node| wlr.wlr_scene_node_destroy(node);
+        view.scene_tree = null;
+    }
+
     server.clearFocusRefs(view.node_id);
     // If this xwayland surface currently held keyboard focus, clear
     // the pointer. closeFocused would otherwise dereference a dead
