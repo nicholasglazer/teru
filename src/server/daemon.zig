@@ -160,17 +160,26 @@ pub fn run(self: *Daemon) void {
             self.tryAcceptClient();
         }
 
-        // Read client input
+        // Read client input. A client command here (handleClientData) can
+        // spawn or close a pane, mutating mux.panes — which leaves the fds[]
+        // snapshot (built before poll) stale relative to the live pane list.
+        const panes_before = self.mux.panes.items.len;
         if (self.client_fd != null and pty_start >= 2) {
             if (fds[1].revents & (POLLIN | POLLHUP | POLLERR) != 0) {
                 self.handleClientData(&recv_buf);
             }
         }
 
-        // Read PTY output and relay to client (tagged with pane_id)
+        // Read PTY output and relay to client (tagged with pane_id).
+        // Skip the relay if the pane set changed under us this iteration:
+        // fds[pty_start..] no longer lines up with mux.panes by index. fds[]
+        // is rebuilt at the top of the next iteration, so output is relayed
+        // one iteration later — imperceptible, and avoids reading a pane's fd
+        // against the wrong pane (mis-tagged output / off-by-one).
         var pane_idx: usize = 0;
         var any_pty_died = false;
-        for (pty_start..pty_end) |fi| {
+        const pane_set_stable = self.mux.panes.items.len == panes_before;
+        if (pane_set_stable) for (pty_start..pty_end) |fi| {
             if (pane_idx >= self.mux.panes.items.len) break;
             if (fds[fi].revents & POLLIN != 0) {
                 const pane = &self.mux.panes.items[pane_idx];
@@ -190,7 +199,7 @@ pub fn run(self: *Daemon) void {
                 any_pty_died = true;
             }
             pane_idx += 1;
-        }
+        };
 
         // MCP poll only when one of its listen sockets has readiness.
         // mcp.poll() drains both event_socket_fd and socket_fd internally,
