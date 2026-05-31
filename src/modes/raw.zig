@@ -46,7 +46,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
 
     if (pty_inst.child_pid != null) {
         const status = pty_inst.waitForExit() catch 0;
-        graph.markFinished(node_id, @truncate(status >> 8));
+        graph.markFinished(node_id, std.posix.W.EXITSTATUS(status));
     }
     common.outFmt(&buf, "\n\x1b[38;5;208m[teru]\x1b[0m session ended · {d} node(s)\n", .{graph.nodeCount()});
 }

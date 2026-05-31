@@ -197,9 +197,9 @@ fn acceptPosix(server: IpcHandle) ?IpcHandle {
         const Ucred = extern struct { pid: i32, uid: u32, gid: u32 };
         var cr: Ucred = undefined;
         var cr_len: posix.socklen_t = @sizeOf(Ucred);
-        const SOL_SOCKET = 1;
-        const SO_PEERCRED = 17;
-        if (posix.system.getsockopt(conn, SOL_SOCKET, SO_PEERCRED, @ptrCast(&cr), &cr_len) == 0) {
+        // Arch-portable via std: SO.PEERCRED is 17 on x86_64/aarch64 but 18 on
+        // mips/alpha, 21 on ppc, 64 on sparc — the hardcoded 17 was wrong there.
+        if (posix.system.getsockopt(conn, posix.SOL.SOCKET, posix.SO.PEERCRED, @ptrCast(&cr), &cr_len) == 0) {
             const my_uid = compat.getUid();
             if (cr.uid != 0 and cr.uid != my_uid) {
                 _ = posix.system.close(conn);

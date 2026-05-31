@@ -437,10 +437,8 @@ pub fn forkExecCaptureStdout(argv: [*:null]const ?[*:0]const u8, buf: []u8) usiz
     _ = posix.system.close(write_end);
 
     // Set the read end to non-blocking so poll governs all reads.
-    const F_GETFL: c_int = 3;
-    const F_SETFL: c_int = 4;
-    const flags = std.c.fcntl(read_end, F_GETFL);
-    if (flags >= 0) _ = std.c.fcntl(read_end, F_SETFL, flags | O_NONBLOCK);
+    const flags = std.c.fcntl(read_end, posix.F.GETFL);
+    if (flags >= 0) _ = std.c.fcntl(read_end, posix.F.SETFL, flags | O_NONBLOCK);
 
     const overall_deadline_ms: i32 = 2000;
     const start_ns = monotonicNow();

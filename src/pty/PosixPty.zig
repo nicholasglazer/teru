@@ -172,8 +172,7 @@ pub fn deinit(self: *Pty) void {
 pub fn isAlive(self: *const Pty) bool {
     if (self.child_pid) |pid| {
         var status: c_int = 0;
-        const WNOHANG = 1; // sys/wait.h
-        const rc = std.c.waitpid(pid, &status, WNOHANG);
+        const rc = std.c.waitpid(pid, &status, posix.W.NOHANG);
         return rc == 0; // 0 means still running
     }
     return false;

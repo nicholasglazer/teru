@@ -418,17 +418,10 @@ fn encodeKeyframe(allocator: Allocator, grid: *const Grid) ![]const u8 {
         }
     }
 
-    // Shrink to actual size
-    if (pos < buf.len) {
-        if (allocator.resize(buf, pos)) {
-            buf.len = pos;
-        } else {
-            const exact = try allocator.alloc(u8, pos);
-            @memcpy(exact, buf[0..pos]);
-            allocator.free(buf);
-            buf = exact;
-        }
-    }
+    // Shrink to actual size. Allocator.realloc does the resize-in-place /
+    // relocate-copy-free dance internally (it replaces this hand-roll) with the
+    // same OOM-propagates behaviour the explicit alloc path had.
+    if (pos < buf.len) buf = try allocator.realloc(buf, pos);
 
     return buf;
 }
