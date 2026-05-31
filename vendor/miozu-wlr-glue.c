@@ -892,13 +892,18 @@ void miozu_scene_buffer_commit_dirty(
 {
     pixman_region32_t region;
     pixman_region32_init(&region);
-    if (dirty_y0 < 0 || dirty_y1 <= dirty_y0 || fb_w <= 0 || fb_h <= 0) {
+    /* dirty_y0 < 0 is the "whole buffer" sentinel. dirty_y1 == dirty_y0 is a
+     * ZERO-height middle band: borders only (repaintBorderOnly). Only a truly
+     * inverted range (dirty_y1 < dirty_y0) falls back to full damage. The old
+     * `<=` test made the borders-only case re-damage the entire pane on every
+     * focus change. */
+    if (dirty_y0 < 0 || dirty_y1 < dirty_y0 || fb_w <= 0 || fb_h <= 0) {
         /* Fall back to full-buffer damage. */
         pixman_region32_union_rect(&region, &region, 0, 0, fb_w, fb_h);
     } else {
-        int y0 = dirty_y0 < 0 ? 0 : dirty_y0;
+        int y0 = dirty_y0;
         int y1 = dirty_y1 > fb_h ? fb_h : dirty_y1;
-        pixman_region32_union_rect(&region, &region, 0, y0, fb_w, y1 - y0);
+        if (y1 > y0) pixman_region32_union_rect(&region, &region, 0, y0, fb_w, y1 - y0);
         if (border_thickness > 0 && fb_h > 2 * border_thickness && fb_w > 2 * border_thickness) {
             int bt = border_thickness;
             pixman_region32_union_rect(&region, &region, 0, 0, fb_w, bt);
