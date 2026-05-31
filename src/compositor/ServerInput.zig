@@ -233,9 +233,9 @@ fn extractLayoutCode(keymap: *wlr.xkb_keymap, target_idx: u32) []const u8 {
     const raw = std.mem.sliceTo(raw_ptr, 0);
 
     const hdr = "xkb_symbols";
-    const hdr_pos = std.mem.indexOf(u8, raw, hdr) orelse return "";
-    const q1 = std.mem.indexOfScalarPos(u8, raw, hdr_pos + hdr.len, '"') orelse return "";
-    const q2 = std.mem.indexOfScalarPos(u8, raw, q1 + 1, '"') orelse return "";
+    const hdr_pos = std.mem.find(u8, raw, hdr) orelse return "";
+    const q1 = std.mem.findScalarPos(u8, raw, hdr_pos + hdr.len, '"') orelse return "";
+    const q2 = std.mem.findScalarPos(u8, raw, q1 + 1, '"') orelse return "";
     const sig = raw[q1 + 1 .. q2];
 
     var it = std.mem.splitScalar(u8, sig, '_');

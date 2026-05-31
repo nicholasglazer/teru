@@ -149,7 +149,7 @@ fn parseToken(token: []const u8) Widget {
     if (std.mem.startsWith(u8, token, "exec:")) {
         const rest = token["exec:".len..];
         // Find first colon → interval
-        if (std.mem.indexOf(u8, rest, ":")) |colon| {
+        if (std.mem.find(u8, rest, ":")) |colon| {
             const interval = std.fmt.parseInt(u32, rest[0..colon], 10) catch 5;
             return .{ .kind = .exec, .arg = rest[colon + 1 ..], .interval = interval };
         }

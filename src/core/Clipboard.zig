@@ -185,7 +185,7 @@ fn writeAllToPty(pane: *const Pane, data: []const u8) void {
     // receiving app exits its bracketed-paste accumulator. Better than
     // a permanent freeze.
     const trailing = data[@min(written, data.len)..];
-    const dropped_close = std.mem.indexOf(u8, trailing, paste_end) != null;
+    const dropped_close = std.mem.find(u8, trailing, paste_end) != null;
     if (dropped_close) {
         _ = pane.ptyWrite(paste_end) catch {};
     }

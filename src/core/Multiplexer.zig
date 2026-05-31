@@ -790,7 +790,7 @@ fn gridContainsText(grid: *const Grid, needle: []const u8) bool {
         line[n] = if (cell.char >= 32 and cell.char < 127) @intCast(cell.char) else ' ';
         n += 1;
     }
-    return std.mem.indexOf(u8, line[0..n], needle) != null;
+    return std.mem.find(u8, line[0..n], needle) != null;
 }
 
 test "spawnPaneWithCommand runs a multi-word command (H8: agent exec via /bin/sh -c)" {

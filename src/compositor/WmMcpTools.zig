@@ -178,7 +178,7 @@ pub fn thunkSetBar(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8
     const which = extractNestedJsonString(p, "which") orelse
         return jsonRpcError(buf, id, -32602, "Missing which (top|bottom)");
     const args = extractJsonObject(p, "arguments") orelse p;
-    const enabled: bool = std.mem.indexOf(u8, args, "\"enabled\":true") != null;
+    const enabled: bool = std.mem.find(u8, args, "\"enabled\":true") != null;
     return toolToggleBar(self, which, enabled, buf, id);
 }
 
@@ -212,7 +212,7 @@ pub fn thunkTestDrag(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const 
     const ty = extractNestedJsonInt(p, "to_y") orelse
         return jsonRpcError(buf, id, -32602, "Missing to_y");
     const args = extractJsonObject(p, "arguments") orelse p;
-    const super_held = std.mem.indexOf(u8, args, "\"super\":true") != null;
+    const super_held = std.mem.find(u8, args, "\"super\":true") != null;
     const button: u32 = blk: {
         const b = extractNestedJsonInt(p, "button") orelse break :blk 272;
         break :blk @intCast(b);
@@ -245,12 +245,12 @@ pub fn thunkMousePath(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const
         return jsonRpcError(buf, id, -32602, "Missing to_y");
     const dur_raw = extractNestedJsonInt(p, "duration_ms");
     const dur: u32 = if (dur_raw) |d| @intCast(@max(0, d)) else self.server.wm_config.mouse_path_default_ms;
-    const humanize_true = std.mem.indexOf(u8, p, "\"humanize\":true") != null;
-    const humanize_false = std.mem.indexOf(u8, p, "\"humanize\":false") != null;
+    const humanize_true = std.mem.find(u8, p, "\"humanize\":true") != null;
+    const humanize_false = std.mem.find(u8, p, "\"humanize\":false") != null;
     const humanize: bool = if (humanize_true) true else if (humanize_false) false else self.server.wm_config.mouse_humanize;
     const btn_raw = extractNestedJsonInt(p, "button");
     const btn: ?u32 = if (btn_raw) |b| @intCast(@max(0, b)) else null;
-    const super_held = std.mem.indexOf(u8, p, "\"super\":true") != null;
+    const super_held = std.mem.find(u8, p, "\"super\":true") != null;
     return toolMousePath(self, @intCast(fx), @intCast(fy), @intCast(tx), @intCast(ty), dur, humanize, btn, super_held, buf, id);
 }
 
@@ -275,10 +275,10 @@ pub fn thunkPress(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8)
     const key = extractNestedJsonString(p, "key") orelse
         return jsonRpcError(buf, id, -32602, "Missing key");
     const args_obj = extractJsonObject(p, "arguments") orelse p;
-    const ctrl = std.mem.indexOf(u8, args_obj, "\"ctrl\":true") != null;
-    const shift = std.mem.indexOf(u8, args_obj, "\"shift\":true") != null;
-    const alt = std.mem.indexOf(u8, args_obj, "\"alt\":true") != null;
-    const sup = std.mem.indexOf(u8, args_obj, "\"super\":true") != null;
+    const ctrl = std.mem.find(u8, args_obj, "\"ctrl\":true") != null;
+    const shift = std.mem.find(u8, args_obj, "\"shift\":true") != null;
+    const alt = std.mem.find(u8, args_obj, "\"alt\":true") != null;
+    const sup = std.mem.find(u8, args_obj, "\"super\":true") != null;
     return toolPress(self, key, ctrl, shift, alt, sup, buf, id);
 }
 

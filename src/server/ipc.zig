@@ -351,9 +351,9 @@ test "buildPath: POSIX format" {
     // Linux: /run/user/{uid}/teru-session-myproject.sock
     // macOS: /tmp/teru-{uid}-session-myproject.sock
     try std.testing.expect(std.mem.endsWith(u8, path.?, ".sock"));
-    try std.testing.expect(std.mem.indexOf(u8, path.?, "teru") != null);
-    try std.testing.expect(std.mem.indexOf(u8, path.?, "session") != null);
-    try std.testing.expect(std.mem.indexOf(u8, path.?, "myproject") != null);
+    try std.testing.expect(std.mem.find(u8, path.?, "teru") != null);
+    try std.testing.expect(std.mem.find(u8, path.?, "session") != null);
+    try std.testing.expect(std.mem.find(u8, path.?, "myproject") != null);
 }
 
 test "buildPath: returns null for overflow" {

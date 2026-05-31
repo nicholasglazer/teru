@@ -99,7 +99,7 @@ pub fn getSocketPath(self: *const HookListener) []const u8 {
 /// True once `data` holds a complete HTTP request: headers terminated by a
 /// blank line, plus a body of at least Content-Length bytes (0 if absent).
 fn requestComplete(data: []const u8) bool {
-    const hdr_end = std.mem.indexOf(u8, data, "\r\n\r\n") orelse return false;
+    const hdr_end = std.mem.find(u8, data, "\r\n\r\n") orelse return false;
     const body_start = hdr_end + 4;
     const hdrs = data[0..hdr_end];
     var content_length: usize = 0;

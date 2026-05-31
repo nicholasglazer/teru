@@ -76,7 +76,7 @@ pub fn save(server: *Server, name: []const u8) !void {
 
     teru.compat.ensureParentDirC(path);
 
-    var path_z: [std.fs.max_path_bytes:0]u8 = undefined;
+    var path_z: [std.Io.Dir.max_path_bytes:0]u8 = undefined;
     if (path.len >= path_z.len) return error.PathTooLong;
     @memcpy(path_z[0..path.len], path);
     path_z[path.len] = 0;
@@ -99,7 +99,7 @@ pub fn restore(server: *Server, name: []const u8) !void {
     const path = try CoreSession.getSessionPath(allocator, name);
     defer allocator.free(path);
 
-    var path_z: [std.fs.max_path_bytes:0]u8 = undefined;
+    var path_z: [std.Io.Dir.max_path_bytes:0]u8 = undefined;
     if (path.len >= path_z.len) return error.PathTooLong;
     @memcpy(path_z[0..path.len], path);
     path_z[path.len] = 0;

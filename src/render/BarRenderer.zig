@@ -464,7 +464,7 @@ fn renderMemWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, 
 }
 
 fn parseMemLine(data: []const u8, key: []const u8) ?u64 {
-    const idx = std.mem.indexOf(u8, data, key) orelse return null;
+    const idx = std.mem.find(u8, data, key) orelse return null;
     var i = idx + key.len;
     while (i < data.len and (data[i] == ' ' or data[i] == '\t')) i += 1;
     var val: u64 = 0;
@@ -680,7 +680,7 @@ fn evalExec(w: *BarWidget.Widget, now_ns: i128) void {
         if (c != '\n' and c != '\r' and c != ' ' and c != '\t') break;
     }
     // Only keep first line
-    if (std.mem.indexOfScalar(u8, buf[0..end], '\n')) |nl| end = nl;
+    if (std.mem.findScalar(u8, buf[0..end], '\n')) |nl| end = nl;
 
     const copy_n = @min(end, w.cache.len);
     @memcpy(w.cache[0..copy_n], buf[0..copy_n]);

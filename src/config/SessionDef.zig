@@ -458,7 +458,7 @@ fn parseSectionHeader(header: []const u8) SectionCtx {
         const after_ws = header["workspace.".len..];
 
         // Find the workspace number
-        const dot_pos = std.mem.indexOfScalar(u8, after_ws, '.') orelse {
+        const dot_pos = std.mem.findScalar(u8, after_ws, '.') orelse {
             // Just "workspace.N"
             const ws_num = std.fmt.parseInt(u8, after_ws, 10) catch return .{};
             return .{ .kind = .workspace, .ws_index = ws_num };
@@ -486,7 +486,7 @@ const KeyValue = struct {
 };
 
 fn parseKeyValue(line: []const u8) ?KeyValue {
-    const eq_pos = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const eq_pos = std.mem.findScalar(u8, line, '=') orelse return null;
     const key = trimRight(line[0..eq_pos]);
     const value = trimLeft(line[eq_pos + 1 ..]);
     if (key.len == 0) return null;
@@ -503,7 +503,7 @@ fn layoutToString(layout: Layout) []const u8 {
 
 fn parseFloat(s: []const u8) ?f32 {
     // Simple float parser: handle "0.65" style decimals
-    const dot = std.mem.indexOfScalar(u8, s, '.') orelse {
+    const dot = std.mem.findScalar(u8, s, '.') orelse {
         const int_val = std.fmt.parseInt(i32, s, 10) catch return null;
         return @floatFromInt(int_val);
     };
@@ -534,7 +534,7 @@ fn expandTilde(path: []const u8, buf: []u8) ?[]const u8 {
 /// Simple environment variable expansion: replace $VAR with its value.
 /// Handles $EDITOR, $SHELL, etc. at word boundaries.
 fn expandEnvVars(input: []const u8, buf: []u8) ?[]const u8 {
-    if (std.mem.indexOfScalar(u8, input, '$') == null) return input;
+    if (std.mem.findScalar(u8, input, '$') == null) return input;
 
     var out_pos: usize = 0;
     var i: usize = 0;
@@ -625,7 +625,7 @@ fn getPaneCmd(pane: anytype, buf: []u8) []const u8 {
 /// Ensure the parent directory of a path exists.
 fn ensureParentDir(path: []const u8, io: Io) void {
     // Find last '/' to get parent dir
-    const last_slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return;
+    const last_slash = std.mem.findScalarLast(u8, path, '/') orelse return;
     if (last_slash == 0) return;
     const parent = path[0..last_slash];
 

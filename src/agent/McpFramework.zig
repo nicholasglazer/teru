@@ -185,7 +185,7 @@ pub fn Framework(comptime Impl: type) type {
                         }
                     },
                     .line_json => {
-                        if (std.mem.indexOfScalar(u8, req_buf[0..total], '\n') != null) break;
+                        if (std.mem.findScalar(u8, req_buf[0..total], '\n') != null) break;
                     },
                 }
             }
@@ -331,7 +331,7 @@ pub fn Framework(comptime Impl: type) type {
                 for (write_names) |w| {
                     var name_buf: [128]u8 = undefined;
                     const needle = std.fmt.bufPrint(&name_buf, "\"name\":\"{s}\"", .{w}) catch continue;
-                    if (std.mem.indexOf(u8, obj, needle) != null) {
+                    if (std.mem.find(u8, obj, needle) != null) {
                         is_write = true;
                         break;
                     }
@@ -401,23 +401,23 @@ test "read-only mode rejects write tools" {
     // Read tools call succeeds
     const read_call = "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"test_read\"},\"id\":1}";
     const r1 = FW.dispatch(&impl, read_call, &resp_buf, &config);
-    try std.testing.expect(std.mem.indexOf(u8, r1, "\"result\"") != null);
+    try std.testing.expect(std.mem.find(u8, r1, "\"result\"") != null);
 
     // Write tools call rejected
     const write_call = "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"test_write\"},\"id\":2}";
     const r2 = FW.dispatch(&impl, write_call, &resp_buf, &config);
-    try std.testing.expect(std.mem.indexOf(u8, r2, "Read-only") != null);
+    try std.testing.expect(std.mem.find(u8, r2, "Read-only") != null);
 
     // tools/list excludes test_write
     const list_call = "{\"jsonrpc\":\"2.0\",\"method\":\"tools/list\",\"id\":3}";
     const r3 = FW.dispatch(&impl, list_call, &resp_buf, &config);
-    try std.testing.expect(std.mem.indexOf(u8, r3, "test_read") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r3, "test_write") == null);
+    try std.testing.expect(std.mem.find(u8, r3, "test_read") != null);
+    try std.testing.expect(std.mem.find(u8, r3, "test_write") == null);
 
     // Disabling the gate restores write access + listing
     impl.active = false;
     const r4 = FW.dispatch(&impl, write_call, &resp_buf, &config);
-    try std.testing.expect(std.mem.indexOf(u8, r4, "\"result\"") != null);
+    try std.testing.expect(std.mem.find(u8, r4, "\"result\"") != null);
     const r5 = FW.dispatch(&impl, list_call, &resp_buf, &config);
-    try std.testing.expect(std.mem.indexOf(u8, r5, "test_write") != null);
+    try std.testing.expect(std.mem.find(u8, r5, "test_write") != null);
 }

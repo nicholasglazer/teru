@@ -717,7 +717,7 @@ fn finishOsc(self: *VtParser) void {
             8 => {
                 // Hyperlink (OSC 8). Format: "params;uri" to start, ";;" to end.
                 // params are key=value pairs (id=...) — we skip them for now.
-                if (std.mem.indexOf(u8, payload, ";")) |sep| {
+                if (std.mem.find(u8, payload, ";")) |sep| {
                     const uri = payload[sep + 1 ..];
                     if (uri.len == 0) {
                         // End hyperlink

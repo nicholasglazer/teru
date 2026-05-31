@@ -395,7 +395,7 @@ fn execReadable(fd: c_int, mask: u32, data: ?*anyopaque) callconv(.c) c_int {
             data_bytes.len -= 1;
         }
         // Only keep first line (bar is single-line)
-        if (std.mem.indexOfScalar(u8, data_bytes, 0x0A)) |nl| data_bytes = data_bytes[0..nl];
+        if (std.mem.findScalar(u8, data_bytes, 0x0A)) |nl| data_bytes = data_bytes[0..nl];
 
         const copy_n = @min(data_bytes.len, pe.widget.cache.len);
         @memcpy(pe.widget.cache[0..copy_n], data_bytes[0..copy_n]);
@@ -600,8 +600,8 @@ fn shortKeymap(name: []const u8) []const u8 {
 
     // Prefer the variant in parens if there is one.
     var src: []const u8 = name;
-    if (std.mem.lastIndexOfScalar(u8, name, '(')) |lp| {
-        if (std.mem.indexOfScalarPos(u8, name, lp + 1, ')')) |rp| {
+    if (std.mem.findScalarLast(u8, name, '(')) |lp| {
+        if (std.mem.findScalarPos(u8, name, lp + 1, ')')) |rp| {
             if (rp > lp + 1) src = name[lp + 1 .. rp];
         }
     }

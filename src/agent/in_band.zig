@@ -284,7 +284,7 @@ test "buildJsonRpcRequest — integer and string args" {
 test "buildJsonRpcRequest — string id quoted" {
     var buf: [1024]u8 = undefined;
     const req = buildJsonRpcRequest("teru_list_panes", "abc", &[_]protocol.QueryArg{}, &buf).?;
-    try std.testing.expect(std.mem.indexOf(u8, req, "\"id\":\"abc\"") != null);
+    try std.testing.expect(std.mem.find(u8, req, "\"id\":\"abc\"") != null);
 }
 
 test "frameDcs wraps the body in ESC P 9999 ; id=... ; body ESC\\\\" {

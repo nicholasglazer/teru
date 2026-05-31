@@ -400,9 +400,9 @@ test "TuiScreen: flush produces ANSI output" {
 
     // Should contain cursor hide, cursor positioning, H, i, cursor show
     const output = read_buf[0..@intCast(n)];
-    try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[?25l") != null); // cursor hide
-    try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[?25h") != null); // cursor show
-    try std.testing.expect(std.mem.indexOf(u8, output, "H") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\x1b[?25l") != null); // cursor hide
+    try std.testing.expect(std.mem.find(u8, output, "\x1b[?25h") != null); // cursor show
+    try std.testing.expect(std.mem.find(u8, output, "H") != null);
 }
 
 test "TuiScreen: diff renders only changes" {
