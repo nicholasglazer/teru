@@ -28,11 +28,10 @@ pub fn init(pty_master_fd: i32, host_fd: i32) SignalManager {
 /// Register the SIGWINCH handler. Call after init(). No-op on Windows.
 pub fn registerWinch(_: SignalManager) void {
     if (builtin.os.tag == .windows) return;
-    const SA_RESTART = 0x10000000;
     const sa = posix.Sigaction{
         .handler = .{ .handler = handleSigwinch },
         .mask = posix.sigemptyset(),
-        .flags = SA_RESTART,
+        .flags = posix.SA.RESTART, // arch-portable (0x10000000 on x86_64, differs on sparc/alpha)
     };
     posix.sigaction(posix.SIG.WINCH, &sa, null);
 }

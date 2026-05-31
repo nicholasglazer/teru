@@ -156,11 +156,10 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
             const pf = std.c.fcntl(sigwinch_fds[1], posix.F.GETFL);
             if (pf >= 0) _ = std.c.fcntl(sigwinch_fds[1], posix.F.SETFL, pf | compat.O_NONBLOCK);
             g_sigwinch_pipe = sigwinch_fds[1];
-            const SA_RESTART = 0x10000000;
             const sa = posix.Sigaction{
                 .handler = .{ .handler = sigwinchHandler },
                 .mask = posix.sigemptyset(),
-                .flags = SA_RESTART,
+                .flags = posix.SA.RESTART, // arch-portable (differs on sparc/alpha)
             };
             posix.sigaction(posix.SIG.WINCH, &sa, null);
         }
