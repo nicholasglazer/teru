@@ -230,7 +230,13 @@ pub fn respawnShell(self: *Pane, allocator: Allocator, spawn_config: SpawnConfig
         .shell = spawn_config.shell,
         .term = spawn_config.term,
         .exec_argv = null, // never carry over exec_argv on respawn
-    }) catch return; // silently fail — better than crashing the compositor
+    }) catch |e| {
+        // The old PTY was already deinit'd above, so on failure the pane has
+        // no live shell until the next liveness sweep retries closePane →
+        // respawnShell. Log it instead of failing silently.
+        std.debug.print("teru: respawnShell failed: {s} (pane has no shell until next retry)\n", .{@errorName(e)});
+        return;
+    };
 
     // Set non-blocking
     if (builtin.os.tag != .windows) {

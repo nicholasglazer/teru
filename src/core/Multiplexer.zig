@@ -228,11 +228,6 @@ pub fn spawnPaneWithCommand(self: *Multiplexer, rows: u16, cols: u16, command: [
     const id = self.next_pane_id;
     self.next_pane_id += 1;
 
-    var grid = try Grid.init(self.allocator, rows, cols);
-    errdefer grid.deinit(self.allocator);
-
-    const sb = Scrollback.init(self.allocator, .{ .keyframe_interval = 100 });
-
     // Run the command line via `/bin/sh -c` so arguments, pipes, and env
     // expansion work — a bare shell path (e.g. "/bin/zsh") still execs fine.
     // Pty.spawn execve()s `.shell` as a LITERAL argv[0] path, so passing a
@@ -245,24 +240,17 @@ pub fn spawnPaneWithCommand(self: *Multiplexer, rows: u16, cols: u16, command: [
     cmd_z[command.len] = 0;
     const cmd_ptr: [*:0]const u8 = @ptrCast(&cmd_z);
     const sh_argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", cmd_ptr, null };
-    var pty = try Pty.spawn(.{ .rows = rows, .cols = cols, .exec_argv = &sh_argv, .cwd = cwd });
-    errdefer pty.deinit();
 
-    // Set PTY master to non-blocking (Windows ConPTY uses PeekNamedPipe)
-    if (builtin.os.tag != .windows) {
-        const flags = std.c.fcntl(pty.master, posix.F.GETFL);
-        if (flags < 0) return error.FcntlFailed;
-        _ = std.c.fcntl(pty.master, posix.F.SETFL, flags | compat.O_NONBLOCK);
-    }
+    // Inherit the configured scrollback size / tab width / cursor shape / TERM
+    // (Pane.init applies them); only override the exec target + cwd. sh_argv /
+    // cmd_z live on this stack frame, which is valid across Pane.init's
+    // internal Pty.spawn fork.
+    var cfg = self.spawn_config;
+    cfg.exec_argv = &sh_argv;
+    cfg.cwd = cwd;
 
-    var pane = Pane{
-        .backend = .{ .local = pty },
-        .grid = grid,
-        .vt = VtParser.initEmpty(),
-        .id = id,
-        .scrollback = sb,
-    };
-    _ = &pane;
+    var pane = try Pane.init(self.allocator, rows, cols, id, cfg);
+    errdefer pane.deinit(self.allocator);
 
     try self.panes.append(self.allocator, pane);
     errdefer _ = self.panes.pop();
