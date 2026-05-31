@@ -144,7 +144,7 @@ last_pointer_surface: ?*wlr.wlr_surface = null,
 /// etc. all end with a `try self.allocator.alloc(Rect, count)`). On
 /// border-drag that's 60 heap allocs/sec; during Mod+drag float it's
 /// more. With a 16 KiB FBA we cover up to 1024 panes of Rect and
-/// arrangeworkspace's outer ArrayListUnmanaged still falls back to
+/// arrangeworkspace's outer ArrayList still falls back to
 /// the general allocator for tree layouts / edge cases.
 arrange_scratch_buf: [16 * 1024]u8 = undefined,
 
@@ -793,7 +793,7 @@ pub fn deinit(self: *Server) void {
     safeRemoveListener(&self.output_manager_apply);
     safeRemoveListener(&self.output_manager_test);
 
-    // Our ArrayListUnmanaged collections. The *Output / *Keyboard
+    // Our ArrayList collections. The *Output / *Keyboard
     // items themselves are owned by wlroots' destroy-chain when the
     // wl_display tears down; we only free our pointer arrays here.
     self.outputs.deinit(self.zig_allocator);

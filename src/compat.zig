@@ -1,11 +1,15 @@
 //! Compatibility layer for Zig 0.17-dev.
 //!
-//! Contains helpers that don't have a direct native Io equivalent:
-//!   - MemWriter/MemReader/DynWriter — in-memory serialization streams
-//!   - nanoTimestamp() — clock_gettime(REALTIME) for code without Io access
+//! Small helpers used by windowless / daemon / no-Io code paths:
+//!   - MemWriter/MemReader/DynWriter — one stable in-memory binary-format
+//!     codepath for the session/scrollback formats. NOTE: as of dev.420 native
+//!     std.Io.Writer/Reader DO expose writeInt/takeInt + .fixed/.Allocating, so
+//!     these are retained for format stability, NOT because the API is missing.
+//!   - nanoTimestamp() — libc clock_gettime(REALTIME) for code without Io access
 //!   - getenv() — convenience wrapper around std.c.getenv
 //!   - forkExec*() — process spawning with PTY/pipe setup
-//!   - memsetU32() — workaround for the @memset([]u32, runtime) codegen bug
+//!   - memsetU32() — single revert point for []u32 fills (the codegen bug that
+//!     required a hand loop is fixed on dev.420; now just calls @memset)
 //!
 //! File I/O has been migrated to native std.Io.Dir / std.Io.File APIs.
 
