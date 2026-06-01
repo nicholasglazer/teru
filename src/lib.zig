@@ -101,4 +101,9 @@ test {
     _ = TuiScreen;
     _ = TuiRenderer;
     _ = TuiInput;
+    // Mode-layer helpers (CLI/daemon glue). Referenced only in the test graph
+    // so the modes/common.zig regression tests (e.g. multi-pane state-sync
+    // re-linking) run under `zig build test` without exposing modes/* as
+    // public library API.
+    _ = @import("modes/common.zig");
 }

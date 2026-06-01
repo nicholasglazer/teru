@@ -62,6 +62,21 @@ both binaries. Bodies over 800 bytes are clipped in the trace.
 
 `grep '(mcp)'` the log to isolate it; `grep '(mcp) →'` for requests only.
 
+## Daemon session log
+
+A session daemon auto-started by `teru -n NAME` is detached from your terminal
+(`setsid`), so its stdout/stderr — including any `TERU_LOG` output — are
+redirected to a per-session log file instead of a dead PTY:
+
+```sh
+tail -f "$XDG_RUNTIME_DIR/teru-session-<name>.log"
+```
+
+To capture the full MCP trace from a backgrounded daemon, start the session with
+`TERU_LOG=debug teru -n NAME` (the env var is inherited by the forked daemon),
+then tail the log above. A *foreground* `teru --daemon NAME` logs to its terminal
+as usual (no redirect). See [SESSIONS.md](SESSIONS.md) for the session model.
+
 ## Sockets (canonical names)
 
 | | request socket | event push socket |

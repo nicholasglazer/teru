@@ -151,6 +151,12 @@ pub fn setAllocator(self: *VtParser, allocator: std.mem.Allocator) void {
 /// Feed a slice of bytes into the parser.
 /// Uses SIMD fast-path to skip runs of printable ASCII when in ground state.
 pub fn feed(self: *VtParser, data: []const u8) void {
+    // Guard a zero-dimension grid: every write path below indexes
+    // row_cells[c] over a `grid.cells[..][0..cols]` slice, which is empty when
+    // cols==0 (or there are no rows), so the index panics. A client can drive
+    // the grid to 0x0 by sending a resize to 0 rows/cols; the daemon owns this
+    // parser and must never crash on a bad client resize. Drop the bytes.
+    if (self.grid.cols == 0 or self.grid.rows == 0) return;
     var i: usize = 0;
     while (i < data.len) {
         // Fast-path: when in ground state, scan ahead for the next byte

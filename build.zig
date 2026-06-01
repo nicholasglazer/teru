@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     // ── Single source of truth for version ────────────────────────
     // Propagated to all modules via build_options.version.
     // Bump with: make bump-version V=x.y.z (updates here + build.zig.zon)
-    const version = "0.7.0";
+    const version = "0.7.1";
 
     // Strip debug info on any release optimize mode. Module-level setting
     // in Zig 0.17 (Module.CreateOptions.strip). The Makefile previously
@@ -132,9 +132,9 @@ pub fn build(b: *std.Build) void {
     // ── run step ─────────────────────────────────────────────────────
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    // Forward `zig build run -- <args>` to the artifact. In Zig 0.17.0-dev.639
+    // the `b.args` field was removed in favour of Run.addPassthruArgs().
+    run_cmd.addPassthruArgs();
     const run_step = b.step("run", "Run teru terminal");
     run_step.dependOn(&run_cmd.step);
 
@@ -175,7 +175,7 @@ pub fn build(b: *std.Build) void {
     });
     // Not installed into zig-out/bin by default; accessed via `zig build bench`.
     const bench_run = b.addRunArtifact(bench_exe);
-    if (b.args) |args| bench_run.addArgs(args);
+    bench_run.addPassthruArgs();
     const bench_step = b.step("bench", "Run the throughput benchmark harness (args: <payload-dir>)");
     bench_step.dependOn(&bench_run.step);
 
@@ -241,9 +241,7 @@ pub fn build(b: *std.Build) void {
 
         const miozu_run = b.addRunArtifact(miozu_exe);
         miozu_run.step.dependOn(b.getInstallStep());
-        if (b.args) |args| {
-            miozu_run.addArgs(args);
-        }
+        miozu_run.addPassthruArgs();
         const miozu_run_step = b.step("run-wm", "Run teruwm compositor");
         miozu_run_step.dependOn(&miozu_run.step);
 

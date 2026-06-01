@@ -60,8 +60,11 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
     // Terminal size
     var ws: posix.winsize = undefined;
     const ws_rc = std.c.ioctl(1, posix.T.IOCGWINSZ, &ws);
-    const term_rows: u16 = if (ws_rc == 0) ws.row else 24;
-    const term_cols: u16 = if (ws_rc == 0) ws.col else 80;
+    // Fall back to 24x80 if the ioctl fails OR reports a 0 dimension (some
+    // terminals report 0x0 transiently on first connect). A 0 size would
+    // otherwise propagate a resize-to-0 to the daemon and a 0-width render here.
+    const term_rows: u16 = if (ws_rc == 0 and ws.row > 0) ws.row else 24;
+    const term_cols: u16 = if (ws_rc == 0 and ws.col > 0) ws.col else 80;
 
     // Non-blocking socket + stdin
     const sock_flags = std.c.fcntl(sock, posix.F.GETFL);
@@ -301,7 +304,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
             var sig_drain: [16]u8 = undefined;
             _ = posix.read(sigwinch_fds[0], &sig_drain) catch {};
             var new_ws: posix.winsize = undefined;
-            if (std.c.ioctl(1, posix.T.IOCGWINSZ, &new_ws) == 0) {
+            if (std.c.ioctl(1, posix.T.IOCGWINSZ, &new_ws) == 0 and new_ws.row > 0 and new_ws.col > 0) {
                 const new_rows: u16 = new_ws.row;
                 const new_cols: u16 = new_ws.col;
                 if (new_rows != screen.height or new_cols != screen.width) {

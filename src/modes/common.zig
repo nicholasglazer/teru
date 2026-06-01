@@ -130,11 +130,61 @@ pub fn autoStartNamedDaemon(name: []const u8, template: ?[]const u8) bool {
     const fork_pid = compat.posixFork();
     if (fork_pid < 0) return false;
     if (fork_pid == 0) {
+        // ── Daemonize ────────────────────────────────────────────────
+        // Detach from the controlling terminal BEFORE exec. A teru session
+        // is meant to outlive the connection that started it — you ssh in,
+        // run `teru -n work`, and your agents must keep running after you
+        // close the laptop. The kernel SIGHUPs the login session's process
+        // group when the ssh PTY hangs up; without setsid() the forked
+        // daemon is in that group and dies with the connection, taking every
+        // pane (every agent) with it. setsid() moves the daemon into a fresh
+        // session with NO controlling terminal, so the hangup can't reach it.
+        // The child is never a process-group leader here (the parent is), so
+        // setsid() always succeeds.
+        _ = posix.system.setsid();
+        // Re-point std{in,out,err} off the about-to-die client PTY: stdin from
+        // /dev/null, stdout/stderr appended to a per-session log file. This
+        // keeps the daemon's diagnostics (including TERU_LOG=debug output)
+        // captured and tailable after the client disconnects, instead of
+        // writing into a dead terminal.
+        redirectDaemonStdio(name);
         const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
         _ = std.c.execve(exe_path, @ptrCast(&argv), envp);
         compat.posixExit(1);
     }
     return true;
+}
+
+/// Per-session daemon log path: `$XDG_RUNTIME_DIR/teru-session-<name>.log`.
+/// Tail this to watch a backgrounded daemon (see docs/DEBUGGING.md).
+pub fn daemonLogPath(buf: []u8, name: []const u8) ?[:0]const u8 {
+    const dir = compat.getenv("XDG_RUNTIME_DIR") orelse "/tmp";
+    const path = std.fmt.bufPrint(buf, "{s}/teru-session-{s}.log", .{ dir, name }) catch return null;
+    if (path.len + 1 > buf.len) return null;
+    buf[path.len] = 0;
+    return buf[0..path.len :0];
+}
+
+/// In the forked daemon child (post-setsid, pre-exec): redirect fd 0 ← /dev/null
+/// and fd 1,2 ← the per-session log file, so the daemon no longer holds the
+/// client's PTY. Best-effort — a failed open leaves that fd pointing at the old
+/// PTY, which is harmless once setsid() has detached the session.
+fn redirectDaemonStdio(name: []const u8) void {
+    const devnull = posix.system.open("/dev/null", .{ .ACCMODE = .RDONLY }, @as(std.posix.mode_t, 0));
+    if (devnull >= 0) {
+        _ = std.c.dup2(devnull, 0);
+        if (devnull > 2) _ = posix.system.close(devnull);
+    }
+    var path_buf: [256]u8 = undefined;
+    if (daemonLogPath(&path_buf, name)) |log_path| {
+        const flags = std.posix.O{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true };
+        const logfd = std.c.open(log_path.ptr, flags, @as(std.posix.mode_t, 0o600));
+        if (logfd >= 0) {
+            _ = std.c.dup2(logfd, 1);
+            _ = std.c.dup2(logfd, 2);
+            if (logfd > 2) _ = posix.system.close(logfd);
+        }
+    }
 }
 
 /// Default-daemon variant of autoStartNamedDaemon (no template).
@@ -390,8 +440,15 @@ pub fn parseDaemonStateSync(daemon_fd: posix.fd_t, mux: *Multiplexer, payload: [
         if (pane_id >= mux.next_pane_id) mux.next_pane_id = pane_id + 1;
 
         mux.panes.append(mux.allocator, pane) catch continue;
-        const idx = mux.panes.items.len - 1;
-        mux.panes.items[idx].linkVt(mux.allocator);
+        // append() may have reallocated mux.panes, moving every Pane struct and
+        // dangling each pane's self-pointers (vt.grid, vt.response_ctx,
+        // grid.scrollback). Re-link ALL panes, not just the new one — same
+        // invariant Multiplexer.addPane upholds. Linking only items[idx] left
+        // earlier panes' vt.grid dangling, so attaching a multi-pane session
+        // (≥2 panes, enough to grow past ArrayList capacity) segfaulted in
+        // vt.feed() during the state-sync replay. Single-pane sessions never
+        // reallocate, which is why they attached fine.
+        for (mux.panes.items) |*p| p.linkVt(mux.allocator);
 
         if (ws_idx < 10) {
             mux.layout_engine.workspaces[ws_idx].addNode(mux.allocator, pane_id) catch |err| {
@@ -469,4 +526,52 @@ pub fn processHookEvent(
         .pre_compact, .post_compact => {},
         .unknown => {},
     }
+}
+
+test "parseDaemonStateSync: multi-pane attach re-links every pane's vt.grid" {
+    // Regression: attaching a session with ≥2 panes (enough to grow mux.panes
+    // past ArrayList capacity) used to SIGSEGV in vt.feed() during the
+    // state-sync replay. parseDaemonStateSync appended each pane then linked
+    // ONLY the new one, so a reallocating append left earlier panes' vt.grid
+    // self-pointer dangling. Single-pane sessions never reallocate, so they
+    // attached fine — which is exactly why it slipped through. Fix re-links
+    // ALL panes after every append (same invariant as Multiplexer.addPane).
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator);
+    defer mux.deinit();
+
+    const n_panes = 9; // 0→1→2→4→8→16 cap growth ⇒ several reallocations
+    var payload: [2 + 12 + n_panes * 13]u8 = undefined;
+    payload[0] = 0; // active_ws
+    payload[1] = 1; // ws_count
+    payload[2] = 0; // layout
+    payload[3] = n_panes; // pane_count (informational)
+    payload[4] = 50; // ratio_x100
+    payload[5] = 0; // reserved
+    std.mem.writeInt(u64, payload[6..14], 1, .little); // active_pane_id
+    var pos: usize = 14;
+    var pid: u64 = 1;
+    while (pid <= n_panes) : (pid += 1) {
+        std.mem.writeInt(u64, payload[pos..][0..8], pid, .little);
+        pos += 8;
+        std.mem.writeInt(u16, payload[pos..][0..2], 24, .little); // rows
+        pos += 2;
+        std.mem.writeInt(u16, payload[pos..][0..2], 80, .little); // cols
+        pos += 2;
+        payload[pos] = 0; // ws_idx
+        pos += 1;
+    }
+
+    parseDaemonStateSync(-1, &mux, &payload);
+    try testing.expectEqual(@as(usize, n_panes), mux.panes.items.len);
+
+    // The invariant the bug violated: every parser points at its OWN grid.
+    for (mux.panes.items) |*pane| {
+        try testing.expectEqual(&pane.grid, pane.vt.grid);
+    }
+
+    // And feeding lands in the right grid for an early pane (would deref a
+    // dangling pointer pre-fix). Printable byte ⇒ no PTY response triggered.
+    mux.panes.items[0].vt.feed("X");
+    try testing.expectEqual(@as(u16, 1), mux.panes.items[0].grid.cursor_col);
 }
