@@ -234,7 +234,7 @@ pub fn respawnShell(self: *Pane, allocator: Allocator, spawn_config: SpawnConfig
         // The old PTY was already deinit'd above, so on failure the pane has
         // no live shell until the next liveness sweep retries closePane →
         // respawnShell. Log it instead of failing silently.
-        std.debug.print("teru: respawnShell failed: {s} (pane has no shell until next retry)\n", .{@errorName(e)});
+        std.log.scoped(.core).err("respawnShell failed: {s} (pane has no shell until next retry)", .{@errorName(e)});
         return;
     };
 

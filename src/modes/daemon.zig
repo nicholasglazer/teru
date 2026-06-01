@@ -180,13 +180,13 @@ pub fn runHeadless(allocator: std.mem.Allocator, io: std.Io, session_name: []con
     } else {
         const pid = try mux.spawnPane(common.DEFAULT_ROWS, common.DEFAULT_COLS);
         _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = if (mux.getPaneById(pid)) |p| p.childPid() else null }) catch |e| {
-            std.debug.print("teru-daemon: graph.spawn failed: {s}\n", .{@errorName(e)});
+            std.log.scoped(.daemon).err("graph.spawn failed: {s}", .{@errorName(e)});
         };
     }
     if (mux.panes.items.len == 0) {
         const pid = try mux.spawnPane(common.DEFAULT_ROWS, common.DEFAULT_COLS);
         _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = if (mux.getPaneById(pid)) |p| p.childPid() else null }) catch |e| {
-            std.debug.print("teru-daemon: graph.spawn failed: {s}\n", .{@errorName(e)});
+            std.log.scoped(.daemon).err("graph.spawn failed: {s}", .{@errorName(e)});
         };
     }
 

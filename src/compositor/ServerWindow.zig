@@ -82,7 +82,7 @@ pub fn toggleFloat(self: *Server) void {
     self.nodes.floating[slot] = false;
     self.layout_engine.workspaces[ws].addNode(self.zig_allocator, nid) catch {};
     self.arrangeworkspace(ws);
-    std.debug.print("teruwm: unfloat node={d}\n", .{nid});
+    std.log.scoped(.compositor).debug("unfloat node={d}", .{nid});
 
     if (self.bar) |b| _ = b.render(self);
 }
@@ -127,7 +127,7 @@ pub fn toggleFullscreen(self: *Server) void {
         self.arrangeworkspace(ws);
         if (self.bar) |b| _ = b.render(self);
 
-        std.debug.print("teruwm: fullscreen off\n", .{});
+        std.log.scoped(.compositor).info("fullscreen off", .{});
         return;
     }
 
@@ -174,7 +174,7 @@ pub fn toggleFullscreen(self: *Server) void {
         self.nodes.applyRect(slot, 0, 0, out_w, out_h);
     }
 
-    std.debug.print("teruwm: fullscreen on node={d}\n", .{target_id});
+    std.log.scoped(.compositor).info("fullscreen on node={d}", .{target_id});
 }
 
 // ── Terminal lifecycle ─────────────────────────────────────────
@@ -301,19 +301,19 @@ pub fn closeNode(self: *Server, node_id: u64) bool {
 pub fn closeFocused(self: *Server) void {
     if (self.focused_view) |view| {
         clearFocusRefs(self, view.node_id);
-        std.debug.print("teruwm: closeFocused → xdg view node={d}\n", .{view.node_id});
+        std.log.scoped(.compositor).info("closeFocused → xdg view node={d}", .{view.node_id});
         wlr.wlr_xdg_toplevel_send_close(view.toplevel);
         return;
     }
     if (self.focused_xwayland) |xw| {
         // X11 client: wlr_xwayland_surface_close sends WM_DELETE_WINDOW
         // which most XWayland apps (Emacs, GIMP, Steam) listen for.
-        std.debug.print("teruwm: closeFocused → xwayland surface\n", .{});
+        std.log.scoped(.compositor).info("closeFocused → xwayland surface", .{});
         wlr.wlr_xwayland_surface_close(xw);
         return;
     }
     if (self.focused_terminal) |tp| {
-        std.debug.print("teruwm: closeFocused → terminal node={d}\n", .{tp.node_id});
+        std.log.scoped(.compositor).info("closeFocused → terminal node={d}", .{tp.node_id});
         _ = closeNode(self, tp.node_id);
         return;
     }
@@ -323,14 +323,14 @@ pub fn closeFocused(self: *Server) void {
     // close) or the workspace is legitimately empty. Print the state
     // so we can see which one it is in live logs.
     const ws = self.layout_engine.getActiveWorkspace();
-    std.debug.print(
-        "teruwm: closeFocused with no focus — ws={d} tiled_count={d} terminal_count={d}\n",
+    std.log.scoped(.compositor).warn(
+        "closeFocused with no focus — ws={d} tiled_count={d} terminal_count={d}",
         .{ self.layout_engine.active_workspace, ws.node_ids.items.len, self.terminal_count },
     );
 }
 
 pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
-    std.debug.print("teruwm: terminal exited node={d}\n", .{tp.node_id});
+    std.log.scoped(.compositor).info("terminal exited node={d}", .{tp.node_id});
 
     clearFocusRefs(self, tp.node_id);
 
@@ -463,7 +463,7 @@ pub fn moveNodeToWorkspace(self: *Server, nid: u64, target: u8) void {
     if (from < self.layout_engine.workspaces.len) self.layout_engine.workspaces[from].removeNode(nid);
     if (!self.nodes.floating[slot]) {
         self.layout_engine.workspaces[target].addNode(self.zig_allocator, nid) catch |e| {
-            std.debug.print("teruwm: moveNodeToWorkspace addNode failed: {s}\n", .{@errorName(e)});
+            std.log.scoped(.compositor).err("moveNodeToWorkspace addNode failed: {s}", .{@errorName(e)});
         };
     }
 

@@ -652,12 +652,12 @@ fn registerListeners(self: *Server) void {
             // even in lazy mode; the Xwayland process only spawns on first connect.
             if (wlr.miozu_xwayland_display_name(xwl)) |dn| {
                 _ = wlr.setenv("DISPLAY", dn, 1);
-                std.debug.print("teruwm: XWayland enabled (DISPLAY={s})\n", .{dn});
+                std.log.scoped(.compositor).info("XWayland enabled (DISPLAY={s})", .{dn});
             } else {
-                std.debug.print("teruwm: XWayland enabled\n", .{});
+                std.log.scoped(.compositor).info("XWayland enabled", .{});
             }
         } else {
-            std.debug.print("teruwm: XWayland init failed (X11 apps won't work)\n", .{});
+            std.log.scoped(.compositor).err("XWayland init failed (X11 apps won't work)", .{});
         }
     }
 }
@@ -977,7 +977,7 @@ pub fn focusView(self: *Server, view: *XdgView) void {
 pub fn spawnTerminal(self: *Server, ws: u8) void {
     // Create at default size — arrangeworkspace will resize to fit the layout
     const tp = TerminalPane.create(self, ws, 24, 80) orelse {
-        std.debug.print("teruwm: failed to spawn terminal pane\n", .{});
+        std.log.scoped(.compositor).err("failed to spawn terminal pane", .{});
         return;
     };
 
@@ -1054,7 +1054,7 @@ pub fn clipboardCopyCursorLine(self: *Server, tp: *TerminalPane) void {
     }
 
     self.clipboard_len = @intCast(@min(pos, std.math.maxInt(u16)));
-    std.debug.print("teruwm: clipboard copy ({d} bytes)\n", .{self.clipboard_len});
+    std.log.scoped(.compositor).debug("clipboard copy ({d} bytes)", .{self.clipboard_len});
 }
 
 /// Paste internal clipboard buffer to a terminal pane's PTY.
@@ -1072,7 +1072,7 @@ pub fn clipboardPaste(self: *Server, tp: *TerminalPane) void {
         tp.writeInput("\x1b[201~");
     }
 
-    std.debug.print("teruwm: clipboard paste ({d} bytes)\n", .{self.clipboard_len});
+    std.log.scoped(.compositor).debug("clipboard paste ({d} bytes)", .{self.clipboard_len});
 }
 
 /// Poll all terminal panes for PTY output. Called from the event loop.

@@ -26,7 +26,7 @@ pub fn takeScreenshot(server: *Server) void {
     path_buf[path.len] = 0;
 
     if (takeScreenshotToPath(server, path)) {
-        std.debug.print("teruwm: screenshot → {s}\n", .{path});
+        std.log.scoped(.compositor).info("screenshot → {s}", .{path});
     }
 }
 

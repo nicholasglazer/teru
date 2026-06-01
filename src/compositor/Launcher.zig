@@ -61,7 +61,7 @@ fn scanPath(self: *Launcher) void {
     // Sort entries for consistent display
     self.sortEntries();
 
-    std.debug.print("teruwm: launcher loaded {d} executables from $PATH\n", .{self.count});
+    std.log.scoped(.compositor).info("launcher loaded {d} executables from $PATH", .{self.count});
 }
 
 fn scanDir(self: *Launcher, path: []const u8) void {

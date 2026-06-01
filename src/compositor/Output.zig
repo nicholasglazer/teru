@@ -75,14 +75,14 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
     // Failure here is non-fatal (legacy code paths still work with just
     // primary_output); we just can't cycle focus to a non-tracked output.
     server.outputs.append(server.zig_allocator, output) catch {
-        std.debug.print("teruwm: WARN: outputs list append failed\n", .{});
+        std.log.scoped(.compositor).warn("outputs list append failed", .{});
     };
     if (server.focused_output == null) server.focused_output = output;
 
     const name = wlr.miozu_output_name(wlr_output) orelse "unknown";
     const w = wlr.miozu_output_width(wlr_output);
     const h = wlr.miozu_output_height(wlr_output);
-    std.debug.print("teruwm: output '{s}' connected ({d}x{d})\n", .{ name, w, h });
+    std.log.scoped(.compositor).info("output '{s}' connected ({d}x{d})", .{ name, w, h });
 
     // On first output: create background, bars, then spawn terminal
     if (server.terminal_count == 0) {
@@ -122,7 +122,7 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
         // timer — without it, an idle compositor schedules no frames
         // and the bar widgets freeze. See barTick in Server.zig.
         server.startBarTick();
-        std.debug.print("teruwm: output attached, workspace 1 active (empty)\n", .{});
+        std.log.scoped(.compositor).info("output attached, workspace 1 active (empty)", .{});
     }
 
     return output;
@@ -239,7 +239,7 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const output: *Output = @fieldParentPtr("destroy", listener);
     const server = output.server;
     const name = wlr.miozu_output_name(output.wlr_output) orelse "unknown";
-    std.debug.print("teruwm: output '{s}' disconnected\n", .{name});
+    std.log.scoped(.compositor).info("output '{s}' disconnected", .{name});
 
     // Remove listeners
     wlr.wl_list_remove(&output.frame.link);

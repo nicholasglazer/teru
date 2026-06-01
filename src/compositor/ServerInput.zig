@@ -277,7 +277,7 @@ pub fn setupKeyboard(server: *Server, device: *wlr.wlr_input_device) void {
                 .options = server.wm_config.getXkbOptions(),
             };
             if (wlr.xkb_keymap_new_from_names(server.xkb_ctx, &names, 0)) |km| break :blk km;
-            std.debug.print("teruwm: [keyboard] config invalid, falling back to env/defaults\n", .{});
+            std.log.scoped(.input).warn("[keyboard] config invalid, falling back to env/defaults", .{});
         }
         break :blk wlr.xkb_keymap_new_from_names(server.xkb_ctx, null, 0) orelse return;
     };
@@ -311,7 +311,7 @@ pub fn setupKeyboard(server: *Server, device: *wlr.wlr_input_device) void {
     wlr.wlr_seat_set_keyboard(server.seat, keyboard);
     refreshActiveKeymap(server, keyboard);
 
-    std.debug.print("teruwm: keyboard configured\n", .{});
+    std.log.scoped(.input).info("keyboard configured", .{});
 }
 
 // ── Keybind dispatch ──────────────────────────────────────────
@@ -478,7 +478,7 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
             return true;
         },
         .compositor_quit => {
-            std.debug.print("teruwm: compositor_quit (Mod+Shift+Q or MCP)\n", .{});
+            std.log.scoped(.compositor).info("compositor_quit (Mod+Shift+Q or MCP)", .{});
             wlr.wl_display_terminate(server.display);
             return true;
         },
@@ -565,13 +565,13 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
         },
         .session_save => {
             Session.save(server, "default") catch |err| {
-                std.debug.print("teruwm: session save failed: {}\n", .{err});
+                std.log.scoped(.session).err("session save failed: {}", .{err});
             };
             return true;
         },
         .session_restore => {
             Session.restore(server, "default") catch |err| {
-                std.debug.print("teruwm: session restore failed: {}\n", .{err});
+                std.log.scoped(.session).err("session restore failed: {}", .{err});
             };
             return true;
         },
@@ -715,7 +715,7 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
                 path_buf[path.len] = 0;
                 const png = teru.png;
                 png.write(server.zig_allocator, @ptrCast(path_buf[0..path.len :0]), tp.renderer.framebuffer, tp.renderer.width, tp.renderer.height) catch return true;
-                std.debug.print("teruwm: pane screenshot → {s}\n", .{path});
+                std.log.scoped(.compositor).info("pane screenshot → {s}", .{path});
             }
             return true;
         },

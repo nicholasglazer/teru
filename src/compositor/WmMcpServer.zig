@@ -117,12 +117,12 @@ pub fn init(server: *Server) ?*WmMcpServer {
                     onEventSocketReadable,
                     @ptrCast(self),
                 );
-                std.debug.print("teruwm: MCP event socket on {s}\n", .{evt_path});
+                std.log.scoped(.mcp).info("event socket on {s}", .{evt_path});
             } else |_| {}
         }
     }
 
-    std.debug.print("teruwm: MCP server on {s}\n", .{path});
+    std.log.scoped(.mcp).info("server on {s}", .{path});
     return self;
 }
 
@@ -189,7 +189,7 @@ fn acceptEventSubscriber(self: *WmMcpServer) void {
     // Replace previous subscriber.
     if (self.event_subscriber_fd != -1) _ = posix.system.close(self.event_subscriber_fd);
     self.event_subscriber_fd = fd;
-    std.debug.print("teruwm: MCP events subscriber connected (fd={d})\n", .{fd});
+    std.log.scoped(.mcp).info("events subscriber connected (fd={d})", .{fd});
 }
 
 /// Emit one JSON event line to the current subscriber. No subscriber,

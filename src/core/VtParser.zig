@@ -1028,7 +1028,7 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
                         if (self.grid.switchToAltScreen(self.allocator)) {
                             self.alt_screen = true;
                         } else |e| {
-                            std.debug.print("VtParser: switchToAltScreen failed: {} — staying on primary\n", .{e});
+                            std.log.scoped(.vt).err("switchToAltScreen failed: {} — staying on primary", .{e});
                         }
                     }
                 },

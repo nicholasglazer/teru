@@ -86,7 +86,7 @@ pub fn save(server: *Server, name: []const u8) !void {
     const written = std.c.fwrite(buf[0..pos].ptr, 1, pos, file);
     if (written != pos) return error.WriteFailed;
 
-    std.debug.print("teruwm: session saved to {s} ({d} bytes)\n", .{ path, pos });
+    std.log.scoped(.session).info("session saved to {s} ({d} bytes)", .{ path, pos });
 }
 
 // ── Restore ─────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ pub fn restore(server: *Server, name: []const u8) !void {
             };
 
             const tp = TerminalPane.createWithSpawn(server, ws_idx, 24, 80, spawn_config) orelse {
-                std.debug.print("teruwm: session restore: failed to spawn pane on ws={d}\n", .{ws_idx});
+                std.log.scoped(.session).err("session restore: failed to spawn pane on ws={d}", .{ws_idx});
                 continue;
             };
 
@@ -162,7 +162,7 @@ pub fn restore(server: *Server, name: []const u8) !void {
     }
     if (server.bar) |b| _ = b.render(server);
 
-    std.debug.print("teruwm: session {s} restored\n", .{name});
+    std.log.scoped(.session).info("session {s} restored", .{name});
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
