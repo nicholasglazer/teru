@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.2 (2026-06-01)
+
+Hotfix on top of 0.7.1: attaching a session and moving the mouse flooded the
+terminal with VT-parser trace lines (`feed: 12 bytes: 1b 5b 3c …`,
+`CSI final=0x6d params_len=9 …`, `SGR mouse detected!`), visibly corrupting the
+TUI.
+
+### Fixes (high)
+
+- **Input-trace debug output leaked into the attached terminal.**
+  `TuiInput.debugLog` wrote unconditionally to the client's stderr — which *is*
+  the user's terminal — on every byte fed, every CSI dispatch, and every mouse
+  event. With SGR mouse mode enabled the terminal streams a motion sequence per
+  mouse move, so the screen filled with hex dumps interleaved with the real
+  render. The recent `std.debug.print → TERU_LOG`-gated migration missed it
+  because it used a private helper, not `std.debug.print`. The helper is now
+  gated behind `TERU_LOG=debug` (off by default, a no-op after one cached env
+  read on the hot input path; set `TERU_LOG=debug` + redirect `2>` to recover
+  the trace). Verified end-to-end: injecting SGR mouse motion into an attached
+  client now produces zero trace lines (and exactly the expected lines with
+  `TERU_LOG=debug`).
+
 ## 0.7.1 (2026-06-01)
 
 Makes persistent sessions actually usable as a tmux replacement for the
