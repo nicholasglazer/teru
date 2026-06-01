@@ -95,17 +95,11 @@ Suggested scopes: `.compositor`, `.mcp`, `.pty`, `.vt`, `.render`, `.config`,
 
 ## Improvement plan (logging for the whole project)
 
-Current state: **84 ad-hoc `std.debug.print` calls** (mostly in the compositor)
-that print to stderr unconditionally — no levels, no scope tags, can't be
-filtered. The new `std.log` facility above is the target; the work is to move
-the codebase onto it.
-
-1. **Migrate `std.debug.print` → `std.log.scoped`.** Mechanical, per file:
-   strip the leading `"teruwm: "` (the scope tag replaces it), drop the trailing
-   `\n` (the logFn adds one), pick a scope + level. After this, `TERU_LOG`
-   controls all diagnostics and the default (`info`) is quiet.
-   - Keep the dedicated `panic` handler's `std.debug.print` in
-     `compositor/main.zig` — a panic must print regardless of `TERU_LOG`.
+1. **Migrate `std.debug.print` → `std.log.scoped`. — DONE (0.7.x).** All 80
+   ad-hoc prints across teru/teruwm now route through `std.log` with a scope +
+   level, so the default (`info`) is quiet and `TERU_LOG` controls everything.
+   Only the `panic` handler's `std.debug.print` in `compositor/main.zig` remains
+   (a panic must print regardless of `TERU_LOG`).
 2. **Per-scope verbosity** (future): `TERU_LOG=info,mcp=debug` to trace only MCP
    while keeping the rest quiet. `std.Options.log_scope_levels` supports this; a
    small parse in `log.zig` would wire it up.
@@ -121,5 +115,6 @@ the codebase onto it.
    machine parsing is ever needed, a `TERU_LOG_JSON=1` branch in the logFn can
    emit one JSON object per line without touching call sites.
 
-The facility (`src/log.zig`), the MCP trace, `tools/mcp-probe.py`, and the
-`run-teruwm.sh trace` mode are in place; steps 1–3 above are the remaining work.
+The facility (`src/log.zig`), the MCP trace, `tools/mcp-probe.py`, the
+`run-teruwm.sh trace` mode, and the print migration (step 1) are in place;
+steps 2–3 (per-scope verbosity, the shutdown deinit pass) are the remaining work.
