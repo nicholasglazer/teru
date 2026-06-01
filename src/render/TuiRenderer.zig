@@ -53,6 +53,11 @@ pub fn render(self: *Self, mux: *Multiplexer, stdout_fd: i32) void {
 
 /// Render with TUI-specific options (nesting, prefix state).
 pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: RenderOpts) void {
+    // A 0-width or 0-height screen has nothing to draw and would underflow the
+    // `w - 1` / `height - 1` arithmetic below. Happens transiently when a
+    // terminal reports a 0x0 winsize (some terminals on first connect / during
+    // a resize). Skip the frame rather than panic.
+    if (self.screen.width == 0 or self.screen.height == 0) return;
     self.screen.clear();
 
     const ws = &mux.layout_engine.workspaces[mux.active_workspace];
@@ -252,7 +257,7 @@ fn drawStatusBar(self: *Self, mux: *Multiplexer, opts: RenderOpts) void {
     const layout = mux.layout_engine.workspaces[mux.active_workspace].layout;
     const layout_name = layout.name();
     for (layout_name) |ch| {
-        if (col >= w - 1) break;
+        if (col >= w -| 1) break; // saturating: w may be 0
         self.screen.setCell(row, col, ch, status_fg, status_bg, .{});
         col += 1;
     }

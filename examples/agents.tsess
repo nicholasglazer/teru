@@ -1,0 +1,107 @@
+# teru session: agents — tmux-style multiplexed agent workspace
+#
+# The disconnect-survivable replacement for a tmux agent session.
+# Start once, then come and go: close your laptop / drop SSH and every
+# pane (and the agent running in it) keeps running on the server. Next
+# login you reattach exactly where you left off.
+#
+#   First time:   teru -n agents -t agents     # build layout + attach
+#   Reattach:     teru -n agents               # back to where you were
+#   List:         teru -l
+#
+# Workspaces — switch with Alt+1 / Alt+2 / Alt+3 (like tmux M-1..M-3):
+#   1 main   2x2 grid, 4 agents rooted at /home/ng/prod
+#   2 code   2x2 grid, 4 agents rooted at /home/ng/code
+#   3 shell  single full-screen scratch shell
+#
+# Pane navigation mirrors the tmux config: Alt+h/j/k/l between panes.
+#
+# Every agent pane PRE-TYPES the claude command but does NOT run it
+# (auto_start = false). You review the command line, then press Enter to
+# launch. Nothing starts on its own — attaching the session spawns only
+# idle shells, so this is safe to leave running on production.
+
+[session]
+name = agents
+description = tmux-style agent multiplexer (survives SSH disconnect / laptop close)
+
+# ═══════════════════════════════════════════════════════════════
+# WORKSPACE 1: main — 2x2 grid, 4 agents in /home/ng/prod
+# ┌──────────┬──────────┐
+# │  main-1  │  main-3  │
+# ├──────────┼──────────┤
+# │  main-2  │  main-4  │
+# └──────────┴──────────┘
+# ═══════════════════════════════════════════════════════════════
+
+[workspace.1]
+name = main
+layout = grid
+
+[workspace.1.pane.1]
+role = main-1
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/prod
+auto_start = false
+
+[workspace.1.pane.2]
+role = main-2
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/prod
+auto_start = false
+
+[workspace.1.pane.3]
+role = main-3
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/prod
+auto_start = false
+
+[workspace.1.pane.4]
+role = main-4
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/prod
+auto_start = false
+
+# ═══════════════════════════════════════════════════════════════
+# WORKSPACE 2: code — 2x2 grid, 4 agents in /home/ng/code
+# ═══════════════════════════════════════════════════════════════
+
+[workspace.2]
+name = code
+layout = grid
+
+[workspace.2.pane.1]
+role = code-1
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/code
+auto_start = false
+
+[workspace.2.pane.2]
+role = code-2
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/code
+auto_start = false
+
+[workspace.2.pane.3]
+role = code-3
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/code
+auto_start = false
+
+[workspace.2.pane.4]
+role = code-4
+cmd = claude --dangerously-skip-permissions --fallback-model sonnet --verbose
+cwd = /home/ng/code
+auto_start = false
+
+# ═══════════════════════════════════════════════════════════════
+# WORKSPACE 3: shell — single full-screen scratch shell (no command)
+# ═══════════════════════════════════════════════════════════════
+
+[workspace.3]
+name = shell
+layout = monocle
+
+[workspace.3.pane.1]
+role = shell
+cwd = /home/ng/prod

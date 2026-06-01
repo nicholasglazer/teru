@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.7.1 (2026-06-01)
+
+Makes persistent sessions actually usable as a tmux replacement for the
+remote-agent workflow (ssh in, run agents, close the laptop, reconnect later).
+Four defects — two fatal — are fixed, each first reproduced against the real
+symptom (three with new end-to-end tests — `tests/session_survival_e2e.py`,
+`tests/daemon_resize_stress.py`, `tests/many_pane_e2e.py` — and the multi-pane
+attach crash live on the deploy server, then locked down with an inline
+regression test). Full write-up in
+[`AUDIT-2026-06-01-daemon.md`](AUDIT-2026-06-01-daemon.md); new user guide
+[`docs/SESSIONS.md`](docs/SESSIONS.md). All 527 inline tests pass.
+
+### Fixes (critical)
+
+- **Attaching a multi-pane session segfaulted the client.** `teru -n NAME` on
+  any session with ≥2 panes crashed with a raw `SIGSEGV` in `VtParser.feed`
+  during the state-sync replay. `parseDaemonStateSync` appended each remote pane
+  to the multiplexer's `ArrayList` but re-linked only the just-added pane's
+  `vt.grid`/`vt.response_ctx` self-pointers; a reallocating append moved every
+  earlier `Pane`, leaving their parser pointing at freed memory. Single-pane
+  sessions never reallocate, so they attached fine — which hid the bug until a
+  9-pane layout was attached on the server. Now re-links **all** panes after each
+  append, matching the invariant `Multiplexer.addPane` already upheld. Guarded by
+  `modes/common.zig`'s `parseDaemonStateSync: multi-pane attach re-links every
+  pane's vt.grid` test.
+- **Session daemon died on SSH disconnect / laptop close** — exactly "I close my
+  laptop and the agents stop." `teru -n NAME` forked the daemon with no
+  `setsid()`, so it stayed in the ssh login session's process group with the PTY
+  as controlling terminal; the hangup SIGHUP on disconnect killed the daemon and
+  every agent it owned. The forked daemon now `setsid()`s into its own session
+  before exec and re-points std{in,out,err} off the dying PTY onto a per-session
+  log file (`$XDG_RUNTIME_DIR/teru-session-<name>.log`). Verified end-to-end:
+  daemon + agents survive disconnect, reconnect reattaches to the same daemon and
+  replays state.
+
+### Fixes (high)
+
+- **A client could crash the daemon with `resize(0,0)`.** A 0-dimension resize
+  drove pane grids to 0 columns; the next byte of PTY output indexed an empty
+  cell slice and panicked `VtParser`, taking the daemon (and all agents) down.
+  The daemon now ignores 0-dimension resizes; `VtParser.feed` and the TUI
+  renderer guard 0-size grids/screens (`w -| 1`), and the client clamps a 0
+  winsize to 24×80 at the source.
+- **Large sessions silently dropped panes.** The daemon's poll set was a fixed
+  `[36]` array that stopped at ~32 PTYs with a client attached, so panes past the
+  cap (e.g. in the 34-pane `claude-power` layout) were never drained and their
+  agents blocked. The poll set is now a heap buffer grown to the live pane count.
+
+### Docs
+
+- New [`docs/SESSIONS.md`](docs/SESSIONS.md): the persistent-session / tmux-
+  replacement workflow, `.tsess` predefined layouts, detach/reattach, diagnostics.
+- [`docs/DEBUGGING.md`](docs/DEBUGGING.md): per-session daemon log file.
+- New `examples/agents.tsess`: a safe 3-workspace / 9-pane starter layout
+  (2×2 agent grids + scratch shell, all `auto_start = false`) for the
+  remote-agent session.
+
+### Build
+
+- **Zig 0.17.0-dev.639 compatibility.** The toolchain rolled dev.420 → dev.639,
+  which removed `std.Build.args`; `build.zig` now forwards `zig build run --`
+  arguments via `Run.addPassthruArgs()` at the three run sites. (The dev.420
+  upstream `std/os/linux.zig:8552` termios typo from 0.7.0's note is still
+  present in dev.639 — same one-line `arch_bits` → `native_arch` patch, or build
+  with a fixed Zig.)
+
 ## 0.7.0 (2026-05-31)
 
 A large hardening release triggered by a Zig toolchain bump to

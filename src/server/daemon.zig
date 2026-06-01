@@ -44,6 +44,12 @@ io: ?std.Io = null,
 /// Monotonic ns of last checkPaneAlive() call; used to throttle the
 /// pane-health sweep to ~5 s in the absence of POLLHUP/POLLERR.
 last_pane_check_ns: i128 = 0,
+/// Reusable poll() fd set, grown to fit (listen + client + every PTY + 2 MCP
+/// fds). Heap-backed rather than a fixed array so a large session — e.g. the
+/// 34-pane claude-power layout — never silently drops panes from the poll set
+/// (an un-polled PTY's output is never drained; its buffer fills and the agent
+/// blocks). Grows on demand, never shrinks; freed in deinit.
+poll_fds: []posix.pollfd = &.{},
 
 // ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -60,6 +66,11 @@ pub fn init(
         return error.PathTooLong;
     const path_len = path.len;
 
+    // Seed the poll fd set (grown on demand in run()). 16 covers the common
+    // small-session case with no in-loop allocation.
+    const pollbuf = try allocator.alloc(posix.pollfd, 16);
+    errdefer allocator.free(pollbuf);
+
     const ipc_server = ipc.listen(path) catch return error.SocketFailed;
     const sock = ipc_server.rawFd();
 
@@ -75,10 +86,22 @@ pub fn init(
         .socket_path_len = path_len,
         .session_name = session_name,
         .running = true,
+        .poll_fds = pollbuf,
     };
     @memcpy(daemon.socket_path[0..path_len], path);
 
     return daemon;
+}
+
+/// Grow the reusable poll fd buffer to at least `n` entries (never shrinks).
+/// On allocation failure returns the existing buffer — callers must tolerate a
+/// slightly-short slice (the run loop's `fds.len < 4` guard does).
+fn ensurePollCapacity(self: *Daemon, n: usize) []posix.pollfd {
+    if (self.poll_fds.len >= n) return self.poll_fds;
+    if (self.allocator.realloc(self.poll_fds, n)) |grown| {
+        self.poll_fds = grown;
+    } else |_| {}
+    return self.poll_fds;
 }
 
 /// Main daemon event loop. Blocks until all panes close.
@@ -95,8 +118,13 @@ pub fn run(self: *Daemon) void {
 
         // Build poll fd set (POSIX only — Windows daemon returns Unsupported in init)
         if (builtin.os.tag == .windows) return;
-        // listen + client + 32 PTYs + 2 MCP fds (request + event)
-        var fds: [36]posix.pollfd = undefined;
+        // Size to fit listen + client + every PTY + 2 MCP fds. Grows with the
+        // pane count so no pane is ever dropped from the poll set.
+        const fds = self.ensurePollCapacity(self.mux.panes.items.len + 4);
+        // fds is seeded to 16 in init and only ever grows, so it is always
+        // ≥ 4. The guard is defence-in-depth against a pathological OOM that
+        // left it empty; skip the iteration rather than index a short slice.
+        if (fds.len < 4) continue;
         var nfds: usize = 0;
 
         // [0] = listen socket
@@ -112,7 +140,7 @@ pub fn run(self: *Daemon) void {
         // [nfds..pty_end] = PTY master fds
         const pty_start = nfds;
         for (self.mux.panes.items) |*pane| {
-            if (nfds >= fds.len - 2) break; // leave room for MCP fds
+            if (nfds >= fds.len -| 2) break; // leave room for MCP fds
             fds[nfds] = .{ .fd = pane.ptyMasterFd(), .events = POLLIN, .revents = 0 };
             nfds += 1;
         }
@@ -238,6 +266,7 @@ pub fn run(self: *Daemon) void {
 }
 
 pub fn deinit(self: *Daemon) void {
+    if (self.poll_fds.len > 0) self.allocator.free(self.poll_fds);
     if (self.client_fd) |cfd| {
         _ = posix.system.close(cfd);
         self.client_fd = null;
@@ -365,7 +394,8 @@ fn handleClientData(self: *Daemon, recv_buf: []u8) void {
                     if (pp.data.len >= 4) {
                         if (self.mux.getPaneById(pp.pane_id)) |pane| {
                             if (proto.decodeResize(pp.data)) |sz| {
-                                pane.ptyResize(sz.rows, sz.cols);
+                                // Drop a 0-dimension resize (never a valid terminal).
+                                if (sz.rows != 0 and sz.cols != 0) pane.ptyResize(sz.rows, sz.cols);
                             }
                         }
                     }
@@ -488,6 +518,11 @@ fn disconnectClient(self: *Daemon) void {
 }
 
 fn resizeAllPanes(self: *Daemon, rows: u16, cols: u16) void {
+    // Ignore a degenerate 0-dimension resize. A 0x0 terminal is never valid,
+    // and resizing a pane grid to 0 cols/rows makes the VtParser index an empty
+    // cell slice → panic → the daemon dies and takes every agent with it. The
+    // daemon must be uncrashable by client input; keep the current size.
+    if (rows == 0 or cols == 0) return;
     for (self.mux.panes.items) |*pane| {
         if (cols != pane.grid.cols or rows != pane.grid.rows) {
             pane.resize(self.allocator, rows, cols) catch continue;
