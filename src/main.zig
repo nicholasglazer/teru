@@ -17,6 +17,10 @@ const render = @import("render/render.zig");
 const McpBridge = @import("agent/McpBridge.zig");
 const Daemon = @import("server/daemon.zig");
 
+// Env-gated logging (TERU_LOG=debug|info|warn|err). Routes all std.log through
+// the shared logFn; TERU_LOG=debug captures the full MCP trace.
+pub const std_options = @import("log.zig").std_options;
+
 const common = @import("modes/common.zig");
 const raw_mode = @import("modes/raw.zig");
 const windowed_mode = @import("modes/windowed.zig");

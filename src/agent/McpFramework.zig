@@ -114,7 +114,23 @@ pub fn Framework(comptime Impl: type) type {
 
         /// Route a JSON-RPC body through method dispatch. Public because
         /// in-band OSC 9999 path reaches here without a socket fd.
+        /// Clip a body for the trace log so a 64 KiB request/response stays
+        /// readable in `TERU_LOG=debug` output.
+        fn logClip(s: []const u8) []const u8 {
+            return if (s.len > 800) s[0..800] else s;
+        }
+
+        /// Trace wrapper: logs the request + response at `mcp` debug level
+        /// (gated by TERU_LOG=debug). Covers every MCP path — the teru socket,
+        /// the teruwm socket, and the OSC-9999 in-band channel all call this.
         pub fn dispatch(impl: *Impl, body: []const u8, resp: []u8, config: *const Config) []const u8 {
+            std.log.scoped(.mcp).debug("→ {s}", .{logClip(body)});
+            const out = dispatchInner(impl, body, resp, config);
+            std.log.scoped(.mcp).debug("← {s}", .{logClip(out)});
+            return out;
+        }
+
+        fn dispatchInner(impl: *Impl, body: []const u8, resp: []u8, config: *const Config) []const u8 {
             const method = tools.extractJsonString(body, "method") orelse
                 return tools.jsonRpcError(resp, null, -32600, "Invalid Request: missing method");
             const id = tools.extractJsonId(body);
