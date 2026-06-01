@@ -11,6 +11,7 @@
 const std = @import("std");
 const daemon_proto = @import("../server/protocol.zig");
 const compat = @import("../compat.zig");
+const log = @import("../log.zig");
 
 pub const Action = union(enum) {
     /// Raw bytes to forward to daemon as active_input
@@ -50,8 +51,14 @@ prefix_active: bool = false,
 prefix_timestamp: i64 = 0,
 prefix_timeout_ms: i64 = 500,
 
-/// Debug log — writes to stderr (redirect with 2>/tmp/tui-debug.log)
+/// Per-byte input trace — writes raw to stderr (redirect with 2>tui-debug.log).
+/// GATED behind `TERU_LOG=debug`: the attaching client's stderr is the user's
+/// terminal, so an ungated write here interleaves with the TUI on fd 1 and
+/// visibly corrupts the screen — most violently under SGR mouse mode, where the
+/// terminal streams a motion sequence per mouse move. Off by default; a no-op
+/// after one cached env read, so it stays free on the hot input path.
 fn debugLog(comptime fmt: []const u8, args: anytype) void {
+    if (log.activeLevel() != .debug) return;
     var buf: [512]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
     _ = std.c.write(2, msg.ptr, msg.len);
