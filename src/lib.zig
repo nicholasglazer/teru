@@ -52,6 +52,7 @@ pub const SessionDef = @import("config/SessionDef.zig");
 pub const WinPty = @import("pty/WinPty.zig");
 pub const ipc = @import("server/ipc.zig");
 pub const compat = @import("compat.zig");
+pub const log = @import("log.zig");
 pub const build_options = @import("build_options");
 pub const png = @import("png.zig");
 pub const keysyms = @import("input/keysyms.zig");

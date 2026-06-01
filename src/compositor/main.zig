@@ -14,6 +14,10 @@ const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 const ServerRestart = @import("ServerRestart.zig");
 
+// Env-gated logging (TERU_LOG=debug|info|warn|err). TERU_LOG=debug captures the
+// full teruwm MCP trace via std.log.scoped(.mcp).
+pub const std_options = teru.log.std_options;
+
 /// Custom panic handler: print "teruwm: PANIC <msg>" + a stack trace
 /// before aborting. Without this, segfaults look like clean exits in
 /// the log and we waste hours debugging "why did teruwm just vanish?"
