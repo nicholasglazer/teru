@@ -58,7 +58,7 @@ pub fn focusView(server: *Server, view: *XdgView) void {
     server.focused_terminal = null;
     refreshAllBorders(server);
     if (!was_focused) {
-        std.debug.print("teruwm: focusView ran node={d} focused_terminal->null\n", .{view.node_id});
+        std.log.scoped(.compositor).debug("focusView ran node={d} focused_terminal->null", .{view.node_id});
     }
 
     // Clear urgency on focus gain + emit focus_changed.
@@ -86,8 +86,8 @@ pub fn focusView(server: *Server, view: *XdgView) void {
     const keycodes: ?[*]const u32 = if (kb_opt) |kb| wlr.miozu_keyboard_keycodes(kb) else null;
     const num_keycodes: usize = if (kb_opt) |kb| wlr.miozu_keyboard_num_keycodes(kb) else 0;
     wlr.wlr_seat_keyboard_notify_enter(server.seat, target, keycodes, num_keycodes, modifiers);
-    std.debug.print(
-        "teruwm: keyboard_notify_enter target={x} (root={x} leaf={?x})\n",
+    std.log.scoped(.compositor).debug(
+        "keyboard_notify_enter target={x} (root={x} leaf={?x})",
         .{ @intFromPtr(target), @intFromPtr(root_surface), if (server.last_pointer_surface) |l| @intFromPtr(l) else null },
     );
 

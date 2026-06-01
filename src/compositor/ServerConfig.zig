@@ -22,9 +22,9 @@ pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem
         self.font_atlas = fa;
         self.font_size = config.font_size;
         self.font_size_base = config.font_size;
-        std.debug.print("teruwm: font loaded ({d}x{d} cells)\n", .{ fa.cell_width, fa.cell_height });
+        std.log.scoped(.config).info("font loaded ({d}x{d} cells)", .{ fa.cell_width, fa.cell_height });
     } else |err| {
-        std.debug.print("teruwm: font init failed: {}, using fallback\n", .{err});
+        std.log.scoped(.config).err("font init failed: {}, using fallback", .{err});
     }
 
     // ── Keybinds: set mod to Super (compositor), load unified defaults + media ──
@@ -65,7 +65,7 @@ pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem
     // ── teruwm-specific config (~/.config/teruwm/config) ────
     self.wm_config = WmConfig.load(io);
     if (self.wm_config.rule_count > 0) {
-        std.debug.print("teruwm: loaded {d} window rules\n", .{self.wm_config.rule_count});
+        std.log.scoped(.config).info("loaded {d} window rules", .{self.wm_config.rule_count});
     }
 
     // ── User-defined spawn chords from [keybind] section ────
@@ -90,7 +90,7 @@ fn applyWmSpawnChords(self: *Server) void {
 
         // Parse the chord ("Mod+Return") via the shared trigger parser
         const trig = Keybinds.parseTriggerWithMod(entry.getChord(), self.keybinds.mod_key) orelse {
-            std.debug.print("teruwm: skipping bad keybind chord '{s}'\n", .{entry.getChord()});
+            std.log.scoped(.config).warn("skipping bad keybind chord '{s}'", .{entry.getChord()});
             continue;
         };
 
@@ -109,7 +109,7 @@ fn applyWmSpawnChords(self: *Server) void {
         slot += 1;
     }
     if (slot > 0) {
-        std.debug.print("teruwm: loaded {d} spawn chords\n", .{slot});
+        std.log.scoped(.config).info("loaded {d} spawn chords", .{slot});
     }
 }
 
@@ -124,7 +124,7 @@ fn applyWmScratchpadChords(self: *Server) void {
         if (slot >= self.scratchpad_table.len) break;
 
         const trig = Keybinds.parseTriggerWithMod(entry.getChord(), self.keybinds.mod_key) orelse {
-            std.debug.print("teruwm: skipping bad scratchpad chord '{s}'\n", .{entry.getChord()});
+            std.log.scoped(.config).warn("skipping bad scratchpad chord '{s}'", .{entry.getChord()});
             continue;
         };
 
@@ -139,7 +139,7 @@ fn applyWmScratchpadChords(self: *Server) void {
         slot += 1;
     }
     if (slot > 0) {
-        std.debug.print("teruwm: loaded {d} scratchpad chords\n", .{slot});
+        std.log.scoped(.config).info("loaded {d} scratchpad chords", .{slot});
     }
 }
 
@@ -299,7 +299,7 @@ pub fn reloadWmConfig(self: *Server) void {
                 .options = self.wm_config.getXkbOptions(),
             };
             if (wlr.xkb_keymap_new_from_names(self.xkb_ctx, &names, 0)) |km| break :blk km;
-            std.debug.print("teruwm: [keyboard] config invalid on reload, keeping previous keymap\n", .{});
+            std.log.scoped(.config).warn("[keyboard] config invalid on reload, keeping previous keymap", .{});
             break :blk null;
         }
         break :blk wlr.xkb_keymap_new_from_names(self.xkb_ctx, null, 0);
@@ -317,5 +317,5 @@ pub fn reloadWmConfig(self: *Server) void {
         if (refresh_kb) |rkb| self.refreshActiveKeymap(rkb);
     }
 
-    std.debug.print("teruwm: config reloaded (gap={d}, border={d}, bg=0x{x:0>8})\n", .{ self.wm_config.gap, self.wm_config.border_width, self.wm_config.bg_color });
+    std.log.scoped(.config).info("config reloaded (gap={d}, border={d}, bg=0x{x:0>8})", .{ self.wm_config.gap, self.wm_config.border_width, self.wm_config.bg_color });
 }

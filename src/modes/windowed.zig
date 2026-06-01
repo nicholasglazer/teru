@@ -793,13 +793,13 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                         const id = mux.spawnPane(grid_rows, grid_cols) catch continue;
                                         if (mux.getPaneById(id)) |pane| {
                                             _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.childPid() }) catch |e| {
-                                            std.debug.print("teru: graph.spawn after split failed: {s}\n", .{@errorName(e)});
+                                            std.log.scoped(.compositor).err("graph.spawn after split failed: {s}", .{@errorName(e)});
                                         };
                                         }
                                         hooks.fire(.spawn);
                                         const ws = &mux.layout_engine.workspaces[mux.active_workspace];
                                         ws.addNodeSplit(mux.allocator, id, dir) catch |e| {
-                                            std.debug.print("teru: addNodeSplit failed: {s}\n", .{@errorName(e)});
+                                            std.log.scoped(.compositor).err("addNodeSplit failed: {s}", .{@errorName(e)});
                                         };
                                         const sz = win.getSize();
                                         mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
@@ -925,13 +925,13 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                     const id = mux.spawnPane(grid_rows, grid_cols) catch continue;
                                     if (mux.getPaneById(id)) |pane| {
                                         _ = graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.childPid() }) catch |e| {
-                                            std.debug.print("teru: graph.spawn after split failed: {s}\n", .{@errorName(e)});
+                                            std.log.scoped(.compositor).err("graph.spawn after split failed: {s}", .{@errorName(e)});
                                         };
                                     }
                                     hooks.fire(.spawn);
                                     const ws = &mux.layout_engine.workspaces[mux.active_workspace];
                                     ws.addNodeSplit(mux.allocator, id, dir) catch |e| {
-                                        std.debug.print("teru: addNodeSplit failed: {s}\n", .{@errorName(e)});
+                                        std.log.scoped(.compositor).err("addNodeSplit failed: {s}", .{@errorName(e)});
                                     };
                                     const sz = win.getSize();
                                     mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);

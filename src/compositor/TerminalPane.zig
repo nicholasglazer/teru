@@ -174,7 +174,7 @@ pub fn createWithSpawn(server: *Server, ws: u8, rows: u16, cols: u16, spawn_conf
         server.nodes.setName(s, auto_name);
     }
 
-    std.debug.print("teruwm: terminal pane node={d} ws={d} ({d}x{d})\n", .{ tp.node_id, ws, cols, rows });
+    std.log.scoped(.pty).info("terminal pane node={d} ws={d} ({d}x{d})", .{ tp.node_id, ws, cols, rows });
 
     tp.render();
     return tp;

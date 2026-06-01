@@ -35,7 +35,7 @@ pub fn handleNewOutput(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.
     const wlr_output: *wlr.wlr_output = @ptrCast(@alignCast(data orelse return));
 
     _ = Output.create(server, wlr_output, server.zig_allocator) catch {
-        std.debug.print("teruwm: failed to create output\n", .{});
+        std.log.scoped(.compositor).err("failed to create output", .{});
         return;
     };
     const first = (server.primary_output == null);
@@ -57,7 +57,7 @@ fn runAutostart(server: *Server) void {
     if (server.wm_config.autostart_count == 0) return;
     for (server.wm_config.autostart[0..server.wm_config.autostart_count]) |*entry| {
         const cmd = entry.getCmd();
-        std.debug.print("teruwm: autostart → {s}\n", .{cmd});
+        std.log.scoped(.compositor).info("autostart → {s}", .{cmd});
         server.spawnShell(cmd);
     }
 }
@@ -88,7 +88,7 @@ pub fn handleXdgActivation(listener: *wlr.wl_listener, data: ?*anyopaque) callco
     if (server.nodes.markUrgent(slot)) {
         const nid = server.nodes.node_id[slot];
         const ws = server.nodes.workspace[slot];
-        std.debug.print("teruwm: urgent node={d} ws={d}\n", .{ nid, ws });
+        std.log.scoped(.compositor).info("urgent node={d} ws={d}", .{ nid, ws });
         server.emitMcpEventKind("urgent", ",\"node_id\":{d},\"workspace\":{d}", .{ nid, ws });
         if (server.bar) |b| _ = b.render(server);
         server.scheduleRender();

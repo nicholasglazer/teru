@@ -667,7 +667,7 @@ fn toolNotify(_: *WmMcpServer, message: []const u8, buf: []u8, id: ?[]const u8) 
     // toast would need a scene_rect + a libteru text renderer anchored
     // to the focused output; worth doing when session_lock_v1 lands
     // (shared scene-tree plumbing).
-    std.debug.print("teruwm: notify: {s}\n", .{message});
+    std.log.scoped(.mcp).info("notify: {s}", .{message});
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"notification logged"}}]}},"id":{s}}}
     , .{id_str}) catch jsonRpcError(buf, id, -32603, "Internal error");

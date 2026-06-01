@@ -53,7 +53,7 @@ fn closeInheritedFds() void {
 pub fn spawnShell(cmd: []const u8) void {
     var buf: [512:0]u8 = undefined;
     if (cmd.len >= buf.len) {
-        std.debug.print("teruwm: spawnShell command truncated ({d} > 512)\n", .{cmd.len});
+        std.log.scoped(.pty).warn("spawnShell command truncated ({d} > 512)", .{cmd.len});
     }
     const n = @min(cmd.len, buf.len);
     @memcpy(buf[0..n], cmd[0..n]);

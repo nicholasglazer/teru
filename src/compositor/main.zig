@@ -48,20 +48,20 @@ pub fn main(init: std.process.Init) !void {
 
     // ── Create Wayland display ──────────────────────────────────
     const display = wlr.wl_display_create() orelse {
-        std.debug.print("teruwm: failed to create wl_display\n", .{});
+        std.log.scoped(.compositor).err("failed to create wl_display", .{});
         return error.DisplayCreateFailed;
     };
 
     const event_loop = wlr.wl_display_get_event_loop(display) orelse {
         wlr.wl_display_destroy(display);
-        std.debug.print("teruwm: failed to get event loop\n", .{});
+        std.log.scoped(.compositor).err("failed to get event loop", .{});
         return error.EventLoopFailed;
     };
 
     // ── Initialize compositor server ────────────────────────────
     const server = Server.initOnHeap(display, event_loop, allocator) catch |err| {
         wlr.wl_display_destroy(display);
-        std.debug.print("teruwm: server init failed: {}\n", .{err});
+        std.log.scoped(.compositor).err("server init failed: {}", .{err});
         return err;
     };
     // Defer order matters. LIFO unwind means the LAST defer registered
@@ -90,13 +90,13 @@ pub fn main(init: std.process.Init) !void {
     // ── Add Wayland socket ──────────────────────────────────────
     const socket = wlr.wl_display_add_socket_auto(display);
     if (socket == null) {
-        std.debug.print("teruwm: failed to add Wayland socket\n", .{});
+        std.log.scoped(.compositor).err("failed to add Wayland socket", .{});
         return error.SocketFailed;
     }
 
     // ── Start backend ───────────────────────────────────────────
     if (!wlr.wlr_backend_start(server.backend)) {
-        std.debug.print("teruwm: failed to start backend\n", .{});
+        std.log.scoped(.compositor).err("failed to start backend", .{});
         return error.BackendStartFailed;
     }
 
@@ -116,7 +116,7 @@ pub fn main(init: std.process.Init) !void {
     // ── Start MCP server for compositor control ────────────────
     server.startMcp();
 
-    std.debug.print("teruwm: compositor running on WAYLAND_DISPLAY={s}\n", .{
+    std.log.scoped(.compositor).info("compositor running on WAYLAND_DISPLAY={s}", .{
         socket orelse "unknown",
     });
 
@@ -133,7 +133,7 @@ pub fn main(init: std.process.Init) !void {
     // ── Run event loop ──────────────────────────────────────────
     wlr.wl_display_run(display);
 
-    std.debug.print("teruwm: shutting down\n", .{});
+    std.log.scoped(.compositor).info("shutting down", .{});
 }
 
 /// SIGTERM / SIGINT handler — runs in event-loop context (signalfd).

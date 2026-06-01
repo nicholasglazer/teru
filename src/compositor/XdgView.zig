@@ -127,7 +127,7 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         .{ view.node_id, ws },
     );
 
-    std.debug.print("teruwm: surface mapped app_id='{s}' node={d} ws={d}\n", .{
+    std.log.scoped(.compositor).info("surface mapped app_id='{s}' node={d} ws={d}", .{
         app_id orelse "none",
         view.node_id,
         ws,
@@ -227,7 +227,7 @@ fn handleUnmap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     // rearrange to repaint borders correctly.
     if (ws_index) |w| server.arrangeworkspace(w);
 
-    std.debug.print("teruwm: surface unmapped node={d}\n", .{view.node_id});
+    std.log.scoped(.compositor).info("surface unmapped node={d}", .{view.node_id});
 }
 
 fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
@@ -277,7 +277,7 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     wlr.wl_list_remove(&view.request_move.link);
     wlr.wl_list_remove(&view.request_resize.link);
 
-    std.debug.print("teruwm: surface destroyed node={d}\n", .{view.node_id});
+    std.log.scoped(.compositor).info("surface destroyed node={d}", .{view.node_id});
 
     // Free the view
     server.zig_allocator.destroy(view);
@@ -303,7 +303,7 @@ fn handleNewPopup(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) vo
     const view: *XdgView = @fieldParentPtr("new_popup", listener);
     const popup: *wlr.wlr_xdg_popup = @ptrCast(@alignCast(data orelse return));
     const popup_surface = wlr.miozu_xdg_popup_base(popup) orelse return;
-    std.debug.print("teruwm: new_popup node={d} popup_surface={*}\n", .{ view.node_id, popup_surface });
+    std.log.scoped(.compositor).debug("new_popup node={d} popup_surface={*}", .{ view.node_id, popup_surface });
     if (wlr.wlr_scene_xdg_surface_create(view.scene_tree, popup_surface) == null) return;
 
     // Constrain the popup to the output area. Without this the popup
@@ -336,7 +336,7 @@ fn handleShowWindowMenu(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c)
 
     server.nodes.floating[slot] = !server.nodes.floating[slot];
     const now_float = server.nodes.floating[slot];
-    std.debug.print("teruwm: show_window_menu node={d} float={}\n", .{ view.node_id, now_float });
+    std.log.scoped(.compositor).debug("show_window_menu node={d} float={}", .{ view.node_id, now_float });
 
     if (now_float) {
         const ws = server.nodes.workspace[slot];

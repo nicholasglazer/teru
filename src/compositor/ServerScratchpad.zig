@@ -245,6 +245,6 @@ fn spawn(server: *Server, name: []const u8, ws: u8) ?u16 {
 
     server.focused_terminal = tp;
     server.focused_view = null;
-    std.debug.print("teruwm: scratchpad '{s}' spawned on ws={d}\n", .{ name, ws });
+    std.log.scoped(.pty).info("scratchpad '{s}' spawned on ws={d}", .{ name, ws });
     return slot;
 }

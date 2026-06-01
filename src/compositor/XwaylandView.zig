@@ -88,7 +88,7 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
                 wlr.wlr_scene_node_set_position(node, x, y);
             }
         }
-        std.debug.print("teruwm: X11 floating mapped class='{s}' or={} fixed={} parent={} modal={}\n", .{
+        std.log.scoped(.compositor).info("X11 floating mapped class='{s}' or={} fixed={} parent={} modal={}", .{
             class orelse "none",
             is_or,
             wlr.miozu_xwayland_surface_is_fixed_size(view.surface),
@@ -118,7 +118,7 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         }
         server.layout_engine.workspaces[ws].addNode(server.zig_allocator, view.node_id) catch return;
 
-        std.debug.print("teruwm: X11 surface mapped class='{s}' node={d} ws={d}\n", .{ class orelse "none", view.node_id, ws });
+        std.log.scoped(.compositor).info("X11 surface mapped class='{s}' node={d} ws={d}", .{ class orelse "none", view.node_id, ws });
 
         server.arrangeworkspace(ws);
 

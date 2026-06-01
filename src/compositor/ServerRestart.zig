@@ -90,7 +90,7 @@ pub fn execRestart(server: *Server) void {
     }
 
     if (truncated) {
-        std.debug.print("teruwm: restart state truncated at {d} bytes ({d} panes)\n", .{ pos, pane_count });
+        std.log.scoped(.session).warn("restart state truncated at {d} bytes ({d} panes)", .{ pos, pane_count });
     }
 
     // Write state file
@@ -101,12 +101,12 @@ pub fn execRestart(server: *Server) void {
         _ = std.c.fwrite(buf[0..pos].ptr, 1, pos, f);
         _ = std.c.fclose(f);
     } else {
-        std.debug.print("teruwm: failed to write restart state\n", .{});
+        std.log.scoped(.session).err("failed to write restart state", .{});
         restoreCloexec(cleared_fds.items);
         return;
     }
 
-    std.debug.print("teruwm: restarting ({d} panes saved)\n", .{pane_count});
+    std.log.scoped(.session).info("restarting ({d} panes saved)", .{pane_count});
 
     // exec the new binary
     const self_exe = "/proc/self/exe";
@@ -114,7 +114,7 @@ pub fn execRestart(server: *Server) void {
     _ = std.posix.system.execve(@ptrCast(self_exe), @ptrCast(&argv_buf), std.c.environ);
 
     // If exec returns, it failed — put FD_CLOEXEC back
-    std.debug.print("teruwm: exec failed, continuing\n", .{});
+    std.log.scoped(.session).err("exec failed, continuing", .{});
     restoreCloexec(cleared_fds.items);
 }
 
@@ -126,7 +126,7 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
     var rpath_buf: [128:0]u8 = undefined;
     const rpath = restartStatePath(&rpath_buf);
     const file = std.c.fopen(rpath, "rb") orelse {
-        std.debug.print("teruwm: no restart state found\n", .{});
+        std.log.scoped(.session).info("no restart state found", .{});
         return;
     };
     const n = std.c.fread(&buf, 1, buf.len, file);
@@ -150,7 +150,7 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
         }
     }
 
-    std.debug.print("teruwm: restoring {d} panes (active ws={d})\n", .{ pane_count, active_ws });
+    std.log.scoped(.session).info("restoring {d} panes (active ws={d})", .{ pane_count, active_ws });
 
     var restored: u16 = 0;
     for (0..pane_count) |_| {
@@ -190,7 +190,7 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
     server.updateFocusedTerminal();
     if (server.bar) |b| _ = b.render(server);
 
-    std.debug.print("teruwm: restored {d}/{d} panes\n", .{ restored, pane_count });
+    std.log.scoped(.session).info("restored {d}/{d} panes", .{ restored, pane_count });
 }
 
 // ── Private helpers ──────────────────────────────────────────
