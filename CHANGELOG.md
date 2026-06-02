@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.1 (2026-06-02)
+
+Hotfix for the SSH render dropout reported against 0.8.0.
+
+### Fixes (high)
+
+- **Panes didn't all draw on attach over SSH; bottom panes stayed blank until
+  clicked, and keybinds like Alt+J/K appeared to do nothing.** Root cause: the
+  client's render flush (`TuiScreen.writeAllFd`) treated `EAGAIN` as "stop" and
+  silently dropped the rest of the frame. Over SSH, stdin/stdout/stderr share
+  one open file description, so the `O_NONBLOCK` set on stdin (needed to poll it)
+  also makes stdout non-blocking — under SSH backpressure the flush hit EAGAIN
+  and dropped the tail of the screen (the bottom panes). Because `flush()` then
+  updates the diff baseline `prev[]` to the full frame, the dropped cells were
+  never re-emitted, so they stayed blank until something changed them (a click's
+  active-border, a workspace switch). This also made focus changes (Alt+J/K)
+  look like no-ops — the focus moved on the daemon but the confirming re-render
+  was dropped. `writeAllFd` now resumes across EAGAIN/EINTR via `POLL.OUT`
+  (mirrors the 0.8.0 daemon-side `writeAll` fix), so each frame is delivered
+  intact. (Same class of bug, both sides of the wire now hardened.)
+
 ## 0.8.0 (2026-06-02)
 
 Remote-attach multiplexer correctness overhaul. A full review (47 findings, 34
