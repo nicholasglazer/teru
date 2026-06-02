@@ -46,10 +46,15 @@ esc_timestamp: i64 = 0,
 nested: bool = false,
 /// Last mouse event (set by feed(), consumed by caller)
 last_mouse: ?struct { col: u16, row: u16, button: u8, release: bool } = null,
-/// Prefix key state (Ctrl+Space = 0x00)
+/// Prefix key state.
 prefix_active: bool = false,
 prefix_timestamp: i64 = 0,
 prefix_timeout_ms: i64 = 500,
+/// The prefix key byte. Ctrl+B (0x02) normally; Ctrl+A (0x01) when NESTED so a
+/// teru-inside-teru can be driven without colliding with the outer teru, which
+/// owns Ctrl+B and Alt. The outer doesn't grab Ctrl+A, so it passes through to
+/// the inner — making the inner's prefix reachable.
+prefix_byte: u8 = 0x02,
 
 /// Per-byte input trace — writes raw to stderr (redirect with 2>tui-debug.log).
 /// GATED behind `TERU_LOG=debug`: the attaching client's stderr is the user's
@@ -83,7 +88,9 @@ pub fn initAutoDetect() Self {
     else
         false;
     const nested = term_is_teru or (compat.getenv("TERU_NESTED") != null);
-    return .{ .nested = nested };
+    // Nested: use Ctrl+A as the prefix (the outer teru owns Ctrl+B + Alt and
+    // grabs them first; it does NOT grab Ctrl+A, so it forwards it to the inner).
+    return .{ .nested = nested, .prefix_byte = if (nested) 0x01 else 0x02 };
 }
 
 /// Process a chunk of raw input bytes.
@@ -101,9 +108,8 @@ pub fn feed(self: *Self, bytes: []const u8, daemon_fd: std.posix.fd_t) bool {
 
         switch (self.state) {
             .ground => {
-                // Ctrl+B (0x02) = TUI prefix key
-                // Uses Ctrl+B (not Ctrl+Space) to avoid conflict with outer teru
-                if (b == 0x02) {
+                // Prefix key (Ctrl+B normally, Ctrl+A when nested — see prefix_byte).
+                if (b == self.prefix_byte) {
                     if (i > raw_start) {
                         _ = daemon_proto.sendMessage(daemon_fd, .active_input, bytes[raw_start..i]);
                     }
