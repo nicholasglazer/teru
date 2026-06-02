@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.3 (2026-06-02)
+
+### Added
+
+- **Nested teru is now controllable via a `Ctrl+A` prefix.** Previously a
+  teru-inside-teru couldn't be driven at all: the outer teru grabs both Alt and
+  its `Ctrl+B` prefix first, so nothing reached the inner. In nested mode
+  (`TERU_NESTED=1` / `TERM_PROGRAM=teru`) the inner now uses **Ctrl+A** as its
+  prefix — which the outer does *not* grab and therefore forwards through — so
+  `Ctrl+A j` / `Ctrl+A k` (focus), `Ctrl+A 1/2/3` (workspace), etc. drive the
+  remote session while `Ctrl+B` and Alt stay with your local teru. Pairs with
+  the 0.8.2 nested status-bar drop for a clean single-bar, fully-drivable nested
+  session.
+
 ## 0.8.2 (2026-06-02)
 
 ### Added
