@@ -14,7 +14,8 @@
 #   2 code   2x2 grid, 4 agents rooted at /home/ng/code
 #   3 shell  single full-screen scratch shell
 #
-# Pane navigation mirrors the tmux config: Alt+h/j/k/l between panes.
+# Pane focus: Alt+J / Alt+K (next / previous). Alt+H / Alt+L resize the master.
+# Click a pane to focus it. Alt+Space cycles the layout; Ctrl+B is the prefix.
 #
 # Every agent pane PRE-TYPES the claude command but does NOT run it
 # (auto_start = false). You review the command line, then press Enter to

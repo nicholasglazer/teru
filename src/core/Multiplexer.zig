@@ -286,6 +286,13 @@ pub fn closePane(self: *Multiplexer, pane_id: u64) void {
         if (pane.id == pane_id) {
             pane.deinit(self.allocator);
             _ = self.panes.orderedRemove(i);
+            // orderedRemove memmoves every later Pane struct down a slot,
+            // dangling their vt.grid / vt.response_ctx / grid.scrollback
+            // self-pointers. Re-link ALL survivors (same invariant the spawn
+            // paths uphold) — otherwise the next vt.feed() on a moved pane
+            // writes through a freed *Grid and takes the daemon (and every
+            // agent it hosts) down.
+            for (self.panes.items) |*p| p.linkVt(self.allocator);
             break;
         }
     }
@@ -347,6 +354,22 @@ pub fn focusMaster(self: *Multiplexer) void {
     for (ws.node_ids.items, 0..) |nid, i| {
         if (nid == mid) {
             ws.active_index = i;
+            self.markDirty();
+            return;
+        }
+    }
+}
+
+/// Focus a specific pane by id in the active workspace (absolute focus — used
+/// by mouse click). Sets BOTH active_index (flat layouts) and active_node
+/// (split tree) so getActiveNodeId() agrees regardless of layout, and the
+/// confirming state_sync reflects exactly this pane.
+pub fn focusPaneId(self: *Multiplexer, id: u64) void {
+    const ws = &self.layout_engine.workspaces[self.active_workspace];
+    for (ws.node_ids.items, 0..) |nid, i| {
+        if (nid == id) {
+            ws.active_index = i;
+            ws.active_node = id;
             self.markDirty();
             return;
         }
