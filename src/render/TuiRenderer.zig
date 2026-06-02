@@ -64,13 +64,17 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
     const pane_ids = ws.node_ids.items;
 
     if (pane_ids.len == 0) {
-        self.drawStatusBar(mux, opts);
+        if (!opts.nested) self.drawStatusBar(mux, opts);
         _ = self.screen.flush(stdout_fd);
         return;
     }
 
-    // Reserve last row for status bar
-    const content_height = if (self.screen.height > 1) self.screen.height - 1 else self.screen.height;
+    // Reserve last row for the status bar — UNLESS nested, where we drop our
+    // own status bar (the outer teru already has one) and give the row back to
+    // the panes so there's no duplicate bar and no blank gap.
+    const content_height = if (opts.nested)
+        self.screen.height
+    else if (self.screen.height > 1) self.screen.height - 1 else self.screen.height;
 
     // Calculate layout rects in character cells
     const screen_rect = Rect{
@@ -85,7 +89,7 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
         if (mux.getActivePane()) |pane| {
             self.screen.stamp(&pane.grid, 0, 0, content_height, self.screen.width);
         }
-        self.drawStatusBar(mux, opts);
+        if (!opts.nested) self.drawStatusBar(mux, opts);
         _ = self.screen.flush(stdout_fd);
         return;
     };
@@ -156,8 +160,8 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
         }
     }
 
-    // Status bar
-    self.drawStatusBar(mux, opts);
+    // Status bar — skipped when nested (the outer teru owns the bar).
+    if (!opts.nested) self.drawStatusBar(mux, opts);
 
     // Flush
     _ = self.screen.flush(stdout_fd);
