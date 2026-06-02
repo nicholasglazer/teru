@@ -418,6 +418,10 @@ pub fn parseDaemonStateSync(daemon_fd: posix.fd_t, mux: *Multiplexer, payload: [
         if (wi < 10) {
             var ws = &mux.layout_engine.workspaces[wi];
             ws.layout = @enumFromInt(@min(layout_byte, @intFromEnum(LE.Layout.accordion)));
+            // Pin: the daemon's layout is authoritative. Without this, the
+            // per-pane addNode loop below re-runs autoSelectLayout and overwrites
+            // the layout the daemon just told us (grid → master-stack on 4 panes).
+            ws.layout_pinned = true;
             ws.active_node = if (active_pane_id != 0) active_pane_id else null;
             ws.master_ratio = @as(f32, @floatFromInt(ratio_x100)) / 100.0;
         }
@@ -459,6 +463,24 @@ pub fn parseDaemonStateSync(daemon_fd: posix.fd_t, mux: *Multiplexer, payload: [
     }
 
     mux.switchWorkspace(active_ws);
+
+    // Resolve the daemon's focus (shipped as active_node = getActiveNodeId())
+    // into active_index now that node_ids is populated. The renderer highlights
+    // by active_index, so without this the client's highlight + click-rect base
+    // never tracked the daemon's real focus (S1/S2). Doing it HERE covers every
+    // caller: initial attach (tui.zig), steady-state state_sync, and
+    // pollDaemonOutput — the last two previously had no resolver / a duplicate.
+    for (&mux.layout_engine.workspaces) |*wsp| {
+        if (wsp.active_node) |node_id| {
+            for (wsp.node_ids.items, 0..) |nid, idx| {
+                if (nid == node_id) {
+                    wsp.active_index = idx;
+                    break;
+                }
+            }
+        }
+    }
+
     for (mux.panes.items) |*p| p.grid.dirty = true;
 }
 

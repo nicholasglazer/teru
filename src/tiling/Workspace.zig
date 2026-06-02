@@ -37,6 +37,15 @@ layouts: [max_layouts]Layout = undefined,
 layout_count: u8 = 0,
 layout_index: u8 = 0,
 
+// Explicit layout pin. When true, addNode/removeNode/addNodeSplit must NOT
+// re-run autoSelectLayout — a template (`layout = grid`) or a state_sync from
+// the daemon set the layout deliberately, and pane churn would otherwise stomp
+// it (e.g. autoSelect returns master_stack for 2-4 panes, silently turning a
+// declared `grid` into master-stack). Cleared by cycleLayout so an explicit
+// user layout-cycle still wins. Preferred over setLayouts(&.{single}), which
+// would set layout_count==1 and disable the layout-cycle keybind entirely.
+layout_pinned: bool = false,
+
 // Marked master pane — Alt+Shift+M sets, Alt+M focuses
 master_id: ?u64 = null,
 
@@ -81,6 +90,8 @@ pub fn setLayouts(self: *Workspace, list: []const Layout) void {
 /// Cycle to the next layout in the workspace's layout list.
 /// If no list is configured, cycles through all layouts.
 pub fn cycleLayout(self: *Workspace) void {
+    // Explicit user cycle overrides the template/state_sync pin from here on.
+    self.layout_pinned = false;
     if (self.layout_count > 1) {
         self.layout_index = (self.layout_index + 1) % self.layout_count;
         self.layout = self.layouts[self.layout_index];
@@ -109,7 +120,8 @@ pub fn addNode(self: *Workspace, allocator: Allocator, id: u64) !void {
     }
     try self.node_ids.append(allocator, id);
     // Auto-select layout only when no per-workspace layout list is configured
-    if (self.layout_count == 0) {
+    // AND the layout hasn't been explicitly pinned (template / state_sync).
+    if (self.layout_count == 0 and !self.layout_pinned) {
         self.layout = autoSelectLayout(self.node_ids.items.len);
     }
 }
@@ -138,7 +150,8 @@ pub fn removeNode(self: *Workspace, id: u64) void {
         self.master_id = null;
     };
     // Auto-select layout only when no per-workspace layout list is configured
-    if (self.layout_count == 0) {
+    // AND the layout hasn't been explicitly pinned (template / state_sync).
+    if (self.layout_count == 0 and !self.layout_pinned) {
         self.layout = autoSelectLayout(self.node_ids.items.len);
     }
 }
@@ -291,7 +304,7 @@ pub fn addNodeSplit(self: *Workspace, allocator: Allocator, pane_id: u64, direct
     }
     if (!in_flat) {
         try self.node_ids.append(allocator, pane_id);
-        if (self.layout_count == 0) {
+        if (self.layout_count == 0 and !self.layout_pinned) {
             self.layout = autoSelectLayout(self.node_ids.items.len);
         }
     }

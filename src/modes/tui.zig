@@ -126,10 +126,13 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
             const rd = daemon_proto.encodeResize(cr, term_cols);
             @memcpy(rbuf[8..12], &rd);
             _ = daemon_proto.sendMessage(sock, .resize, &rbuf);
+            // resize() is non-destructive (it blanks only newly-uncovered cells
+            // and clamps the cursor), so the content just replayed by the
+            // attach-time grid-sync SURVIVES. Do NOT clearScreen(2)/reset the
+            // cursor here — that erased exactly what was replayed, leaving every
+            // pane blank until new output arrived (idle/non-active panes stayed
+            // empty forever). That was the "reattach shows nothing" bug.
             pane.grid.resize(allocator, cr, term_cols) catch |e| std.log.warn("pane grid resize failed: {s}", .{@errorName(e)});
-            pane.grid.clearScreen(2);
-            pane.grid.cursor_row = 0;
-            pane.grid.cursor_col = 0;
         }
     }
 
@@ -225,24 +228,18 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
                             if (mouse.col >= rect.x and mouse.col < rect.x + rect.width and
                                 mouse.row >= rect.y and mouse.row < rect.y + rect.height)
                             {
-                                if (idx < pane_ids.len and active_ws.active_index != idx) {
-                                    // Send focus_next/prev to reach target pane.
-                                    const current = active_ws.active_index;
-                                    const count = pane_ids.len;
-                                    if (count > 1) {
-                                        const fwd = if (idx > current) idx - current else count - current + idx;
-                                        const bwd = if (current > idx) current - idx else count - idx + current;
-                                        const cmd = if (fwd <= bwd) daemon_proto.Command.focus_next else daemon_proto.Command.focus_prev;
-                                        const steps = if (fwd <= bwd) fwd else bwd;
-                                        const cmd_byte = [1]u8{@intFromEnum(cmd)};
-                                        for (0..steps) |_| {
-                                            _ = daemon_proto.sendMessage(sock, .command, &cmd_byte);
-                                        }
-                                    }
-                                    // Update locally; daemon will confirm via state_sync.
-                                    active_ws.active_index = idx;
-                                    active_ws.active_node = pane_ids[idx];
-                                    needs_render = true;
+                                if (idx < pane_ids.len) {
+                                    // Absolute focus: tell the daemon exactly which
+                                    // pane to focus by id. No relative focus_next/prev
+                                    // stepping from a (possibly stale) local index —
+                                    // that wrapped to a neighbour. No optimistic local
+                                    // write either: the daemon's confirming state_sync
+                                    // drives the highlight, keeping the rendered focus
+                                    // and the daemon's input target identical.
+                                    var cmd_buf: [9]u8 = undefined;
+                                    cmd_buf[0] = @intFromEnum(daemon_proto.Command.focus_pane);
+                                    std.mem.writeInt(u64, cmd_buf[1..9], pane_ids[idx], .little);
+                                    _ = daemon_proto.sendMessage(sock, .command, &cmd_buf);
                                 }
                                 break;
                             }
@@ -270,18 +267,11 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
                         }
                     },
                     .state_sync => {
+                        // parseDaemonStateSync now resolves active_node→active_index
+                        // itself (after node_ids is populated), so every sync caller
+                        // — here, the initial attach, and pollDaemonOutput — seeds
+                        // the highlight from the daemon's authoritative focus.
                         common.parseDaemonStateSync(sock, &mux, payload);
-                        // Resolve active_node to active_index
-                        for (&mux.layout_engine.workspaces) |*wsp| {
-                            if (wsp.active_node) |node_id| {
-                                for (wsp.node_ids.items, 0..) |nid, idx| {
-                                    if (nid == node_id) {
-                                        wsp.active_index = idx;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
                         needs_render = true;
                     },
                     .pane_event => {

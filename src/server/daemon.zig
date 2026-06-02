@@ -395,7 +395,14 @@ fn handleClientData(self: *Daemon, recv_buf: []u8) void {
                         if (self.mux.getPaneById(pp.pane_id)) |pane| {
                             if (proto.decodeResize(pp.data)) |sz| {
                                 // Drop a 0-dimension resize (never a valid terminal).
-                                if (sz.rows != 0 and sz.cols != 0) pane.ptyResize(sz.rows, sz.cols);
+                                // Reflow the Grid too (resize() = grid.resize + ptyResize),
+                                // not just the PTY — otherwise the daemon's authoritative
+                                // grid for a non-active workspace's pane stays at its
+                                // 24×80 spawn default and replays at the wrong geometry
+                                // on the next attach. &pane.grid is stable, so no relink.
+                                if (sz.rows != 0 and sz.cols != 0)
+                                    pane.resize(self.allocator, sz.rows, sz.cols) catch |e|
+                                        std.log.scoped(.daemon).warn("pane resize failed: {s}", .{@errorName(e)});
                             }
                         }
                     }
@@ -447,6 +454,14 @@ fn handleCommand(self: *Daemon, payload: []const u8) void {
         .swap_prev => self.mux.swapPanePrev(),
         .focus_master => self.mux.focusMaster(),
         .set_master => self.mux.setMaster(),
+        .focus_pane => {
+            if (payload.len >= 9) {
+                const pane_id = std.mem.readInt(u64, payload[1..9], .little);
+                self.mux.focusPaneId(pane_id);
+            }
+        },
+        .resize_shrink => self.mux.resizeActive(-2, -2),
+        .resize_grow => self.mux.resizeActive(2, 2),
     }
     // Notify client of state change
     self.sendStateSync();
@@ -484,8 +499,13 @@ fn sendStateSync(self: *Daemon) void {
         pos += 1;
         buf[pos] = 0; // reserved
         pos += 1;
-        // Active pane ID (8 bytes, 0 = none)
-        const active_id: u64 = ws.active_node orelse 0;
+        // Active pane ID (8 bytes, 0 = none). Use getActiveNodeId() — NOT the
+        // raw active_node, which is null for every flat layout (master-stack/
+        // grid/monocle, where focus lives in active_index). Shipping
+        // active_node here meant the daemon's real focus never reached the
+        // client: the highlight + click-stepping base went stale and input
+        // routed to a different pane than the one shown focused (S1/S2).
+        const active_id: u64 = ws.getActiveNodeId() orelse 0;
         std.mem.writeInt(u64, buf[pos..][0..8], active_id, .little);
         pos += 8;
     }

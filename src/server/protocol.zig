@@ -65,9 +65,19 @@ pub const Command = enum(u8) {
     swap_prev = 9,
     focus_master = 10,
     set_master = 11,
+    // Absolute focus: payload[1..9] = 8-byte LE pane_id to focus. Lets a mouse
+    // click target a pane directly instead of walking focus_next/prev from a
+    // possibly-stale client index (which wrapped → wrong pane).
+    focus_pane = 12,
+    // Master-area resize (Alt+H / Alt+L). Without a wire command for these,
+    // handleAltKey fell through to .none and Alt+H/L leaked into the pane as
+    // ESC+h / ESC+l, which readline/Claude read as Meta-h (kill-word) /
+    // Meta-l (downcase) — silently mutilating typed input.
+    resize_shrink = 13,
+    resize_grow = 14,
 
     pub fn fromByte(b: u8) ?Command {
-        return if (b <= 11) @enumFromInt(b) else null;
+        return if (b <= 14) @enumFromInt(b) else null;
     }
 };
 
@@ -194,13 +204,36 @@ pub fn decodeResize(payload: []const u8) ?struct { rows: u16, cols: u16 } {
 
 // ── Internal helpers ──────────────────────────────────────────────
 
-/// Write all bytes to fd using raw C write. Returns false on error.
+/// Write all bytes to fd. Resumes across EAGAIN/EINTR so a frame is delivered
+/// as a UNIT. Returns false only on a real error or a dead/stalled peer.
+///
+/// The client_fd is non-blocking; under SSH backpressure the socket send buffer
+/// fills and write() returns EAGAIN mid-frame. The old code returned false here,
+/// which permanently DESYNCED the wire: if the 5-byte header had gone out but
+/// the payload had not, the peer read the next bytes as a fresh header and every
+/// pane corrupted (the garble-under-load symptom). Now we wait for the socket to
+/// drain and finish the frame; a bounded poll keeps a dead peer from wedging the
+/// single-threaded daemon forever.
 fn writeAll(fd: posix.fd_t, data: []const u8) bool {
+    const POLLOUT: i16 = 0x004;
     var written: usize = 0;
     while (written < data.len) {
         const rc = std.c.write(fd, data[written..].ptr, data.len - written);
-        if (rc <= 0) return false;
-        written += @intCast(rc);
+        if (rc > 0) {
+            written += @intCast(rc);
+            continue;
+        }
+        if (rc == 0) return false;
+        switch (posix.errno(rc)) {
+            .INTR => continue,
+            .AGAIN => {
+                var pfd = [1]posix.pollfd{.{ .fd = fd, .events = POLLOUT, .revents = 0 }};
+                const pr = posix.poll(&pfd, 5000) catch return false;
+                if (pr == 0) return false; // 5s with no drain → peer is gone
+                continue;
+            },
+            else => return false,
+        }
     }
     return true;
 }
@@ -469,10 +502,12 @@ test "Command.fromByte: valid and invalid" {
     try std.testing.expectEqual(Command.swap_prev, Command.fromByte(9).?);
     try std.testing.expectEqual(Command.focus_master, Command.fromByte(10).?);
     try std.testing.expectEqual(Command.set_master, Command.fromByte(11).?);
+    try std.testing.expectEqual(Command.focus_pane, Command.fromByte(12).?);
+    try std.testing.expectEqual(Command.resize_shrink, Command.fromByte(13).?);
+    try std.testing.expectEqual(Command.resize_grow, Command.fromByte(14).?);
 
-    // 12+ must return null.
-    try std.testing.expect(Command.fromByte(12) == null);
-    try std.testing.expect(Command.fromByte(13) == null);
+    // 15+ must return null.
+    try std.testing.expect(Command.fromByte(15) == null);
     try std.testing.expect(Command.fromByte(128) == null);
     try std.testing.expect(Command.fromByte(255) == null);
 }

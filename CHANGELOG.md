@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.8.0 (2026-06-02)
+
+Remote-attach multiplexer correctness overhaul. A full review (47 findings, 34
+confirmed) plus a live PTY reproduction rig found that the interactive
+`teru -n NAME` experience was broken in several core ways. Every fix below was
+**reproduced** on a real attached client and **re-verified** after the change
+(routing matrix, layout, content replay). All 527 inline tests pass.
+
+### Fixes (critical)
+
+- **Clicking a pane focused the WRONG pane; typed input landed in a different
+  pane than the one highlighted (S1/S2).** Two root causes: (1) the daemon
+  serialized `active_node` in state_sync, which is always null for flat layouts
+  (master-stack/grid/monocle, where focus lives in `active_index`), so the
+  daemon's real focus never reached the client — now it ships
+  `getActiveNodeId()`; (2) the mouse handler walked `focus_next/prev` a relative
+  number of steps from a stale local index (which *wrapped* to a neighbour) —
+  replaced with an absolute `focus_pane` command carrying the target pane id.
+  The client now resolves the daemon's focus into `active_index` centrally in
+  `parseDaemonStateSync`, covering attach, steady-state, and poll paths.
+  Reproduced: click→pane matrix was fully scrambled; now diagonal on both grid
+  and master-stack.
+- **`closePane` use-after-free could crash the whole daemon.** `orderedRemove`
+  memmoves the remaining `Pane` structs but never re-linked their
+  `vt.grid`/`vt.response_ctx`/`grid.scrollback` self-pointers — the next
+  `vt.feed()` wrote through a freed `*Grid`. Now re-links all survivors (the same
+  invariant the spawn paths uphold).
+
+### Fixes (high)
+
+- **A template `layout = grid` rendered as `master-stack` (S3).**
+  `Workspace.addNode` re-ran `autoSelectLayout()` on every pane spawn,
+  overwriting the declared layout (autoSelect returns master-stack for 2–4
+  panes). Added a `layout_pinned` flag set by template restore and state_sync,
+  gating the three autoSelect sites; cleared by an explicit layout-cycle.
+  Verified: status bar now shows `grid` with a real 2×2 layout.
+- **Reattach showed blank panes; existing screen content was lost.** The client
+  called `pane.grid.clearScreen(2)` on every pane immediately *after* the
+  attach-time grid replay — erasing exactly what it had just replayed. Removed;
+  the non-destructive `resize` preserves the replayed content. Verified: all
+  pane banners now survive attach.
+- **Garble/corruption under SSH load.** `writeAll` treated `EAGAIN` as fatal and
+  aborted mid-frame, permanently desyncing the wire (header sent, payload
+  dropped → the peer reframed every following byte). Now resumes across
+  EAGAIN/EINTR via `POLL.OUT` so each frame is delivered as a unit, with a
+  bounded wait so a dead peer can't wedge the daemon.
+- **Alt+H / Alt+L leaked into the focused pane as `ESC+h` / `ESC+l`**, which
+  readline/Claude read as Meta-h (kill-word) / Meta-l (downcase) — silently
+  mutilating typed input. Added `resize_shrink`/`resize_grow` wire commands and
+  mapped the keys. Verified: no ESC leak; the master pane resizes.
+- **Daemon reflows a pane's Grid (not just the PTY) on per-pane resize**, so a
+  non-active workspace's pane no longer keeps its 24×80 spawn default and replay
+  at the wrong geometry.
+
+### Known remaining (tracked for the next pass)
+
+- A non-active workspace's *pre-attach* content does not yet replay on switch
+  (new output after switching renders fine; switching + focus + input routing
+  all work). Tied to grid-sync coverage / a full state reconcile.
+- Render perf: the grid-sync is still plaintext/lossy and steady-state output is
+  relayed without a damage/delta protocol. The EAGAIN fix removes the
+  corruption; a diffed render + delta protocol is a separately-scoped follow-up.
+- Docs (`KEYBINDINGS.md` TUI/remote section), state_sync buffer enlargement,
+  CSI-timeout de-wedge, ghost-pane pruning, and a centralized append+relink
+  helper remain from the review backlog.
+
 ## 0.7.2 (2026-06-01)
 
 Hotfix on top of 0.7.1: attaching a session and moving the mouse flooded the

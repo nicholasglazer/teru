@@ -297,6 +297,10 @@ fn handleAltKey(self: *Self, key: u8) Action {
         'j' => .{ .command = .focus_next },
         // Alt+K = focus prev
         'k' => .{ .command = .focus_prev },
+        // Alt+H / Alt+L = shrink / grow master (must be intercepted — otherwise
+        // they leak into the pane as ESC+h / ESC+l = readline kill-word/downcase).
+        'h' => .{ .command = .resize_shrink },
+        'l' => .{ .command = .resize_grow },
         // Alt+1-9 = workspace 1-9
         '1' => .{ .workspace = 0 },
         '2' => .{ .workspace = 1 },

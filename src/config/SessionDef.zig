@@ -311,8 +311,11 @@ pub fn restore(def: *SessionDef, mux: *Multiplexer, graph: *ProcessGraph, rows: 
 
         const ws = &mux.layout_engine.workspaces[ws_idx];
 
-        // Set layout and ratio
+        // Set layout and ratio. Pin it so the per-pane spawns below don't
+        // re-run autoSelectLayout and silently overwrite the declared layout
+        // (e.g. `layout = grid` with 4 panes was being stomped to master-stack).
         ws.layout = ws_def.layout;
+        ws.layout_pinned = true;
         ws.master_ratio = ws_def.ratio;
         // Clear split tree so flat layout takes effect
         ws.split_root = null;
