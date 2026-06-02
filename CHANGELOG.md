@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.2 (2026-06-02)
+
+### Added
+
+- **Nested mode** (`TERU_NESTED=1`). When teru runs inside another teru — e.g.
+  a local teru → ssh → remote `teru -n agents` — the inner one now **drops its
+  own status bar and gives that row back to the panes**, so you don't get two
+  overlapping `1 2 3 grid` bars and no blank gap is left behind. Auto-detected
+  via `TERM_PROGRAM=teru` (set in a local teru pane) and, because that env var
+  isn't forwarded over SSH, also via an explicit `TERU_NESTED=1` you set on the
+  remote: `TERU_NESTED=1 teru -n agents`. Note: the **outer** teru still owns
+  Alt + the Ctrl+B prefix (it grabs them first), so the inner session can't be
+  driven by those keys while nested — that's inherent to nesting the same
+  multiplexer; run the SSH session in a non-teru terminal if you want Alt to
+  reach the remote directly.
+
 ## 0.8.1 (2026-06-02)
 
 Hotfix for the SSH render dropout reported against 0.8.0.

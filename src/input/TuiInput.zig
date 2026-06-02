@@ -69,13 +69,20 @@ pub fn init() Self {
 }
 
 /// Create a TuiInput that detects nesting automatically.
-/// When nested inside another teru (TERM_PROGRAM=teru), Alt+key bindings
-/// are disabled and only prefix commands (Ctrl+Space + key) are used.
+/// Nested = running inside another teru. When nested, Alt+key bindings are not
+/// grabbed (the outer teru owns Alt) and the inner teru also drops its own
+/// status bar so it doesn't duplicate the outer's.
+///
+/// Detection: `TERM_PROGRAM=teru` (set in a local teru's pane env) OR
+/// `TERU_NESTED=1`. The env-var fallback exists because TERM_PROGRAM is NOT
+/// forwarded across SSH, so the over-SSH nested case (local teru → ssh → remote
+/// teru) needs an explicit signal: run the remote as `TERU_NESTED=1 teru -n …`.
 pub fn initAutoDetect() Self {
-    const nested = if (compat.getenv("TERM_PROGRAM")) |tp|
+    const term_is_teru = if (compat.getenv("TERM_PROGRAM")) |tp|
         std.mem.eql(u8, std.mem.sliceTo(tp, 0), "teru")
     else
         false;
+    const nested = term_is_teru or (compat.getenv("TERU_NESTED") != null);
     return .{ .nested = nested };
 }
 
