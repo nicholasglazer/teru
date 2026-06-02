@@ -314,11 +314,35 @@ fn appendUtf8(buf: []u8, pos: usize, cp: u21) usize {
 }
 
 fn writeAllFd(fd: i32, data: []const u8) void {
+    const posix = std.posix;
+    const POLLOUT: i16 = 0x004;
     var written: usize = 0;
     while (written < data.len) {
         const rc = std.c.write(fd, data[written..].ptr, data.len - written);
-        if (rc <= 0) return;
-        written += @intCast(rc);
+        if (rc > 0) {
+            written += @intCast(rc);
+            continue;
+        }
+        if (rc == 0) return;
+        switch (posix.errno(rc)) {
+            .INTR => continue,
+            .AGAIN => {
+                // Over SSH, stdin/stdout/stderr share one open file description,
+                // so the O_NONBLOCK we set on stdin (to poll it) ALSO makes
+                // stdout non-blocking. Under SSH backpressure write() returns
+                // EAGAIN; returning here would silently drop the rest of the
+                // frame — and since flush() then updates prev[] to the full
+                // frame, the diff never re-emits the dropped cells. The result:
+                // the tail of the screen (bottom panes) stays blank until a cell
+                // there changes (e.g. on click). Wait for the terminal to drain
+                // and finish the frame instead.
+                var pfd = [1]posix.pollfd{.{ .fd = fd, .events = POLLOUT, .revents = 0 }};
+                const pr = posix.poll(&pfd, 5000) catch return;
+                if (pr == 0) return;
+                continue;
+            },
+            else => return,
+        }
     }
 }
 
