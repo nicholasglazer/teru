@@ -14,6 +14,7 @@ const compat = @import("../compat.zig");
 const ipc = @import("ipc.zig");
 const Allocator = std.mem.Allocator;
 const Multiplexer = @import("../core/Multiplexer.zig");
+const Pane = @import("../core/Pane.zig");
 const ProcessGraph = @import("../graph/ProcessGraph.zig");
 const McpServer = @import("../agent/McpServer.zig");
 const Hooks = @import("../config/Hooks.zig");
@@ -303,66 +304,89 @@ fn tryAcceptClient(self: *Daemon) void {
     self.sendGridSync();
 }
 
-/// Send visible grid content for all panes to the client.
-/// This enables the client to render immediately on reconnect.
-fn sendGridSync(self: *Daemon) void {
+/// Replay ONE pane's visible grid to the client as a self-contained snapshot:
+///   clear screen → home → repaint every row from the top → restore the cursor.
+/// Sent on attach AND re-sent after every resize (see handleClientData), so the
+/// client's copy always exactly mirrors the daemon's grid at the current size.
+///
+/// Why clear + cursor-restore: the previous version homed and repainted but never
+/// cleared and never restored the cursor — and it ran once, BEFORE the client's
+/// resize. So the stale (pre-resize) snapshot stayed on screen while the live
+/// shell redrew its prompt at the post-resize position, leaving a DUPLICATE: a
+/// frozen copy at the top plus the live prompt lower down. Clearing first
+/// replaces any stale content; restoring the cursor makes the live shell's next
+/// output land exactly on the replayed copy instead of beside it.
+/// (Plaintext/ASCII only — SGR/wide-glyph fidelity is a separately-scoped TODO.)
+fn sendPaneGridSync(self: *Daemon, pane: *Pane) void {
     const cfd = self.client_fd orelse return;
     var line_buf: [16384]u8 = undefined;
+    var grid_buf: [65536]u8 = undefined;
+    var gpos: usize = 0;
 
-    for (self.mux.panes.items) |*pane| {
-        // Build grid content: rows of text for VtParser to replay
-        var grid_buf: [65536]u8 = undefined;
-        var gpos: usize = 0;
+    // pane_id prefix
+    std.mem.writeInt(u64, grid_buf[0..8], pane.id, .little);
+    gpos = 8;
 
-        // Encode pane_id prefix
-        std.mem.writeInt(u64, grid_buf[0..8], pane.id, .little);
-        gpos = 8;
+    // Clear the pane then home, so this repaint REPLACES any stale snapshot
+    // rather than layering on top of it (the duplication bug).
+    const clear_home = "\x1b[2J\x1b[H";
+    @memcpy(grid_buf[gpos..][0..clear_home.len], clear_home);
+    gpos += clear_home.len;
 
-        // Encode visible grid as VT sequences: cursor home + each row's text
-        // ESC[H = cursor home
-        if (gpos + 3 <= grid_buf.len) {
-            grid_buf[gpos] = 0x1b;
-            grid_buf[gpos + 1] = '[';
-            grid_buf[gpos + 2] = 'H';
-            gpos += 3;
-        }
-
-        var row: u16 = 0;
-        while (row < pane.grid.rows) : (row += 1) {
-            const row_start = @as(usize, row) * @as(usize, pane.grid.cols);
-            var col: u16 = 0;
-            var line_len: usize = 0;
-            while (col < pane.grid.cols) : (col += 1) {
-                if (row_start + col >= pane.grid.cells.len) break;
-                const cell = pane.grid.cells[row_start + col];
-                if (cell.char >= 32 and cell.char < 127) {
-                    if (line_len < line_buf.len) {
-                        line_buf[line_len] = @intCast(cell.char);
-                        line_len += 1;
-                    }
-                } else {
-                    if (line_len < line_buf.len) {
-                        line_buf[line_len] = ' ';
-                        line_len += 1;
-                    }
+    var row: u16 = 0;
+    while (row < pane.grid.rows) : (row += 1) {
+        const row_start = @as(usize, row) * @as(usize, pane.grid.cols);
+        var col: u16 = 0;
+        var line_len: usize = 0;
+        while (col < pane.grid.cols) : (col += 1) {
+            if (row_start + col >= pane.grid.cells.len) break;
+            const cell = pane.grid.cells[row_start + col];
+            if (cell.char >= 32 and cell.char < 127) {
+                if (line_len < line_buf.len) {
+                    line_buf[line_len] = @intCast(cell.char);
+                    line_len += 1;
+                }
+            } else {
+                if (line_len < line_buf.len) {
+                    line_buf[line_len] = ' ';
+                    line_len += 1;
                 }
             }
-            // Trim trailing spaces
-            while (line_len > 0 and line_buf[line_len - 1] == ' ') line_len -= 1;
-
-            if (gpos + line_len + 2 > grid_buf.len) break;
-            @memcpy(grid_buf[gpos..][0..line_len], line_buf[0..line_len]);
-            gpos += line_len;
-            // Newline (CR+LF) between rows
-            if (row + 1 < pane.grid.rows) {
-                grid_buf[gpos] = '\r';
-                grid_buf[gpos + 1] = '\n';
-                gpos += 2;
-            }
         }
+        // Trim trailing spaces
+        while (line_len > 0 and line_buf[line_len - 1] == ' ') line_len -= 1;
 
-        _ = proto.sendMessage(cfd, .output, grid_buf[0..gpos]);
+        if (gpos + line_len + 2 > grid_buf.len) break;
+        @memcpy(grid_buf[gpos..][0..line_len], line_buf[0..line_len]);
+        gpos += line_len;
+        // Newline (CR+LF) between rows
+        if (row + 1 < pane.grid.rows) {
+            grid_buf[gpos] = '\r';
+            grid_buf[gpos + 1] = '\n';
+            gpos += 2;
+        }
     }
+
+    // Restore the cursor to the daemon's real position (1-based CUP) so the live
+    // shell's next byte continues where the replay left off — not at the bottom
+    // where the trailing-blank-row CRLFs would otherwise have parked it.
+    var cur_buf: [24]u8 = undefined;
+    const cur = std.fmt.bufPrint(&cur_buf, "\x1b[{d};{d}H", .{
+        pane.grid.cursor_row + 1,
+        pane.grid.cursor_col + 1,
+    }) catch "";
+    if (gpos + cur.len <= grid_buf.len) {
+        @memcpy(grid_buf[gpos..][0..cur.len], cur);
+        gpos += cur.len;
+    }
+
+    _ = proto.sendMessage(cfd, .output, grid_buf[0..gpos]);
+}
+
+/// Replay every pane's grid to the client (on attach / full re-sync).
+fn sendGridSync(self: *Daemon) void {
+    if (self.client_fd == null) return;
+    for (self.mux.panes.items) |*pane| self.sendPaneGridSync(pane);
 }
 
 fn handleClientData(self: *Daemon, recv_buf: []u8) void {
@@ -400,15 +424,22 @@ fn handleClientData(self: *Daemon, recv_buf: []u8) void {
                                 // grid for a non-active workspace's pane stays at its
                                 // 24×80 spawn default and replays at the wrong geometry
                                 // on the next attach. &pane.grid is stable, so no relink.
-                                if (sz.rows != 0 and sz.cols != 0)
+                                if (sz.rows != 0 and sz.cols != 0) {
                                     pane.resize(self.allocator, sz.rows, sz.cols) catch |e|
                                         std.log.scoped(.daemon).warn("pane resize failed: {s}", .{@errorName(e)});
+                                    // Re-send this pane's grid at the new size so the
+                                    // client replaces its pre-resize snapshot (which was
+                                    // at the wrong geometry) — kills the duplicate prompt.
+                                    self.sendPaneGridSync(pane);
+                                }
                             }
                         }
                     }
                 }
             } else if (proto.decodeResize(payload)) |sz| {
                 self.resizeAllPanes(sz.rows, sz.cols);
+                // Full re-sync after a whole-screen resize, same rationale.
+                self.sendGridSync();
             }
         },
         .detach => {
