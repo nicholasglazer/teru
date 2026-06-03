@@ -15,18 +15,30 @@ See `memory/feedback_verify_before_release.md`.
 
 - Kill any existing instance: `pkill -f "^/home/ng/code/foss/teru/zig-out/bin/teruwm"`
 - Clean stale sockets: `rm -f /run/user/1000/wayland-*.lock`
-- Start detached with captured output:
+- **Pick the backend** — teruwm uses `wlr_backend_autocreate`, which chooses by env:
+  - **Headless** (default for Claude-driven tests, no visible window):
+    `WLR_BACKENDS=headless WLR_RENDERER=pixman` → off-screen `HEADLESS-1` output,
+    drive purely over MCP.
+  - **Nested X11 window** (when you want it visible on the user's Xorg `:0`):
+    `DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority` → autocreate picks the X11 backend and
+    opens teruwm as a normal window on the existing X server. No DRM seat needed.
+  - **Bare DRM/KMS** (real standalone compositor on a free VT): NO `DISPLAY`/
+    `WAYLAND_DISPLAY`, NO `WLR_BACKENDS`. This is the ONLY path that needs the seat.
+- Start detached with captured output (headless example):
   ```
-  setsid /home/ng/code/foss/teru/zig-out/bin/teruwm >/tmp/teruwm-live.log 2>&1 < /dev/null &
+  WLR_BACKENDS=headless WLR_RENDERER=pixman \
+    setsid /home/ng/code/workbench/foss/teru/zig-out/bin/teruwm >/tmp/teruwm-live.log 2>&1 < /dev/null &
   disown
   ```
-- Wait 2–3 s, then confirm PID + socket:
+- Wait 2–3 s, then confirm PID + socket (note the real name is `teruwm-mcp-<pid>.sock`):
   ```
-  pgrep -af "^/home/ng/code/foss/teru/zig-out/bin/teruwm"
-  ls /run/user/1000/teru-wmmcp-*.sock
+  pgrep -af "/home/ng/code/workbench/foss/teru/zig-out/bin/teruwm"
+  ls /run/user/1000/teruwm-mcp-*.sock
   ```
-- If the log shows `Timeout waiting session to become active`, the user's
-  Xorg session owns the DRM seat — tell the user and wait. Don't retry.
+- The `Timeout waiting session to become active` failure is **specific to the bare
+  DRM backend** when an Xorg/another compositor already holds the DRM seat. It does
+  NOT apply to the headless or nested-X11 backends — those launch fine even while
+  Xorg owns the seat. So prefer headless (or `DISPLAY=:0`) and you won't hit it.
 
 ## Drive via MCP
 
@@ -35,7 +47,7 @@ Use the small HTTP-over-Unix-socket helper at `/tmp/teruwm-probe/mcp.py`
 history). Command shape:
 
 ```
-python3 /tmp/teruwm-probe/mcp.py /run/user/1000/teru-wmmcp-$PID.sock \
+python3 /tmp/teruwm-probe/mcp.py /run/user/1000/teruwm-mcp-$PID.sock \
   '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"<TOOL>","arguments":{...}}}'
 ```
 

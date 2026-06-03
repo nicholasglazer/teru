@@ -256,6 +256,8 @@ const write_tool_names = [_][]const u8{
     "teru_set_config",
     "teru_session_restore",
     "teru_focus_pane",
+    "teru_swap_pane",
+    "teru_move_pane",
 };
 
 /// Snapshotted at server init from `$TERU_MCP_READONLY=1`.

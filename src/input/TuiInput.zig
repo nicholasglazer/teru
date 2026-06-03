@@ -42,7 +42,10 @@ csi_buf: [32]u8 = undefined,
 csi_len: usize = 0,
 /// Timestamp of last ESC byte (for Alt+key timeout)
 esc_timestamp: i64 = 0,
-/// When nested inside another teru, only use prefix key (no Alt shortcuts)
+/// When nested inside another teru. Selects the Ctrl+A prefix (the outer owns
+/// Ctrl+B) and suppresses the inner status bar. Does NOT suppress Alt handling —
+/// a teru outer forwards Alt after the OSC 9998 handshake (see handleAltKey);
+/// in a plain non-teru terminal with TERU_NESTED=1, Alt is consumed by the inner.
 nested: bool = false,
 /// Last mouse event (set by feed(), consumed by caller)
 last_mouse: ?struct { col: u16, row: u16, button: u8, release: bool } = null,
@@ -74,9 +77,12 @@ pub fn init() Self {
 }
 
 /// Create a TuiInput that detects nesting automatically.
-/// Nested = running inside another teru. When nested, Alt+key bindings are not
-/// grabbed (the outer teru owns Alt) and the inner teru also drops its own
-/// status bar so it doesn't duplicate the outer's.
+/// Nested = running inside another teru (or TERU_NESTED=1). When nested the
+/// prefix becomes Ctrl+A (the outer owns Ctrl+B) and the inner drops its own
+/// status bar. Alt is STILL handled when it reaches this process: a teru outer
+/// forwards Alt+key after the OSC 9998 handshake; a non-teru terminal passes
+/// ESC+key straight through, so Alt is consumed by the inner (use the Ctrl+A
+/// prefix for any shell-bound Alt keys in that case).
 ///
 /// Detection: `TERM_PROGRAM=teru` (set in a local teru's pane env) OR
 /// `TERU_NESTED=1`. The env-var fallback exists because TERM_PROGRAM is NOT
@@ -308,13 +314,12 @@ pub fn isPrefixActive(self: *const Self) bool {
     return self.prefix_active;
 }
 
-fn handleAltKey(self: *Self, key: u8) Action {
+fn handleAltKey(_: *Self, key: u8) Action {
     // Note: when nested, the outer teru only delivers Alt+key to us if it has
-    // chosen to FORWARD it (OSC 9998 handshake). If it forwards, we should act on
-    // it (drive the remote with the same Alt shortcuts as the local teru); if it
+    // chosen to FORWARD it (OSC 9998 handshake). If it forwards, we act on it
+    // (drive the remote with the same Alt shortcuts as the local teru); if it
     // doesn't, we never see Alt here. So we handle Alt the same whether nested or
     // not — there's no longer a reason to short-circuit on `nested`.
-    _ = self;
     return switch (key) {
         // Alt+J = focus next
         'j' => .{ .command = .focus_next },

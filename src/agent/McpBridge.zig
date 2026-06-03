@@ -241,6 +241,8 @@ const write_tool_names = [_][]const u8{
     "teru_set_config",
     "teru_session_restore",
     "teru_focus_pane",
+    "teru_swap_pane",
+    "teru_move_pane",
 };
 
 fn isBlockedToolCall(line: []const u8) bool {

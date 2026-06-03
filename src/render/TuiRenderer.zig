@@ -33,11 +33,13 @@ const PaneSize = struct { id: u64 = 0, rows: u16 = 0, cols: u16 = 0 };
 /// edge — teruwm/xmonad-style breathing room. Applied as a half-gap pre-inset on
 /// the tiling area + a half-gap post-inset on each pane, so inter-pane spacing
 /// and edge spacing both equal `2 * pane_gap`. 0 would restore touching borders.
-const pane_gap: u16 = 1;
+/// `pub` so the mouse hit-test in modes/tui.zig uses the SAME value — a single
+/// source of truth keeps click geometry identical to render geometry.
+pub const pane_gap: u16 = 1;
 
 // Border colors (ANSI indexed)
 const border_active: Color = .{ .rgb = .{ .r = 0xFF, .g = 0x98, .b = 0x37 } }; // miozu orange #FF9837
-const border_inactive: Color = .{ .indexed = 240 }; // dark gray (visible on dark bg)
+// (inactive panes draw no border — gap-only separation, xmonad smart borders)
 const status_fg: Color = .{ .indexed = 7 }; // white
 const status_bg: Color = .{ .indexed = 0 }; // black
 const status_active_fg: Color = .{ .indexed = 0 }; // black on yellow
