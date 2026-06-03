@@ -38,6 +38,17 @@ const Vec4u16 = @Vector(4, u16);
 /// span it's 64 vector stores. Replaces a per-scanline scalar `@memset`
 /// that was 200×50×16 ≈ 160 K function-call entries per frame on a
 /// typical grid.
+/// Draw a 1px hollow outline of a cell rect — the unfocused-pane cursor.
+/// Four thin fillRect strips (top/bottom/left/right) so an inactive terminal's
+/// cursor reads as "not active" while still showing its position.
+inline fn drawHollowRect(fb: []u32, fb_w: usize, x0: usize, y0: usize, x1: usize, y1: usize, color: u32) void {
+    if (x1 <= x0 or y1 <= y0) return;
+    fillRect(fb, fb_w, x0, y0, x1, @min(y0 + 1, y1), color); // top
+    fillRect(fb, fb_w, x0, y1 - 1, x1, y1, color); // bottom
+    fillRect(fb, fb_w, x0, y0, @min(x0 + 1, x1), y1, color); // left
+    fillRect(fb, fb_w, x1 - 1, y0, x1, y1, color); // right
+}
+
 inline fn fillRect(
     fb: []u32,
     fb_w: usize,
@@ -81,8 +92,9 @@ pub const SoftwareRenderer = struct {
     cursor_color: u32, // configurable cursor block color (ARGB)
     padding: u32, // pixels of padding around content
     scheme: ColorScheme, // runtime color scheme (palette + semantic colors)
-    cursor_blink_on: bool = true, // toggled by blink timer (teruwm: reused as "this pane is focused")
+    cursor_blink_on: bool = true, // blink phase — toggled by a blink timer; stays true when blink is off
     cursor_visible: bool = true, // DECTCEM (ESC[?25l hides); set by the caller from VtParser.cursor_visible
+    cursor_focused: bool = true, // is THIS pane focused — focused draws a SOLID cursor, unfocused a HOLLOW outline
     last_cursor_row: u16 = 0, // previous cursor row (for dirty tracking)
     allocator: std.mem.Allocator,
 
@@ -341,10 +353,13 @@ pub const SoftwareRenderer = struct {
         }
 
         // 3. Draw cursor at cursor position (shape from grid.cursor_shape).
-        // Gated on DECTCEM (cursor_visible) — teruwm panes used to draw the
-        // cursor unconditionally, ignoring ESC[?25l — and on cursor_blink_on
-        // (blink/focus, set by the caller; defaults on).
-        if (self.cursor_visible and self.cursor_blink_on and
+        // Gated on DECTCEM (cursor_visible — teruwm panes used to draw the cursor
+        // unconditionally, ignoring ESC[?25l). FOCUS-aware: the focused pane gets
+        // a SOLID cursor (gated on the blink phase when blinking is on); an
+        // UNFOCUSED pane gets a HOLLOW outline so you can still see where the
+        // cursor is without it looking active. Only one pane is focused, so only
+        // one solid cursor shows.
+        if (self.cursor_visible and
             grid.cursor_row < grid.rows and grid.cursor_col < grid.cols)
         {
             const cx: usize = @as(usize, grid.cursor_col) * cw + self.padding;
@@ -354,20 +369,26 @@ pub const SoftwareRenderer = struct {
             const cursor_max_y = @min(cy + ch, fb_h);
             const cursor_max_x = @min(cx + cw, fb_w);
 
-            switch (grid.cursor_shape) {
-                .block => fillRect(self.framebuffer, fb_w, cx, cy, cursor_max_x, cursor_max_y, cursor_color),
-                .underline => {
-                    // Fill bottom 2 rows of the cell
-                    const ul_start = if (ch >= 2) cy + ch - 2 else cy;
-                    const ul_min = @min(ul_start, fb_h);
-                    fillRect(self.framebuffer, fb_w, cx, ul_min, cursor_max_x, cursor_max_y, cursor_color);
-                },
-                .bar => {
-                    // Fill left 2 columns of the cell
-                    const bar_w = @min(@as(usize, 2), cw);
-                    const bar_max_x = @min(cx + bar_w, fb_w);
-                    fillRect(self.framebuffer, fb_w, cx, cy, bar_max_x, cursor_max_y, cursor_color);
-                },
+            if (!self.cursor_focused) {
+                // Unfocused pane → hollow outline (always shown, no blink).
+                drawHollowRect(self.framebuffer, fb_w, cx, cy, cursor_max_x, cursor_max_y, cursor_color);
+            } else if (self.cursor_blink_on) {
+                // Focused pane → solid cursor in the configured shape.
+                switch (grid.cursor_shape) {
+                    .block => fillRect(self.framebuffer, fb_w, cx, cy, cursor_max_x, cursor_max_y, cursor_color),
+                    .underline => {
+                        // Fill bottom 2 rows of the cell
+                        const ul_start = if (ch >= 2) cy + ch - 2 else cy;
+                        const ul_min = @min(ul_start, fb_h);
+                        fillRect(self.framebuffer, fb_w, cx, ul_min, cursor_max_x, cursor_max_y, cursor_color);
+                    },
+                    .bar => {
+                        // Fill left 2 columns of the cell
+                        const bar_w = @min(@as(usize, 2), cw);
+                        const bar_max_x = @min(cx + bar_w, fb_w);
+                        fillRect(self.framebuffer, fb_w, cx, cy, bar_max_x, cursor_max_y, cursor_color);
+                    },
+                }
             }
         }
     }

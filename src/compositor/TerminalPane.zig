@@ -376,11 +376,12 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     const sel_ptr: ?*const Selection = if (self.selection.active) &self.selection else null;
     const so: u32 = self.pane.scroll_offset;
     const sbl: u32 = if (grid.scrollback) |sb| @intCast(sb.lineCount()) else 0;
-    // Honour DECTCEM (ESC[?25l): the teruwm SoftwareRenderer path drew the
-    // cursor unconditionally, so a hidden cursor still showed. (Focus-based
-    // hollowing of unfocused panes is left to a follow-up — it needs focus
-    // changes to repaint the cursor cell, which repaintBorderOnly does not.)
+    // Honour DECTCEM (ESC[?25l) and focus: the focused pane draws a SOLID cursor,
+    // unfocused panes a HOLLOW outline — so two visible panes don't both look
+    // active. (repaintBorderOnly re-applies cursor_focused + repaints the cursor
+    // cell on focus flips, which the old border-only paint skipped.)
     self.renderer.cursor_visible = self.pane.vt.cursor_visible;
+    self.renderer.cursor_focused = (self.server.focused_terminal == self);
     self.renderer.renderDirtyWithSelection(grid, sel_ptr, so, sbl);
 
     const border: c_int = if (self.shouldDrawBorder()) blk: {
@@ -406,20 +407,30 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
 /// border colour changes but the cells haven't; a full `render()`
 /// here was re-SIMD-blitting thousands of cells for nothing.
 pub fn repaintBorderOnly(self: *TerminalPane) void {
-    if (!self.shouldDrawBorder()) return;
-    const border_color = self.borderColor();
-    self.drawBorder(border_color);
-    // Only the 4 border strips changed — damage region is just those.
-    // Pass dirty_y0=-1 so the helper skips the middle-band and unions
-    // only the border strips.
+    // Focus changed: re-apply the cursor's focus style (solid↔hollow) and repaint
+    // its row, plus the border. This used to be border-only, which left an
+    // unfocused pane still showing a SOLID 'active' cursor (the deferred follow-up
+    // noted in renderIfDirty). The cursor row is one cell tall — far cheaper than
+    // a full re-blit, so the original perf intent holds.
+    self.renderer.cursor_focused = (self.server.focused_terminal == self);
+    const grid = &self.pane.grid;
+    const ch: usize = self.renderer.cell_height;
+    const cy: usize = @as(usize, grid.cursor_row) * ch; // padding = 0 in the compositor fb
+    const cy1: usize = @min(cy + ch, @as(usize, self.renderer.height));
+    grid.markRowDirty(grid.cursor_row);
+    self.renderer.renderDirty(grid); // repaints the cursor row + cursor in the new style
+
+    const has_border = self.shouldDrawBorder();
+    if (has_border) self.drawBorder(self.borderColor());
+    // Damage region = the cursor row band (+ border strips when present).
     wlr.miozu_scene_buffer_commit_dirty(
         self.scene_buffer,
         self.pixel_buffer,
         @intCast(self.renderer.width),
         @intCast(self.renderer.height),
-        0, // dirty_y0 = 0
-        0, // dirty_y1 = 0 → middle band is zero-height, skipped
-        2,
+        @intCast(cy),
+        @intCast(cy1),
+        if (has_border) @as(c_int, 2) else @as(c_int, 0),
     );
 }
 
