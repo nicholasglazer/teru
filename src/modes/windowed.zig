@@ -766,7 +766,12 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                 const fwd_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else if (keysym == ks.Return) '\r' else 0;
                                 if (fwd_char != 0) {
                                     if (mux.getActivePaneMut()) |pane| {
-                                        if (pane.vt.nested_alt_forward) {
+                                        // Only forward while the pane is actually showing the
+                                        // nested teru (alt screen). If the inner exited and the
+                                        // pane fell back to a shell, this stops us forwarding
+                                        // Alt+key into that shell as ESC+key (Meta-key) — a stale
+                                        // nested_alt_forward flag can otherwise mangle shell input.
+                                        if (pane.vt.nested_alt_forward and pane.vt.alt_screen) {
                                             const ab = [2]u8{ 0x1b, fwd_char };
                                             _ = pane.ptyWrite(&ab) catch {};
                                             continue;

@@ -354,15 +354,19 @@ pub fn getBorderColor(graph: ?*const ProcessGraph, pane_id: u64, is_active: bool
 
 // ── Rect utility ──────────────────────────────────────────────────
 
-/// Shrink a rect by n pixels on each side.
+/// Shrink a rect by n on each side. The origin ALWAYS shifts inward by n; the
+/// dimensions clamp to 0 when the rect is too small to inset (callers guard
+/// against 0 width/height). Returning the rect unchanged for a too-small pane —
+/// the previous behaviour — left it at an UN-shifted origin while its neighbours
+/// shifted, so it bled into the adjacent gap (and desynced the click hit-test).
+/// `*|` / `+|` saturate the (not-reachable-today) overflow cases.
 pub fn insetRect(rect: Rect, n: u16) Rect {
-    const double_n = n * 2;
-    if (rect.width <= double_n or rect.height <= double_n) return rect;
+    const double_n = n *| 2;
     return .{
-        .x = rect.x + n,
-        .y = rect.y + n,
-        .width = rect.width - double_n,
-        .height = rect.height - double_n,
+        .x = rect.x +| n,
+        .y = rect.y +| n,
+        .width = if (rect.width > double_n) rect.width - double_n else 0,
+        .height = if (rect.height > double_n) rect.height - double_n else 0,
     };
 }
 
@@ -378,10 +382,14 @@ test "insetRect" {
     try t.expectEqual(@as(u16, 98), inset.width);
     try t.expectEqual(@as(u16, 78), inset.height);
 
-    // Too small to inset
-    const tiny = Rect{ .x = 0, .y = 0, .width = 2, .height = 2 };
-    const no_change = insetRect(tiny, 1);
-    try t.expect(no_change.eql(tiny));
+    // Too small to inset: the origin still shifts by n; dimensions clamp to 0
+    // (so the pane renders as nothing rather than bleeding into a neighbour's gap).
+    const tiny = Rect{ .x = 5, .y = 3, .width = 2, .height = 2 };
+    const clamped = insetRect(tiny, 1);
+    try t.expectEqual(@as(u16, 6), clamped.x);
+    try t.expectEqual(@as(u16, 4), clamped.y);
+    try t.expectEqual(@as(u16, 0), clamped.width);
+    try t.expectEqual(@as(u16, 0), clamped.height);
 }
 
 test "drawBorder" {

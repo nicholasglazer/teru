@@ -1075,6 +1075,10 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
                         self.alt_screen = false;
                         self.grid.switchToMainScreen();
                     }
+                    // A nested teru lives in the alt screen; when it leaves the alt
+                    // screen it is no longer driving this pane, so drop its Alt-forward
+                    // claim too (belt-and-suspenders alongside the OSC 9998;0 release).
+                    self.nested_alt_forward = false;
                 },
                 1000, 1002, 1003 => self.mouse_tracking = .none,
                 1006 => self.mouse_sgr = false,

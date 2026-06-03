@@ -18,6 +18,7 @@ const Multiplexer = @import("../core/Multiplexer.zig");
 const TuiScreen = @import("../render/TuiScreen.zig");
 const TuiRenderer = @import("../render/TuiRenderer.zig");
 const TuiInput = @import("../input/TuiInput.zig");
+const Compositor = @import("../render/Compositor.zig");
 const daemon_proto = @import("../server/protocol.zig");
 
 // SIGWINCH self-pipe — set by run() before installing the handler.
@@ -229,15 +230,28 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
             if (tui_input.last_mouse) |mouse| {
                 tui_input.last_mouse = null;
                 if (!mouse.release and mouse.button == 0) {
-                    // Left click → focus pane under cursor
+                    // Left click → focus pane under cursor. This MUST mirror
+                    // TuiRenderer's geometry exactly — same gapped screen_rect AND the
+                    // same per-rect post-inset by g — or the hit-test lives in a
+                    // different coordinate space than what's drawn, and clicks near
+                    // pane edges / in the gaps focus the wrong pane.
                     const active_ws = &mux.layout_engine.workspaces[mux.active_workspace];
                     const pane_ids = active_ws.node_ids.items;
                     const LE_Rect = @import("../tiling/LayoutEngine.zig").Rect;
-                    const sr = LE_Rect{ .x = 0, .y = 0, .width = screen.width, .height = if (screen.height > 1) screen.height - 1 else screen.height };
+                    const multi_pane = pane_ids.len > 1;
+                    const g: u16 = if (multi_pane) TuiRenderer.pane_gap else 0;
+                    // Mirror TuiRenderer.content_height EXACTLY: nested mode drops the
+                    // status bar and gives that row back to the panes, so the tiling area
+                    // is the full height; non-nested reserves the last row for the bar.
+                    const content_h = if (tui_input.isNested())
+                        screen.height
+                    else if (screen.height > 1) screen.height - 1 else screen.height;
+                    const sr = LE_Rect{ .x = g, .y = g, .width = screen.width -| (2 *| g), .height = content_h -| (2 *| g) };
                     const rects = mux.layout_engine.calculate(mux.active_workspace, sr) catch null;
                     if (rects) |rs| {
                         defer allocator.free(rs);
-                        for (rs, 0..) |rect, idx| {
+                        for (rs, 0..) |raw_rect, idx| {
+                            const rect = Compositor.insetRect(raw_rect, g);
                             if (mouse.col >= rect.x and mouse.col < rect.x + rect.width and
                                 mouse.row >= rect.y and mouse.row < rect.y + rect.height)
                             {
