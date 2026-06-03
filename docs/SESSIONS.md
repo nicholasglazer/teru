@@ -112,13 +112,51 @@ one session beyond that 160-pane ceiling.
 
 ## Switching, splitting, detaching
 
-Inside an attached session:
+Inside an attached session (the over-SSH TUI client):
 
 - **Alt+1 … Alt+0** — switch workspace (same muscle memory as tmux `M-1`…`M-9`).
+- **Alt+J / Alt+K** — focus next / previous pane.
+- **Alt+H / Alt+L** — shrink / grow the master area.
 - **Alt+C** — new pane in the current workspace.
-- **Ctrl-\\** — detach (leaves everything running).
+- **Click a pane** — focus it directly (the typed input then lands in that pane).
+- **Ctrl+B** — prefix key; the next key is a command (e.g. `Ctrl+B Space` cycles
+  the layout, `Ctrl+B n` / `Ctrl+B p` focus next/prev, `Ctrl+B 1…0` switch
+  workspace, `Ctrl+B d` detaches).
+- **Ctrl-\\** — detach immediately (leaves everything running).
 
-See [KEYBINDINGS.md](KEYBINDINGS.md) for the full set.
+See [KEYBINDINGS.md](KEYBINDINGS.md#remote--tui-session-teru--n-over-ssh) for the
+full remote keymap.
+
+## Nested sessions (a local teru → ssh → remote teru)
+
+A common shape is running a **local** teru, opening a pane, and `ssh`-ing into a
+server where you attach a **remote** teru session:
+
+```sh
+# in a local teru pane:
+ssh -p 2248 you@server
+TERU_NESTED=1 teru -n agents       # attach the remote session, nested-aware
+```
+
+Two teru multiplexers are now stacked in the same terminal. teru detects this
+("nested mode") and adapts:
+
+- **The inner teru drops its own status bar**, giving that row back to the panes —
+  so you see one bar (the outer's), not two overlapping ones with a blank gap.
+- **`Alt` drives the remote.** The inner announces itself (OSC 9998) and the outer
+  **forwards `Alt`+key to it**, so the nested session responds to the *same* `Alt`
+  shortcuts as your local one — `Alt+1/2/3` (workspace), `Alt+J/K` (focus),
+  `Alt+H/L` (resize). No new muscle memory.
+- **`RAlt` and the outer prefix stay local.** `RAlt`+key rearranges the nested
+  pane *within your local layout*, and `Ctrl+B` / `Ctrl+Space` always controls the
+  *outer* teru — the escape hatch while focused on the remote. `Ctrl+A` remains
+  available as the inner's fallback prefix.
+
+Detection is automatic when the remote terminal is itself a teru pane
+(`TERM_PROGRAM=teru`), but that variable is **not** forwarded over SSH — so for
+the local→ssh→remote case set `TERU_NESTED=1` explicitly on the remote, as above.
+With an older outer teru (no Alt-forwarding) or a non-teru terminal, drive the
+remote with the `Ctrl+A` prefix instead.
 
 ## Commands
 

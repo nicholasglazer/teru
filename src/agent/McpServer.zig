@@ -377,5 +377,7 @@ const dispatch_table: [mcp_dispatch.tools.len]Handler = .{
     impl.callSessionRestore,
     impl.callScreenshot,
     impl.callSubscribeEvents,
+    impl.callSwapPane,
+    impl.callMovePane,
 };
 

@@ -184,7 +184,61 @@ pub fn callSubscribeEvents(self: *McpServer, params: []const u8, buf: []u8, id: 
     , .{ teru_path, id_str }) catch tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
+pub fn callSwapPane(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const pane_id = tools.extractNestedJsonInt(params, "pane_id") orelse
+        return tools.jsonRpcError(buf, id, -32602, "Missing pane_id");
+    const direction = tools.extractNestedJsonString(params, "direction") orelse "next";
+    return toolSwapPane(self, pane_id, direction, buf, id);
+}
+pub fn callMovePane(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const pane_id = tools.extractNestedJsonInt(params, "pane_id") orelse
+        return tools.jsonRpcError(buf, id, -32602, "Missing pane_id");
+    const workspace = tools.extractNestedJsonInt(params, "workspace") orelse
+        return tools.jsonRpcError(buf, id, -32602, "Missing workspace");
+    if (workspace > 9) return tools.jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
+    return toolMovePane(self, pane_id, @intCast(workspace), buf, id);
+}
+
 // ── Tool implementations ───────────────────────────────────────
+
+/// Focus a pane by id: make its workspace active and select it. Returns false
+/// if no pane has that id. Shared by swap/move (which act on the active pane).
+fn focusPaneById(self: *McpServer, pane_id: u64) bool {
+    for (&self.multiplexer.layout_engine.workspaces, 0..) |*ws, ws_idx| {
+        for (ws.node_ids.items, 0..) |node_id, node_idx| {
+            if (node_id == pane_id) {
+                ws.active_index = node_idx;
+                self.multiplexer.active_workspace = @intCast(ws_idx);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn toolSwapPane(self: *McpServer, pane_id: u64, direction: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+    if (!focusPaneById(self, pane_id))
+        return tools.jsonRpcError(buf, id, -32602, "Pane not found");
+    if (std.mem.eql(u8, direction, "prev"))
+        self.multiplexer.swapPanePrev()
+    else
+        self.multiplexer.swapPaneNext();
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
+    , .{id_str}) catch tools.jsonRpcError(buf, id, -32603, "Internal error");
+}
+
+fn toolMovePane(self: *McpServer, pane_id: u64, workspace: u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const id_str = id orelse "null";
+    if (!focusPaneById(self, pane_id))
+        return tools.jsonRpcError(buf, id, -32602, "Pane not found");
+    if (!self.multiplexer.movePaneToWorkspace(workspace))
+        return tools.jsonRpcError(buf, id, -32602, "Move failed");
+    return std.fmt.bufPrint(buf,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
+    , .{id_str}) catch tools.jsonRpcError(buf, id, -32603, "Internal error");
+}
 
 fn toolListPanes(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
     const id_str = id orelse "null";

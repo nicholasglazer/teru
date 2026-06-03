@@ -147,6 +147,18 @@ pub const tools = [_]Tool{
         \\"description":"Returns the Unix-socket paths for newline-delimited JSON event streams. `teru` is always present (pane spawn/exit, command exec). `teruwm` is present iff the compositor is running — subscribe to both to observe terminal and window-manager events from a single agent.","inputSchema":{"type":"object","properties":{},"required":[]}
         ,
     },
+    .{
+        .name = "teru_swap_pane",
+        .schema_json =
+        \\"description":"Rearrange the tiling: swap a pane with its next/previous neighbour in the workspace order (xmonad-style move). Combine with teru_set_layout to drive the window arrangement entirely from an agent.","inputSchema":{"type":"object","properties":{"pane_id":{"type":"integer"},"direction":{"type":"string","enum":["next","prev"],"default":"next"}},"required":["pane_id"]}
+        ,
+    },
+    .{
+        .name = "teru_move_pane",
+        .schema_json =
+        \\"description":"Move a pane to another workspace (0-9). The pane keeps running; only its workspace assignment changes.","inputSchema":{"type":"object","properties":{"pane_id":{"type":"integer"},"workspace":{"type":"integer"}},"required":["pane_id","workspace"]}
+        ,
+    },
 };
 
 /// The complete `tools/list` JSON array (with enclosing brackets),

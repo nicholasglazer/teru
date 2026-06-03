@@ -29,6 +29,12 @@ last_pane_count: usize = 0,
 
 const PaneSize = struct { id: u64 = 0, rows: u16 = 0, cols: u16 = 0 };
 
+/// Uniform gap (in cells) between tiled panes and between panes and the screen
+/// edge — teruwm/xmonad-style breathing room. Applied as a half-gap pre-inset on
+/// the tiling area + a half-gap post-inset on each pane, so inter-pane spacing
+/// and edge spacing both equal `2 * pane_gap`. 0 would restore touching borders.
+const pane_gap: u16 = 1;
+
 // Border colors (ANSI indexed)
 const border_active: Color = .{ .rgb = .{ .r = 0xFF, .g = 0x98, .b = 0x37 } }; // miozu orange #FF9837
 const border_inactive: Color = .{ .indexed = 240 }; // dark gray (visible on dark bg)
@@ -76,12 +82,20 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
         self.screen.height
     else if (self.screen.height > 1) self.screen.height - 1 else self.screen.height;
 
-    // Calculate layout rects in character cells
+    const multi_pane = pane_ids.len > 1;
+
+    // Uniform gaps: pre-inset the whole tiling area by `pane_gap` (half-gap), then
+    // post-inset every pane rect by `pane_gap` at each use site below. Edge and
+    // inter-pane spacing both come out to 2*pane_gap, so panes share equal space
+    // AND equal gaps. A single pane keeps the full screen (no chrome, no waste).
+    const g: u16 = if (multi_pane) pane_gap else 0;
+
+    // Calculate layout rects in character cells (within the gapped tiling area)
     const screen_rect = Rect{
-        .x = 0,
-        .y = 0,
-        .width = self.screen.width,
-        .height = content_height,
+        .x = g,
+        .y = g,
+        .width = self.screen.width -| (2 *| g),
+        .height = content_height -| (2 *| g),
     };
 
     const rects = mux.layout_engine.calculate(mux.active_workspace, screen_rect) catch {
@@ -95,12 +109,10 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
     };
     defer self.allocator.free(rects);
 
-    const multi_pane = pane_ids.len > 1;
-
     // Resize daemon panes to match layout rects (so grid rows/cols match)
     for (pane_ids, 0..) |pane_id, ri| {
         if (ri >= rects.len) break;
-        const rect = rects[ri];
+        const rect = Compositor.insetRect(rects[ri], g);
         // Content area: inset by 1 for borders if multi-pane
         const content_rows = if (multi_pane and rect.height > 2) rect.height - 2 else rect.height;
         const content_cols = if (multi_pane and rect.width > 2) rect.width - 2 else rect.width;
@@ -131,7 +143,7 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
     self.last_pane_count = @min(pane_ids.len, self.last_pane_sizes.len);
     for (pane_ids, 0..) |pane_id, ci| {
         if (ci >= self.last_pane_sizes.len or ci >= rects.len) break;
-        const rect = rects[ci];
+        const rect = Compositor.insetRect(rects[ci], g);
         self.last_pane_sizes[ci] = .{
             .id = pane_id,
             .rows = if (multi_pane and rect.height > 2) rect.height - 2 else rect.height,
@@ -143,17 +155,19 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
     for (pane_ids, 0..) |pane_id, i| {
         if (i >= rects.len) break;
         const pane = mux.getPaneById(pane_id) orelse continue;
-        const rect = rects[i];
+        const rect = Compositor.insetRect(rects[i], g);
         const is_active = (ws.active_index == i);
 
         if (multi_pane) {
-            // Inset by 1 for borders
+            // Content is inset by 1 for ALL panes (whether or not a border is
+            // drawn), so focus changes never reflow a pane's geometry.
             const inset = Compositor.insetRect(rect, 1);
             self.screen.stamp(&pane.grid, inset.y, inset.x, inset.height, inset.width);
 
-            // Draw border
-            const color = if (is_active) border_active else border_inactive;
-            self.drawPaneBorder(rect, color);
+            // Focus-only border (teruwm/xmonad "smart borders"): only the active
+            // pane gets a frame; the rest read as content blocks separated by the
+            // uniform gaps. The inactive border ring stays blank — part of the gap.
+            if (is_active) self.drawPaneBorder(rect, border_active);
         } else {
             // Single pane: no borders, fill entire content area
             self.screen.stamp(&pane.grid, rect.y, rect.x, rect.height, rect.width);
@@ -170,7 +184,7 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
     if (mux.getActivePane()) |pane| {
         const active_idx = ws.active_index;
         if (active_idx < rects.len) {
-            const rect = rects[active_idx];
+            const rect = Compositor.insetRect(rects[active_idx], g);
             if (multi_pane) {
                 const inset = Compositor.insetRect(rect, 1);
                 const cursor_row = inset.y + @min(pane.grid.cursor_row, inset.height -| 1);
