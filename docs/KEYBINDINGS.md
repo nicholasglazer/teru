@@ -206,6 +206,69 @@ file for the compositor).
 | `r` | Restore teruwm session from `default.tsess` |
 | `Esc` | Leave prefix mode |
 
+## Remote / TUI session (`teru -n` over SSH)
+
+When you attach a session over SSH (`teru -n NAME`), teru renders as a full-screen
+ANSI **TUI client** talking to a headless daemon (see [SESSIONS.md](SESSIONS.md)).
+This client has its **own** key handling, distinct from the windowed/compositor
+bindings above:
+
+- **`$mod` is Alt**, same as standalone teru.
+- **The prefix is `Ctrl+B`** here (not `Ctrl+Space`) — tmux muscle memory — and
+  becomes **`Ctrl+A`** when nested (a teru inside another teru; see below).
+
+| Key | Action |
+|-----|--------|
+| `Alt+1` … `Alt+0` | Switch to workspace 1–9, 0 |
+| `Alt+J` / `Alt+K` | Focus next / previous pane |
+| `Alt+H` / `Alt+L` | Shrink / grow the master area |
+| `Alt+C` | New pane in the current workspace |
+| **Click** a pane | Focus that pane (input then routes to it) |
+| `Ctrl+B` then … | Prefix command (table below) |
+| `Ctrl-\` | Detach immediately (everything keeps running) |
+
+### Prefix commands (`Ctrl+B`, then …)
+
+| Key | Action |
+|-----|--------|
+| `c` or `\` | Spawn pane (vertical split) |
+| `-` | Spawn pane (horizontal split) |
+| `x` | Close focused pane |
+| `n` / `p` (or `j` / `k`) | Focus next / previous pane |
+| `1` … `9`, `0` | Switch to workspace N |
+| `Space` | Cycle layout |
+| `z` | Zoom toggle |
+| `Shift+J` / `Shift+K` | Swap focused pane with next / previous |
+| `m` / `Shift+M` | Focus master / set focused as master |
+| `d` | Detach session |
+| `Esc` | Leave prefix mode |
+
+### Nested (teru inside teru)
+
+When the TUI client runs **inside another teru** — typically a local teru → `ssh`
+→ remote `TERU_NESTED=1 teru -n NAME` — the inner client:
+
+- **drops its own status bar** (the outer already draws one), and
+- **announces itself** (OSC 9998) so the outer teru **forwards `Alt`+key to it**.
+  The result: the remote multiplexer is driven with the **same `Alt` shortcuts as
+  your local one** while focused on the nested pane — `Alt+1/2/3`, `Alt+J/K`,
+  `Alt+H/L`, etc. all reach the remote.
+
+Key ownership while focused on a nested pane:
+
+| Keys | Go to | Why |
+|------|-------|-----|
+| `Alt`+key | **inner** (remote) | forwarded by the outer (OSC 9998 handshake) |
+| `RAlt`+key | **outer** (local) | rearrange the nested pane within your local layout |
+| `Ctrl+B` / `Ctrl+Space` prefix | **outer** (local) | escape hatch — always controls the local teru |
+| `Ctrl+A` prefix | **inner** (remote) | fallback prefix for the remote, still available |
+
+Set `TERU_NESTED=1` on the remote (the `TERM_PROGRAM=teru` auto-detect doesn't
+survive SSH). Full workflow: [SESSIONS.md → Nested sessions](SESSIONS.md#nested-sessions-a-local-teru--ssh--remote-teru).
+
+> Older outer teru (pre-Alt-forwarding) or a non-teru terminal: `Alt` won't be
+> forwarded, so drive the remote with the `Ctrl+A` prefix instead.
+
 ## Scroll mode (`$mod+V`)
 
 | Key | Action |

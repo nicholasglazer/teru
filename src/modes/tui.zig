@@ -152,6 +152,19 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
     const leave_tui = "\x1b[?1000l\x1b[?1006l\x1b[?25h\x1b[?1049l";
     defer _ = std.c.write(1, leave_tui.ptr, leave_tui.len);
 
+    // Nested: announce to the outer teru that it should forward Alt+key to this
+    // pane (OSC 9998;1), so the remote multiplexer is driven with the same Alt
+    // shortcuts as the local one. Released on detach (;0). No-op in a non-teru
+    // terminal (the OSC is just ignored).
+    if (tui_input.isNested()) {
+        const claim = "\x1b]9998;1\x07";
+        _ = std.c.write(1, claim.ptr, claim.len);
+    }
+    defer if (tui_input.isNested()) {
+        const release = "\x1b]9998;0\x07";
+        _ = std.c.write(1, release.ptr, release.len);
+    };
+
     // SIGWINCH wiring
     var sigwinch_fds: [2]posix.fd_t = .{ -1, -1 };
     {

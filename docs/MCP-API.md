@@ -243,7 +243,7 @@ release — today, `teruwm_*` tools must still go through the compositor
 socket. See [AI-INTEGRATION.md](AI-INTEGRATION.md#in-band-mcp-over-osc-9999)
 for the full protocol spec.
 
-## teru (terminal) MCP — 20 tools
+## teru (terminal) MCP — 22 tools
 
 Socket: `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock`. Implementation: `src/agent/McpServer.zig`.
 
@@ -254,6 +254,8 @@ Socket: `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock`. Implementation: `src/agent/McpSer
 | `teru_list_panes` | — | Every pane's `id`, `workspace`, agent metadata, status. |
 | `teru_focus_pane` | `pane_id` | Switch focus to pane. |
 | `teru_close_pane` | `pane_id` | Close pane by id. |
+| `teru_swap_pane` | `pane_id`, `direction` (`next`/`prev`, default `next`) | Rearrange the tiling — swap a pane with its neighbour in the workspace order (xmonad-style move). Pair with `teru_set_layout` to drive the arrangement entirely from an agent. |
+| `teru_move_pane` | `pane_id`, `workspace` (0..9) | Move a pane to another workspace; it keeps running. |
 | `teru_create_pane` | `workspace` (int, default 0), `direction` (`vertical`/`horizontal`), `command` (string), `cwd` (string) | Spawn new pane in workspace. |
 | `teru_read_output` | `pane_id`, `lines` (int, default 50) | Get the last N lines of scrollback as plain text. |
 | `teru_send_input` | `pane_id`, `text` | Write `text` to the pane's PTY stdin. |

@@ -754,6 +754,27 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                             var key_buf: [32]u8 = undefined;
                             const len = kb.processKey(key.keycode, &key_buf);
 
+                            // Nested-teru Alt-forwarding. When the focused pane is
+                            // itself a teru that announced it wants Alt (OSC 9998;1),
+                            // forward LEFT-Alt+key to it as ESC+key so the *remote*
+                            // multiplexer is driven with the same keys as the local
+                            // one. RAlt is left alone (so RAlt still rearranges the
+                            // pane in the OUTER layout) and the Ctrl-prefix stays the
+                            // escape hatch for local control while focused on a nested
+                            // session.
+                            if (!prefix.awaiting and !ralt_held and (key.modifiers & 8) != 0) {
+                                const fwd_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else if (keysym == ks.Return) '\r' else 0;
+                                if (fwd_char != 0) {
+                                    if (mux.getActivePaneMut()) |pane| {
+                                        if (pane.vt.nested_alt_forward) {
+                                            const ab = [2]u8{ 0x1b, fwd_char };
+                                            _ = pane.ptyWrite(&ab) catch {};
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+
                             // Global shortcuts: Alt+key (workspace, focus, zoom, split)
                             {
                                 const ks_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else if (keysym == ks.Return) '\r' else 0;

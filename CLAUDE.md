@@ -32,7 +32,7 @@ zig build -Doptimize=ReleaseFast      # release teru   → zig-out/bin/teru
 make compositor                           # debug teruwm (auto CRT fix)
 zig build -Dcompositor                    # debug teruwm (no CRT fix)
 zig build -Doptimize=ReleaseFast -Dcompositor   # release teruwm → zig-out/bin/teruwm
-zig build test                        # 517 inline tests (library-level)
+zig build test                        # 527 inline tests (library-level)
 zig build bench -- tools/bench-payloads   # throughput benchmarks
 zig build run                         # run debug teru (windowed)
 zig build run -- --raw                # run debug teru (TTY mode)
@@ -77,14 +77,18 @@ Reference: [docs/MCP-API.md](docs/MCP-API.md).
 ## Testing
 
 ```sh
-zig build test                        # 517 inline tests
+zig build test                        # 527 inline tests
+python3 tests/session_survival_e2e.py # daemon survives SSH disconnect + reattach-resume
+python3 tests/daemon_resize_stress.py # daemon is uncrashable by client resize(0,0)
+python3 tests/many_pane_e2e.py        # every pane drained at 40 panes (no poll-set cap)
+python3 tests/interactive_attach_e2e.py  # multi-pane render + click-focus routing + nested mode
 python3 /tmp/teruwm-full-e2e.py       # E2E covering every MCP tool + Mod+drag (see /tmp for latest)
 bash tools/run-bench.sh               # reproduce benchmarks from docs/BENCHMARKS.md
 ```
 
 ## Version
 
-Current: **0.6.11** — see `build.zig` line 10 (`const version`).
+Current: **0.8.3** — see `build.zig` line 10 (`const version`).
 Propagated via `build_options.version` to `main.zig`, `McpServer.zig`,
 `WmMcpServer.zig`. Bump with `make bump-version V=x.y.z`.
 

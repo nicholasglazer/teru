@@ -209,8 +209,16 @@ pub fn feed(self: *Self, bytes: []const u8, daemon_fd: std.posix.fd_t) bool {
                             _ = daemon_proto.sendMessage(daemon_fd, .active_input, csi_fwd[0 .. 3 + plen]);
                         },
                         .mouse_click => |mc| {
-                            // Store for caller to handle (needs layout rects)
-                            self.last_mouse = .{ .col = mc.col, .row = mc.row, .button = mc.button, .release = mc.release };
+                            // Store for the caller to handle (it needs layout rects).
+                            // Record PRESS events only: a press+release pair can arrive
+                            // in ONE feed() (a fast click, or byte-batching over SSH), and
+                            // because last_mouse is a single slot the release would clobber
+                            // the press before the caller reads it — losing the click
+                            // (focus never moved). Releases drive nothing in the TUI client
+                            // today (focus happens on press), so drop them here.
+                            if (!mc.release) {
+                                self.last_mouse = .{ .col = mc.col, .row = mc.row, .button = mc.button, .release = mc.release };
+                            }
                         },
                         else => self.dispatchAction(action, daemon_fd),
                     }
@@ -301,10 +309,12 @@ pub fn isPrefixActive(self: *const Self) bool {
 }
 
 fn handleAltKey(self: *Self, key: u8) Action {
-    // When nested inside another teru, don't intercept Alt+key —
-    // let it pass through to the outer teru. Use prefix instead.
-    if (self.nested) return .none;
-
+    // Note: when nested, the outer teru only delivers Alt+key to us if it has
+    // chosen to FORWARD it (OSC 9998 handshake). If it forwards, we should act on
+    // it (drive the remote with the same Alt shortcuts as the local teru); if it
+    // doesn't, we never see Alt here. So we handle Alt the same whether nested or
+    // not — there's no longer a reason to short-circuit on `nested`.
+    _ = self;
     return switch (key) {
         // Alt+J = focus next
         'j' => .{ .command = .focus_next },
@@ -543,4 +553,34 @@ test "TuiInput: CSI sequence (arrow key) stays none" {
     var input = init();
     const action = input.handleCsi('A'); // Up arrow
     try std.testing.expect(action == .none);
+}
+
+test "TuiInput: nested input still handles Alt (outer forwards it via OSC 9998)" {
+    // When nested, the outer teru forwards Alt+key to us as ESC+key only if it
+    // chose to; if it forwards, we must ACT on it (not pass it back to the pane).
+    var input = Self{ .nested = true, .prefix_byte = 0x01 };
+    try std.testing.expectEqual(Action{ .command = .focus_next }, input.handleAltKey('j'));
+    try std.testing.expectEqual(Action{ .workspace = 2 }, input.handleAltKey('3'));
+    try std.testing.expectEqual(Action{ .command = .cycle_layout }, input.handleAltKey(' '));
+}
+
+test "TuiInput: batched mouse press+release in one feed keeps the press" {
+    // Regression: a left click delivered as press THEN release in a single feed()
+    // (fast click / SSH byte-batching) must still surface a PRESS to the caller —
+    // the release must not clobber the press in the single last_mouse slot, or the
+    // click is silently lost and focus never moves.
+    var input = init();
+    var fds: [2]std.posix.fd_t = undefined;
+    if (std.c.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) return;
+    defer _ = std.posix.system.close(fds[0]);
+    defer _ = std.posix.system.close(fds[1]);
+
+    // ESC[<0;50;20M  (press)  immediately followed by  ESC[<0;50;20m  (release)
+    _ = input.feed("\x1b[<0;50;20M\x1b[<0;50;20m", fds[0]);
+
+    try std.testing.expect(input.last_mouse != null);
+    try std.testing.expect(!input.last_mouse.?.release); // it's the PRESS, not the release
+    try std.testing.expectEqual(@as(u16, 49), input.last_mouse.?.col); // 50 → 0-indexed 49
+    try std.testing.expectEqual(@as(u16, 19), input.last_mouse.?.row);
+    try std.testing.expectEqual(@as(u8, 0), input.last_mouse.?.button);
 }

@@ -114,6 +114,12 @@ agent_event_buf: [512]u8 = undefined,
 agent_event_len: usize = 0,
 has_agent_event: bool = false,
 
+/// Set by OSC 9998 (`ESC]9998;1 BEL` / `;0`): the program in this pane is a
+/// NESTED teru that wants the outer teru to forward Alt+key to it (so the remote
+/// multiplexer is driven with the same keys as the local one) instead of the
+/// outer grabbing Alt for itself. Read by the windowed key dispatch.
+nested_alt_forward: bool = false,
+
 
 pub fn init(allocator: std.mem.Allocator, grid: *Grid) VtParser {
     return .{ .grid = grid, .allocator = allocator };
@@ -765,6 +771,13 @@ fn finishOsc(self: *VtParser) void {
             133 => {
                 // Shell integration: semantic prompt marks (A/B/C/D)
                 self.handleOsc133(payload);
+            },
+            9998 => {
+                // Nested-teru Alt-forward announce. A teru running inside this
+                // pane emits `ESC]9998;1 BEL` on attach to ask the outer teru to
+                // forward Alt+key to it, and `;0` on detach to release. Pure flag
+                // flip — the windowed input dispatch reads it.
+                if (payload.len >= 1) self.nested_alt_forward = (payload[0] == '1');
             },
             9999 => {
                 // Agent protocol — store payload for external consumption.
@@ -1674,6 +1687,19 @@ test "SIMD fast-path — mixed text and escapes" {
     try std.testing.expectEqual(@as(u21, 'W'), grid.cellAtConst(0, 5).char);
     try std.testing.expectEqual(@as(u21, 'd'), grid.cellAtConst(0, 9).char);
     try std.testing.expect(grid.cellAtConst(0, 5).attrs.bold);
+}
+
+test "OSC 9998 nested-teru Alt-forward announce toggles the flag" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 24, 80);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    try std.testing.expect(!parser.nested_alt_forward);
+    parser.feed("\x1b]9998;1\x07"); // inner teru claims Alt-forwarding
+    try std.testing.expect(parser.nested_alt_forward);
+    parser.feed("\x1b]9998;0\x07"); // inner detaches → release
+    try std.testing.expect(!parser.nested_alt_forward);
 }
 
 // ── Agent protocol (OSC 9999) tests ─────────────────────────────
