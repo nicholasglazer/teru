@@ -35,15 +35,22 @@ const PaneSize = struct { id: u64 = 0, rows: u16 = 0, cols: u16 = 0 };
 /// and edge spacing both equal `2 * pane_gap`. 0 would restore touching borders.
 /// `pub` so the mouse hit-test in modes/tui.zig uses the SAME value — a single
 /// source of truth keeps click geometry identical to render geometry.
-pub const pane_gap: u16 = 1;
+pub const pane_gap: u16 = 0;
 
 // Border colors (ANSI indexed)
 const border_active: Color = .{ .rgb = .{ .r = 0xFF, .g = 0x98, .b = 0x37 } }; // miozu orange #FF9837
-// (inactive panes draw no border — gap-only separation, xmonad smart borders)
-const status_fg: Color = .{ .indexed = 7 }; // white
-const status_bg: Color = .{ .indexed = 0 }; // black
-const status_active_fg: Color = .{ .indexed = 0 }; // black on yellow
-const status_active_bg: Color = .{ .indexed = 3 }; // yellow
+// Dim ring on unfocused panes so multiple panes read as distinct frames (the
+// content is already inset by 1 for every pane, so this never reflows on focus).
+const border_inactive: Color = .{ .rgb = .{ .r = 0x3a, .g = 0x3d, .b = 0x44 } }; // miozu base02 #3a3d44
+// Status bar — themed (miozu) instead of plain black/white so the panel reads
+// as a coloured strip, not a monochrome line.
+const status_bg: Color = .{ .rgb = .{ .r = 0x2a, .g = 0x2f, .b = 0x3d } }; // base01-ish, lighter than pane bg → distinct strip
+const status_fg: Color = .{ .rgb = .{ .r = 0xd0, .g = 0xd2, .b = 0xdb } }; // miozu fg
+const status_dim: Color = .{ .rgb = .{ .r = 0x6b, .g = 0x73, .b = 0x89 } }; // muted (base03) — hints / separators
+const status_accent: Color = .{ .rgb = .{ .r = 0xff, .g = 0x98, .b = 0x37 } }; // miozu orange (base09)
+const status_layout: Color = .{ .indexed = 6 }; // cyan accent (follows the live theme palette)
+const status_active_fg: Color = .{ .rgb = .{ .r = 0x23, .g = 0x27, .b = 0x33 } }; // dark text on orange
+const status_active_bg: Color = .{ .rgb = .{ .r = 0xff, .g = 0x98, .b = 0x37 } }; // orange highlight for active ws
 
 pub fn init(screen: *TuiScreen, allocator: Allocator, daemon_fd: posix.fd_t) Self {
     return .{ .screen = screen, .allocator = allocator, .daemon_fd = daemon_fd };
@@ -52,7 +59,17 @@ pub fn init(screen: *TuiScreen, allocator: Allocator, daemon_fd: posix.fd_t) Sel
 pub const RenderOpts = struct {
     nested: bool = false,
     prefix_active: bool = false,
+    /// Draw the status bar even when nested (TERU_NESTED_BAR=1). Without it,
+    /// nested mode drops the bar entirely — fine under an outer teru, but it
+    /// leaves no panel at all under teruwm / a plain terminal.
+    nested_bar: bool = false,
 };
+
+/// Whether to draw the status bar (and reserve its row): always when not
+/// nested; when nested, only if the nested-bar opt-in is set.
+fn showBar(opts: RenderOpts) bool {
+    return !opts.nested or opts.nested_bar;
+}
 
 /// Render the active workspace's panes into the TuiScreen and flush to stdout.
 pub fn render(self: *Self, mux: *Multiplexer, stdout_fd: i32) void {
@@ -72,7 +89,7 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
     const pane_ids = ws.node_ids.items;
 
     if (pane_ids.len == 0) {
-        if (!opts.nested) self.drawStatusBar(mux, opts);
+        if (showBar(opts)) self.drawStatusBar(mux, opts);
         _ = self.screen.flush(stdout_fd);
         return;
     }
@@ -80,9 +97,10 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
     // Reserve last row for the status bar — UNLESS nested, where we drop our
     // own status bar (the outer teru already has one) and give the row back to
     // the panes so there's no duplicate bar and no blank gap.
-    const content_height = if (opts.nested)
-        self.screen.height
-    else if (self.screen.height > 1) self.screen.height - 1 else self.screen.height;
+    const content_height = if (showBar(opts))
+        (if (self.screen.height > 1) self.screen.height - 1 else self.screen.height)
+    else
+        self.screen.height;
 
     const multi_pane = pane_ids.len > 1;
 
@@ -105,7 +123,7 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
         if (mux.getActivePane()) |pane| {
             self.screen.stamp(&pane.grid, 0, 0, content_height, self.screen.width);
         }
-        if (!opts.nested) self.drawStatusBar(mux, opts);
+        if (showBar(opts)) self.drawStatusBar(mux, opts);
         _ = self.screen.flush(stdout_fd);
         return;
     };
@@ -166,10 +184,11 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
             const inset = Compositor.insetRect(rect, 1);
             self.screen.stamp(&pane.grid, inset.y, inset.x, inset.height, inset.width);
 
-            // Focus-only border (teruwm/xmonad "smart borders"): only the active
-            // pane gets a frame; the rest read as content blocks separated by the
-            // uniform gaps. The inactive border ring stays blank — part of the gap.
-            if (is_active) self.drawPaneBorder(rect, border_active);
+            // Every pane gets a frame: orange when focused, dim base02 otherwise,
+            // so panes are visually separated even before you look for the active
+            // one. The 1-cell content inset above is identical for both, so a focus
+            // change only recolors the ring — it never reflows pane geometry.
+            self.drawPaneBorder(rect, if (is_active) border_active else border_inactive);
         } else {
             // Single pane: no borders, fill entire content area
             self.screen.stamp(&pane.grid, rect.y, rect.x, rect.height, rect.width);
@@ -177,7 +196,7 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
     }
 
     // Status bar — skipped when nested (the outer teru owns the bar).
-    if (!opts.nested) self.drawStatusBar(mux, opts);
+    if (showBar(opts)) self.drawStatusBar(mux, opts);
 
     // Flush
     _ = self.screen.flush(stdout_fd);
@@ -278,7 +297,7 @@ fn drawStatusBar(self: *Self, mux: *Multiplexer, opts: RenderOpts) void {
     const layout_name = layout.name();
     for (layout_name) |ch| {
         if (col >= w -| 1) break; // saturating: w may be 0
-        self.screen.setCell(row, col, ch, status_fg, status_bg, .{});
+        self.screen.setCell(row, col, ch, status_layout, status_bg, .{ .bold = true });
         col += 1;
     }
 
@@ -293,10 +312,11 @@ fn drawStatusBar(self: *Self, mux: *Multiplexer, opts: RenderOpts) void {
         }
     } else if (opts.nested) {
         col += 1;
-        const hint = " C-b:prefix ";
+        // Nested prefix is Ctrl+A (the outer/host owns Ctrl+B), so show C-a.
+        const hint = " C-a:prefix ";
         for (hint) |ch| {
             if (col >= w - 1) break;
-            self.screen.setCell(row, col, ch, .{ .indexed = 8 }, status_bg, .{});
+            self.screen.setCell(row, col, ch, status_dim, status_bg, .{});
             col += 1;
         }
     }
@@ -315,7 +335,7 @@ fn drawStatusBar(self: *Self, mux: *Multiplexer, opts: RenderOpts) void {
         for (count_str, 0..) |ch, ci| {
             const rc = right_start + @as(u16, @intCast(ci));
             if (rc < w) {
-                self.screen.setCell(row, rc, ch, status_fg, status_bg, .{});
+                self.screen.setCell(row, rc, ch, status_accent, status_bg, .{ .bold = true });
             }
         }
     }

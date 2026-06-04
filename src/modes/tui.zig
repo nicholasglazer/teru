@@ -190,7 +190,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
     }
 
     // Initial render
-    renderer.renderWithOpts(&mux, 1, .{ .nested = tui_input.isNested(), .prefix_active = tui_input.isPrefixActive() });
+    renderer.renderWithOpts(&mux, 1, .{ .nested = tui_input.isNested(), .nested_bar = tui_input.isNestedBar(), .prefix_active = tui_input.isPrefixActive() });
 
     // Main poll loop
     var in_buf: [4096]u8 = undefined;
@@ -240,12 +240,14 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
                     const LE_Rect = @import("../tiling/LayoutEngine.zig").Rect;
                     const multi_pane = pane_ids.len > 1;
                     const g: u16 = if (multi_pane) TuiRenderer.pane_gap else 0;
-                    // Mirror TuiRenderer.content_height EXACTLY: nested mode drops the
-                    // status bar and gives that row back to the panes, so the tiling area
-                    // is the full height; non-nested reserves the last row for the bar.
-                    const content_h = if (tui_input.isNested())
-                        screen.height
-                    else if (screen.height > 1) screen.height - 1 else screen.height;
+                    // Mirror TuiRenderer.content_height EXACTLY: the bar (and its
+                    // reserved row) shows when not nested OR when the nested-bar opt-in
+                    // is set; only a bar-less nested session gives that row to the panes.
+                    const show_bar = !tui_input.isNested() or tui_input.isNestedBar();
+                    const content_h = if (show_bar)
+                        (if (screen.height > 1) screen.height - 1 else screen.height)
+                    else
+                        screen.height;
                     const sr = LE_Rect{ .x = g, .y = g, .width = screen.width -| (2 *| g), .height = content_h -| (2 *| g) };
                     const rects = mux.layout_engine.calculate(mux.active_workspace, sr) catch null;
                     if (rects) |rs| {
@@ -341,7 +343,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
         }
 
         if (needs_render) {
-            renderer.renderWithOpts(&mux, 1, .{ .nested = tui_input.isNested(), .prefix_active = tui_input.isPrefixActive() });
+            renderer.renderWithOpts(&mux, 1, .{ .nested = tui_input.isNested(), .nested_bar = tui_input.isNestedBar(), .prefix_active = tui_input.isPrefixActive() });
         }
     }
 }

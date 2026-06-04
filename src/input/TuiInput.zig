@@ -47,6 +47,11 @@ esc_timestamp: i64 = 0,
 /// a teru outer forwards Alt after the OSC 9998 handshake (see handleAltKey);
 /// in a plain non-teru terminal with TERU_NESTED=1, Alt is consumed by the inner.
 nested: bool = false,
+/// In nested mode the inner teru drops its own status bar by default (the
+/// outer teru owns one). But under teruwm — or any non-teru host — there IS
+/// no outer bar, so the multiplexer ends up with no panel at all. Setting
+/// `TERU_NESTED_BAR=1` keeps the inner bar visible even when nested.
+nested_bar: bool = false,
 /// Last mouse event (set by feed(), consumed by caller)
 last_mouse: ?struct { col: u16, row: u16, button: u8, release: bool } = null,
 /// Prefix key state.
@@ -94,9 +99,12 @@ pub fn initAutoDetect() Self {
     else
         false;
     const nested = term_is_teru or (compat.getenv("TERU_NESTED") != null);
+    // Keep the inner status bar visible when nested under a non-teru host
+    // (teruwm, plain terminal) — opt-in, since teru-in-teru wants it dropped.
+    const nested_bar = compat.getenv("TERU_NESTED_BAR") != null;
     // Nested: use Ctrl+A as the prefix (the outer teru owns Ctrl+B + Alt and
     // grabs them first; it does NOT grab Ctrl+A, so it forwards it to the inner).
-    return .{ .nested = nested, .prefix_byte = if (nested) 0x01 else 0x02 };
+    return .{ .nested = nested, .nested_bar = nested_bar, .prefix_byte = if (nested) 0x01 else 0x02 };
 }
 
 /// Process a chunk of raw input bytes.
@@ -312,6 +320,12 @@ pub fn isNested(self: *const Self) bool {
 /// Returns true if prefix key is active (waiting for command key).
 pub fn isPrefixActive(self: *const Self) bool {
     return self.prefix_active;
+}
+
+/// Returns true if the status bar should be drawn even while nested
+/// (`TERU_NESTED_BAR=1`). Use with `isNested()` to decide bar visibility.
+pub fn isNestedBar(self: *const Self) bool {
+    return self.nested_bar;
 }
 
 fn handleAltKey(_: *Self, key: u8) Action {
