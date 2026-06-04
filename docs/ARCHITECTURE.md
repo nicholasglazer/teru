@@ -193,7 +193,16 @@ callback calls `execRestart()`:
 1. Serialize to `/tmp/teruwm-restart.bin`: pane count, active workspace,
    per-workspace layouts, per-pane `{workspace, pty_fd, rows, cols, pid}`.
 2. Clear `FD_CLOEXEC` on every PTY master so the fds survive `exec()`.
-3. `execveat(/proc/self/exe, ["teruwm", "--restore"])`.
+3. Re-resolve the on-disk binary path (`readlink /proc/self/exe`,
+   stripping the kernel's `" (deleted)"` suffix) and
+   `execve(<resolved path>, ["teruwm", "--restore"])`. Re-resolving — vs.
+   exec'ing the bare `/proc/self/exe` symlink — is what lets a restart
+   load a **freshly rebuilt** binary: once the file is replaced on disk
+   (a `make` + `install`), the running process's `/proc/self/exe` points
+   at the now-deleted old inode, so exec'ing it would re-run the *old*
+   code. Falls back to the symlink if the path can't be resolved. This is
+   the `xmonad --restart` workflow: rebuild, then `$mod+'` (or
+   the `teruwm_restart` MCP tool) picks up the new binary with PTYs intact.
 
 New binary's `restoreSession()` reads the file and reconstructs the
 `TerminalPane`s via `Pane.attach(fd)`. Shells never notice — their

@@ -45,11 +45,20 @@ Both `arrangeworkspace()` and `arrangeWorkspaceSmooth()` must use identical gap 
 teruwm supports xmonad-style restart:
 1. Serialize pane state + PTY master fds to `/tmp/teruwm-restart.bin`
 2. Clear FD_CLOEXEC on PTY fds
-3. `exec("/proc/self/exe", "--restore")`
+3. Re-resolve the binary path (`readlink /proc/self/exe`, strip a trailing
+   `" (deleted)"`) and `exec(<resolved path>, "--restore")`
 4. New binary reads state, attaches to existing PTY fds via `Pty.attach()`
 5. Shells never notice — zero downtime for terminals
 
 **Critical**: NEVER set O_CLOEXEC on PTY master fds. They must survive exec().
+
+**Why re-resolve instead of exec'ing `/proc/self/exe` directly**: after a
+rebuild + `install`, the running process's `/proc/self/exe` symlink points at
+the *deleted old inode* (`readlink` returns `…/teruwm (deleted)`). exec'ing the
+symlink would re-run the OLD code, so a restart could never pick up a new build.
+Resolving to the on-disk path and exec'ing that loads the rebuilt binary —
+this is what makes `teruwm_restart` / `$mod+'` an actual
+`xmonad --restart`. See `resolveSelfExe` in `ServerRestart.zig`.
 
 ## wlroots Patterns
 
