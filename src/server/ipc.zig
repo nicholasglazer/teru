@@ -169,6 +169,11 @@ fn listenPosix(path: []const u8) IpcError!IpcHandle {
     const flags = std.c.fcntl(sock, posix.F.GETFL);
     if (flags >= 0) _ = std.c.fcntl(sock, posix.F.SETFL, flags | compat.O_NONBLOCK);
 
+    // FD_CLOEXEC: keep the listening socket out of forked PTY/shell children
+    // (we only want it in the daemon; accepted client fds are set separately).
+    const fd_flags = std.c.fcntl(sock, posix.F.GETFD);
+    if (fd_flags >= 0) _ = std.c.fcntl(sock, posix.F.SETFD, fd_flags | 1);
+
     // Bind
     var addr: posix.sockaddr.un = std.mem.zeroes(posix.sockaddr.un);
     addr.family = posix.AF.UNIX;

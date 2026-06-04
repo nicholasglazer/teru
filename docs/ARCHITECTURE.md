@@ -12,7 +12,7 @@ for the JSON-RPC surface see [MCP-API.md](MCP-API.md).
 │                        │        │                         │
 │  - windowed / --raw    │        │  - wlroots root comp    │
 │  - session daemon      │        │  - hosts teru panes     │
-│  - MCP 20 tools        │        │    + XDG + XWayland     │
+│  - MCP 22 tools        │        │    + XDG + XWayland     │
 │                        │        │  - MCP 37 tools         │
 └──────┬─────────────────┘        └──────┬──────────────────┘
        │                                  │
@@ -55,7 +55,7 @@ integrations on top.
 | `render/BarRenderer.zig` | Bar compositor shared by teru and teruwm | Widget dispatch, color thresholds, class → palette resolution. |
 | `render/BarWidget.zig` · `PushWidget.zig` | Widget parsing and push-widget storage | Fixed-size arrays; no heap. |
 | `tiling/` | Layout engine | 8 pure functions (rect-in → rects-out). Workspace state + layout cycling. |
-| `agent/McpServer.zig` · `McpDispatch.zig` | 20-tool MCP server for teru | Line-delimited JSON-RPC over Unix socket (since v0.4.14). Dispatch table + schemas assembled at compile time. |
+| `agent/McpServer.zig` · `McpDispatch.zig` | 22-tool MCP server for teru | Line-delimited JSON-RPC over Unix socket (since v0.4.14). Dispatch table + schemas assembled at compile time. |
 | `agent/McpBridge.zig` | `--mcp-server` stdio proxy | Line-JSON proxy between stdin/stdout and the Unix socket. |
 | `agent/in_band.zig` | OSC 9999 in-band MCP | Agents inside a teru pane call tools over the PTY — zero socket, zero subprocess. |
 | `agent/protocol.zig` | OSC 9999 parser | Parses `agent:start` / `status` / `stop` events + `query` (in-band MCP); updates ProcessGraph. |
@@ -87,9 +87,9 @@ A single daemon process per `-n NAME`. Owns all PTY master fds; clients
 to frame updates. Wire protocol: a 5-byte header per message, then
 binary payload. Clients can disconnect and reconnect; PTYs keep running.
 
-### MCP server (20 tools)
+### MCP server (22 tools)
 
-`src/agent/McpServer.zig`. See [MCP-API.md](MCP-API.md#teru-terminal-mcp--20-tools)
+`src/agent/McpServer.zig`. See [MCP-API.md](MCP-API.md#teru-terminal-mcp--22-tools)
 for the tool list. Socket path: `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock`.
 
 ## `teruwm` — the Wayland compositor
@@ -257,7 +257,7 @@ warning, critical, inverted)`. Thresholds come from
 
 `src/compositor/WmMcpServer.zig`. Socket
 `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock`. Protocol mirrors
-`teru-mcp-*.sock`. See [MCP-API.md](MCP-API.md#teruwm-compositor-mcp--24-tools).
+`teru-mcp-*.sock`. See [MCP-API.md](MCP-API.md#teruwm-compositor-mcp--37-tools).
 
 ### E2E test surface
 
