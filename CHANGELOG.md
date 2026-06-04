@@ -1,5 +1,56 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Quit/restart moved onto the apostrophe key, mirroring the reference xmonad
+  config.** `$mod+'` → hot-restart, `$mod+Shift+'` → quit (previously restart was
+  on `$mod+Ctrl+Shift+R` and quit on `$mod+Shift+Q`). `$mod+Shift+Q` is kept as a
+  layout-independent quit fallback. `$mod+Q` — previously close-window — is now
+  **unbound**; close is `$mod+Shift+C` only, matching xmonad. Keysym note: on a US
+  layout plain apostrophe is `0x27` and Shift+apostrophe is `quotedbl 0x22`, so
+  each chord is bound to the keysym it actually produces (ServerInput hands the
+  matcher the shift-translated keysym and does not un-shift punctuation).
+  `teruwm_restart` (MCP) and config-reload (`$mod+Shift+R`) are unchanged.
+
+### Fixed
+
+- **Hot-restart now loads a rebuilt binary** (`$mod+'` /
+  `teruwm_restart`). It previously exec'd the `/proc/self/exe` symlink, which —
+  after a rebuild + `install` replaced the file — points at the *deleted old
+  inode*, so a "restart after rebuild" silently re-ran the OLD code. The restart
+  now re-resolves the on-disk path (stripping the kernel's `" (deleted)"`
+  suffix) and exec's that, so it picks up the new build with PTYs intact — real
+  `xmonad --restart` semantics. Falls back to the symlink if unresolvable.
+- **teruwm terminal cursor is focus-aware.** Only the focused pane draws a solid
+  (blink-gated) cursor; unfocused panes draw a hollow outline. Previously every
+  pane rendered the active/solid caret, so multiple terminals all looked
+  focused.
+- **Hot-restart survives on a bare TTY.** The re-exec now clears `WAYLAND_DISPLAY`
+  and `DISPLAY` (teruwm sets them for its clients), so the new compositor
+  re-selects the DRM/session backend instead of trying to nest in teruwm's own
+  now-dead Wayland socket and aborting with `BackendCreateFailed`.
+- **`$mod`-modified keys no longer leak into terminal panes.** An unbound
+  `$mod+<key>` is swallowed rather than typed (previously `$mod+Q`, now unbound,
+  would type a literal `q` into the focused shell).
+- **`Alt+<key>` is forwarded to terminal panes as Meta (`ESC`-prefixed).**
+  Previously teruwm sent the bare character, so a nested teru's `Alt+j`
+  pane-switch arrived as `j` and leaked. Left Alt only — AltGr is untouched.
+
+### Changed (nested teru multiplexer)
+
+- **Every pane gets a border** (orange focused, dim base02 unfocused) instead of
+  focus-only, so panes read as distinct frames.
+- **`pane_gap` is 0** — panes sit edge-to-edge separated by their border lines
+  (the cell-quantized gap was non-uniform between axes; 0 is symmetric).
+- **Themed status bar** — coloured strip (orange active workspace + pane count,
+  cyan layout name) instead of monochrome black/white, and the prefix hint shows
+  the correct `C-a` when nested.
+- **`TERU_NESTED_BAR=1`** keeps the inner status bar visible when nested under a
+  non-teru host (teruwm / a plain terminal), where there is no outer teru bar to
+  own it. Default off, so teru-in-teru stays single-bar.
+
 ## 0.8.3 (2026-06-02)
 
 ### Added
