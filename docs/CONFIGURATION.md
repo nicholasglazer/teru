@@ -456,7 +456,9 @@ Boolean options accept: `true`, `yes`, `1` for true; `false`, `no`, `0` for fals
 
 ## teruwm Compositor Config
 
-The teruwm compositor reads a **separate** config file from the terminal: `~/.config/teruwm/config`. This file covers window manager concerns only (gaps, borders, bars, window rules). Font, colors, and terminal behavior still come from `~/.config/teru/teru.conf` and are shared with the embedded teru terminal panes.
+The teruwm compositor reads a **separate** config file, `~/.config/teruwm/config`, for **compositor-level** concerns only: gaps, borders, bars, window rules, opacity, keyboard layout, and spawn chords. Everything that describes *the terminal itself* — font (incl. bold/italic variants), colors/palette/theme, cursor shape & color, selection, scrollback, shell, `$TERM`, tab width, and **`padding`** — comes from `~/.config/teru/teru.conf` and is applied identically to native compositor panes and to the standalone windowed terminal. A native pane *is* a libteru terminal; the only thing the compositor changes is how panes are tiled and composited, not how a terminal looks. *(Since 0.9.1 native panes are actually fed these settings; before that they silently used libteru defaults.)*
+
+One exception: `scroll_speed` / `touchpad_scroll_invert` / `alt_scroll_zoom` are driven by the compositor's input layer for native panes, so set them in `~/.config/teruwm/config` (their `teru.conf` copies are inert inside teruwm).
 
 If `~/.config/teruwm/config` does not exist, all defaults are used.
 

@@ -70,6 +70,25 @@ keybinds: KB = .{},
 font_atlas: ?*teru.render.FontAtlas = null, // shared across all terminal panes
 font_size: u16 = 16, // live font size — mutated by Alt+scroll zoom (ServerFont)
 font_size_base: u16 = 16, // config font size — the `.reset` zoom target
+// Terminal-rendering settings fed from teru.conf (populated in
+// ServerConfig.applyConfig). Native panes used to render with libteru struct
+// defaults (Miozu palette, block cursor, 10000-line scrollback) regardless of
+// the user's teru.conf; these carry the configured values into every
+// TerminalPane. color_scheme is value-only (safe to copy); spawn_config's
+// shell/term slices point into the process-lifetime Config (main.zig:47).
+color_scheme: teru.Config.ColorScheme = .{},
+spawn_config: teru.Pane.SpawnConfig = .{},
+// Visual margin between a pane's edge and its text — config.padding, default
+// 8px, same key + meaning as windowed teru. Applied via renderer.padding (the
+// pane buffer is the full tile rect, so there's room); margins fill with the
+// terminal bg, identical to the windowed path.
+terminal_padding: u32 = 8,
+// Optional bold/italic font variants (config.font_{bold,italic,bold_italic}).
+// Owned here for the process lifetime; null → that weight falls back to the
+// regular atlas. Their `.data` is handed to each pane renderer.
+font_variant_bold: ?teru.render.FontAtlas.VariantAtlas = null,
+font_variant_italic: ?teru.render.FontAtlas.VariantAtlas = null,
+font_variant_bold_italic: ?teru.render.FontAtlas.VariantAtlas = null,
 next_node_id: u64 = 1,
 focused_view: ?*XdgView = null,
 focused_terminal: ?*TerminalPane = null,
