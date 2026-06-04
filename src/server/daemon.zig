@@ -493,6 +493,15 @@ fn handleCommand(self: *Daemon, payload: []const u8) void {
         },
         .resize_shrink => self.mux.resizeActive(-2, -2),
         .resize_grow => self.mux.resizeActive(2, 2),
+        .swap_master => self.mux.swapMaster(),
+        .rotate_slaves_up => self.mux.rotateSlaves(true),
+        .rotate_slaves_down => self.mux.rotateSlaves(false),
+        .master_count_inc => self.mux.adjustMasterCount(1),
+        .master_count_dec => self.mux.adjustMasterCount(-1),
+        .move_to_workspace => {
+            if (payload.len >= 2 and payload[1] < 10) _ = self.mux.movePaneToWorkspace(payload[1]);
+        },
+        .reset_layout => self.mux.resetLayout(),
     }
     // Notify client of state change
     self.sendStateSync();

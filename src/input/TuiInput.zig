@@ -20,6 +20,8 @@ pub const Action = union(enum) {
     command: daemon_proto.Command,
     /// Workspace switch (command + workspace index)
     workspace: u8,
+    /// Move the focused pane to a workspace (move_to_workspace + index)
+    move_to_workspace: u8,
     /// Mouse click at (col, row) — 0-indexed, relative to TUI screen
     mouse_click: struct { col: u16, row: u16, button: u8, release: bool },
     /// Detach from session
@@ -366,10 +368,30 @@ fn handleAltKey(_: *Self, key: u8) Action {
         'd' => .detach,
         // Alt+M = focus master
         'm' => .{ .command = .focus_master },
-        // Alt+N = swap next (RAlt emulation)
+        // Alt+N / Alt+P = swap next / prev (RAlt emulation)
         'n' => .{ .command = .swap_next },
-        // Alt+P = swap prev (RAlt emulation)
         'p' => .{ .command = .swap_prev },
+        // Alt+Shift+J / Alt+Shift+K = swap next / prev (xmonad Mod+Shift+j/k).
+        // Shift makes xkb deliver the uppercase letter, so we match on it here.
+        'J' => .{ .command = .swap_next },
+        'K' => .{ .command = .swap_prev },
+        // Alt+Shift+M = swap focused <-> master (xmonad Mod+Shift+m)
+        'M' => .{ .command = .swap_master },
+        // Alt+, / Alt+. = IncMasterN -/+ (xmonad Mod+,/.)
+        ',' => .{ .command = .master_count_inc },
+        '.' => .{ .command = .master_count_dec },
+        // Alt+Shift+1..0 = move focused pane to workspace 1..10 (xmonad
+        // Mod+Shift+N). On a US layout Shift+digit is the symbol above it.
+        '!' => .{ .move_to_workspace = 0 },
+        '@' => .{ .move_to_workspace = 1 },
+        '#' => .{ .move_to_workspace = 2 },
+        '$' => .{ .move_to_workspace = 3 },
+        '%' => .{ .move_to_workspace = 4 },
+        '^' => .{ .move_to_workspace = 5 },
+        '&' => .{ .move_to_workspace = 6 },
+        '*' => .{ .move_to_workspace = 7 },
+        '(' => .{ .move_to_workspace = 8 },
+        ')' => .{ .move_to_workspace = 9 },
         // Unknown Alt+key — forward as ESC + key
         else => .none,
     };
@@ -407,7 +429,15 @@ fn handlePrefixKey(_: *Self, key: u8) Action {
         'K' => .{ .command = .swap_prev },
         // Master
         'm' => .{ .command = .focus_master },
-        'M' => .{ .command = .set_master },
+        'M' => .{ .command = .swap_master },
+        // IncMasterN (panes in the master area)
+        ',' => .{ .command = .master_count_inc },
+        '.' => .{ .command = .master_count_dec },
+        // Rotate the non-master region; focus stays put
+        'o' => .{ .command = .rotate_slaves_down },
+        'O' => .{ .command = .rotate_slaves_up },
+        // Reset the workspace to the default tiling
+        'r' => .{ .command = .reset_layout },
         // Session
         'd' => .detach,
         else => .none,
@@ -468,6 +498,10 @@ fn dispatchAction(_: *Self, action: Action, daemon_fd: std.posix.fd_t) void {
         },
         .workspace => |ws| {
             const payload = [2]u8{ @intFromEnum(daemon_proto.Command.switch_workspace), ws };
+            _ = daemon_proto.sendMessage(daemon_fd, .command, &payload);
+        },
+        .move_to_workspace => |ws| {
+            const payload = [2]u8{ @intFromEnum(daemon_proto.Command.move_to_workspace), ws };
             _ = daemon_proto.sendMessage(daemon_fd, .command, &payload);
         },
         .mouse_click => {

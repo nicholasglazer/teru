@@ -75,9 +75,18 @@ pub const Command = enum(u8) {
     // Meta-l (downcase) — silently mutilating typed input.
     resize_shrink = 13,
     resize_grow = 14,
+    // Pane-management parity with teruwm/xmonad — flat-list ops the engine
+    // already implements but that were never exposed over the wire.
+    swap_master = 15, // swap focused <-> master (xmonad W.swapMaster)
+    rotate_slaves_up = 16, // rotate the non-master region, focus stays put
+    rotate_slaves_down = 17,
+    master_count_inc = 18, // IncMasterN +1 (panes in the master area)
+    master_count_dec = 19, // IncMasterN -1
+    move_to_workspace = 20, // payload[1] = target ws (move the focused pane)
+    reset_layout = 21, // back to master_stack, master_count = 1
 
     pub fn fromByte(b: u8) ?Command {
-        return if (b <= 14) @enumFromInt(b) else null;
+        return if (b <= 21) @enumFromInt(b) else null;
     }
 };
 
@@ -505,9 +514,16 @@ test "Command.fromByte: valid and invalid" {
     try std.testing.expectEqual(Command.focus_pane, Command.fromByte(12).?);
     try std.testing.expectEqual(Command.resize_shrink, Command.fromByte(13).?);
     try std.testing.expectEqual(Command.resize_grow, Command.fromByte(14).?);
+    try std.testing.expectEqual(Command.swap_master, Command.fromByte(15).?);
+    try std.testing.expectEqual(Command.rotate_slaves_up, Command.fromByte(16).?);
+    try std.testing.expectEqual(Command.rotate_slaves_down, Command.fromByte(17).?);
+    try std.testing.expectEqual(Command.master_count_inc, Command.fromByte(18).?);
+    try std.testing.expectEqual(Command.master_count_dec, Command.fromByte(19).?);
+    try std.testing.expectEqual(Command.move_to_workspace, Command.fromByte(20).?);
+    try std.testing.expectEqual(Command.reset_layout, Command.fromByte(21).?);
 
-    // 15+ must return null.
-    try std.testing.expect(Command.fromByte(15) == null);
+    // 22+ must return null.
+    try std.testing.expect(Command.fromByte(22) == null);
     try std.testing.expect(Command.fromByte(128) == null);
     try std.testing.expect(Command.fromByte(255) == null);
 }

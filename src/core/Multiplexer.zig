@@ -347,6 +347,37 @@ pub fn setMaster(self: *Multiplexer) void {
     self.markDirty();
 }
 
+/// Swap the active pane with the master slot (xmonad W.swapMaster).
+pub fn swapMaster(self: *Multiplexer) void {
+    self.layout_engine.workspaces[self.active_workspace].swapWithMaster();
+    self.markDirty();
+}
+
+/// Rotate the non-master (slave) region by one slot; focus stays put.
+pub fn rotateSlaves(self: *Multiplexer, up: bool) void {
+    self.layout_engine.workspaces[self.active_workspace].rotateSlaves(up);
+    self.markDirty();
+}
+
+/// Adjust how many panes occupy the master area (xmonad IncMasterN).
+pub fn adjustMasterCount(self: *Multiplexer, delta: i8) void {
+    self.layout_engine.workspaces[self.active_workspace].adjustMasterCount(delta);
+    self.markDirty();
+}
+
+/// Reset the active workspace to the default tiling: master-stack, 1 master.
+pub fn resetLayout(self: *Multiplexer) void {
+    const ws = &self.layout_engine.workspaces[self.active_workspace];
+    ws.layout = .master_stack;
+    ws.master_count = 1;
+    ws.layout_pinned = true;
+    // Clear the split tree so the flat master-stack takes effect.
+    ws.split_root = null;
+    ws.split_node_count = 0;
+    ws.active_node = null;
+    self.markDirty();
+}
+
 /// Focus the master pane in the active workspace.
 pub fn focusMaster(self: *Multiplexer) void {
     const ws = &self.layout_engine.workspaces[self.active_workspace];

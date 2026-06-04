@@ -427,6 +427,16 @@ pub fn parseDaemonStateSync(daemon_fd: posix.fd_t, mux: *Multiplexer, payload: [
         }
     }
 
+    // Rebuild each workspace's pane order from the daemon's authoritative list.
+    // The per-pane section lists panes per workspace IN node_ids order, so we
+    // clear the local order and re-add in that order. Previously every existing
+    // pane was skipped (`continue`), so a daemon-side reorder — swap-next/prev,
+    // move-to-workspace — never reached the client and looked like a no-op.
+    // master_id is a pane id (not an index) so it survives the clear;
+    // active_index is re-resolved from active_node below; closed panes simply
+    // don't reappear in the list so they drop out of the order too.
+    for (&mux.layout_engine.workspaces) |*ws| ws.node_ids.clearRetainingCapacity();
+
     const Pane = @import("../core/Pane.zig");
     while (pos + 13 <= payload.len) {
         const pane_id = std.mem.readInt(u64, payload[pos..][0..8], .little);
@@ -438,21 +448,16 @@ pub fn parseDaemonStateSync(daemon_fd: posix.fd_t, mux: *Multiplexer, payload: [
         const ws_idx = payload[pos];
         pos += 1;
 
-        if (mux.getPaneById(pane_id) != null) continue;
-
-        const pane = Pane.initRemote(mux.allocator, rows, cols, pane_id, daemon_fd, mux.spawn_config) catch continue;
-        if (pane_id >= mux.next_pane_id) mux.next_pane_id = pane_id + 1;
-
-        mux.panes.append(mux.allocator, pane) catch continue;
-        // append() may have reallocated mux.panes, moving every Pane struct and
-        // dangling each pane's self-pointers (vt.grid, vt.response_ctx,
-        // grid.scrollback). Re-link ALL panes, not just the new one — same
-        // invariant Multiplexer.addPane upholds. Linking only items[idx] left
-        // earlier panes' vt.grid dangling, so attaching a multi-pane session
-        // (≥2 panes, enough to grow past ArrayList capacity) segfaulted in
-        // vt.feed() during the state-sync replay. Single-pane sessions never
-        // reallocate, which is why they attached fine.
-        for (mux.panes.items) |*p| p.linkVt(mux.allocator);
+        if (mux.getPaneById(pane_id) == null) {
+            const pane = Pane.initRemote(mux.allocator, rows, cols, pane_id, daemon_fd, mux.spawn_config) catch continue;
+            if (pane_id >= mux.next_pane_id) mux.next_pane_id = pane_id + 1;
+            mux.panes.append(mux.allocator, pane) catch continue;
+            // append() may have reallocated mux.panes, moving every Pane struct
+            // and dangling each pane's self-pointers (vt.grid, vt.response_ctx,
+            // grid.scrollback). Re-link ALL panes, not just the new one — same
+            // invariant Multiplexer.addPane upholds.
+            for (mux.panes.items) |*p| p.linkVt(mux.allocator);
+        }
 
         if (ws_idx < 10) {
             mux.layout_engine.workspaces[ws_idx].addNode(mux.allocator, pane_id) catch |err| {
