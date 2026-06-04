@@ -32,7 +32,7 @@ zig build -Doptimize=ReleaseFast      # release teru   → zig-out/bin/teru
 make compositor                           # debug teruwm (auto CRT fix)
 zig build -Dcompositor                    # debug teruwm (no CRT fix)
 zig build -Doptimize=ReleaseFast -Dcompositor   # release teruwm → zig-out/bin/teruwm
-zig build test                        # 527 inline tests (library-level)
+zig build test                        # 531 inline tests (library-level)
 zig build bench -- tools/bench-payloads   # throughput benchmarks
 zig build run                         # run debug teru (windowed)
 zig build run -- --raw                # run debug teru (TTY mode)
@@ -44,7 +44,7 @@ zig build run -- --raw                # run debug teru (TTY mode)
 - `src/server/` — Session daemon (`daemon.zig`), wire protocol, cross-platform IPC (`ipc.zig`)
 - `src/pty/` — `pty.zig` comptime dispatch, `PosixPty.zig`, `WinPty.zig` (ConPTY), `RemotePty.zig`
 - `src/graph/` — `ProcessGraph` (DAG of processes/agents, MCP-queryable)
-- `src/agent/` — OSC 9999 parser, HookHandler/Listener, `McpServer.zig` + `McpDispatch.zig` (20 tools, line-JSON), `McpBridge.zig` (stdio proxy), `in_band.zig` (in-band MCP over OSC 9999 + DCS), `PaneBackend.zig`
+- `src/agent/` — OSC 9999 parser, HookHandler/Listener, `McpServer.zig` + `McpDispatch.zig` (22 tools, line-JSON), `McpBridge.zig` (stdio proxy), `in_band.zig` (in-band MCP over OSC 9999 + DCS), `PaneBackend.zig`
 - `src/tiling/` — Layout engine + workspace state; 8 layouts (master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion)
 - `src/persist/` — Session serialization, scrollback compression (keyframe + delta)
 - `src/config/` — Config parser, `Keybinds.zig` (configurable), `ConfigWatcher.zig` (inotify/kqueue/poll), `themes.zig`
@@ -58,9 +58,9 @@ Map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## MCP
 
-Two servers. 57 tools total.
+Two servers. 59 tools total.
 
-- **teru agent** (`src/agent/McpServer.zig`) — 20 tools + event push channel, sockets `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock` (requests) and `teru-mcp-events-$PID.sock` (events). Since v0.4.19 transparently forwards `teruwm_*` tools to the compositor socket.
+- **teru agent** (`src/agent/McpServer.zig`) — 22 tools + event push channel, sockets `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock` (requests) and `teru-mcp-events-$PID.sock` (events). Since v0.4.19 transparently forwards `teruwm_*` tools to the compositor socket.
 - **teruwm compositor** (`src/compositor/WmMcpServer.zig`) — 37 tools + event push channel, sockets `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock` (requests) and `teruwm-mcp-events-$PID.sock` (events)
 
 Reference: [docs/MCP-API.md](docs/MCP-API.md).
@@ -77,7 +77,7 @@ Reference: [docs/MCP-API.md](docs/MCP-API.md).
 ## Testing
 
 ```sh
-zig build test                        # 527 inline tests
+zig build test                        # 531 inline tests
 python3 tests/session_survival_e2e.py # daemon survives SSH disconnect + reattach-resume
 python3 tests/daemon_resize_stress.py # daemon is uncrashable by client resize(0,0)
 python3 tests/many_pane_e2e.py        # every pane drained at 40 panes (no poll-set cap)
@@ -132,7 +132,7 @@ place:
 - [docs/INSTALLING.md](docs/INSTALLING.md) — per-platform install + teruwm TTY caveat
 - [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md) — every default keybind for both binaries
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — teru.conf, teruwm/config, widgets, thresholds, rules
-- [docs/MCP-API.md](docs/MCP-API.md) — all 57 tools with schemas + examples
+- [docs/MCP-API.md](docs/MCP-API.md) — all 59 tools with schemas + examples
 - [docs/AI-INTEGRATION.md](docs/AI-INTEGRATION.md) — CustomPaneBackend, push widgets, OSC 9999, .tsess templates
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module map, rendering pipeline, hot-restart, gap arithmetic
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — methodology + numbers, explicitly-not-measured items

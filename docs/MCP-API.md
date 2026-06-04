@@ -5,8 +5,8 @@ Both speak JSON-RPC 2.0 over a Unix socket (or Windows named pipe).
 
 | Server | Socket | Tools | Purpose |
 |---|---|---:|---|
-| **teru agent** | `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock` | 19 | Control any running teru instance — panes, workspaces, scrollback, sessions, broadcast, config live-edit |
-| **teruwm compositor** | `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock` | 26 | Control the Wayland compositor — windows (terminal + XDG), workspaces, layouts, bars, push widgets, named scratchpads (v0.4.18), event push stream, hot-restart, E2E test hooks |
+| **teru agent** | `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock` | 22 | Control any running teru instance — panes, workspaces, scrollback, sessions, broadcast, config live-edit |
+| **teruwm compositor** | `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock` | 37 | Control the Wayland compositor — windows (terminal + XDG), workspaces, layouts, bars, push widgets, named scratchpads (v0.4.18), event push stream, hot-restart, E2E test hooks |
 
 If you write a daemon that needs to push data to the bar, you want the
 compositor server. If you want an AI agent to read another pane's output
@@ -190,7 +190,7 @@ best-effort (O_NONBLOCK on the server side); slow consumers drop.
 
 Since v0.4.19, **teru's MCP transparently forwards `teruwm_*` tools**
 to the running teruwm compositor's socket. Agents see one unified
-45-tool surface regardless of which binary they're connected to:
+59-tool surface regardless of which binary they're connected to:
 
 ```
 agent ──→ teru-mcp-$PID.sock
@@ -209,7 +209,7 @@ path (below) all get the same unified surface. Set
 `TERUWM_MCP_SOCKET=/path/to/sock` to pin a specific teruwm instance
 when multiple run on the same host.
 
-`tools/list` today returns only teru's 20 tools — the forwarded
+`tools/list` today returns only teru's 22 tools — the forwarded
 tools aren't merged into the listing. Clients that want the full
 surface should also query teruwm's socket directly for its
 `tools/list`, or rely on documentation (this file). Unified

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **Daemon multiplexer pane-management parity with teruwm/xmonad.** Fixed
+  pane-swap (the client skipped reordered panes on state-sync, so swap was a
+  silent no-op) and exposed the flat-list ops the engine already had but the
+  wire protocol didn't: swap-master, rotate-slaves ±, master-count ±
+  (IncMasterN), move-pane-to-workspace, reset-layout. Nested keys: `Alt+n/p` and
+  `Alt+Shift+j/k` swap, `Alt+Shift+m` swap-master, `Alt+,`/`.` master-count,
+  `Alt+Shift+1-0` move-to-workspace; prefix `M`/`r`/`o`/`O`/`,`/`.` for the rest.
+
 ### Changed
 
 - **Quit/restart moved onto the apostrophe key, mirroring the reference xmonad

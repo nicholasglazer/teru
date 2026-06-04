@@ -222,10 +222,20 @@ bindings above:
 |-----|--------|
 | `Alt+1` … `Alt+0` | Switch to workspace 1–9, 0 |
 | `Alt+J` / `Alt+K` | Focus next / previous pane |
+| `Alt+M` | Focus the master pane |
+| `Alt+N` / `Alt+P` | Swap focused pane with next / previous |
+| `Alt+Shift+J` / `Alt+Shift+K` | Swap focused pane with next / previous (xmonad parity) |
+| `Alt+Shift+M` | Swap focused pane with the master |
+| `Alt+,` / `Alt+.` | Increase / decrease panes in the master area (IncMasterN) |
+| `Alt+Shift+1` … `Alt+Shift+0` | Move focused pane to workspace 1–9, 0 |
 | `Alt+H` / `Alt+L` | Shrink / grow the master area |
-| `Alt+C` | New pane in the current workspace |
+| `Alt+Enter` | New pane (split) |
+| `Alt+X` | Close focused pane |
+| `Alt+Space` | Cycle layout |
+| `Alt+Z` | Zoom (monocle) toggle |
+| `Alt+D` | Detach session |
 | **Click** a pane | Focus that pane (input then routes to it) |
-| `Ctrl+B` then … | Prefix command (table below) |
+| `Ctrl+B` (or `Ctrl+A` when nested) then … | Prefix command (table below) |
 | `Ctrl-\` | Detach immediately (everything keeps running) |
 
 ### Prefix commands (`Ctrl+B`, then …)
@@ -240,7 +250,10 @@ bindings above:
 | `Space` | Cycle layout |
 | `z` | Zoom toggle |
 | `Shift+J` / `Shift+K` | Swap focused pane with next / previous |
-| `m` / `Shift+M` | Focus master / set focused as master |
+| `m` / `Shift+M` | Focus master / swap focused with master |
+| `,` / `.` | Increase / decrease master count (IncMasterN) |
+| `o` / `Shift+O` | Rotate the non-master panes down / up |
+| `r` | Reset layout to master-stack |
 | `d` | Detach session |
 | `Esc` | Leave prefix mode |
 
@@ -266,6 +279,10 @@ Key ownership while focused on a nested pane:
 
 Set `TERU_NESTED=1` on the remote (the `TERM_PROGRAM=teru` auto-detect doesn't
 survive SSH). Full workflow: [SESSIONS.md → Nested sessions](SESSIONS.md#nested-sessions-a-local-teru--ssh--remote-teru).
+
+The inner status bar is dropped by default (the outer owns one). Under **teruwm**
+or a plain terminal there is no outer bar, so set **`TERU_NESTED_BAR=1`** to keep
+the inner multiplexer's bar (workspace tabs + layout + pane count) visible.
 
 > Older outer teru (pre-Alt-forwarding) or a non-teru terminal: `Alt` won't be
 > forwarded, so drive the remote with the `Ctrl+A` prefix instead.
