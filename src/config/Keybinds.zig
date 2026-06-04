@@ -689,12 +689,19 @@ pub const Keybinds = struct {
         // adjustment). In standalone teru they control font size —
         // that binding is added by `loadTerminalZoomDefaults`, called
         // only from the terminal init path, never from teruwm.
-        _ = self.add(n, M, 'q', .window_close); // xmonad parity: close focused
-        _ = self.add(n, MS, 'q', .compositor_quit); // xmonad parity: quit compositor
+        // Close is $mod+Shift+C only (xmonad `mod-shift-c`); $mod+Q is left
+        // UNBOUND to match the ~/.miozu xmonad config (which never binds mod-q).
+        _ = self.add(n, MS, 'q', .compositor_quit); // layout-independent quit fallback
         _ = self.add(n, MS, 'r', .config_reload);
-        // Mod+Ctrl+Shift+R: hot-restart compositor (preserves terminal sessions)
-        const MCS = Mods{ .ctrl = true, .shift = true, .super_ = true };
-        _ = self.add(n, MCS, 'r', .compositor_restart);
+        // Quit/restart live on the apostrophe key, mirroring ~/.miozu xmonad:
+        //   $mod+'        → restart   (xmonad: `xmonad --recompile && --restart`)
+        //   $mod+Shift+'  → quit      (xmonad: `io (exitWith ExitSuccess)`)
+        // Keysym note: ServerInput hands the matcher the *shift-translated*
+        // keysym and only un-shifts A–Z + the number row, so on a US layout
+        // plain apostrophe arrives as 0x27 ('\'') and Shift+apostrophe as 0x22
+        // ('"'). Each chord is bound to the keysym it actually produces.
+        _ = self.add(n, M, '\'', .compositor_restart);
+        _ = self.add(n, MS, '"', .compositor_quit);
         _ = self.add(n, M, 'w', .screenshot);
         _ = self.add(n, MS, 'w', .screenshot_pane);
         const MCW = Mods{ .ctrl = true, .super_ = true };
@@ -901,6 +908,37 @@ test "Keybinds defaults and lookup" {
     try std.testing.expect(kb.lookup(.scroll, Mods.CTRL_SHIFT, 'c').? == .copy_selection);
     // Unknown key returns null
     try std.testing.expect(kb.lookup(.normal, Mods.NONE, 'q') == null);
+}
+
+test "Keybinds quit/restart on apostrophe mirror xmonad" {
+    // teruwm sets mod_key = Super, then loadDefaults binds restart on $mod+'
+    // and quit on $mod+Shift+' — matching ~/.miozu xmonad. The keysyms are
+    // what xkb delivers on a US layout: plain apostrophe = 0x27 ('\''),
+    // Shift+apostrophe = quotedbl 0x22 ('"') (ServerInput does not un-shift
+    // punctuation). This mirrors the live keyboard path's (mods, keysym).
+    var kb = Keybinds{};
+    kb.mod_key = Mods.SUPER;
+    kb.loadDefaults();
+
+    const M = Mods.SUPER;
+    const MS = Mods{ .super_ = true, .shift = true };
+    // $mod+' (apostrophe 0x27, no shift) → restart.
+    try std.testing.expect(kb.lookup(.normal, M, '\'').? == .compositor_restart);
+    // $mod+Shift+' (quotedbl 0x22) → quit.
+    try std.testing.expect(kb.lookup(.normal, MS, '"').? == .compositor_quit);
+    // $mod+Shift+Q kept as a layout-independent quit fallback.
+    try std.testing.expect(kb.lookup(.normal, MS, 'q').? == .compositor_quit);
+    // $mod+Q is now UNBOUND (close lives only on $mod+Shift+C; xmonad parity).
+    try std.testing.expect(kb.lookup(.normal, M, 'q') == null);
+    // Close window remains on $mod+Shift+C.
+    try std.testing.expect(kb.lookup(.normal, MS, 'c').? == .window_close);
+    // The old $mod+Ctrl+Shift+R restart chord is gone.
+    const MCS = Mods{ .super_ = true, .ctrl = true, .shift = true };
+    try std.testing.expect(kb.lookup(.normal, MCS, 'r') == null);
+    // $mod+Shift+R still reloads config — must not regress.
+    try std.testing.expect(kb.lookup(.normal, MS, 'r').? == .config_reload);
+    // Plain apostrophe / quotedbl without $mod must NOT be eaten (they're text).
+    try std.testing.expect(kb.lookup(.normal, Mods.NONE, '\'') == null);
 }
 
 test "Keybinds parseLine" {
