@@ -149,8 +149,9 @@ teruwmctl scratchpad term       # show 'term' again
 | `$mod+Shift+W` | Screenshot focused pane |
 | `$mod+Ctrl+W` | Screenshot area (drag to select; uses `slurp` + `grim`) |
 | `$mod+Shift+R` | Reload config from `~/.config/teruwm/config` |
-| `$mod+Ctrl+Shift+R` | **Hot-restart** compositor (PTYs survive) |
-| `$mod+Shift+Q` | Quit compositor |
+| `$mod+'` | **Hot-restart** compositor — PTYs survive, picks up a rebuilt binary (xmonad `mod-'`) |
+| `$mod+Shift+'` | **Quit** compositor (xmonad `mod-Shift-'`) |
+| `$mod+Shift+Q` | Quit compositor (layout-independent fallback) |
 
 ## Font zoom
 
