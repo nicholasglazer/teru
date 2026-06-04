@@ -17,6 +17,7 @@ const Pty = teru.Pty;
 const Pane = teru.Pane;
 const Server = @import("Server.zig");
 const TerminalPane = @import("TerminalPane.zig");
+const wlr = @import("wlr.zig");
 
 extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 
@@ -152,12 +153,37 @@ pub fn execRestart(server: *Server) void {
     _ = unsetenv("WAYLAND_DISPLAY");
     _ = unsetenv("DISPLAY");
 
+    // Release the DRM/logind seat IN-PROCESS before re-exec. On a bare TTY,
+    // wlr_backend_autocreate took control of the seat (libseat TakeControl),
+    // the DRM master, and each input device. execve replaces the process image
+    // WITHOUT running destructors, so without this the old image still owns the
+    // seat at exec time and the new image's autocreate fails to TakeControl →
+    // BackendCreateFailed → the process exits → the whole session dies (this is
+    // exactly why $mod+' "closed the session" on real hardware; headless has no
+    // seat, so the e2e suite never hit it).
+    //
+    // Order is load-bearing: destroy the backend FIRST — it closes the DRM +
+    // input device fds through the still-live session — THEN destroy the
+    // session, whose close releases libseat control (logind ReleaseControl), the
+    // one thing blocking the new TakeControl. shutting_down gates the output
+    // frame/destroy handlers that fire during teardown (same invariant deinit
+    // relies on, Server.zig:732 / Output.zig:272). PTY master fds were
+    // FD_CLOEXEC-cleared above and are independent of wlroots, so they survive
+    // this teardown and the execve — terminals keep running.
+    server.shutting_down = true;
+    wlr.wlr_backend_destroy(server.backend);
+    if (server.session) |sess| wlr.wlr_session_destroy(sess);
+
     var argv_buf: [3:null]?[*:0]const u8 = .{ self_exe, @ptrCast("--restore"), null };
     _ = std.posix.system.execve(self_exe, @ptrCast(&argv_buf), std.c.environ);
 
-    // If exec returns, it failed — put FD_CLOEXEC back
-    std.log.scoped(.session).err("exec failed, continuing", .{});
-    restoreCloexec(cleared_fds.items);
+    // exec returned → it failed, AND we've already torn down the backend/seat,
+    // so there's no live display to fall back to (restoring FD_CLOEXEC would
+    // only leave a blind, seat-less zombie). Exit; the parent shell shows the
+    // error. A failed re-exec of a freshly built binary is rare and recoverable
+    // (relaunch); limping on headless is not.
+    std.log.scoped(.session).err("exec failed after seat teardown — exiting", .{});
+    std.process.exit(1);
 }
 
 /// Restore terminal panes from a restart state file. PTY master fds

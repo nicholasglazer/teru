@@ -86,6 +86,35 @@ run-wm: ## Build and run teruwm compositor
 install: release ## Install to PREFIX (default: /usr/local)
 	install -Dm755 zig-out/bin/teru $(DESTDIR)$(BINDIR)/teru
 
+# install-local: the "always latest" target behind `startt`. One
+# `-Dcompositor` build produces both teru + teruwm; the CRT fix and the
+# termios-typo zig-lib patch are applied automatically, then both binaries
+# are stripped and installed to ~/.local/bin (no sudo, no /usr/local).
+LOCALBIN ?= $(HOME)/.local/bin
+.PHONY: install-local
+install-local: ## Build release teru + teruwm, install both to ~/.local/bin
+	./tools/fix-crt.sh
+	zig build -Doptimize=ReleaseSafe -Dcompositor $(CRT_FIX_FLAG) $$(./tools/zig-lib-fix.sh)
+	strip zig-out/bin/teru zig-out/bin/teruwm
+	install -Dm755 zig-out/bin/teru   $(LOCALBIN)/teru
+	install -Dm755 zig-out/bin/teruwm $(LOCALBIN)/teruwm
+	@echo "install-local: installed teru + teruwm → $(LOCALBIN)"
+
+# dev-install: the fast inner-loop sibling of install-local. Debug build
+# (incremental, ~seconds; full safety + symbols for crash diagnostics), NOT
+# stripped, installed to ~/.local/bin. This is the "recompile" half of the
+# edit → recompile → `Super+'` hot-restart loop. Pair with the `tr` shell
+# alias. teruwm re-execs whatever sits at ~/.local/bin/teruwm on restart, so
+# a dev-install immediately before `Super+'` lands you on the new code with
+# PTYs intact.
+.PHONY: dev-install
+dev-install: ## Fast DEBUG build of teru + teruwm, install both to ~/.local/bin
+	./tools/fix-crt.sh
+	zig build -Dcompositor $(CRT_FIX_FLAG) $$(./tools/zig-lib-fix.sh)
+	install -Dm755 zig-out/bin/teru   $(LOCALBIN)/teru
+	install -Dm755 zig-out/bin/teruwm $(LOCALBIN)/teruwm
+	@echo "dev-install: installed DEBUG teru + teruwm → $(LOCALBIN)"
+
 .PHONY: uninstall
 uninstall: ## Remove installed binary
 	rm -f $(DESTDIR)$(BINDIR)/teru

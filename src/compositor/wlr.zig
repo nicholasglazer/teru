@@ -676,6 +676,11 @@ pub const WL_SEAT_CAPABILITY_KEYBOARD: u32 = 2;
 // ── Session (VT switching) ──────────────────────────────────────
 
 pub extern "wlroots-0.18" fn wlr_session_change_vt(session: *wlr_session, vt: c_uint) callconv(.c) bool;
+// Releases the libseat/logind session control (close_seat → ReleaseControl).
+// Called on hot-restart, after wlr_backend_destroy, so the re-exec'd process
+// can re-acquire the seat. wlr_backend_autocreate captures this session via its
+// out-param; the caller owns it (the backend does NOT destroy it on 0.18).
+pub extern "wlroots-0.18" fn wlr_session_destroy(session: *wlr_session) callconv(.c) void;
 
 // XKB keysyms for VT switching (Ctrl+Alt+F1-F12)
 pub const XKB_KEY_XF86Switch_VT_1: u32 = 0x1008FE01;

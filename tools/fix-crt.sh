@@ -42,6 +42,17 @@ if ! $NEED_FIX; then
     exit 0
 fi
 
+# Idempotent fast path. This script runs at the top of every `make` target, but
+# the expensive work (objcopy 3 CRTs + symlinking all of /usr/lib/lib*.so* with
+# a basename fork per file) only needs redoing when the system CRT files change
+# (a glibc/gcc update). If the cache is already built and not older than the
+# system crt1.o, return immediately — turning a ~7s no-op into ~5ms. Without
+# this guard the CRT setup dominated every incremental rebuild (the zig compile
+# itself is ~100ms cached).
+if [ -f "$FIX_DIR/libc.txt" ] && [ -f "$FIX_DIR/crt1.o" ] && [ ! "/usr/lib/crt1.o" -nt "$FIX_DIR/crt1.o" ]; then
+    exit 0
+fi
+
 echo "Detected .sframe sections in system CRT files — creating stripped copies..."
 
 mkdir -p "$FIX_DIR"

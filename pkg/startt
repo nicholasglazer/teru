@@ -1,0 +1,77 @@
+#!/bin/bash
+# startt — the `startx` of teruwm (start-teru).
+#
+# Builds the latest release teru + teruwm from source (`make install-local`)
+# and installs both to ~/.local/bin, then execs teruwm. Because it rebuilds
+# first you can never launch stale code — and unlike xmonad there's no
+# separate "recompile" step. A broken build aborts BEFORE the exec (set -e),
+# dropping you back to the login shell with the error visible.
+#
+# Install (symlink so the launcher tracks the repo):
+#   ln -sf "$PWD/pkg/startt" ~/.local/bin/startt
+# Usage:    startt            # release rebuild + install + launch (default)
+#           startt dev         # fast DEBUG rebuild + install + launch
+#           startt skip        # skip the rebuild, launch the installed binary
+#
+# Source-tree location: set TERU_SRC, else the first of these that exists is used.
+set -euo pipefail
+
+find_src() {
+    if [ -n "${TERU_SRC:-}" ] && [ -f "$TERU_SRC/build.zig" ]; then
+        echo "$TERU_SRC"; return 0
+    fi
+    for d in \
+        "$HOME/code/workbench/foss/teru" \
+        "$HOME/code/teru" \
+        "$HOME/src/teru" \
+        "$HOME/teru"; do
+        [ -f "$d/build.zig" ] && { echo "$d"; return 0; }
+    done
+    return 1
+}
+
+# Default is DEBUG — the inner-loop build is ~1.3s incremental (after the
+# fix-crt idempotency fix), vs release's slow LLVM re-optimization. Use
+# `startt release` when you want the optimized daily-driver binary.
+MODE="${1:-dev}"
+case "$MODE" in
+    dev)     TARGET=dev-install   ;;   # fast DEBUG build (default — dev inner loop)
+    release) TARGET=install-local ;;   # optimized binary (~85s cold, smoother to daily-drive)
+    skip)    TARGET= ;;                # launch the installed binary as-is
+    *) echo "usage: startt [dev|release|skip]" >&2; exit 2 ;;
+esac
+
+if [ -n "$TARGET" ]; then
+    REPO="$(find_src)" || {
+        echo "startt: can't find the teru source tree." >&2
+        echo "  Set TERU_SRC=/path/to/teru, or run 'startt skip' to launch the installed binary." >&2
+        exit 1
+    }
+    make -C "$REPO" "$TARGET"
+fi
+
+# Keyboard layout for TTY launch (env-inheritance break on bare TTY).
+KB_ENV="$HOME/.config/environment.d/10-miozu-keyboard.conf"
+[ -f "$KB_ENV" ] && { set -a; . "$KB_ENV"; set +a; }
+
+# Clear stale Wayland locks left by a crashed session.
+rm -f "/run/user/$(id -u)/wayland-"*.lock 2>/dev/null || true
+
+# Run teruwm. NOT `exec` on purpose: if the compositor fails to acquire the
+# DRM seat (e.g. another compositor/Xorg holds it) it exits immediately, and
+# `exec` would replace this shell — bouncing you to the login prompt before
+# you can read the error. Running it as a child keeps the error on screen and
+# drops you back to the shell. Hot-restart ($mod+') is unaffected: teruwm
+# re-execs itself in place regardless of its parent.
+"$HOME/.local/bin/teruwm"
+status=$?
+if [ "$status" -ne 0 ]; then
+    echo
+    echo "── teruwm exited with status $status. Common causes on a bare TTY:"
+    echo "   • 'Timeout waiting session to become active' / 'Could not connect"
+    echo "     to remote display' → another compositor or Xorg holds the DRM"
+    echo "     seat. Quit it, or launch from a VT that owns the active seat."
+    echo "   • Run from a graphical session (WAYLAND_DISPLAY/DISPLAY set) →"
+    echo "     teruwm is a root compositor; launch it from a bare TTY."
+    echo "Press Enter to return to the shell…"; read -r _
+fi

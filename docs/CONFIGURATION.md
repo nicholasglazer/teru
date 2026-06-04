@@ -642,11 +642,11 @@ with sensible defaults. Bind in `[keybind]`:
 
 ```conf
 [keybind]
-Mod+R            = spawn:teruwm-record product
-Mod+Shift+R      = spawn:teruwm-record area
-Mod+Ctrl+R       = spawn:teruwm-record gif
-Mod+Alt+R        = spawn:teruwm-record tutorial
-Mod+Shift+Ctrl+R = spawn:teruwm-record stop
+mod+r            = spawn:teruwm-record product
+mod+shift+r      = spawn:teruwm-record area
+mod+ctrl+r       = spawn:teruwm-record gif
+mod+alt+r        = spawn:teruwm-record tutorial
+mod+shift+ctrl+r = spawn:teruwm-record stop
 ```
 
 Presets: **product** (30 fps MP4), **area** (slurp + 30 fps), **gif**
@@ -664,18 +664,28 @@ enum belong here).
 
 ```conf
 [keybind]
-Mod+Return        = spawn:teru
-Mod+Shift+Return  = spawn:teru --class Scratchpad
-Mod+E             = spawn:emacsclient -c -a emacs
-Mod+Shift+D       = spawn:dunstctl close-all
-Mod+X             = spawn:chromium
+mod+return        = spawn:teru
+mod+shift+return  = spawn:teru --class Scratchpad
+mod+e             = spawn:emacsclient -c -a emacs
+mod+shift+d       = spawn:dunstctl close-all
+mod+x             = spawn:chromium
 ```
 
-Syntax: `<chord> = spawn:<cmd>`. The LHS follows the same `Mod+Ctrl+X`
+Syntax: `<chord> = spawn:<cmd>`. The LHS follows the same `mod+ctrl+x`
 grammar as other keybind sections. The RHS is passed to `/bin/sh -c`,
 so pipes, args, and quoting work. Up to 32 entries. Commands inherit
 the compositor's environment (`WAYLAND_DISPLAY`, `DISPLAY` for
 Xwayland), same as `[autostart]`.
+
+> **Chord matching is case-insensitive.** `mod+q`, `Mod+Q`, and `MOD+Q` are
+> equivalent — modifier tokens (`mod`, `super`, `alt`, `ctrl`, `shift`) and
+> letter keys fold to a single canonical form, and named keys resolve in any
+> case (`return`/`Return`, `xf86audiomute`/`XF86AudioMute`). Lowercase is the
+> style used throughout this doc. For a shifted letter, use an explicit
+> `shift` token (`mod+shift+r`) rather than relying on an uppercase key — a
+> Shift+letter press is folded to its lowercase keysym before matching, so the
+> `shift` modifier is what disambiguates. `mod` resolves to the compositor's
+> `$mod` (Super); `super+q` is equivalent and explicit.
 
 ### `[names]` — Human-Readable Window Names
 
@@ -730,9 +740,10 @@ battery_critical = 15
 
 # ── User-defined spawn chords (v0.4.15) ────────
 [keybind]
-Mod+Return       = spawn:teru
-Mod+E            = spawn:emacsclient -c -a emacs
-Mod+Shift+D      = spawn:dunstctl close-all
+mod+return       = spawn:teru
+mod+e            = spawn:emacsclient -c -a emacs
+mod+shift+d      = spawn:dunstctl close-all
+mod+q            = spawn:foot -e ~/code/workbench/foss/teru/tools/recompile-restart.sh
 
 # ── Workspace assignments ──────────────────────
 [rules]
