@@ -192,6 +192,11 @@ bar_left: ?[]const u8 = null, // format string (null = workspace tabs)
 bar_center: ?[]const u8 = null, // format string (null = layout + title)
 bar_right: ?[]const u8 = null, // format string (null = dimensions)
 
+// TUI multiplexer client (`teru -n` over SSH / nested). These were previously
+// hardcoded; the TUI client now loads teru.conf and honours them.
+tui_pane_gap: u16 = 0, // gap (in text cells) between panes in the nested multiplexer
+tui_nested_bar: bool = false, // show the inner status bar when nested (else TERU_NESTED_BAR env)
+
 // Per-workspace config (10 workspaces, 1-indexed in config, 0-indexed in array)
 workspace_layouts: [10]?LayoutEngine.Layout = @splat(null),
 workspace_ratios: [10]?f32 = @splat(null),
@@ -578,6 +583,10 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         self.setString(allocator, &self.word_delimiters, value);
     } else if (std.mem.eql(u8, key, "show_status_bar")) {
         self.show_status_bar = parseBool(value) orelse return;
+    } else if (std.mem.eql(u8, key, "tui_pane_gap")) {
+        self.tui_pane_gap = std.fmt.parseInt(u16, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "tui_nested_bar")) {
+        self.tui_nested_bar = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "bar_left")) {
         self.setString(allocator, &self.bar_left, value);
     } else if (std.mem.eql(u8, key, "bar_center")) {
@@ -852,6 +861,18 @@ test "parse ignores malformed lines" {
     // All should remain at defaults since values are invalid
     try std.testing.expectEqual(@as(u16, 16), config.font_size);
     try std.testing.expectEqual(@as(u32, 0xFF232733), config.bg);
+}
+
+test "parse tui_pane_gap and tui_nested_bar (nested multiplexer config)" {
+    const allocator = std.testing.allocator;
+    const content =
+        \\tui_pane_gap = 4
+        \\tui_nested_bar = true
+    ;
+    var config = Config{ .allocator = allocator };
+    config.parse(allocator, content);
+    try std.testing.expectEqual(@as(u16, 4), config.tui_pane_gap);
+    try std.testing.expectEqual(true, config.tui_nested_bar);
 }
 
 test "missing config file returns defaults" {
