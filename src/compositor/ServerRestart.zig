@@ -18,11 +18,34 @@ const Pane = teru.Pane;
 const Server = @import("Server.zig");
 const TerminalPane = @import("TerminalPane.zig");
 
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+
 /// Prefer $XDG_RUNTIME_DIR (private, cleaned on logout) over /tmp.
 /// Thin wrapper around compat.runtimeFilePath for the restart blob.
 fn restartStatePath(buf: []u8) [:0]const u8 {
     return teru.compat.runtimeFilePath(buf, "teruwm-restart.bin") orelse
         @panic("restartStatePath: buffer too small");
+}
+
+/// Resolve the running binary's on-disk path via /proc/self/exe, stripping
+/// the " (deleted)" suffix the kernel appends once the file has been
+/// replaced (a rebuild + `install` swaps the inode under the running
+/// process). exec'ing the bare "/proc/self/exe" symlink would re-run the
+/// stale in-memory inode — the OLD code — so a hot-restart could never
+/// pick up a fresh build. Re-resolving the path and exec'ing *that* gives
+/// xmonad --restart semantics. Returns null (→ caller falls back to the
+/// always-valid symlink) if the link can't be read or the path isn't
+/// executable anymore.
+fn resolveSelfExe(buf: *[4096:0]u8) ?[*:0]const u8 {
+    const n = std.c.readlink("/proc/self/exe", buf, buf.len);
+    if (n <= 0) return null;
+    var len: usize = @intCast(n);
+    const deleted = " (deleted)";
+    if (len > deleted.len and std.mem.eql(u8, buf[len - deleted.len ..][0..deleted.len], deleted))
+        len -= deleted.len;
+    buf[len] = 0;
+    if (std.c.access(buf, std.posix.X_OK) != 0) return null;
+    return buf[0..len :0].ptr;
 }
 
 /// Save live state + exec the new binary. Returns only on exec failure
@@ -108,10 +131,29 @@ pub fn execRestart(server: *Server) void {
 
     std.log.scoped(.session).info("restarting ({d} panes saved)", .{pane_count});
 
-    // exec the new binary
-    const self_exe = "/proc/self/exe";
-    var argv_buf: [3:null]?[*:0]const u8 = .{ @ptrCast(self_exe), @ptrCast("--restore"), null };
-    _ = std.posix.system.execve(@ptrCast(self_exe), @ptrCast(&argv_buf), std.c.environ);
+    // exec the new binary — re-resolve the on-disk path so a rebuilt +
+    // reinstalled teruwm is actually loaded (see resolveSelfExe). Falls
+    // back to the bare /proc symlink if the path can't be resolved.
+    var exe_buf: [4096:0]u8 = undefined;
+    const self_exe: [*:0]const u8 = resolveSelfExe(&exe_buf) orelse "/proc/self/exe";
+
+    // Drop teruwm's OWN compositor sockets from the environ before exec.
+    // While running, teruwm setenv's WAYLAND_DISPLAY (its wl socket) and
+    // DISPLAY (Xwayland) so client apps can connect. If those survive the
+    // execve, wlr_backend_autocreate in the new process tries to NEST in
+    // those now-dead sockets ("Could not connect to remote display") and the
+    // compositor aborts — this killed hot-restart on a bare TTY (the headless
+    // test masked it because WLR_BACKENDS=headless still won). Clearing them
+    // makes autocreate re-select the session backend (DRM/TTY) exactly as the
+    // original launch did. NOTE: a teruwm launched NESTED in another
+    // X11/Wayland session would also fall back to DRM here — restart targets
+    // the bare-TTY compositor; capturing+restoring the launch env would
+    // generalise it.
+    _ = unsetenv("WAYLAND_DISPLAY");
+    _ = unsetenv("DISPLAY");
+
+    var argv_buf: [3:null]?[*:0]const u8 = .{ self_exe, @ptrCast("--restore"), null };
+    _ = std.posix.system.execve(self_exe, @ptrCast(&argv_buf), std.c.environ);
 
     // If exec returns, it failed — put FD_CLOEXEC back
     std.log.scoped(.session).err("exec failed, continuing", .{});

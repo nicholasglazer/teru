@@ -44,8 +44,9 @@ human with a keyboard for.
   that has a keybind also has a tool. [docs/MCP-API.md](docs/MCP-API.md).
 - **Push widgets.** External daemons register `{widget:name}` entries in the bar and push updates
   via MCP — event-driven, no polling. [docs/AI-INTEGRATION.md](docs/AI-INTEGRATION.md#push-widgets).
-- **Hot restart.** `Mod+Ctrl+Shift+R` exec()s a freshly compiled teruwm; PTY fds survive the
-  exec so your shells don't blink. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#hot-restart).
+- **Hot restart.** `$mod+'` re-execs a freshly compiled teruwm (re-resolving the on-disk path,
+  so it actually loads the rebuild); PTY fds survive the exec so your shells don't blink.
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#hot-restart).
 - **CPU-only SIMD renderer.** `@Vector(4, u32)` alpha blending. Works over SSH, in VMs, in
   containers, on machines with no GPU driver loaded. [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 - **Process graph.** Every pane, every agent, every child process is a node in a DAG the MCP
@@ -103,9 +104,10 @@ teruwm
 #   Mod+B         toggle top bar
 #   Mod+Shift+B   toggle bottom bar
 #   Mod+Drag      grab a tiled pane with the cursor → it becomes floating
-#   Mod+X         close pane or client window
+#   Mod+Shift+C         close focused window
 #   Mod+Shift+R         reload config
-#   Mod+Ctrl+Shift+R    hot-restart compositor (PTYs survive)
+#   Mod+'               hot-restart compositor (PTYs survive, picks up rebuilds)
+#   Mod+Shift+'         quit compositor
 ```
 
 Keybinds: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md). Config: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
