@@ -35,8 +35,14 @@ test-wm: ## Run library + compositor inline tests
 .PHONY: e2e-wm
 e2e-wm: ## Headless teruwm end-to-end MCP test (spawn / tiling / shell-exit / no-spin)
 	./tools/fix-crt.sh
-	zig build -Dcompositor $(CRT_FIX_FLAG)
+	zig build -Dcompositor $(CRT_FIX_FLAG) $$(./tools/zig-lib-fix.sh)
 	python3 tests/teruwm_e2e.py zig-out/bin/teruwm
+
+.PHONY: audit-wm
+audit-wm: ## Headless teruwm MCP usability audit (all 37 tools + 58 keybind actions)
+	./tools/fix-crt.sh
+	zig build -Dcompositor $(CRT_FIX_FLAG) $$(./tools/zig-lib-fix.sh)
+	python3 tests/teruwm_mcp_audit.py zig-out/bin/teruwm
 
 # ── Release ─────────────────────────────────────────────────────────
 .PHONY: release
