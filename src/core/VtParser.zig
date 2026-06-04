@@ -1370,6 +1370,61 @@ test "SGR basic attributes" {
     try std.testing.expect(!cell_b.attrs.italic);
 }
 
+test "malformed DCS with embedded ESC[ does not leak into CSI (v0.4.22 crash class)" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 24, 80);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    // A DCS body that embeds `ESC [ 31 m` (SGR red — would corrupt grid state
+    // if it leaked into CSI param collection) plus stray text, properly
+    // terminated by ST (ESC \), then a ground 'X'. Before the dcs_st_esc
+    // guard the embedded ESC dropped into .escape → CSI. The whole DCS body
+    // must be consumed silently, so 'X' lands at (0,0) with no red leak.
+    parser.feed("\x1bP1$r\x1b[31mleak\x1b\\X");
+    const x = grid.cellAtConst(0, 0);
+    try std.testing.expectEqual(@as(u21, 'X'), x.char); // body produced NO output
+    try std.testing.expect(!x.attrs.bold);
+
+    // Parser must have returned cleanly to ground: a following SGR + char works.
+    parser.feed("\x1b[1mY");
+    try std.testing.expectEqual(@as(u21, 'Y'), grid.cellAtConst(0, 1).char);
+    try std.testing.expect(grid.cellAtConst(0, 1).attrs.bold);
+}
+
+test "DCS terminated by BEL recovers to ground" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 24, 80);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+    parser.feed("\x1bPq#0;2;0;0;0\x07Z"); // sixel-ish DCS ended by BEL, then 'Z'
+    try std.testing.expectEqual(@as(u21, 'Z'), grid.cellAtConst(0, 0).char);
+}
+
+test "CSI param overflow truncates without panic" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 24, 80);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+    // 25 params (cap is 16) — overflow must stop collecting, not crash.
+    parser.feed("\x1b[1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1HQ");
+    // CUP with params 1;1 homes the cursor; 'Q' lands at (0,0). No panic.
+    try std.testing.expectEqual(@as(u21, 'Q'), grid.cellAtConst(0, 0).char);
+}
+
+test "OSC string over 256 bytes truncates without panic" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 24, 80);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+    var buf: [400]u8 = undefined;
+    @memset(&buf, 'a');
+    parser.feed("\x1b]0;"); // OSC set-title
+    parser.feed(&buf); // 400-byte title — bounded buffer must truncate
+    parser.feed("\x07W"); // BEL terminator, then ground 'W'
+    try std.testing.expectEqual(@as(u21, 'W'), grid.cellAtConst(0, 0).char);
+}
+
 test "SGR standard colors" {
     const allocator = std.testing.allocator;
     var grid = try Grid.init(allocator, 24, 80);
