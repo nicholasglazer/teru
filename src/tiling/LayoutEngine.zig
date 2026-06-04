@@ -165,6 +165,62 @@ test "master_stack — two nodes" {
     try t.expectEqual(@as(u16, 800), rects[1].height);
 }
 
+fn rectsOverlap(a: Rect, b: Rect) bool {
+    return a.x < b.x + b.width and b.x < a.x + a.width and
+        a.y < b.y + b.height and b.y < a.y + a.height;
+}
+
+test "tiling layouts: rects non-overlapping + in-bounds + count==nodes" {
+    // Geometry invariants every tiling layout must hold (the 6 that had no
+    // inline rect coverage). A layout returning overlapping or out-of-bounds
+    // rects renders broken windows; this catches it without a real display.
+    const screen = Rect{ .x = 0, .y = 0, .width = 1280, .height = 720 };
+    const tiling = [_]Layout{ .grid, .dishes, .spiral, .three_col, .columns, .accordion };
+    for (tiling) |lay| {
+        var s = testEngine();
+        defer s.engine.deinit();
+        const ws = &s.engine.workspaces[0];
+        try ws.addNode(s.allocator, 1);
+        try ws.addNode(s.allocator, 2);
+        try ws.addNode(s.allocator, 3);
+        ws.layout = lay;
+        const rects = try s.engine.calculate(0, screen);
+        defer s.allocator.free(rects);
+        try t.expectEqual(@as(usize, 3), rects.len);
+        for (rects) |r| {
+            try t.expect(r.width > 0 and r.height > 0);
+            try t.expect(r.x + r.width <= screen.width);
+            try t.expect(r.y + r.height <= screen.height);
+        }
+        for (rects, 0..) |a, i| {
+            for (rects[i + 1 ..]) |b| try t.expect(!rectsOverlap(a, b));
+        }
+    }
+}
+
+test "monocle: exactly the active node is full-screen, others hidden" {
+    var s = testEngine();
+    defer s.engine.deinit();
+    const ws = &s.engine.workspaces[0];
+    try ws.addNode(s.allocator, 1);
+    try ws.addNode(s.allocator, 2);
+    try ws.addNode(s.allocator, 3);
+    ws.layout = .monocle;
+    const screen = Rect{ .x = 0, .y = 0, .width = 1280, .height = 720 };
+    const rects = try s.engine.calculate(0, screen);
+    defer s.allocator.free(rects);
+    try t.expectEqual(@as(usize, 3), rects.len);
+    var full: usize = 0;
+    for (rects) |r| {
+        if (r.eql(screen)) {
+            full += 1;
+        } else {
+            try t.expect(r.width == 0 and r.height == 0); // hidden behind the active one
+        }
+    }
+    try t.expectEqual(@as(usize, 1), full); // exactly one visible
+}
+
 test "calculate — zero nodes and invalid workspace" {
     var s = testEngine();
     defer s.engine.deinit();
