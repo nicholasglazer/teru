@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.9.1 — 2026-06-04
+
+Native teruwm terminal panes are now fed by `teru.conf`, the same as the
+standalone/windowed terminal — they previously rendered with libteru struct
+defaults regardless of the user's config.
+
+Architecture: `teru.conf` is the single source of truth for *what a terminal
+is* (rendering + behaviour); both the windowed client and the native
+compositor pane consume it identically through the shared `SoftwareRenderer` +
+`Pane`. `WmConfig` (`~/.config/teruwm/config`) owns only genuinely
+compositor-level concerns — inter-pane gaps, borders, bars, opacity, window
+rules, keyboard layout, spawn chords, Super-based keybinds. The only thing
+that legitimately differs is the *display model* (one window with an internal
+multiplexer vs. N scene-buffer nodes tiled by the compositor); the terminal
+itself is the same in both.
+
+### Fixed
+
+- **Native panes honour `teru.conf` colors / palette / cursor / selection.**
+  `ServerConfig.applyConfig` had a dead-comment placeholder where the scheme
+  wiring should be, so native panes always rendered the default Miozu palette
+  and ignored `theme=` / `color0..15` / `cursor_color`. Now `Server` carries
+  `config.colorScheme()` and both `TerminalPane` creation paths (fresh + restored)
+  render with `initWithScheme` — fixing palette, fg/bg, selection, cursor color
+  and `bold_is_bright` in one wire.
+- **Native panes honour cursor shape / scrollback / shell / `$TERM` / tab width.**
+  An empty `SpawnConfig{}` was passed at pane creation; now `Server.spawn_config`
+  is populated from `teru.conf` and threaded to fresh panes (restored panes keep
+  their already-running shells).
+- **Native panes honour `padding`.** Was hardcoded to 0 (text flush to the
+  top-left corner). The pane buffer is now sized `grid + 2*padding`, the shared
+  renderer insets the grid and fills the margin with the terminal background
+  (`scheme.bg`) — visually identical to windowed teru. `resize`/`refont` derive
+  cols/rows from the inset area.
+- **Native panes honour bold/italic fonts.** `font_bold/_italic/_bold_italic`
+  variant atlases are now built in `applyConfig` and handed to each pane
+  renderer; unset weights fall back to the regular atlas (no change for users
+  without variant fonts).
+
+### Notes
+
+- `scroll_speed` / `touchpad_scroll_invert` / `alt_scroll_zoom` remain
+  WmConfig-owned for native panes (input routing is a compositor concern); the
+  `teru.conf` copies are inert inside teruwm by design.
+- Theme/scheme changes apply to panes spawned after launch; live hot-reload of
+  `teru.conf` into running panes is a separate follow-up (teruwm doesn't yet
+  watch `teru.conf`).
+
 ## 0.9.0 — 2026-06-04
 
 Headline: hot-restart now actually survives on real hardware (it released the

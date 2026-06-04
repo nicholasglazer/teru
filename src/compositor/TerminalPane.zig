@@ -63,7 +63,7 @@ mouse: MouseState = .{},
 /// Common init: creates Pane + SoftwareRenderer + wlr_scene_buffer.
 /// Does NOT register with workspace or node registry — callers do that.
 fn init(server: *Server, rows: u16, cols: u16) ?*TerminalPane {
-    return initWithSpawn(server, rows, cols, .{});
+    return initWithSpawn(server, rows, cols, server.spawn_config);
 }
 
 /// Same as init() but with an explicit SpawnConfig — used by session
@@ -72,8 +72,11 @@ fn initWithSpawn(server: *Server, rows: u16, cols: u16, spawn_config: Pane.Spawn
     const allocator = server.zig_allocator;
     const cell_w: u32 = if (server.font_atlas) |fa| fa.cell_width else 8;
     const cell_h: u32 = if (server.font_atlas) |fa| fa.cell_height else 16;
-    const pixel_w: u32 = @as(u32, cols) * cell_w;
-    const pixel_h: u32 = @as(u32, rows) * cell_h;
+    // Buffer = grid + 2*padding so the renderer can inset the text by the
+    // configured margin (filled with scheme.bg) exactly like windowed teru.
+    const pad = server.terminal_padding;
+    const pixel_w: u32 = @as(u32, cols) * cell_w + pad * 2;
+    const pixel_h: u32 = @as(u32, rows) * cell_h + pad * 2;
 
     // Resources acquired in order: pixel_buffer → scene_buffer → pane →
     // renderer → tp. Anything that fails after must roll back everything
@@ -96,13 +99,13 @@ fn initWithSpawn(server: *Server, rows: u16, cols: u16, spawn_config: Pane.Spawn
         return null;
     };
 
-    var renderer = SoftwareRenderer.init(allocator, pixel_w, pixel_h, cell_w, cell_h) catch {
+    var renderer = SoftwareRenderer.initWithScheme(allocator, pixel_w, pixel_h, cell_w, cell_h, server.color_scheme) catch {
         pane.deinit(allocator);
         if (wlr.miozu_scene_buffer_node(scene_buffer)) |node| wlr.wlr_scene_node_destroy(node);
         wlr.wlr_buffer_drop(pixel_buffer);
         return null;
     };
-    renderer.padding = 0; // compositor fb is exactly cols*cell_w — no room for padding
+    renderer.padding = pad; // content margin, same key/meaning as windowed teru
 
     if (wlr.miozu_pixel_buffer_data(pixel_buffer)) |data| {
         const needed = @as(usize, pixel_w) * @as(usize, pixel_h);
@@ -113,6 +116,10 @@ fn initWithSpawn(server: *Server, rows: u16, cols: u16, spawn_config: Pane.Spawn
         renderer.atlas_width = fa.atlas_width;
         renderer.atlas_height = fa.atlas_height;
     }
+    // Bold/italic variants (fall back to the regular atlas when unset).
+    if (server.font_variant_bold) |v| renderer.glyph_atlas_bold = v.data;
+    if (server.font_variant_italic) |v| renderer.glyph_atlas_italic = v.data;
+    if (server.font_variant_bold_italic) |v| renderer.glyph_atlas_bold_italic = v.data;
 
     const tp = allocator.create(TerminalPane) catch {
         pane.deinit(allocator);
@@ -156,7 +163,7 @@ fn initWithSpawn(server: *Server, rows: u16, cols: u16, spawn_config: Pane.Spawn
 /// BEFORE calling arrangeworkspace(), otherwise the pane can't be
 /// found for resize/positioning.
 pub fn create(server: *Server, ws: u8, rows: u16, cols: u16) ?*TerminalPane {
-    return createWithSpawn(server, ws, rows, cols, .{});
+    return createWithSpawn(server, ws, rows, cols, server.spawn_config);
 }
 
 /// Create a tiled pane with an explicit SpawnConfig (shell, cwd). Used
@@ -186,8 +193,9 @@ pub fn createRestored(server: *Server, ws: u8, pane: *Pane) ?*TerminalPane {
     const allocator = server.zig_allocator;
     const cell_w: u32 = if (server.font_atlas) |fa| fa.cell_width else 8;
     const cell_h: u32 = if (server.font_atlas) |fa| fa.cell_height else 16;
-    const pixel_w: u32 = @as(u32, pane.grid.cols) * cell_w;
-    const pixel_h: u32 = @as(u32, pane.grid.rows) * cell_h;
+    const pad = server.terminal_padding;
+    const pixel_w: u32 = @as(u32, pane.grid.cols) * cell_w + pad * 2;
+    const pixel_h: u32 = @as(u32, pane.grid.rows) * cell_h + pad * 2;
 
     // Same unwind order as initWithSpawn. Pane is caller-owned, not
     // freed on failure here — the caller passes us a pre-attached Pane
@@ -203,12 +211,12 @@ pub fn createRestored(server: *Server, ws: u8, pane: *Pane) ?*TerminalPane {
         return null;
     };
 
-    var renderer = SoftwareRenderer.init(allocator, pixel_w, pixel_h, cell_w, cell_h) catch {
+    var renderer = SoftwareRenderer.initWithScheme(allocator, pixel_w, pixel_h, cell_w, cell_h, server.color_scheme) catch {
         if (wlr.miozu_scene_buffer_node(scene_buffer)) |node| wlr.wlr_scene_node_destroy(node);
         wlr.wlr_buffer_drop(pixel_buffer);
         return null;
     };
-    renderer.padding = 0; // compositor fb is exactly cols*cell_w — no room for padding
+    renderer.padding = pad; // content margin, same key/meaning as windowed teru
     if (wlr.miozu_pixel_buffer_data(pixel_buffer)) |data| {
         const needed = @as(usize, pixel_w) * @as(usize, pixel_h);
         if (needed > 0) renderer.framebuffer = data[0..needed];
@@ -218,6 +226,9 @@ pub fn createRestored(server: *Server, ws: u8, pane: *Pane) ?*TerminalPane {
         renderer.atlas_width = fa.atlas_width;
         renderer.atlas_height = fa.atlas_height;
     }
+    if (server.font_variant_bold) |v| renderer.glyph_atlas_bold = v.data;
+    if (server.font_variant_italic) |v| renderer.glyph_atlas_italic = v.data;
+    if (server.font_variant_bold_italic) |v| renderer.glyph_atlas_bold_italic = v.data;
 
     const tp = allocator.create(TerminalPane) catch {
         if (wlr.miozu_scene_buffer_node(scene_buffer)) |node| wlr.wlr_scene_node_destroy(node);
@@ -465,9 +476,12 @@ pub fn resize(self: *TerminalPane, pixel_w: u32, pixel_h: u32) void {
 
     // Grid cells must be integer counts, but the framebuffer itself should
     // fill the FULL allocated pixel rect — otherwise the leftover pixels
-    // (< one cell) contribute to gap-asymmetry between panes.
-    const new_cols: u16 = @intCast(@max(1, pixel_w / cell_w));
-    const new_rows: u16 = @intCast(@max(1, pixel_h / cell_h));
+    // (< one cell) contribute to gap-asymmetry between panes. The grid is
+    // inset by `padding` on all sides (content margin), so subtract 2*pad
+    // before dividing into cells; the renderer fills the margin with scheme.bg.
+    const pad = self.renderer.padding;
+    const new_cols: u16 = @intCast(@max(1, (pixel_w -| pad * 2) / cell_w));
+    const new_rows: u16 = @intCast(@max(1, (pixel_h -| pad * 2) / cell_h));
     const fb_w = pixel_w;
     const fb_h = pixel_h;
 
@@ -511,8 +525,9 @@ pub fn refont(self: *TerminalPane) void {
     self.renderer.atlas_width = fa.atlas_width;
     self.renderer.atlas_height = fa.atlas_height;
 
-    const new_cols: u16 = @intCast(@max(1, self.renderer.width / fa.cell_width));
-    const new_rows: u16 = @intCast(@max(1, self.renderer.height / fa.cell_height));
+    const pad = self.renderer.padding;
+    const new_cols: u16 = @intCast(@max(1, (self.renderer.width -| pad * 2) / fa.cell_width));
+    const new_rows: u16 = @intCast(@max(1, (self.renderer.height -| pad * 2) / fa.cell_height));
     self.pane.resize(self.server.zig_allocator, new_rows, new_cols) catch return;
     self.pane.grid.markAllDirty();
     self.render();

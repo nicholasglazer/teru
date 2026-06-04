@@ -15,13 +15,18 @@ const Mods = Keybinds.Mods;
 
 /// Apply loaded config to server state: font, colors, keybinds, workspace layouts, bars.
 pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem.Allocator, io: std.Io) void {
-    // ── Font atlas from config ──────────────────────────────
+    // ── Font atlas from config (+ optional bold/italic variants) ──
     if (teru.render.FontAtlas.init(allocator, config.font_path, config.font_size, io)) |atlas| {
         const fa = allocator.create(teru.render.FontAtlas) catch return;
         fa.* = atlas;
         self.font_atlas = fa;
         self.font_size = config.font_size;
         self.font_size_base = config.font_size;
+        // Bold/italic/bold-italic variants — same as windowed mode; silently
+        // fall back to the regular atlas when unset or unloadable.
+        if (config.font_bold) |p| self.font_variant_bold = fa.loadVariant(allocator, p, io) catch null;
+        if (config.font_italic) |p| self.font_variant_italic = fa.loadVariant(allocator, p, io) catch null;
+        if (config.font_bold_italic) |p| self.font_variant_bold_italic = fa.loadVariant(allocator, p, io) catch null;
         std.log.scoped(.config).info("font loaded ({d}x{d} cells)", .{ fa.cell_width, fa.cell_height });
     } else |err| {
         std.log.scoped(.config).err("font init failed: {}, using fallback", .{err});
@@ -59,8 +64,22 @@ pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem
         }
     }
 
-    // ── Color scheme for terminal pane rendering ─────────────
-    // Stored on server, applied to each TerminalPane's SoftwareRenderer
+    // ── Terminal-rendering settings from teru.conf ───────────
+    // Fed to every native TerminalPane so panes honour the user's teru.conf
+    // instead of libteru defaults: colors/palette/cursor-color/selection via
+    // the scheme, cursor shape / scrollback / shell / $TERM / tab width via the
+    // SpawnConfig, and the content margin via padding. (bold_is_bright rides the
+    // scheme.) Consumed in TerminalPane init/restore — the same teru.conf the
+    // standalone windowed terminal reads, so panes look identical in both.
+    self.color_scheme = config.colorScheme();
+    self.terminal_padding = config.padding;
+    self.spawn_config = .{
+        .shell = config.shell,
+        .scrollback_lines = config.scrollback_lines,
+        .term = config.term,
+        .tab_width = config.tab_width,
+        .cursor_shape = config.cursor_shape,
+    };
 
     // ── teruwm-specific config (~/.config/teruwm/config) ────
     self.wm_config = WmConfig.load(io);
