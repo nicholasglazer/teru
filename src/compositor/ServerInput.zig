@@ -104,6 +104,19 @@ pub const Keyboard = struct {
                 const sym = wlr.xkb_state_key_get_one_sym(xkb_st, keycode + 8);
                 const ctrl = wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_CTRL, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
                 const shift = wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_SHIFT, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
+                const logo = wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_LOGO, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
+
+                // $mod (Super) is a window-manager modifier, never terminal
+                // input. A $mod-chord that reached here matched no keybind
+                // (handleKey returned false), so swallow it — otherwise an
+                // unbound combo like $mod+Q would leak its letter ("q") into
+                // the shell, since xkb_state_key_get_utf8 still yields "q"
+                // (Logo isn't a text-level modifier). Real terminal input
+                // never holds Super.
+                if (logo) {
+                    kb.server.cancelTerminalRepeat();
+                    return;
+                }
 
                 if (ctrl and shift and (sym == 'C' or sym == 'c')) {
                     kb.server.clipboardCopyCursorLine(tp);
@@ -127,8 +140,24 @@ pub const Keyboard = struct {
                 } else {
                     const len = wlr.xkb_state_key_get_utf8(xkb_st, keycode + 8, &buf, buf.len);
                     if (len > 0) {
-                        tp.writeInput(buf[0..@intCast(len)]);
-                        repeat_bytes = buf[0..@intCast(len)];
+                        const ulen: usize = @intCast(len);
+                        // Meta/Alt → ESC-prefixed bytes (xterm metaSendsEscape).
+                        // Without this, Alt+key reached a terminal app as the bare
+                        // character — e.g. a nested teru's Alt+j pane-switch arrived
+                        // as "j" and leaked into the shell. Left Alt is XKB's
+                        // XKB_MOD_NAME_ALT (Mod1); AltGr is Mod5/Level3, so this
+                        // does NOT touch AltGr character composition (é, €, …).
+                        const alt = wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_ALT, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
+                        if (alt and ulen + 1 <= buf.len) {
+                            var i: usize = ulen;
+                            while (i > 0) : (i -= 1) buf[i] = buf[i - 1]; // shift right 1
+                            buf[0] = 0x1b; // ESC
+                            tp.writeInput(buf[0 .. ulen + 1]);
+                            repeat_bytes = buf[0 .. ulen + 1];
+                        } else {
+                            tp.writeInput(buf[0..ulen]);
+                            repeat_bytes = buf[0..ulen];
+                        }
                     }
                 }
 
