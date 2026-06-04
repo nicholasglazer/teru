@@ -1015,9 +1015,10 @@ fn toolTestKey(self: *WmMcpServer, action_name: []const u8, buf: []u8, id: ?[]co
     const Action = teru.Keybinds.Action;
     // Parse action from string (exhaustive — unknown → error)
     const action: Action = blk: {
-        inline for (@typeInfo(Action).@"enum".fields) |f| {
-            if (std.mem.eql(u8, f.name, action_name)) {
-                break :blk @enumFromInt(f.value);
+        const ei = @typeInfo(Action).@"enum";
+        inline for (ei.field_names, ei.field_values) |name, value| {
+            if (std.mem.eql(u8, name, action_name)) {
+                break :blk @enumFromInt(value);
             }
         }
         return jsonRpcError(buf, id, -32602, "Unknown action name");

@@ -23,19 +23,22 @@ const Self = @This();
 screen: *TuiScreen,
 allocator: Allocator,
 daemon_fd: posix.fd_t,
+/// Gap (in cells) between panes + screen edge; set from teru.conf
+/// (`tui_pane_gap`). The mouse hit-test in modes/tui.zig reads this same field
+/// so click geometry stays identical to render geometry.
+pane_gap: u16 = default_pane_gap,
 /// Track last-sent pane sizes to avoid redundant resizes
 last_pane_sizes: [64]PaneSize = @splat(.{}),
 last_pane_count: usize = 0,
 
 const PaneSize = struct { id: u64 = 0, rows: u16 = 0, cols: u16 = 0 };
 
-/// Uniform gap (in cells) between tiled panes and between panes and the screen
-/// edge — teruwm/xmonad-style breathing room. Applied as a half-gap pre-inset on
-/// the tiling area + a half-gap post-inset on each pane, so inter-pane spacing
-/// and edge spacing both equal `2 * pane_gap`. 0 would restore touching borders.
-/// `pub` so the mouse hit-test in modes/tui.zig uses the SAME value — a single
-/// source of truth keeps click geometry identical to render geometry.
-pub const pane_gap: u16 = 0;
+/// Default gap (in cells) between tiled panes and between panes and the screen
+/// edge. 0 = panes touch (borders adjacent). Overridable per-instance via the
+/// `pane_gap` field, set from teru.conf `tui_pane_gap`. Applied as a half-gap
+/// pre-inset on the tiling area + a half-gap post-inset on each pane, so
+/// inter-pane and edge spacing both equal `2 * pane_gap`.
+pub const default_pane_gap: u16 = 0;
 
 // Border colors (ANSI indexed)
 const border_active: Color = .{ .rgb = .{ .r = 0xFF, .g = 0x98, .b = 0x37 } }; // miozu orange #FF9837
@@ -108,7 +111,7 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
     // post-inset every pane rect by `pane_gap` at each use site below. Edge and
     // inter-pane spacing both come out to 2*pane_gap, so panes share equal space
     // AND equal gaps. A single pane keeps the full screen (no chrome, no waste).
-    const g: u16 = if (multi_pane) pane_gap else 0;
+    const g: u16 = if (multi_pane) self.pane_gap else 0;
 
     // Calculate layout rects in character cells (within the gapped tiling area)
     const screen_rect = Rect{

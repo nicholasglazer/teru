@@ -18,6 +18,7 @@ const Multiplexer = @import("../core/Multiplexer.zig");
 const TuiScreen = @import("../render/TuiScreen.zig");
 const TuiRenderer = @import("../render/TuiRenderer.zig");
 const TuiInput = @import("../input/TuiInput.zig");
+const Config = @import("../config/Config.zig");
 const Compositor = @import("../render/Compositor.zig");
 const daemon_proto = @import("../server/protocol.zig");
 
@@ -75,7 +76,6 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
     defer _ = std.c.fcntl(0, posix.F.SETFL, stdin_flags);
 
     // Multiplexer for remote panes
-    _ = io;
     var mux = Multiplexer.init(allocator);
     defer mux.deinit();
 
@@ -146,6 +146,17 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
 
     var renderer = TuiRenderer.init(&screen, allocator, sock);
     var tui_input = TuiInput.initAutoDetect();
+
+    // Load teru.conf so the nested multiplexer is configurable (previously the
+    // TUI client ignored config entirely — gap/bar were hardcoded). Failure to
+    // load is non-fatal: keep the built-in defaults.
+    if (Config.load(allocator, io)) |loaded| {
+        var config = loaded;
+        defer config.deinit();
+        renderer.pane_gap = config.tui_pane_gap;
+        // nested_bar: config OR the TERU_NESTED_BAR env (env still works).
+        if (config.tui_nested_bar) tui_input.nested_bar = true;
+    } else |_| {}
 
     // Enter alt screen, hide cursor, enable SGR mouse
     const enter_tui = "\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h";
@@ -239,7 +250,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
                     const pane_ids = active_ws.node_ids.items;
                     const LE_Rect = @import("../tiling/LayoutEngine.zig").Rect;
                     const multi_pane = pane_ids.len > 1;
-                    const g: u16 = if (multi_pane) TuiRenderer.pane_gap else 0;
+                    const g: u16 = if (multi_pane) renderer.pane_gap else 0;
                     // Mirror TuiRenderer.content_height EXACTLY: the bar (and its
                     // reserved row) shows when not nested OR when the nested-bar opt-in
                     // is set; only a bar-less nested session gives that row to the panes.
