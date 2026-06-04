@@ -1,9 +1,26 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 — 2026-06-04
+
+Headline: hot-restart now actually survives on real hardware (it released the
+PTYs but never the DRM/logind seat, so `$mod+'` closed the whole session); a
+`startx`-style `startt` launcher with one-key recompile-restart; and a 55×
+faster dev rebuild loop.
 
 ### Added
 
+- **`startt` — a `startx`-style launcher, and one-key recompile+restart for
+  teruwm.** `make install-local` builds a release teru + teruwm and installs
+  both to `~/.local/bin` in one shot (CRT + zig termios-typo patches applied
+  automatically via the new `tools/zig-lib-fix.sh`, extracted as the single
+  source of truth shared with `run-teruwm.sh`); `make dev-install` is the fast
+  debug sibling for the inner loop. The bundled `pkg/startt` folds rebuild +
+  `exec teruwm` into one command (`startt` / `startt dev` / `startt skip`).
+  For a true xmonad `mod-q`, bind a spawn chord to `tools/recompile-restart.sh`:
+  it runs `make dev-install` detached (double-fork, never blocks the event
+  loop) and, only on a successful build, triggers `teruwm_restart` over MCP —
+  rebuild-and-hot-restart into your latest source in one keypress, PTYs intact.
+  See [docs/INSTALLING.md](docs/INSTALLING.md).
 - **Daemon multiplexer pane-management parity with teruwm/xmonad.** Fixed
   pane-swap (the client skipped reordered panes on state-sync, so swap was a
   silent no-op) and exposed the flat-list ops the engine already had but the
@@ -26,6 +43,43 @@
 
 ### Fixed
 
+- **Hot-restart now survives on a real DRM seat — `$mod+'` no longer closes the
+  session.** `execRestart` serialized panes and kept the PTY fds alive across
+  `execve`, but never released the DRM/logind seat: the old image still held
+  libseat `TakeControl` + the DRM master at exec time, so the re-exec'd image's
+  `wlr_backend_autocreate` failed to `TakeControl` → `BackendCreateFailed` →
+  exit → the whole session died. (Headless masked it — there's no seat to
+  re-acquire, so no e2e test could reach it.) Fix: release the seat in-process
+  right before `execve` — `wlr_backend_destroy` (closes the DRM + input device
+  fds via the live session) then `wlr_session_destroy` (libseat close → logind
+  `ReleaseControl`), gated by `shutting_down`. PTY masters are independent of
+  wlroots and survive, so terminals keep running with zero data loss; the only
+  visible cost is a brief black frame while KMS is re-acquired (teruwm *is* the
+  display server, so unlike xmonad a restart cycles the whole DRM/seat stack).
+  A failed re-exec now exits cleanly instead of limping on a torn-down backend.
+- **Build setup no longer wastes ~7.4 s on every rebuild.** `tools/fix-crt.sh`
+  runs at the top of every `make` target but re-stripped the CRT files and
+  re-symlinked all of `/usr/lib/lib*.so*` (a `basename` fork per file) on every
+  invocation — its only skip path was "`.sframe` absent", which never triggers
+  on affected systems. Added an idempotent freshness guard: if the cache is
+  built and not older than the system `crt1.o`, return immediately (~14 ms vs
+  ~7,432 ms). A no-op `make dev-install` drops from ~7.6 s to ~0.14 s, and a
+  realistic one-file debug rebuild is ~1.3 s — making the `mod+q` /
+  `dev-install` inner loop actually fast. `startt` now defaults to the debug
+  build (`startt release` for the optimized binary).
+- **Keybind chord parsing is now case-insensitive.** Previously
+  `parseTriggerWithMod` matched modifier tokens case-sensitively against
+  lowercase, so `Mod+Q` was silently dropped (`skipping bad keybind chord`)
+  while only `mod+q` worked — and the documented `Mod+R`/`Mod+Return` examples
+  never actually bound. Now modifier tokens and letter keys fold to a single
+  canonical form and named keys (incl. CamelCase XKB names like
+  `XF86AudioMute`/`Print`) resolve in any case. The fix lives at one chokepoint:
+  `namedKey` lowercases letter keys + does case-insensitive name lookup, and
+  `Keybinds.lookup` folds incoming letter keysyms to lowercase — unifying the
+  standalone terminal (raw Shift-uppercased keysyms) and the compositor (already
+  lowercased in `ServerInput`) on one convention, so a binding matches a Shift'd
+  or unshifted press identically on both binaries. Docs corrected to lowercase
+  (the convention) with a case-insensitivity note. (+3 tests.)
 - **Hot-restart now loads a rebuilt binary** (`$mod+'` /
   `teruwm_restart`). It previously exec'd the `/proc/self/exe` symlink, which —
   after a rebuild + `install` replaced the file — points at the *deleted old

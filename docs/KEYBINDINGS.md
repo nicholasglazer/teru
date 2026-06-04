@@ -153,6 +153,19 @@ teruwmctl scratchpad term       # show 'term' again
 | `$mod+Shift+'` | **Quit** compositor (xmonad `mod-Shift-'`) |
 | `$mod+Shift+Q` | Quit compositor (layout-independent fallback) |
 
+> **Optional — one-key recompile + hot-restart** (xmonad's `mod-q`). Not a
+> built-in default; wire it yourself with a spawn chord in
+> `~/.config/teruwm/config`:
+> ```conf
+> [keybind]
+> mod+q = spawn:foot -e /path/to/teru/tools/recompile-restart.sh
+> ```
+> The helper runs `make dev-install` and, only on success, triggers
+> `teruwm_restart` over MCP — so one press rebuilds your latest source and
+> hot-restarts into it, PTYs intact. Build errors stay on screen in the
+> spawned terminal. This is the in-compositor equivalent of `$mod+'` after a
+> manual `make dev-install`. See [INSTALLING.md](INSTALLING.md#inner-loop-refresh-while-developing-teruwm).
+
 ## Font zoom
 
 ### Keyboard (teru standalone)

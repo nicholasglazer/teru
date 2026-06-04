@@ -404,8 +404,11 @@ pub const Binding = struct {
 // ── Named key map ───────────────────────────────────────────
 
 fn namedKey(name: []const u8) ?u32 {
-    // Single ASCII character
-    if (name.len == 1 and name[0] >= 0x20 and name[0] <= 0x7E) return name[0];
+    // Single ASCII character. Letters are lowered so `Mod+Q` and `mod+q` map to
+    // the same keysym — match-time normalization (Keybinds.lookup) lowercases
+    // incoming letters too, so the two sides always agree. Non-letters are
+    // unaffected (toLower is a no-op outside A-Z).
+    if (name.len == 1 and name[0] >= 0x20 and name[0] <= 0x7E) return std.ascii.toLower(name[0]);
 
     const map = .{
         // Standard keys
@@ -451,8 +454,10 @@ fn namedKey(name: []const u8) ?u32 {
         .{ "XF86MonBrightnessDown", @as(u32, 0x1008FF03) },
         .{ "Print", @as(u32, 0xFF61) }, // XKB_KEY_Print (PrintScreen)
     };
+    // Case-insensitive: `Return`/`return`, `XF86AudioMute`/`xf86audiomute` all
+    // resolve. Safe because no two map entries differ only by case.
     inline for (map) |entry| {
-        if (std.mem.eql(u8, name, entry[0])) return entry[1];
+        if (std.ascii.eqlIgnoreCase(name, entry[0])) return entry[1];
     }
     return null;
 }
@@ -490,22 +495,23 @@ pub fn parseTriggerWithMod(trigger: []const u8, mod_key: Mods) ?ParsedTrigger {
     while (i < remaining.len) : (i += 1) {
         if (remaining[i] == '+') {
             const token = remaining[last_plus..i];
-            if (std.mem.eql(u8, token, "mod")) {
+            // Modifier tokens are case-insensitive: Mod / MOD / mod all resolve.
+            if (std.ascii.eqlIgnoreCase(token, "mod")) {
                 // Resolve $mod to the configured modifier
                 if (mod_key.alt) mods.alt = true;
                 if (mod_key.ralt) mods.ralt = true;
                 if (mod_key.ctrl) mods.ctrl = true;
                 if (mod_key.super_) mods.super_ = true;
-            } else if (std.mem.eql(u8, token, "alt")) {
+            } else if (std.ascii.eqlIgnoreCase(token, "alt")) {
                 mods.alt = true;
-            } else if (std.mem.eql(u8, token, "ralt")) {
+            } else if (std.ascii.eqlIgnoreCase(token, "ralt")) {
                 mods.alt = true;
                 mods.ralt = true;
-            } else if (std.mem.eql(u8, token, "ctrl")) {
+            } else if (std.ascii.eqlIgnoreCase(token, "ctrl")) {
                 mods.ctrl = true;
-            } else if (std.mem.eql(u8, token, "shift")) {
+            } else if (std.ascii.eqlIgnoreCase(token, "shift")) {
                 mods.shift = true;
-            } else if (std.mem.eql(u8, token, "super")) {
+            } else if (std.ascii.eqlIgnoreCase(token, "super")) {
                 mods.super_ = true;
             } else return null; // unknown modifier
             last_plus = i + 1;
@@ -536,16 +542,23 @@ pub const Keybinds = struct {
     /// For keycode bindings, pass the raw evdev keycode as keysym_or_keycode
     /// and set check_keycode=true.
     pub fn lookup(self: *const Keybinds, active_mode: Mode, mods: Mods, keysym: u32) ?Action {
+        // Normalize ASCII-letter keysyms to lowercase — the single case-folding
+        // chokepoint for both binaries. Bindings are stored lowercase (namedKey),
+        // teruwm's ServerInput already lowercases, and the standalone terminal
+        // path passes the raw (Shift-uppercased) keysym; folding here makes all
+        // of them agree so `mod+q` matches a Shift'd or unshifted press, and
+        // `Mod+Q`/`mod+q` configs are equivalent. Non-letters pass through.
+        const key = if (keysym >= 'A' and keysym <= 'Z') keysym + 0x20 else keysym;
         // 1. Exact mode match (keysym bindings)
         for (self.bindings[0..self.count]) |b| {
-            if (!b.is_keycode and b.mode == active_mode and mods.eql(b.mods) and b.key == keysym) {
+            if (!b.is_keycode and b.mode == active_mode and mods.eql(b.mods) and b.key == key) {
                 return if (b.action == .none) null else b.action;
             }
         }
         // 2. Shared/shared_except matches
         for (self.bindings[0..self.count]) |b| {
             if (!b.is_keycode and b.mode != active_mode and b.mode.appliesTo(active_mode) and
-                mods.eql(b.mods) and b.key == keysym)
+                mods.eql(b.mods) and b.key == key)
             {
                 return if (b.action == .none) null else b.action;
             }
@@ -879,6 +892,49 @@ test "parseTrigger keycode binding" {
     const t1 = parseTrigger("keycode:44").?;
     try std.testing.expectEqual(@as(u32, 44), t1.key);
     try std.testing.expect(t1.is_keycode);
+}
+
+test "parseTrigger is case-insensitive (modifiers + letter keys)" {
+    // Mixed/upper-case modifiers all resolve to the same parse as lowercase.
+    const lower = parseTriggerWithMod("super+q", Mods.SUPER).?;
+    for ([_][]const u8{ "Super+q", "SUPER+Q", "super+Q", "sUpEr+Q" }) |s| {
+        const t = parseTriggerWithMod(s, Mods.SUPER) orelse {
+            std.debug.print("rejected: {s}\n", .{s});
+            return error.TestUnexpectedResult;
+        };
+        try std.testing.expectEqual(lower.key, t.key); // always lowercase 'q'
+        try std.testing.expect(t.mods.eql(lower.mods));
+    }
+    // `mod` token is case-insensitive too and resolves to the configured mod.
+    const m = parseTriggerWithMod("Mod+Q", Mods.SUPER).?;
+    try std.testing.expectEqual(@as(u32, 'q'), m.key);
+    try std.testing.expect(m.mods.super_);
+}
+
+test "parseTrigger named keys stay case-insensitive incl. CamelCase keysyms" {
+    // Common-word keys work in any case.
+    try std.testing.expectEqual(@as(u32, 0xFF0D), parseTrigger("Return").?.key);
+    try std.testing.expectEqual(@as(u32, 0xFF0D), parseTrigger("RETURN").?.key);
+    try std.testing.expectEqual(@as(u32, 0xFF1B), parseTrigger("Esc").?.key);
+    // Regression guard: the CamelCase XKB keysym names must still resolve
+    // (case-folding the lookup must not break them).
+    try std.testing.expectEqual(@as(u32, 0x1008FF12), parseTrigger("XF86AudioMute").?.key);
+    try std.testing.expectEqual(@as(u32, 0x1008FF12), parseTrigger("xf86audiomute").?.key);
+    try std.testing.expectEqual(@as(u32, 0xFF61), parseTrigger("super+Print").?.key);
+    try std.testing.expectEqual(@as(u32, 0xFF61), parseTrigger("super+print").?.key);
+}
+
+test "Keybinds.lookup folds incoming letter case to the stored binding" {
+    var kb = Keybinds{};
+    kb.mod_key = Mods.SUPER;
+    _ = kb.add(.normal, Mods.CTRL_SHIFT, 'c', .copy_selection); // stored lowercase
+    // A Shift'd press delivers uppercase 'C' on the standalone path; it must
+    // still match the lowercase binding after the chokepoint normalization.
+    try std.testing.expect(kb.lookup(.normal, Mods.CTRL_SHIFT, 'C').? == .copy_selection);
+    try std.testing.expect(kb.lookup(.normal, Mods.CTRL_SHIFT, 'c').? == .copy_selection);
+    // Non-letters are untouched by the fold.
+    _ = kb.add(.normal, Mods.SUPER, '\'', .compositor_restart);
+    try std.testing.expect(kb.lookup(.normal, Mods.SUPER, '\'').? == .compositor_restart);
 }
 
 test "Action.fromString" {

@@ -139,6 +139,88 @@ Config goes in `~/.config/teruwm/config`. See
 [CONFIGURATION.md](CONFIGURATION.md#teruwm-compositor-config) and
 [KEYBINDINGS.md](KEYBINDINGS.md).
 
+### Always-latest launch (the `startx` of teruwm)
+
+If you build from source and want every login to run the freshest binary
+— the Wayland answer to `startx` → `exec xmonad` — use **`make
+install-local`**:
+
+```
+make install-local   # build release teru + teruwm, install both to ~/.local/bin
+```
+
+One `-Dcompositor` build produces both binaries; the GCC-15 CRT fix and the
+upstream zig termios-typo workaround are applied automatically (see
+`tools/zig-lib-fix.sh`), then both are stripped and installed to
+`~/.local/bin` (no `sudo`, no `/usr/local`). Put `~/.local/bin` on your
+`PATH` and `teru` / `teruwm` resolve by name.
+
+A convenience launcher named `startt` (the `startx` of teru) folds the
+rebuild and the `exec` into one command — so you can never launch stale
+code, and there's no separate "recompile" step like xmonad needs. It lives
+at `pkg/startt`:
+
+```
+startt          # fast DEBUG rebuild + install + launch   (default — dev inner loop, ~1.3s)
+startt release   # optimized rebuild + install + launch     (~85s cold; smoother to daily-drive)
+startt skip      # skip the rebuild, launch the installed binary
+```
+
+Symlink it once so the launcher itself tracks the repo (edits to
+`pkg/startt` take effect immediately):
+
+```
+ln -sf "$PWD/pkg/startt" ~/.local/bin/startt
+```
+
+Then run `startt` after logging into a spare TTY. For a true hands-off
+autostart, add a guard to your login shell that execs it on a chosen TTY
+(e.g. fish: `status is-login; and test (tty) = /dev/tty3; and exec startt`).
+
+### Inner-loop refresh while developing teruwm
+
+`startt` rebuilds from your source tree every launch, so the binary is never
+stale. To pull your latest edits into a **running** teruwm without logging
+out, use the same hot-restart that powers `$mod+'`:
+
+```
+make dev-install   # fast DEBUG build of teru + teruwm → ~/.local/bin  (alias: trc)
+# then press $mod+'  → teruwm re-execs the new binary, PTYs intact
+```
+
+`make dev-install` is the fast (debug, unstripped, ~7–15 s) sibling of
+`make install-local`. teruwm's restart re-resolves the on-disk binary path
+(see `resolveSelfExe` in `src/compositor/ServerRestart.zig`), so a
+`dev-install` immediately before `$mod+'` lands you on the freshly-built
+code. This is the teruwm analogue of xmonad's `xr` (`xmonad --recompile`)
+followed by a restart.
+
+**One keypress, both steps.** To collapse `make dev-install` + `$mod+'` into
+a single key (true xmonad `mod-q`), bind a spawn chord to the bundled helper
+`tools/recompile-restart.sh` in `~/.config/teruwm/config`:
+
+```conf
+[keybind]
+mod+q = spawn:foot -e /path/to/teru/tools/recompile-restart.sh
+```
+
+The helper runs `make dev-install` in a foot window and, **only on a
+successful build**, triggers `teruwm_restart` over MCP (via
+`tools/mcp-probe.py`) — re-execing the fresh binary with PTYs intact. A
+failed build leaves the compiler error on screen and never restarts (it's
+also logged to `$XDG_RUNTIME_DIR/teruwm-rebuild.log`). The build runs
+detached (double-fork), so the compositor never blocks during the ~7–15 s
+compile. Two requirements: teruwm must have been launched from
+`~/.local/bin/teruwm` (what `startt` does), so the restart's re-resolve
+picks up the binary `dev-install` just wrote; and the chord is case-insensitive
+(`mod+q` == `Mod+Q`, lowercase by convention — see
+[CONFIGURATION.md](CONFIGURATION.md)). `foot` (rather than `teru -e`) keeps the
+tool working even while you're mid-refactor on teru itself.
+
+A debug/trace counterpart that runs from `zig-out` and can capture the
+full MCP log is in the dotfiles repo (`run-teruwm.sh [debug|trace|skip]`);
+it shares the same `tools/zig-lib-fix.sh` patch logic.
+
 ## Troubleshooting crashes
 
 If `teruwm` aborts, systemd-coredump captures the process image. To
