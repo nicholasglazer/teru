@@ -93,10 +93,17 @@ pub fn extractJsonString(json: []const u8, key: []const u8) ?[]const u8 {
 
 /// Extract a `"key":"value"` string, searching first within `"arguments"` then top-level.
 pub fn extractNestedJsonString(json: []const u8, key: []const u8) ?[]const u8 {
-    // Same as extractJsonString but searches for the key within "arguments" or at top level
-    // First try within "arguments" block
+    // Search for the key inside the "arguments" object. When an "arguments"
+    // block is present we must NOT fall back to a whole-request scan if the
+    // key is missing there: the JSON-RPC envelope carries the tool's own
+    // "name":"teru_<tool>" field, and a whole-request scan for "name" would
+    // wrongly return that tool name instead of null. (Symptom: session_save
+    // with no name arg silently saved to a file called "teru_session_save",
+    // and session_restore reported "Session file not found" for the same
+    // phantom name.) Only fall back to a top-level scan when there is no
+    // "arguments" block at all — i.e. a caller passing a bare arguments object.
     if (std.mem.find(u8, json, "\"arguments\"")) |args_pos| {
-        if (extractJsonString(json[args_pos..], key)) |val| return val;
+        return extractJsonString(json[args_pos..], key);
     }
     return extractJsonString(json, key);
 }
@@ -383,9 +390,19 @@ test "extractNestedJsonString" {
     try t.expect(text != null);
     try t.expectEqualStrings("hello", text.?);
 
-    const name = extractNestedJsonString(json, "name");
-    try t.expect(name != null);
-    try t.expectEqualStrings("teru_send_input", name.?);
+    // "name" is NOT in the arguments object here — only the JSON-RPC envelope's
+    // own tool-name field carries it. extractNestedJsonString must NOT leak
+    // that tool name: an absent argument returns null so the tool reports it
+    // missing instead of acting on a phantom "teru_send_input" value.
+    try t.expect(extractNestedJsonString(json, "name") == null);
+
+    // When "name" IS a real argument it resolves to the argument value, never
+    // the tool name (the regression that made session_save save to a file
+    // literally called "teru_session_save").
+    const with_name = "{\"params\":{\"name\":\"teru_session_save\",\"arguments\":{\"name\":\"mysession\"}}}";
+    const sess = extractNestedJsonString(with_name, "name");
+    try t.expect(sess != null);
+    try t.expectEqualStrings("mysession", sess.?);
 }
 
 test "jsonEscapeString" {

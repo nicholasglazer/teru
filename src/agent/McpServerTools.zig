@@ -1290,9 +1290,16 @@ test "extractNestedJsonString" {
     try t.expect(text != null);
     try t.expectEqualStrings("hello", text.?);
 
-    const name = tools.extractNestedJsonString(json, "name");
-    try t.expect(name != null);
-    try t.expectEqualStrings("teru_send_input", name.?);
+    // "name" is absent from the arguments object — it must NOT leak the
+    // envelope's own tool-name field ("teru_send_input"); an absent arg is
+    // null so the tool reports it missing (see McpTools.extractNestedJsonString).
+    try t.expect(tools.extractNestedJsonString(json, "name") == null);
+
+    // A real "name" argument resolves to the argument value, not the tool name.
+    const with_name = "{\"params\":{\"name\":\"teru_session_save\",\"arguments\":{\"name\":\"mysession\"}}}";
+    const sess = tools.extractNestedJsonString(with_name, "name");
+    try t.expect(sess != null);
+    try t.expectEqualStrings("mysession", sess.?);
 }
 
 test "jsonEscapeString" {
