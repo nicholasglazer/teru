@@ -757,20 +757,62 @@ def run_tests(mcp):
             t.fail(f'get_graph not valid JSON: {e}')
     results.append(t)
 
-    # ── Test 23: subscribe_events returns socket paths ───────────
-    # NOTE/FINDING: the teru AGENT emitEventKind() has no callers, so this
-    # channel currently emits nothing (unlike teruwm). We assert the tool
-    # returns the socket path(s); event-delivery can't be tested until the
-    # agent wires up emitters (focus/pane/workspace events).
-    t = TestResult('subscribe_events')
+    # ── Test 23: event channel — subscribe + verify events FIRE ──
+    # Regression test for the emitEventKind wiring: the teru agent event channel
+    # used to have zero emitters (returned a socket but never pushed). Now
+    # create/focus/switch/close each push a JSON event line on the events socket
+    # (the "teru" field of subscribe_events' response).
+    t = TestResult('event_channel')
     sub_text, sub_err = mcp.call('teru_subscribe_events')
     t.snap('subscribe_result', sub_text)
-    if sub_err:
-        t.fail(f'subscribe_events error: {sub_err}')
-    elif sub_text and ('sock' in sub_text or '/' in sub_text):
-        t.ok('subscribe_events returned socket path(s)')
+    ev_path = None
+    try:
+        ev_path = json.loads(sub_text).get('teru')
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        pass
+    if sub_err or not ev_path:
+        t.fail(f'subscribe_events did not return a teru events socket: {sub_err or sub_text}')
     else:
-        t.fail(f'subscribe_events unexpected response: {sub_text}')
+        try:
+            es = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            es.connect(ev_path)
+            es.setblocking(False)
+            time.sleep(0.4)  # let the daemon accept the subscriber before we fire
+            pid_text, _ = mcp.call('teru_create_pane', {'workspace': 0, 'direction': 'vertical'})
+            ev_pid = int(pid_text) if pid_text and pid_text.strip().isdigit() else None
+            time.sleep(0.2)
+            if ev_pid:
+                mcp.call('teru_focus_pane', {'pane_id': ev_pid}); time.sleep(0.2)
+                mcp.call('teru_switch_workspace', {'workspace': 2}); time.sleep(0.2)
+                mcp.call('teru_switch_workspace', {'workspace': 0}); time.sleep(0.2)
+                mcp.call('teru_close_pane', {'pane_id': ev_pid}); time.sleep(0.3)
+            buf = b''
+            try:
+                while True:
+                    chunk = es.recv(65536)
+                    if not chunk:
+                        break
+                    buf += chunk
+            except BlockingIOError:
+                pass
+            es.close()
+            kinds = set()
+            for line in buf.split(b'\n'):
+                if line.strip():
+                    try:
+                        kinds.add(json.loads(line).get('event'))
+                    except json.JSONDecodeError:
+                        pass
+            t.snap('event_kinds', sorted(k for k in kinds if k))
+            want = {'pane_created', 'focus_changed', 'workspace_switched', 'pane_closed'}
+            if want <= kinds:
+                t.ok(f'all 4 event kinds fired: {sorted(want)}')
+            elif kinds:
+                t.fail(f'partial events — missing {sorted(want - kinds)}')
+            else:
+                t.fail('event channel still silent (no events received)')
+        except OSError as e:
+            t.fail(f'events socket connect/read failed: {e}')
     results.append(t)
 
     return results
