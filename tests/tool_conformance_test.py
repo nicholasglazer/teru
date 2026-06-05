@@ -35,6 +35,18 @@ import sys
 import time
 from typing import Any, Dict, Optional, Tuple
 
+# Resolve binaries: argv override, else installed, else build output.
+def _resolve_bin(argi, name):
+    import os, sys
+    if len(sys.argv) > argi:
+        return os.path.expanduser(sys.argv[argi])
+    for p in (os.path.expanduser(f"~/.local/bin/{name}"), f"zig-out/bin/{name}"):
+        if os.path.exists(p):
+            return p
+    return name
+TERU_BIN = _resolve_bin(1, "teru")
+TERUWM_BIN = _resolve_bin(2, "teruwm")
+
 RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
 
 # ── Tool definitions (from source inspection) ────────────────────
@@ -220,7 +232,7 @@ def launch_teru() -> Tuple[subprocess.Popen, str]:
     env.pop("DISPLAY", None)
     
     log = open("/tmp/teru-conformance.log", "w")
-    proc = subprocess.Popen(["teru", "--daemon", "conformance"],
+    proc = subprocess.Popen([TERU_BIN, "--daemon", "conformance"],
                             env=env, stdout=log, stderr=log,
                             start_new_session=True)
     
@@ -258,7 +270,7 @@ def launch_teruwm() -> Tuple[subprocess.Popen, str]:
             pass
     
     log = open("/tmp/teruwm-conformance.log", "w")
-    proc = subprocess.Popen(["teruwm"], env=env, stdout=log, stderr=log,
+    proc = subprocess.Popen([TERUWM_BIN], env=env, stdout=log, stderr=log,
                             start_new_session=True)
     
     sock = None
@@ -354,6 +366,18 @@ def main():
     teru_proc = None
     teruwm_proc = None
     
+    # set_config rewrites the REAL config files — back them up and restore
+    # verbatim in finally so conformance never leaves the user's config mutated.
+    _cfg_paths = [os.path.expanduser("~/.config/teru/teru.conf"),
+                  os.path.expanduser("~/.config/teruwm/config")]
+    _cfg_backup = {}
+    for _p in _cfg_paths:
+        try:
+            with open(_p) as _fh:
+                _cfg_backup[_p] = _fh.read()
+        except OSError:
+            pass
+
     try:
         print("=" * 70)
         print("JSON-RPC 2.0 Envelope Conformance Test")
@@ -466,6 +490,12 @@ def main():
             return 0
     
     finally:
+        for _p, _content in _cfg_backup.items():
+            try:
+                with open(_p, "w") as _fh:
+                    _fh.write(_content)
+            except OSError:
+                pass
         # Clean up
         for proc in [teru_proc, teruwm_proc]:
             if proc:

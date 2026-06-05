@@ -162,6 +162,8 @@ def main():
         check("font zoom", lambda: _zoom(mcp))
         check("shell exit reaps pane without spinning",
               lambda: _shell_exit(mcp, proc.pid))
+        # Runs its own throwaway compositor — the shared `proc` is untouched.
+        check("teruwm_quit clean shutdown", lambda: _quit_via_mcp(teruwm))
 
         fds = fd_count(proc.pid)
         if fds > 64:
@@ -246,6 +248,34 @@ def _shell_exit(mcp, pid):
     assert_not_spinning(pid, "after shell exit")
     print("  ok  shell exit — pane reaped (%d → %d windows)"
           % (len(before), len(after)))
+
+
+def _quit_via_mcp(teruwm_bin):
+    """teruwm_quit is the programmatic twin of Mod+Shift+Q: it must ack over
+    MCP and then run the FULL wl_display teardown (the defer chain
+    wl_display_destroy_clients → wl_display_destroy → server.deinit) to
+    exit cleanly — not hang, not crash. This is the one shutdown-crash
+    regression that only the MCP path can drive. Uses its OWN throwaway
+    compositor so the shared instance under test is never torn down."""
+    proc, sock_path = launch(teruwm_bin)
+    try:
+        ack = Mcp(sock_path).call("teruwm_quit")
+        assert "quit scheduled" in ack, "teruwm_quit did not ack: %r" % ack
+        # wl_display_terminate only flips a flag; the current MCP iteration
+        # finishes writing the ack, then the run loop exits next tick and the
+        # defer chain runs. Give the teardown a generous window.
+        try:
+            rc = proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise AssertionError(
+                "teruwm_quit acked but the compositor never exited within 5s "
+                "— teardown hung (see /tmp/teruwm-e2e.log)")
+        assert rc == 0, "teruwm_quit exit code %d (expected clean 0)" % rc
+        print("  ok  teruwm_quit — acked over MCP, clean exit (rc %d)" % rc)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
 
 
 if __name__ == "__main__":

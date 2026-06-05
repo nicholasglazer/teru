@@ -434,6 +434,155 @@ def test_event_stream(mcp: Mcp):
           f"got {len(events_read)} events, types: {set(event_types)}")
 
 
+def _subscribe_events(mcp: Mcp, rcvbuf: int | None = None):
+    """Subscribe and return a connected non-blocking events socket, or None.
+
+    Mirrors test_event_stream's handshake. Pass `rcvbuf` to shrink the
+    client receive buffer so the server's non-blocking writes hit EAGAIN
+    quickly (used by the slow-subscriber backpressure test)."""
+    es = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    if rcvbuf is not None:
+        try:
+            es.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
+        except OSError:
+            pass
+    sub_data = mcp.text(mcp.call("teruwm_subscribe_events", {}))
+    if not isinstance(sub_data, dict) or not sub_data.get("socket"):
+        es.close()
+        return None
+    path = sub_data["socket"]
+    if not os.path.exists(path):
+        es.close()
+        return None
+    try:
+        es.connect(path)
+        es.setblocking(False)
+    except OSError:
+        es.close()
+        return None
+    time.sleep(0.4)  # let the event loop accept us before any events fire
+    return es
+
+
+def _read_events(es, timeout: float = 1.5):
+    """Drain newline-delimited JSON events from a non-blocking socket.
+
+    Waits up to `timeout`, but returns early once events have arrived and
+    the stream goes quiet (~0.2s idle) so the happy path stays snappy."""
+    deadline = time.time() + timeout
+    out, buf, idle = [], b"", 0
+    while time.time() < deadline:
+        try:
+            chunk = es.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+            idle = 0
+        except BlockingIOError:
+            idle += 1
+            if out and idle >= 4:
+                break
+            time.sleep(0.05)
+            continue
+        except OSError:
+            break
+        while b"\n" in buf:
+            line, _, buf = buf.partition(b"\n")
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return out
+
+
+def test_node_moved_event(mcp: Mcp):
+    """Moving a node to another workspace must emit a `node_moved` event
+    carrying node_id/from/to. Regression guard: pre-v0.4.22 the move path
+    called the layout engine directly and emitted no event at all."""
+    print("\n== TEST: node_moved_event ==")
+    es = _subscribe_events(mcp)
+    if es is None:
+        check("events", "node_moved_subscribe", False, "could not subscribe")
+        return
+    try:
+        mcp.call("teruwm_spawn_terminal", {"workspace": 0})
+        time.sleep(0.3)
+        wins = mcp.text(mcp.call("teruwm_list_windows"))
+        ws0 = [w for w in wins if w.get("workspace") == 0] if isinstance(wins, list) else []
+        if not ws0:
+            check("events", "node_moved_setup", False, "no window on ws0 to move")
+            return
+        nid = ws0[0]["id"]
+        _read_events(es, timeout=0.5)  # discard spawn's focus_changed
+        r = mcp.call("teruwm_move_to_workspace", {"node_id": nid, "workspace": 4})
+        if "error" in r:
+            check("events", "node_moved_move", False,
+                  f"move error: {r.get('error', {}).get('message')}")
+            return
+        evs = _read_events(es, timeout=2.0)
+        moved = [e for e in evs if isinstance(e, dict) and e.get("event") == "node_moved"]
+        check("events", "node_moved_emitted", len(moved) >= 1,
+              f"events seen: {[e.get('event') for e in evs if isinstance(e, dict)]}")
+        if moved:
+            m = moved[0]
+            fields_ok = m.get("node_id") == nid and m.get("to") == 4 and "from" in m
+            check("events", "node_moved_fields", fields_ok, f"payload: {m}")
+        mcp.call("teruwm_close_window", {"node_id": nid})
+        time.sleep(0.1)
+    finally:
+        es.close()
+
+
+def test_slow_subscriber(mcp: Mcp):
+    """A subscriber that stops reading must NOT wedge the compositor or get
+    silently dropped. emitEvent writes to a non-blocking fd: a full kernel
+    buffer yields EAGAIN, which drops THAT event but keeps the subscriber
+    (the v0.4.22 fix — before it, the first EAGAIN black-holed every later
+    event). Assert (1) the compositor stays responsive while the subscriber
+    is stuck, and (2) a fresh event still arrives once the subscriber drains."""
+    print("\n== TEST: slow_subscriber ==")
+    es = _subscribe_events(mcp, rcvbuf=2048)  # tiny buffer → EAGAIN fast
+    if es is None:
+        check("events", "slow_sub_subscribe", False, "could not subscribe")
+        return
+    try:
+        # (a) Hammer events while NOT reading, to fill the kernel buffer and
+        #     drive the server's non-blocking write into EAGAIN.
+        for i in range(300):
+            mcp.call("teruwm_switch_workspace", {"workspace": 1 if i % 2 else 0})
+        # The compositor must still answer MCP — proof the event loop was
+        # never blocked on the stuck subscriber's write.
+        wins = mcp.text(mcp.call("teruwm_list_windows"))
+        check("events", "responsive_under_stuck_subscriber", isinstance(wins, list),
+              f"list_windows returned {type(wins).__name__}")
+
+        # (b) Drain the backlog, then fire a FRESH, identifiable event and
+        #     confirm it arrives — the subscriber survived the EAGAIN storm.
+        drained = _read_events(es, timeout=1.0)
+        mcp.call("teruwm_spawn_terminal", {"workspace": 0})
+        time.sleep(0.3)
+        wins2 = mcp.text(mcp.call("teruwm_list_windows"))
+        ws0 = [w for w in wins2 if w.get("workspace") == 0] if isinstance(wins2, list) else []
+        if not ws0:
+            check("events", "subscriber_survives_backpressure", False,
+                  "could not spawn a node for the fresh-event probe")
+            return
+        nid = ws0[0]["id"]
+        _read_events(es, timeout=0.5)  # clear the spawn's events
+        mcp.call("teruwm_move_to_workspace", {"node_id": nid, "workspace": 5})
+        fresh = _read_events(es, timeout=2.0)
+        got_fresh = any(isinstance(e, dict) and e.get("event") == "node_moved"
+                        and e.get("to") == 5 for e in fresh)
+        check("events", "subscriber_survives_backpressure", got_fresh,
+              f"after {len(drained)} drained, fresh events: "
+              f"{[e.get('event') for e in fresh if isinstance(e, dict)]}")
+        mcp.call("teruwm_close_window", {"node_id": nid})
+        mcp.call("teruwm_switch_workspace", {"workspace": 0})
+        time.sleep(0.1)
+    finally:
+        es.close()
+
+
 def run(mcp: Mcp):
     """Run all state-assertion tests."""
     print("\n" + "=" * 60)
@@ -446,6 +595,8 @@ def run(mcp: Mcp):
     test_focus_routes_input(mcp)
     test_error_paths(mcp)
     test_event_stream(mcp)
+    test_node_moved_event(mcp)
+    test_slow_subscriber(mcp)
 
 
 def main():

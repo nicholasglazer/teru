@@ -12,12 +12,14 @@ Error codes:
 Verifies error envelope structure:
   {"jsonrpc":"2.0","error":{"code":N,"message":"..."},"id":...}
 
-Launch a daemon: `teru --daemon NAME` (creates /run/user/UID/teru-mcp-*.sock)
+Hermetic: launches its OWN throwaway `teru --daemon` (socket keyed to that
+PID), drives it over the line-JSON socket, tears it down. Never connects to
+a real interactive daemon, so it cannot disturb the user's session.
 
 Usage:
-    python3 tests/e2e_mcp_error_paths.py [socket_path]
+    python3 tests/e2e_mcp_error_paths.py [path/to/teru]
 
-If no socket given, auto-discovers the most recent teru-mcp-*.sock.
+If no binary path is given, resolves zig-out/bin/teru → ~/.local/bin/teru → PATH.
 """
 
 import socket
@@ -322,26 +324,24 @@ def run_error_tests(mcp):
         t.ok('move_pane without pane_id → -32602')
     results.append(t)
 
-    # BUG-B regression test (test 35)
-    t = TestResult('send_keys_mixed_valid_invalid')
-    pane_text, pane_err = mcp.call('teru_create_pane', {'direction': 'vertical'})
-    if not pane_err and pane_text and pane_text.strip().isdigit():
-        pane_id = int(pane_text)
-        time.sleep(0.5)
-        resp = mcp.call_raw('teru_send_keys', {'pane_id': pane_id, 'keys': ['enter', 'bogus_key']})
-        result_text = None
-        if resp and 'result' in resp:
-            content = resp.get('result', {}).get('content', [])
-            if content and 'text' in content[0]:
-                result_text = content[0]['text']
-        t.snap('response', result_text)
-        if result_text and 'sent 1' in result_text and 'skipped 1' in result_text:
-            t.ok('send_keys: valid+invalid → separate sent/skipped counts (BUG-B)')
-        else:
-            t.fail(f'unexpected response: {result_text}')
-        mcp.call('teru_close_pane', {'pane_id': pane_id})
+    # BUG-B regression test (test 35): send_keys must REPORT both the
+    # delivered count and the skipped (unrecognized / empty) count — not
+    # silently drop bad key names. Response shape: "sent N keys, M skipped".
+    # Uses the daemon's default pane (id 1); 'enter' resolves to a harmless
+    # newline, the other two resolve to "" and must be counted as skipped.
+    t = TestResult('send_keys_reports_skipped_BUG_B')
+    resp = mcp.call_raw('teru_send_keys',
+                        {'pane_id': 1, 'keys': ['enter', 'bogus_key', '']})
+    result_text = None
+    if resp and 'result' in resp:
+        content = resp.get('result', {}).get('content', [])
+        if content and 'text' in content[0]:
+            result_text = content[0]['text']
+    t.snap('response', result_text)
+    if result_text and 'sent 1 keys' in result_text and '2 skipped' in result_text:
+        t.ok('send_keys: 1 delivered, 2 skipped reported separately (BUG-B)')
     else:
-        t.fail(f'could not create test pane: {pane_err}')
+        t.fail(f'expected "sent 1 keys, 2 skipped", got: {result_text}')
     results.append(t)
 
     # Path traversal xfail (test 36)
@@ -364,71 +364,59 @@ def run_error_tests(mcp):
     return results
 
 
-def find_socket():
-    socks = sorted(glob.glob('/run/user/*/teru-mcp-*.sock'), key=os.path.getmtime, reverse=True)
-    for s in socks:
-        try:
-            test = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            test.settimeout(1)
-            test.connect(s)
-            test.close()
-            return s
-        except:
-            continue
-    return None
+def _resolve_teru_bin():
+    """argv[1] (if a real path) → zig-out/bin/teru → ~/.local/bin/teru → PATH."""
+    if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
+        return sys.argv[1]
+    for cand in ('zig-out/bin/teru', os.path.expanduser('~/.local/bin/teru')):
+        if os.path.exists(cand):
+            return cand
+    return 'teru'
 
 
-def launch_daemon():
-    """Launch teru daemon, return PID."""
-    try:
-        proc = subprocess.Popen(
-            ['teru', '--daemon', 'test-error-paths'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL
-        )
-        return proc.pid
-    except Exception as e:
-        print(f'ERROR: failed to launch teru daemon: {e}', file=sys.stderr)
-        return None
+def launch_daemon(teru_bin):
+    """Launch a throwaway headless `teru --daemon` and return (proc, sock).
+
+    Hermetic by design: the socket is keyed to OUR proc.pid, so the tests
+    never connect to (and never mutate) a real interactive daemon. The
+    default pane is a fresh `shell`."""
+    runtime = os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
+    proc = subprocess.Popen(
+        [teru_bin, '--daemon', 'errpaths_e2e'],
+        stdout=open('/tmp/teru-errpaths.log', 'w'),
+        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+        start_new_session=True)
+    sock = os.path.join(runtime, f'teru-mcp-{proc.pid}.sock')
+    for _ in range(50):
+        time.sleep(0.2)
+        if os.path.exists(sock):
+            time.sleep(0.3)  # let the default pane's shell settle
+            return proc, sock
+    proc.kill()
+    raise RuntimeError(f'teru --daemon did not create {sock} '
+                       '(see /tmp/teru-errpaths.log)')
 
 
 def main():
-    sock_path = sys.argv[1] if len(sys.argv) > 1 else find_socket()
-    daemon_pid = None
+    teru_bin = _resolve_teru_bin()
+    if '/' in teru_bin and not os.path.exists(teru_bin):
+        print(f'teru binary not found: {teru_bin}', file=sys.stderr)
+        sys.exit(2)
 
-    if not sock_path:
-        print('No teru MCP socket found. Launching daemon...')
-        daemon_pid = launch_daemon()
-        if not daemon_pid:
-            print('FAIL: could not launch daemon', file=sys.stderr)
-            sys.exit(1)
-        for _ in range(50):
-            time.sleep(0.1)
-            sock_path = find_socket()
-            if sock_path:
-                break
-        if not sock_path:
-            print('FAIL: daemon launched but socket did not appear', file=sys.stderr)
-            if daemon_pid:
-                try:
-                    os.kill(daemon_pid, signal.SIGTERM)
-                except:
-                    pass
-            sys.exit(1)
-
-    print(f'Socket: {sock_path}')
+    print('teru MCP error-path tests (hermetic — own throwaway daemon)')
+    proc, sock_path = launch_daemon(teru_bin)
+    print(f'daemon pid {proc.pid}  socket {sock_path}')
     print()
 
     mcp = TeruMCP(sock_path)
-    results = run_error_tests(mcp)
-
-    if daemon_pid:
+    try:
+        results = run_error_tests(mcp)
+    finally:
+        proc.send_signal(signal.SIGTERM)
         try:
-            os.kill(daemon_pid, signal.SIGTERM)
-            time.sleep(0.5)
-        except:
-            pass
+            proc.wait(timeout=4)
+        except subprocess.TimeoutExpired:
+            proc.kill()
 
     print()
     print('=' * 70)
