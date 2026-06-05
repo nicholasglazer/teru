@@ -602,3 +602,155 @@ test "parseDaemonStateSync: multi-pane attach re-links every pane's vt.grid" {
     mux.panes.items[0].vt.feed("X");
     try testing.expectEqual(@as(u16, 1), mux.panes.items[0].grid.cursor_col);
 }
+
+test "parseDaemonStateSync: truncated workspace-metadata → returns gracefully" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator);
+    defer mux.deinit();
+
+    // Format: [active_ws:1][ws_count:1]
+    //   per-ws × N: [layout:1][pane_count:1][ratio_x100:1][reserved:1][active_pane_id:8]
+    // Payload claims 2 workspaces but only has 1 complete header + 3 bytes into the second
+    var payload: [2 + 12 + 3]u8 = undefined;
+    payload[0] = 0; // active_ws
+    payload[1] = 2; // ws_count (claims 2)
+    // First workspace: complete 12-byte header
+    payload[2] = 0; // layout
+    payload[3] = 0; // pane_count
+    payload[4] = 50; // ratio_x100
+    payload[5] = 0; // reserved
+    std.mem.writeInt(u64, payload[6..14], 1, .little); // active_pane_id
+    // Second workspace: incomplete (only 3 bytes, needs 12)
+    payload[14] = 5; // layout (partial)
+    payload[15] = 0; // pane_count (partial)
+    payload[16] = 50; // ratio_x100 (partial, but still missing 9 bytes)
+
+    // Should break cleanly at line 407: if (pos + 12 > payload.len) break;
+    parseDaemonStateSync(-1, &mux, &payload);
+
+    // First workspace should be processed, second should be skipped
+    try testing.expectEqual(@as(u8, 0), @intFromEnum(mux.layout_engine.workspaces[0].layout));
+    try testing.expectEqual(true, mux.layout_engine.workspaces[0].layout_pinned);
+}
+
+test "parseDaemonStateSync: truncated per-pane section → returns gracefully" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator);
+    defer mux.deinit();
+
+    // Claim 1 workspace with 2 panes, but only provide header + 1 complete pane + 5 bytes of a second
+    // Format: [active_ws:1][ws_count:1][layout:1][pane_count:1][ratio_x100:1][reserved:1][active_pane_id:8]
+    //         [pane_id:8][rows:2][cols:2][ws_idx:1] × N
+    var payload: [2 + 12 + 13 + 5]u8 = undefined;
+    payload[0] = 0; // active_ws
+    payload[1] = 1; // ws_count
+
+    // Workspace header
+    payload[2] = 0; // layout
+    payload[3] = 2; // pane_count (claims 2 panes, but second is truncated)
+    payload[4] = 50; // ratio_x100
+    payload[5] = 0; // reserved
+    std.mem.writeInt(u64, payload[6..14], 1, .little); // active_pane_id
+
+    var pos: usize = 14;
+
+    // First pane (complete, 13 bytes)
+    std.mem.writeInt(u64, payload[pos..][0..8], 1, .little);
+    pos += 8;
+    std.mem.writeInt(u16, payload[pos..][0..2], 24, .little); // rows
+    pos += 2;
+    std.mem.writeInt(u16, payload[pos..][0..2], 80, .little); // cols
+    pos += 2;
+    payload[pos] = 0; // ws_idx
+    pos += 1;
+
+    // Second pane (truncated, only 5 bytes of 13)
+    // pos = 27, payload.len = 32, so only 5 bytes left
+    payload[pos] = 0xFF; // partial pane_id
+    pos += 1;
+    payload[pos] = 0xFF; // partial pane_id
+    pos += 1;
+    payload[pos] = 0xFF; // partial pane_id
+    pos += 1;
+    payload[pos] = 0xFF; // partial pane_id
+    pos += 1;
+    payload[pos] = 0xFF; // partial pane_id (only 5 bytes, needs 13)
+
+    // Should break cleanly at line 441: while (pos + 13 <= payload.len)
+    parseDaemonStateSync(-1, &mux, &payload);
+
+    // Only the first pane should be added
+    try testing.expectEqual(@as(usize, 1), mux.panes.items.len);
+    if (mux.panes.items.len > 0) {
+        try testing.expectEqual(@as(u64, 1), mux.panes.items[0].id);
+    }
+}
+
+test "parseDaemonStateSync: invalid layout byte > enum max → clamps safely" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator);
+    defer mux.deinit();
+
+    // Layout enum max is accordion = 7. Payload with layout_byte = 0xFF should clamp to 7.
+    // The clamping happens at line 420: @enumFromInt(@min(layout_byte, @intFromEnum(LE.Layout.accordion)))
+    var payload: [2 + 12 + 13]u8 = undefined;
+    payload[0] = 0; // active_ws
+    payload[1] = 1; // ws_count
+
+    // Workspace header with invalid layout byte
+    payload[2] = 0xFF; // layout_byte = 255 (way beyond enum max of 7)
+    payload[3] = 1; // pane_count
+    payload[4] = 50; // ratio_x100
+    payload[5] = 0; // reserved
+    std.mem.writeInt(u64, payload[6..14], 1, .little); // active_pane_id
+
+    // One pane
+    std.mem.writeInt(u64, payload[14..22], 1, .little);
+    std.mem.writeInt(u16, payload[22..24], 24, .little); // rows
+    std.mem.writeInt(u16, payload[24..26], 80, .little); // cols
+    payload[26] = 0; // ws_idx
+
+    // Should not panic. The @min clamping ensures layout_byte is ≤ 7 before @enumFromInt.
+    parseDaemonStateSync(-1, &mux, &payload);
+
+    // Workspace layout should be clamped to accordion (7)
+    const LE = @import("../tiling/LayoutEngine.zig");
+    try testing.expectEqual(LE.Layout.accordion, mux.layout_engine.workspaces[0].layout);
+    try testing.expectEqual(true, mux.layout_engine.workspaces[0].layout_pinned);
+}
+
+test "parseDaemonStateSync: ws_idx >= 10 → skipped safely without panic" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator);
+    defer mux.deinit();
+
+    // Workspace 0 header + one pane with ws_idx = 15 (out of bounds for workspaces[10])
+    // The check at line 462: if (ws_idx < 10) should skip the addNode safely.
+    var payload: [2 + 12 + 13]u8 = undefined;
+    payload[0] = 0; // active_ws
+    payload[1] = 1; // ws_count
+
+    // Workspace header
+    payload[2] = 0; // layout
+    payload[3] = 1; // pane_count
+    payload[4] = 50; // ratio_x100
+    payload[5] = 0; // reserved
+    std.mem.writeInt(u64, payload[6..14], 1, .little); // active_pane_id
+
+    // Pane with invalid ws_idx
+    std.mem.writeInt(u64, payload[14..22], 1, .little); // pane_id
+    std.mem.writeInt(u16, payload[22..24], 24, .little); // rows
+    std.mem.writeInt(u16, payload[24..26], 80, .little); // cols
+    payload[26] = 15; // ws_idx = 15 (invalid, should be skipped)
+
+    // Should not panic or access out-of-bounds memory
+    parseDaemonStateSync(-1, &mux, &payload);
+
+    // Pane should still be created but not added to any workspace
+    try testing.expectEqual(@as(usize, 1), mux.panes.items.len);
+
+    // No workspace should have the pane (all workspaces should be empty)
+    for (&mux.layout_engine.workspaces) |*ws| {
+        try testing.expectEqual(@as(usize, 0), ws.node_ids.items.len);
+    }
+}
