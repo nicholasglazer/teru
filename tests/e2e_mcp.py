@@ -757,6 +757,22 @@ def run_tests(mcp):
             t.fail(f'get_graph not valid JSON: {e}')
     results.append(t)
 
+    # ── Test 23: subscribe_events returns socket paths ───────────
+    # NOTE/FINDING: the teru AGENT emitEventKind() has no callers, so this
+    # channel currently emits nothing (unlike teruwm). We assert the tool
+    # returns the socket path(s); event-delivery can't be tested until the
+    # agent wires up emitters (focus/pane/workspace events).
+    t = TestResult('subscribe_events')
+    sub_text, sub_err = mcp.call('teru_subscribe_events')
+    t.snap('subscribe_result', sub_text)
+    if sub_err:
+        t.fail(f'subscribe_events error: {sub_err}')
+    elif sub_text and ('sock' in sub_text or '/' in sub_text):
+        t.ok('subscribe_events returned socket path(s)')
+    else:
+        t.fail(f'subscribe_events unexpected response: {sub_text}')
+    results.append(t)
+
     return results
 
 
