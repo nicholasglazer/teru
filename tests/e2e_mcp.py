@@ -456,31 +456,50 @@ def run_tests(mcp):
             mcp.call('teru_close_pane', {'pane_id': test_pane_for_session})
     results.append(t)
 
-    # ── Test 14: Set config + get config + file verification ─────
+    # ── Test 14: Set config writes the config file ───────────────
+    # teru_set_config rewrites the REAL ~/.config/teru/teru.conf. get_config
+    # returns RUNTIME state (renderer padding=0 in a headless daemon), NOT the
+    # file, so we verify against the FILE and back it up / restore it verbatim —
+    # a test must never leave the user's config mutated.
     t = TestResult('set_config_verify')
-    test_key = 'font_size'
-    test_value = '13'
-    
-    # Set config
+    test_key = 'padding'
+    test_value = '12'
+    cfg_path = os.path.expanduser('~/.config/teru/teru.conf')
+    try:
+        with open(cfg_path) as f:
+            cfg_backup = f.read()
+    except OSError:
+        cfg_backup = None
+    if cfg_backup and re.search(rf'^\s*{test_key}\s*=\s*{test_value}\b', cfg_backup, re.M):
+        test_value = '6'  # don't pick a no-op value
+
     set_text, set_err = mcp.call('teru_set_config', {'key': test_key, 'value': test_value})
     t.snap('set_config_result', set_text)
     if set_err:
         t.fail(f'set_config error: {set_err}')
+    elif cfg_backup is None:
+        t.ok('set_config dispatched (no config file to verify against)')
     else:
-        time.sleep(0.5)  # Allow file write to complete
-        
-        # Read config via get_config
-        config_text, config_err = mcp.call('teru_get_config')
-        if config_err:
-            t.fail(f'get_config error after set: {config_err}')
-        else:
-            try:
-                config = json.loads(config_text)
-                t.snap('config_after_set', config)
-                # Note: get_config returns live in-memory state, not necessarily reflecting disk
-                t.ok(f'set_config({test_key}={test_value}) → get_config returned (verify disk file manually)')
-            except json.JSONDecodeError as e:
-                t.fail(f'config not valid JSON: {e}')
+        time.sleep(0.3)
+        try:
+            with open(cfg_path) as f:
+                new_content = f.read()
+            m = re.search(rf'^\s*{test_key}\s*=\s*(\S+)', new_content, re.M)
+            written = m.group(1) if m else None
+            t.snap('written_to_file', written)
+            if written == test_value:
+                t.ok(f'set_config({test_key}={test_value}) written to teru.conf')
+            else:
+                t.fail(f'set_config({test_key}={test_value}) not in teru.conf (got {written})')
+        except OSError as e:
+            t.fail(f'could not read config file: {e}')
+    # ALWAYS restore the original file content verbatim.
+    if cfg_backup is not None:
+        try:
+            with open(cfg_path, 'w') as f:
+                f.write(cfg_backup)
+        except OSError:
+            pass
     results.append(t)
 
     # ── Test 15: Broadcast to multiple panes ──────────────────────
@@ -642,16 +661,13 @@ def run_tests(mcp):
         
         t.snap('workspace_move', {'before': ws_before, 'after': ws_after})
         
+        # Regression test for the focusPaneById active_node bug: in split-tree
+        # layouts getActiveNodeId() reads active_node, which focusPaneById didn't
+        # set — so move/swap/focus silently no-op'd. move must now actually move.
         if ws_after == 2:
-            t.ok(f'move_pane({move_pane}): {ws_before} → {ws_after}')
-        elif move_err:
-            # FINDING: teru returns a clean error (e.g. "Move failed") for a
-            # pane→workspace move in headless-daemon mode. Handler dispatched
-            # without crashing; whether the move SHOULD succeed here (vs needing
-            # an attached client / non-empty target ws) is worth investigating.
-            t.ok(f'move_pane dispatched, teru declined: {move_err}')
+            t.ok(f'move_pane({move_pane}) moved ws {ws_before} → {ws_after}')
         else:
-            t.fail(f'move_pane silently did not move: {ws_before} → {ws_after}')
+            t.fail(f'move_pane did not move to ws 2 (got {ws_after}, err={move_err})')
         
         mcp.call('teru_close_pane', {'pane_id': move_pane})
     else:
@@ -673,7 +689,6 @@ def run_tests(mcp):
         t.ok(f'screenshot returned error (expected in TTY mode): {ss_err[:50]}')
     elif ss_text and 'screenshot saved' in ss_text:
         # Verify PNG magic bytes
-        import os
         if os.path.exists(screenshot_path):
             with open(screenshot_path, 'rb') as f:
                 magic = f.read(4)
