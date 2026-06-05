@@ -208,6 +208,7 @@ fn focusPaneById(self: *McpServer, pane_id: u64) bool {
         for (ws.node_ids.items, 0..) |node_id, node_idx| {
             if (node_id == pane_id) {
                 ws.active_index = node_idx;
+                ws.active_node = pane_id; // tree-mode getActiveNodeId() uses active_node
                 self.multiplexer.active_workspace = @intCast(ws_idx);
                 return true;
             }
@@ -577,6 +578,7 @@ fn toolFocusPane(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []c
         for (ws.node_ids.items, 0..) |node_id, node_idx| {
             if (node_id == pane_id) {
                 ws.active_index = node_idx;
+                ws.active_node = pane_id; // tree-mode getActiveNodeId() uses active_node
                 self.multiplexer.active_workspace = @intCast(ws_idx);
                 return std.fmt.bufPrint(buf,
                     \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}

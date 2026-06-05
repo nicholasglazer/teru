@@ -633,3 +633,46 @@ test "file save and load round-trip" {
     // Clean up temp file
     Dir.cwd().deleteFile(io, "/tmp/teru-session-test.bin") catch {};
 }
+
+test "serializeWithWorkspaces: ws_meta (layout + master_ratio + active_ws) round-trips" {
+    const allocator = std.testing.allocator;
+    var graph = ProcessGraph.init(allocator);
+    defer graph.deinit();
+    _ = try graph.spawn(.{ .name = "a", .workspace = 0 });
+    _ = try graph.spawn(.{ .name = "b", .workspace = 3 });
+    _ = try graph.spawn(.{ .name = "c", .workspace = 3 });
+
+    // Distinct per-workspace metadata to prove the ws_meta path round-trips
+    // (not just defaults). The session active_workspace is taken from meta[0].
+    var ws_meta: [10]WorkspaceMeta = undefined;
+    for (&ws_meta, 0..) |*m, i| {
+        m.* = .{
+            .layout = @as(u8, @intCast(i % 8)),
+            .master_ratio = 0.3 + @as(f32, @floatFromInt(i)) * 0.05,
+            .pane_count = @as(u16, @intCast(i)),
+            .active_workspace = 4,
+        };
+    }
+
+    var buf: [8192]u8 = undefined;
+    var writer = compat.MemWriter{ .buffer = &buf };
+    try serializeWithWorkspaces(&graph, &writer, &ws_meta);
+
+    var reader = compat.MemReader{ .buffer = writer.getWritten() };
+    var session = try deserialize(&reader, allocator);
+    defer session.deinit();
+
+    // Graph nodes survive the round-trip.
+    try std.testing.expectEqual(@as(usize, 3), session.graph_snapshot.len);
+    // active_workspace (from meta[0]) survives.
+    try std.testing.expectEqual(@as(u8, 4), session.active_workspace);
+    // Per-workspace layout + master_ratio survive for all 10 workspaces.
+    for (0..10) |i| {
+        try std.testing.expectEqual(@as(u8, @intCast(i % 8)), session.workspace_states[i].layout);
+        try std.testing.expectApproxEqAbs(
+            0.3 + @as(f32, @floatFromInt(i)) * 0.05,
+            session.workspace_states[i].master_ratio,
+            0.0001,
+        );
+    }
+}
