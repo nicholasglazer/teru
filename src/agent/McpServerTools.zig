@@ -475,6 +475,10 @@ fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, command: ?[
         self.multiplexer.switchWorkspace(prev_workspace);
     }
 
+    // Push a pane_created event to any agent subscribed via teru_subscribe_events
+    // (no-op when nobody's subscribed). Mirrors teruwm's event vocabulary.
+    self.emitEventKind("pane_created", ",\"pane_id\":{d},\"workspace\":{d}", .{ pane_id, workspace });
+
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{d}"}}]}},"id":{s}}}
     , .{ pane_id, id_str }) catch
@@ -487,17 +491,23 @@ fn toolBroadcast(self: *McpServer, workspace: u8, text: []const u8, buf: []u8, i
     // Get pane IDs in the workspace from the layout engine
     const ws = &self.multiplexer.layout_engine.workspaces[workspace];
     var sent: u32 = 0;
+    var failed: u32 = 0;
 
     for (ws.node_ids.items) |node_id| {
         if (self.multiplexer.getPaneById(node_id)) |pane| {
-            _ = pane.ptyWrite(text) catch continue;
+            // Best-effort: a pane mid-teardown can legitimately reject input.
+            // Keep going, but surface the count so a silent drop is visible.
+            _ = pane.ptyWrite(text) catch {
+                failed += 1;
+                continue;
+            };
             sent += 1;
         }
     }
 
     return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"sent to {d} panes"}}]}},"id":{s}}}
-    , .{ sent, id_str }) catch
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"sent to {d} panes, {d} failed"}}]}},"id":{s}}}
+    , .{ sent, failed, id_str }) catch
         tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
@@ -515,16 +525,24 @@ fn toolSendKeys(self: *McpServer, pane_id: u64, params_body: []const u8, buf: []
 
     // Iterate over string elements in the JSON array
     var sent: u32 = 0;
+    var skipped: u32 = 0;
     var iter = JsonArrayIterator.init(keys_json);
     while (iter.next()) |key_name| {
         const seq = resolveKey(key_name, app_cursor);
+        // resolveKey returns "" for unrecognized names (a deliberate security
+        // guard). Don't count those as sent — report them so the caller can
+        // tell a typo'd key name from a delivered one.
+        if (seq.len == 0) {
+            skipped += 1;
+            continue;
+        }
         _ = pane.ptyWrite(seq) catch continue;
         sent += 1;
     }
 
     return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"sent {d} keys"}}]}},"id":{s}}}
-    , .{ sent, id_str }) catch
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"sent {d} keys, {d} skipped"}}]}},"id":{s}}}
+    , .{ sent, skipped, id_str }) catch
         tools.jsonRpcError(buf, id, -32603, "Internal error");
 }
 
@@ -580,6 +598,7 @@ fn toolFocusPane(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []c
                 ws.active_index = node_idx;
                 ws.active_node = pane_id; // tree-mode getActiveNodeId() uses active_node
                 self.multiplexer.active_workspace = @intCast(ws_idx);
+                self.emitEventKind("focus_changed", ",\"pane_id\":{d}", .{pane_id});
                 return std.fmt.bufPrint(buf,
                     \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
                 , .{id_str}) catch
@@ -599,6 +618,7 @@ fn toolClosePane(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []c
         return tools.jsonRpcError(buf, id, -32602, "Pane not found");
 
     self.multiplexer.closePane(pane_id);
+    self.emitEventKind("pane_closed", ",\"pane_id\":{d}", .{pane_id});
 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
@@ -612,7 +632,9 @@ fn toolSwitchWorkspace(self: *McpServer, workspace: u8, buf: []u8, id: ?[]const 
     if (workspace > 9)
         return tools.jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
 
+    const old_ws = self.multiplexer.active_workspace;
     self.multiplexer.switchWorkspace(workspace);
+    self.emitEventKind("workspace_switched", ",\"from\":{d},\"to\":{d}", .{ old_ws, workspace });
 
     return std.fmt.bufPrint(buf,
         \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
