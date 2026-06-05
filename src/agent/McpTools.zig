@@ -127,6 +127,23 @@ pub fn extractNestedJsonInt(json: []const u8, key: []const u8) ?u64 {
     return std.fmt.parseInt(u64, json[start..i], 10) catch null;
 }
 
+/// Extract a `"key": true|false` boolean, WHITESPACE-TOLERANT (handles
+/// `"key":true`, `"key": true`, `"key" : true`). Searches within `"arguments"`
+/// first, then top-level. Returns false if absent or not `true`. Use this
+/// instead of `std.mem.find(json, "\"key\":true")` — that literal match fails
+/// on any client that emits a space after the colon (Python's json.dumps and
+/// most JSON serializers do), silently defaulting booleans to false.
+pub fn extractNestedJsonBool(json: []const u8, key: []const u8) bool {
+    var needle_buf: [64]u8 = undefined;
+    const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\"", .{key}) catch return false;
+    const search_start = if (std.mem.find(u8, json, "\"arguments\"")) |ap| ap else 0;
+    const rel = std.mem.find(u8, json[search_start..], needle) orelse
+        std.mem.find(u8, json, needle) orelse return false;
+    var i = search_start + rel + needle.len;
+    while (i < json.len and (json[i] == ' ' or json[i] == '\t' or json[i] == ':')) : (i += 1) {}
+    return std.mem.startsWith(u8, json[i..], "true");
+}
+
 /// Extract a top-level `"key":N` integer (no `arguments` lookup).
 pub fn extractJsonInt(json: []const u8, key: []const u8) ?u64 {
     var needle_buf: [64]u8 = undefined;
