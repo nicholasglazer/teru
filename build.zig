@@ -26,11 +26,20 @@ pub fn build(b: *std.Build) void {
     // Vendor include path for hand-declared C bindings (stb_truetype, xdg-shell, miozu-wlr-glue).
     lib_mod.addIncludePath(b.path("vendor"));
 
-    const lib = b.addLibrary(.{
-        .name = "teru",
-        .root_module = lib_mod,
-    });
-    b.installArtifact(lib);
+    // Standalone static archive. Every teru binary imports `lib_mod` as a
+    // *module* (its source is recompiled into each exe), so nothing links
+    // libteru.a — building + installing it on every `zig build` just compiles
+    // the whole core library a second time for an artifact no one consumes.
+    // Gate it behind -Dlib so the default dev/release loop skips that work;
+    // request it explicitly (`zig build -Dlib`) if you want the archive.
+    const want_lib = b.option(bool, "lib", "Also build + install the standalone static libteru.a (default: false)") orelse false;
+    if (want_lib) {
+        const lib = b.addLibrary(.{
+            .name = "teru",
+            .root_module = lib_mod,
+        });
+        b.installArtifact(lib);
+    }
 
     // ── Resolved target OS ─────────────────────────────────────────
     const os_tag = target.result.os.tag;
