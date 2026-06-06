@@ -33,6 +33,7 @@ const extractNestedJsonString = tools.extractNestedJsonString;
 const extractNestedJsonInt = tools.extractNestedJsonIntSigned; // i64
 const extractNestedJsonBool = tools.extractNestedJsonBool; // whitespace-tolerant
 const jsonRpcError = tools.jsonRpcError;
+const okText = tools.okText; // success-envelope formatter (see McpTools.okText)
 const jsonEscapeString = tools.jsonEscapeString;
 const findBody = tools.findHttpBody;
 const parseContentLength = tools.parseHttpContentLength;
@@ -100,7 +101,6 @@ pub fn thunkZoom(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) 
 }
 
 fn toolZoom(self: *WmMcpServer, dir: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     const target: teru.render.FontAtlas.ZoomTarget =
         if (std.mem.eql(u8, dir, "in")) .in
         else if (std.mem.eql(u8, dir, "out")) .out
@@ -108,10 +108,7 @@ fn toolZoom(self: *WmMcpServer, dir: []const u8, buf: []u8, id: ?[]const u8) []c
         else return jsonRpcError(buf, id, -32602, "direction must be in, out, or reset");
     const changed = ServerFont.applyFontZoom(self.server, target);
     if (changed) self.server.scheduleRender();
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"changed\":{},\"font_size\":{d}}}"}}]}},"id":{s}}}
-    , .{ changed, self.server.font_size, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "{{\\\"changed\\\":{},\\\"font_size\\\":{d}}}", .{changed, self.server.font_size});
 }
 
 pub fn thunkGetConfig(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -322,39 +319,30 @@ pub fn thunkSessionRestore(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]
 }
 
 fn toolSessionSave(self: *WmMcpServer, name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     const Session = @import("Session.zig");
     Session.save(self.server, name) catch |err| {
         var msg_buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&msg_buf, "session save failed: {}", .{err}) catch "session save failed";
         return jsonRpcError(buf, id, -32603, msg);
     };
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"saved session '{s}'"}}]}},"id":{s}}}
-    , .{ name, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "saved session '{s}'", .{name});
 }
 
 fn toolSessionRestore(self: *WmMcpServer, name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     const Session = @import("Session.zig");
     Session.restore(self.server, name) catch |err| {
         var msg_buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&msg_buf, "session restore failed: {}", .{err}) catch "session restore failed";
         return jsonRpcError(buf, id, -32603, msg);
     };
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"restored session '{s}'"}}]}},"id":{s}}}
-    , .{ name, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "restored session '{s}'", .{name});
 }
 
 fn toolSubscribeEvents(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     const path = self.event_socket_path[0..self.event_socket_path_len];
     // Path contains `/` and maybe other chars; safe as a JSON string (no
     // need to escape — socket paths don't have quote/backslash/control).
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"socket\":\"{s}\"}}"}}]}},"id":{s}}}
-    , .{ path, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "{{\\\"socket\\\":\\\"{s}\\\"}}", .{path});
 }
 
 // ── Name resolution ───────────────────────────────────────────
@@ -443,28 +431,21 @@ fn toolListWindows(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
 }
 
 fn toolSpawnTerminal(self: *WmMcpServer, ws: u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     const srv = self.server;
 
     srv.spawnTerminal(ws);
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"spawned terminal on workspace {d}"}}]}},"id":{s}}}
-    , .{ ws, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "spawned terminal on workspace {d}", .{ws});
 }
 
 fn toolCloseWindow(self: *WmMcpServer, node_id: u64, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     if (!self.server.closeNode(node_id)) {
         return jsonRpcError(buf, id, -32602, "Window not found");
     }
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"closed window {d}"}}]}},"id":{s}}}
-    , .{ node_id, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "closed window {d}", .{node_id});
 }
 
 fn toolFocusWindow(self: *WmMcpServer, node_id: u64, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     const srv = self.server;
 
     // Set as active in workspace, then update focus
@@ -479,16 +460,13 @@ fn toolFocusWindow(self: *WmMcpServer, node_id: u64, buf: []u8, id: ?[]const u8)
         workspace.active_node = node_id;
         srv.updateFocusedTerminal();
         if (srv.bar) |b| _ = b.render(srv);
-        return std.fmt.bufPrint(buf,
-            \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"focused window {d}"}}]}},"id":{s}}}
-        , .{ node_id, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+        return okText(buf, id, "focused window {d}", .{node_id});
     }
 
     return jsonRpcError(buf, id, -32602, "Window not found");
 }
 
 fn toolMoveToWorkspace(self: *WmMcpServer, node_id: u64, ws: u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     if (ws >= 10) return jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
 
     if (self.server.nodes.findById(node_id) == null)
@@ -503,9 +481,7 @@ fn toolMoveToWorkspace(self: *WmMcpServer, node_id: u64, ws: u8, buf: []u8, id: 
     self.server.moveNodeToWorkspace(node_id, ws);
     if (self.server.bar) |b| _ = b.render(self.server);
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"moved window {d} to workspace {d}"}}]}},"id":{s}}}
-    , .{ node_id, ws, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "moved window {d} to workspace {d}", .{node_id, ws});
 }
 
 fn toolListWorkspaces(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
@@ -550,7 +526,6 @@ fn toolListWorkspaces(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8
 }
 
 fn toolSwitchWorkspace(self: *WmMcpServer, ws: u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     if (ws >= 10) return jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
 
     // Route through the single workspace-mutation chokepoint so the
@@ -561,13 +536,10 @@ fn toolSwitchWorkspace(self: *WmMcpServer, ws: u8, buf: []u8, id: ?[]const u8) [
     // triggered switch.
     self.server.focusWorkspace(ws);
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"switched to workspace {d}"}}]}},"id":{s}}}
-    , .{ ws, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "switched to workspace {d}", .{ws});
 }
 
 fn toolSetLayout(self: *WmMcpServer, ws: u8, layout_str: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     const srv = self.server;
     if (ws >= 10) return jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
 
@@ -578,13 +550,10 @@ fn toolSetLayout(self: *WmMcpServer, ws: u8, layout_str: []const u8, buf: []u8, 
     srv.arrangeworkspace(ws);
     if (srv.bar) |b| _ = b.render(srv);
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
-    , .{id_str}) catch jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "ok", .{});
 }
 
 fn toolGetConfig(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     const cfg = &self.server.wm_config;
     const srv = self.server;
 
@@ -601,14 +570,10 @@ fn toolGetConfig(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
     const cell_h: u32 = if (srv.font_atlas) |fa| fa.cell_height else 16;
     const bar_h: u32 = if (srv.bar) |b| b.bar_height else 0;
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"gap\":{d},\"border_width\":{d},\"bg_color\":\"0x{x:0>8}\",\"output_width\":{d},\"output_height\":{d},\"cell_width\":{d},\"cell_height\":{d},\"bar_height\":{d},\"terminal_count\":{d},\"active_workspace\":{d},\"top_bar\":{any},\"bottom_bar\":{any}}}"}}]}},"id":{s}}}
-    , .{ cfg.gap, cfg.border_width, cfg.bg_color, out_w, out_h, cell_w, cell_h, bar_h, srv.terminal_count, srv.layout_engine.active_workspace, top_enabled, bot_enabled, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "{{\\\"gap\\\":{d},\\\"border_width\\\":{d},\\\"bg_color\\\":\\\"0x{x:0>8}\\\",\\\"output_width\\\":{d},\\\"output_height\\\":{d},\\\"cell_width\\\":{d},\\\"cell_height\\\":{d},\\\"bar_height\\\":{d},\\\"terminal_count\\\":{d},\\\"active_workspace\\\":{d},\\\"top_bar\\\":{any},\\\"bottom_bar\\\":{any}}}", .{cfg.gap, cfg.border_width, cfg.bg_color, out_w, out_h, cell_w, cell_h, bar_h, srv.terminal_count, srv.layout_engine.active_workspace, top_enabled, bot_enabled});
 }
 
 fn toolSetConfig(self: *WmMcpServer, key: []const u8, value: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     const cfg = &self.server.wm_config;
 
     if (std.mem.eql(u8, key, "gap")) {
@@ -642,13 +607,10 @@ fn toolSetConfig(self: *WmMcpServer, key: []const u8, value: []const u8, buf: []
         return jsonRpcError(buf, id, -32602, "Unknown config key (gap, border_width, bg_color)");
     }
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"set {s} = {s}"}}]}},"id":{s}}}
-    , .{ key, value, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "set {s} = {s}", .{key, value});
 }
 
 fn toolScreenshot(self: *WmMcpServer, path: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
 
     if (!teru.compat.isSafeScreenshotPath(path))
         return jsonRpcError(buf, id, -32602, "Invalid path (no ../ allowed)");
@@ -657,38 +619,28 @@ fn toolScreenshot(self: *WmMcpServer, path: []const u8, buf: []u8, id: ?[]const 
         const dims = self.server.activeOutputDims();
         const out_w: u32 = dims.w;
         const out_h: u32 = dims.h;
-        return std.fmt.bufPrint(buf,
-            \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"screenshot saved to {s} ({d}x{d})"}}]}},"id":{s}}}
-        , .{ path, out_w, out_h, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+        return okText(buf, id, "screenshot saved to {s} ({d}x{d})", .{path, out_w, out_h});
     }
 
     return jsonRpcError(buf, id, -32603, "Screenshot failed");
 }
 
 fn toolNotify(_: *WmMcpServer, message: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     // No overlay surface in teruwm yet — the notification goes to stderr
     // so any tail -F of the compositor log sees it. A proper on-screen
     // toast would need a scene_rect + a libteru text renderer anchored
     // to the focused output; worth doing when session_lock_v1 lands
     // (shared scene-tree plumbing).
     std.log.scoped(.mcp).info("notify: {s}", .{message});
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"notification logged"}}]}},"id":{s}}}
-    , .{id_str}) catch jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "notification logged", .{});
 }
 
 fn toolReloadConfig(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     self.server.reloadWmConfig();
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"config reloaded (gap={d}, border={d})"}}]}},"id":{s}}}
-    , .{ self.server.wm_config.gap, self.server.wm_config.border_width, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "config reloaded (gap={d}, border={d})", .{self.server.wm_config.gap, self.server.wm_config.border_width});
 }
 
 fn toolScreenshotPane(self: *WmMcpServer, params_body: []const u8, path_opt: ?[]const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     const srv = self.server;
 
     const slot = resolveNode(self, params_body) orelse
@@ -734,10 +686,7 @@ fn toolScreenshotPane(self: *WmMcpServer, params_body: []const u8, path_opt: ?[]
                     };
                 };
 
-                return std.fmt.bufPrint(buf,
-                    \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"pane screenshot saved to {s} ({d}x{d})"}}]}},"id":{s}}}
-                , .{ path, tp.renderer.width, tp.renderer.height, id_str }) catch
-                    jsonRpcError(buf, id, -32603, "Internal error");
+                return okText(buf, id, "pane screenshot saved to {s} ({d}x{d})", .{path, tp.renderer.width, tp.renderer.height});
             }
         }
     }
@@ -746,28 +695,20 @@ fn toolScreenshotPane(self: *WmMcpServer, params_body: []const u8, path_opt: ?[]
 }
 
 fn toolSetName(self: *WmMcpServer, params_body: []const u8, new_name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
 
     const slot = resolveNode(self, params_body) orelse
         return jsonRpcError(buf, id, -32602, "Node not found (provide name or node_id)");
 
     self.server.nodes.setName(slot, new_name);
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"renamed node {d} to {s}"}}]}},"id":{s}}}
-    , .{ self.server.nodes.node_id[slot], new_name, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "renamed node {d} to {s}", .{self.server.nodes.node_id[slot], new_name});
 }
 
 fn toolRestart(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
     // Schedule restart after response is sent (via deferred flag)
     self.server.restart_pending = true;
     if (self.server.primary_output) |output| wlr.wlr_output_schedule_frame(output);
-    const id_str = id orelse "null";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"restart scheduled — compositor will exec() on next frame"}}]}},"id":{s}}}
-    , .{id_str}) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "restart scheduled — compositor will exec() on next frame", .{});
 }
 
 fn toolQuit(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
@@ -807,7 +748,6 @@ fn toolPerf(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
 
 /// Toggle (explicit=null) or set (explicit=true/false) a bar's enabled state.
 fn toolToggleBar(self: *WmMcpServer, which: []const u8, explicit: ?bool, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     const bar = self.server.bar orelse
         return jsonRpcError(buf, id, -32603, "bar not initialized");
 
@@ -829,10 +769,7 @@ fn toolToggleBar(self: *WmMcpServer, which: []const u8, explicit: ?bool, buf: []
     }
     if (new_val) _ = bar.render(self.server);
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{s} bar {s}"}}]}},"id":{s}}}
-    , .{ which, if (new_val) "enabled" else "disabled", id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "{s} bar {s}", .{which, if (new_val) "enabled" else "disabled"});
 }
 
 // ── Push widget tools ──────────────────────────────────────────
@@ -848,20 +785,14 @@ fn toolSetWidget(self: *WmMcpServer, name: []const u8, text: []const u8, class_s
     const ok = self.server.setPushWidget(name, text, class);
     if (!ok) return jsonRpcError(buf, id, -32603, "Out of widget slots (max 32)");
 
-    const id_str = id orelse "null";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"widget '{s}' set"}}]}},"id":{s}}}
-    , .{ name, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "widget '{s}' set", .{name});
 }
 
 fn toolDeleteWidget(self: *WmMcpServer, name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     if (name.len == 0) return jsonRpcError(buf, id, -32602, "Empty name");
     const removed = self.server.deletePushWidget(name);
-    const id_str = id orelse "null";
     const msg = if (removed) "deleted" else "not found";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"widget '{s}' {s}"}}]}},"id":{s}}}
-    , .{ name, msg, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "widget '{s}' {s}", .{name, msg});
 }
 
 fn toolListWidgets(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
@@ -944,11 +875,7 @@ fn toolTestDrag(self: *WmMcpServer, from_x: i32, from_y: i32, to_x: i32, to_y: i
     // Phase 4: button release at t_release — realistic down-up interval.
     srv.processCursorButton(button, 0, t_release, super_held);
 
-    const id_str = id orelse "null";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"drag ({d},{d})->({d},{d}) super={any} button={d}"}}]}},"id":{s}}}
-    , .{ from_x, from_y, to_x, to_y, super_held, button, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "drag ({d},{d})->({d},{d}) super={any} button={d}", .{from_x, from_y, to_x, to_y, super_held, button});
 }
 
 fn toolTestMove(self: *WmMcpServer, x: i32, y: i32, buf: []u8, id: ?[]const u8) []const u8 {
@@ -959,10 +886,7 @@ fn toolTestMove(self: *WmMcpServer, x: i32, y: i32, buf: []u8, id: ?[]const u8) 
     // the enter-serial cache so any subsequent click on the same
     // surface is dropped as "not associated with a valid enter".
     srv.processCursorMotion(monotonicMs());
-    const id_str = id orelse "null";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"cursor at ({d},{d})"}}]}},"id":{s}}}
-    , .{ x, y, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "cursor at ({d},{d})", .{x, y});
 }
 
 fn toolMousePath(
@@ -976,12 +900,8 @@ fn toolMousePath(
         from_x, from_y, to_x, to_y,
         duration_ms, humanize, button, super_held,
     );
-    const id_str = id orelse "null";
     const btn_val: i32 = if (button) |b| @intCast(b) else -1;
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"path ({d},{d})->({d},{d}) {d}ms humanize={any} button={d}"}}]}},"id":{s}}}
-    , .{ from_x, from_y, to_x, to_y, duration_ms, humanize, btn_val, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "path ({d},{d})->({d},{d}) {d}ms humanize={any} button={d}", .{from_x, from_y, to_x, to_y, duration_ms, humanize, btn_val});
 }
 
 fn toolToggleScratchpad(self: *WmMcpServer, index: u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -991,13 +911,10 @@ fn toolToggleScratchpad(self: *WmMcpServer, index: u8, buf: []u8, id: ?[]const u
     const name = std.fmt.bufPrint(&name_buf, "pad{d}", .{index + 1}) catch return jsonRpcError(buf, id, -32603, "bad index");
     self.server.toggleScratchpadByName(name);
 
-    const id_str = id orelse "null";
     const slot = self.server.nodes.findByScratchpad(name);
     const created = slot != null;
     const visible = if (slot) |s| !self.server.nodes.isHidden(s) else false;
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"scratchpad {d} name={s} visible={any} created={any}"}}]}},"id":{s}}}
-    , .{ index, name, visible, created, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "scratchpad {d} name={s} visible={any} created={any}", .{index, name, visible, created});
 }
 
 fn toolScratchpad(self: *WmMcpServer, name: []const u8, cmd: ?[]const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -1007,13 +924,10 @@ fn toolScratchpad(self: *WmMcpServer, name: []const u8, cmd: ?[]const u8, buf: [
     if (name.len == 0) return jsonRpcError(buf, id, -32602, "scratchpad name required");
     self.server.toggleScratchpadByName(name);
 
-    const id_str = id orelse "null";
     const slot = self.server.nodes.findByScratchpad(name);
     const created = slot != null;
     const visible = if (slot) |s| !self.server.nodes.isHidden(s) else false;
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"scratchpad name={s} visible={any} created={any}"}}]}},"id":{s}}}
-    , .{ name, visible, created, id_str }) catch jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "scratchpad name={s} visible={any} created={any}", .{name, visible, created});
 }
 
 fn toolTestKey(self: *WmMcpServer, action_name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -1030,11 +944,7 @@ fn toolTestKey(self: *WmMcpServer, action_name: []const u8, buf: []u8, id: ?[]co
     };
 
     const handled = self.server.executeAction(action);
-    const id_str = id orelse "null";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"action '{s}' handled={any}"}}]}},"id":{s}}}
-    , .{ action_name, handled, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "action '{s}' handled={any}", .{action_name, handled});
 }
 
 // ── AI-first physical input MCP tools ──────────────────────────
@@ -1074,11 +984,7 @@ fn toolClick(self: *WmMcpServer, x: i32, y: i32, button: u32, buf: []u8, id: ?[]
     srv.processCursorButton(button, 1, ms_now +% 5, false);
     srv.processCursorButton(button, 0, ms_now +% 20, false);
 
-    const id_str = id orelse "null";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"cx\":{d},\"cy\":{d},\"hit\":{?d},\"kind\":\"{s}\"}}"}}]}},"id":{s}}}
-    , .{ x, y, hit_id, kind_str, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "{{\\\"cx\\\":{d},\\\"cy\\\":{d},\\\"hit\\\":{?d},\\\"kind\\\":\\\"{s}\\\"}}", .{x, y, hit_id, kind_str});
 }
 
 fn toolType(self: *WmMcpServer, text: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -1098,11 +1004,7 @@ fn toolType(self: *WmMcpServer, text: []const u8, buf: []u8, id: ?[]const u8) []
             tp.writeInput(&bytes);
             sent += 1;
         }
-        const id_str = id orelse "null";
-        return std.fmt.bufPrint(buf,
-            \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"sent\":{d},\"dropped\":{d}}}"}}]}},"id":{s}}}
-        , .{ sent, dropped, id_str }) catch
-            jsonRpcError(buf, id, -32603, "Internal error");
+        return okText(buf, id, "{{\\\"sent\\\":{d},\\\"dropped\\\":{d}}}", .{sent, dropped});
     }
 
     // Fallback: synthetic keyboard events to whatever client owns
@@ -1128,11 +1030,7 @@ fn toolType(self: *WmMcpServer, text: []const u8, buf: []u8, id: ?[]const u8) []
         sent += 1;
     }
 
-    const id_str = id orelse "null";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"sent\":{d},\"dropped\":{d}}}"}}]}},"id":{s}}}
-    , .{ sent, dropped, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "{{\\\"sent\\\":{d},\\\"dropped\\\":{d}}}", .{sent, dropped});
 }
 
 fn toolPress(self: *WmMcpServer, key: []const u8, ctrl: bool, shift: bool, alt: bool, sup: bool, buf: []u8, id: ?[]const u8) []const u8 {
@@ -1148,11 +1046,7 @@ fn toolPress(self: *WmMcpServer, key: []const u8, ctrl: bool, shift: bool, alt: 
         const bytes = ptyBytesForKeyname(key, ctrl, shift, alt);
         if (bytes.len > 0) {
             tp.writeInput(bytes);
-            const id_str = id orelse "null";
-            return std.fmt.bufPrint(buf,
-                \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"key\":\"{s}\",\"keycode\":{d},\"route\":\"pty\"}}"}}]}},"id":{s}}}
-            , .{ key, keycode, id_str }) catch
-                jsonRpcError(buf, id, -32603, "Internal error");
+            return okText(buf, id, "{{\\\"key\\\":\\\"{s}\\\",\\\"keycode\\\":{d},\\\"route\\\":\\\"pty\\\"}}", .{key, keycode});
         }
         // Unknown name — fall through to the seat path so Ctrl+a / F1
         // etc. still reach if somehow a client claims the seat.
@@ -1176,11 +1070,7 @@ fn toolPress(self: *WmMcpServer, key: []const u8, ctrl: bool, shift: bool, alt: 
     if (shift) { sendKey(srv, KEY_LEFTSHIFT, false, ms); ms += 1; }
     if (ctrl) { sendKey(srv, KEY_LEFTCTRL, false, ms); ms += 1; }
 
-    const id_str = id orelse "null";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"key\":\"{s}\",\"keycode\":{d}}}"}}]}},"id":{s}}}
-    , .{ key, keycode, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "{{\\\"key\\\":\\\"{s}\\\",\\\"keycode\\\":{d}}}", .{key, keycode});
 }
 
 /// Map a named key ("Return", "Escape", "Tab", arrows…) to the byte
@@ -1243,11 +1133,7 @@ fn toolScroll(self: *WmMcpServer, x: i32, y: i32, dy: i32, buf: []u8, id: ?[]con
     );
     wlr.wlr_seat_pointer_notify_frame(srv.seat);
 
-    const id_str = id orelse "null";
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"x\":{d},\"y\":{d},\"dy\":{d}}}"}}]}},"id":{s}}}
-    , .{ x, y, dy, id_str }) catch
-        jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "{{\\\"x\\\":{d},\\\"y\\\":{d},\\\"dy\\\":{d}}}", .{x, y, dy});
 }
 
 // ── Keyboard helpers ──────────────────────────────────────────
