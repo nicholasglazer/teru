@@ -64,6 +64,22 @@ pub fn jsonRpcError(buf: []u8, id: ?[]const u8, code: i32, message: []const u8) 
     , .{ code, message, id_str }) catch "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}";
 }
 
+/// Format a JSON-RPC success response whose single text-content body is
+/// `text_fmt` filled with `text_args`. Replaces the ~60 hand-written
+/// `{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"…"}]},"id":…}`
+/// envelopes across the two MCP tool tables with one call site — the output
+/// is byte-for-byte identical (see the inline test). `text_fmt` may carry its
+/// own `{{`/`}}` for literal JSON braces in the text payload. Falls back to a
+/// -32603 error on buffer overflow, exactly like the originals did.
+pub fn okText(buf: []u8, id: ?[]const u8, comptime text_fmt: []const u8, text_args: anytype) []const u8 {
+    const id_str = id orelse "null";
+    return std.fmt.bufPrint(
+        buf,
+        "{{\"jsonrpc\":\"2.0\",\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"" ++ text_fmt ++ "\"}}]}},\"id\":{s}}}",
+        text_args ++ .{id_str},
+    ) catch jsonRpcError(buf, id, -32603, "Internal error");
+}
+
 /// Extract a top-level `"key":"value"` string from JSON.
 /// Returns the unquoted value slice, or null if not found.
 pub fn extractJsonString(json: []const u8, key: []const u8) ?[]const u8 {
@@ -436,6 +452,32 @@ test "jsonRpcError" {
     try t.expect(std.mem.find(u8, result, "-32601") != null);
     try t.expect(std.mem.find(u8, result, "Method not found") != null);
     try t.expect(std.mem.find(u8, result, "\"id\":1") != null);
+}
+
+test "okText matches the hand-written success envelope byte-for-byte" {
+    var a: [512]u8 = undefined;
+    var b: [512]u8 = undefined;
+
+    // 1. static text, no args
+    const got1 = okText(&a, "7", "ok", .{});
+    const want1 = std.fmt.bufPrint(&b,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
+    , .{"7"}) catch unreachable;
+    try t.expectEqualStrings(want1, got1);
+
+    // 2. text with a string + int arg
+    const got2 = okText(&a, "12", "sent {d} keys to {s}", .{ @as(u32, 3), "pane" });
+    const want2 = std.fmt.bufPrint(&b,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"sent {d} keys to {s}"}}]}},"id":{s}}}
+    , .{ @as(u32, 3), "pane", "12" }) catch unreachable;
+    try t.expectEqualStrings(want2, got2);
+
+    // 3. text carrying literal JSON braces (the zoom-style payload) + null id
+    const got3 = okText(&a, null, "{{\\\"changed\\\":{},\\\"font_size\\\":{d}}}", .{ true, @as(u16, 16) });
+    const want3 = std.fmt.bufPrint(&b,
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"changed\":{},\"font_size\":{d}}}"}}]}},"id":{s}}}
+    , .{ true, @as(u16, 16), "null" }) catch unreachable;
+    try t.expectEqualStrings(want3, got3);
 }
 
 test "lineMatchesKey" {

@@ -19,6 +19,7 @@ const png = @import("../png.zig");
 const tier = @import("../render/tier.zig");
 
 const tools = @import("McpTools.zig");
+const okText = tools.okText; // success-envelope formatter (see McpTools.okText)
 const mcp_dispatch = @import("McpDispatch.zig");
 const forward = @import("forward.zig");
 const build_options = @import("build_options");
@@ -164,7 +165,6 @@ pub fn callScreenshot(self: *McpServer, params: []const u8, buf: []u8, id: ?[]co
 
 pub fn callSubscribeEvents(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     _ = params;
-    const id_str = id orelse "null";
     const teru_path = self.event_socket_path[0..self.event_socket_path_len];
 
     // Best-effort discovery of the teruwm event socket — agents asking
@@ -175,13 +175,9 @@ pub fn callSubscribeEvents(self: *McpServer, params: []const u8, buf: []u8, id: 
     // Response is MCP-wrapped: result.content[0].text contains the
     // double-JSON-encoded object (same pattern as every other tool).
     if (teruwm_path.len > 0) {
-        return std.fmt.bufPrint(buf,
-            \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"teru\":\"{s}\",\"teruwm\":\"{s}\"}}"}}]}},"id":{s}}}
-        , .{ teru_path, teruwm_path, id_str }) catch tools.jsonRpcError(buf, id, -32603, "Internal error");
+        return okText(buf, id, "{{\\\"teru\\\":\\\"{s}\\\",\\\"teruwm\\\":\\\"{s}\\\"}}", .{teru_path, teruwm_path});
     }
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"teru\":\"{s}\",\"teruwm\":null}}"}}]}},"id":{s}}}
-    , .{ teru_path, id_str }) catch tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "{{\\\"teru\\\":\\\"{s}\\\",\\\"teruwm\\\":null}}", .{teru_path});
 }
 
 pub fn callSwapPane(self: *McpServer, params: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -218,27 +214,21 @@ fn focusPaneById(self: *McpServer, pane_id: u64) bool {
 }
 
 fn toolSwapPane(self: *McpServer, pane_id: u64, direction: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     if (!focusPaneById(self, pane_id))
         return tools.jsonRpcError(buf, id, -32602, "Pane not found");
     if (std.mem.eql(u8, direction, "prev"))
         self.multiplexer.swapPanePrev()
     else
         self.multiplexer.swapPaneNext();
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
-    , .{id_str}) catch tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "ok", .{});
 }
 
 fn toolMovePane(self: *McpServer, pane_id: u64, workspace: u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     if (!focusPaneById(self, pane_id))
         return tools.jsonRpcError(buf, id, -32602, "Pane not found");
     if (!self.multiplexer.movePaneToWorkspace(workspace))
         return tools.jsonRpcError(buf, id, -32602, "Move failed");
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
-    , .{id_str}) catch tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "ok", .{});
 }
 
 fn toolListPanes(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
@@ -280,7 +270,6 @@ fn toolListPanes(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
 }
 
 fn toolReadOutput(self: *McpServer, pane_id: u64, lines: u32, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
 
     const pane = self.multiplexer.getPaneById(pane_id) orelse
         return tools.jsonRpcError(buf, id, -32602, "Pane not found");
@@ -326,10 +315,7 @@ fn toolReadOutput(self: *McpServer, pane_id: u64, lines: u32, buf: []u8, id: ?[]
     var escaped_buf: [max_response - 256]u8 = undefined;
     const escaped = tools.jsonEscapeString(text_buf[0..text_pos], &escaped_buf);
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{s}"}}]}},"id":{s}}}
-    , .{ escaped, id_str }) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "{s}", .{escaped});
 }
 
 fn toolGetGraph(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
@@ -394,7 +380,6 @@ fn toolGetGraph(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
 }
 
 fn toolSendInput(self: *McpServer, pane_id: u64, text: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
 
     const pane = self.multiplexer.getPaneById(pane_id) orelse
         return tools.jsonRpcError(buf, id, -32602, "Pane not found");
@@ -410,14 +395,10 @@ fn toolSendInput(self: *McpServer, pane_id: u64, text: []const u8, buf: []u8, id
     _ = pane.ptyWrite(unesc_text) catch
         return tools.jsonRpcError(buf, id, -32603, "Write failed");
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
-    , .{id_str}) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "ok", .{});
 }
 
 fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, command: ?[]const u8, cwd_param: ?[]const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
 
     // Resolve CWD: explicit param > active pane's CWD > inherit
     var cwd_buf: [512]u8 = undefined;
@@ -479,14 +460,10 @@ fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, command: ?[
     // (no-op when nobody's subscribed). Mirrors teruwm's event vocabulary.
     self.emitEventKind("pane_created", ",\"pane_id\":{d},\"workspace\":{d}", .{ pane_id, workspace });
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{d}"}}]}},"id":{s}}}
-    , .{ pane_id, id_str }) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "{d}", .{pane_id});
 }
 
 fn toolBroadcast(self: *McpServer, workspace: u8, text: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
 
     // Get pane IDs in the workspace from the layout engine
     const ws = &self.multiplexer.layout_engine.workspaces[workspace];
@@ -505,14 +482,10 @@ fn toolBroadcast(self: *McpServer, workspace: u8, text: []const u8, buf: []u8, i
         }
     }
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"sent to {d} panes, {d} failed"}}]}},"id":{s}}}
-    , .{ sent, failed, id_str }) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "sent to {d} panes, {d} failed", .{sent, failed});
 }
 
 fn toolSendKeys(self: *McpServer, pane_id: u64, params_body: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
 
     const pane = self.multiplexer.getPaneById(pane_id) orelse
         return tools.jsonRpcError(buf, id, -32602, "Pane not found");
@@ -540,14 +513,10 @@ fn toolSendKeys(self: *McpServer, pane_id: u64, params_body: []const u8, buf: []
         sent += 1;
     }
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"sent {d} keys, {d} skipped"}}]}},"id":{s}}}
-    , .{ sent, skipped, id_str }) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "sent {d} keys, {d} skipped", .{sent, skipped});
 }
 
 fn toolGetState(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
 
     const pane = self.multiplexer.getPaneById(pane_id) orelse
         return tools.jsonRpcError(buf, id, -32602, "Pane not found");
@@ -582,14 +551,10 @@ fn toolGetState(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []co
     var escaped_buf: [4096]u8 = undefined;
     const escaped = tools.jsonEscapeString(inner_json, &escaped_buf);
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{s}"}}]}},"id":{s}}}
-    , .{ escaped, id_str }) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "{s}", .{escaped});
 }
 
 fn toolFocusPane(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
 
     // Search all workspaces for the pane
     for (&self.multiplexer.layout_engine.workspaces, 0..) |*ws, ws_idx| {
@@ -599,10 +564,7 @@ fn toolFocusPane(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []c
                 ws.active_node = pane_id; // tree-mode getActiveNodeId() uses active_node
                 self.multiplexer.active_workspace = @intCast(ws_idx);
                 self.emitEventKind("focus_changed", ",\"pane_id\":{d}", .{pane_id});
-                return std.fmt.bufPrint(buf,
-                    \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
-                , .{id_str}) catch
-                    tools.jsonRpcError(buf, id, -32603, "Internal error");
+                return okText(buf, id, "ok", .{});
             }
         }
     }
@@ -611,7 +573,6 @@ fn toolFocusPane(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []c
 }
 
 fn toolClosePane(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
 
     // Verify pane exists before closing
     if (self.multiplexer.getPaneById(pane_id) == null)
@@ -620,14 +581,10 @@ fn toolClosePane(self: *McpServer, pane_id: u64, buf: []u8, id: ?[]const u8) []c
     self.multiplexer.closePane(pane_id);
     self.emitEventKind("pane_closed", ",\"pane_id\":{d}", .{pane_id});
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
-    , .{id_str}) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "ok", .{});
 }
 
 fn toolSwitchWorkspace(self: *McpServer, workspace: u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
 
     if (workspace > 9)
         return tools.jsonRpcError(buf, id, -32602, "Workspace must be 0-9");
@@ -636,14 +593,10 @@ fn toolSwitchWorkspace(self: *McpServer, workspace: u8, buf: []u8, id: ?[]const 
     self.multiplexer.switchWorkspace(workspace);
     self.emitEventKind("workspace_switched", ",\"from\":{d},\"to\":{d}", .{ old_ws, workspace });
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
-    , .{id_str}) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "ok", .{});
 }
 
 fn toolSetLayout(self: *McpServer, workspace: u8, layout_str: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     const LayoutEngine = @import("../tiling/LayoutEngine.zig");
 
     if (workspace > 9)
@@ -670,14 +623,10 @@ fn toolSetLayout(self: *McpServer, workspace: u8, layout_str: []const u8, buf: [
     // Mark panes dirty for redraw
     for (self.multiplexer.panes.items) |*pane| pane.grid.dirty = true;
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"ok"}}]}},"id":{s}}}
-    , .{id_str}) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "ok", .{});
 }
 
 fn toolSetConfig(_: *McpServer, key: []const u8, value: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
 
     // Validate key is a known config option
     const valid_keys = [_][]const u8{
@@ -763,10 +712,7 @@ fn toolSetConfig(_: *McpServer, key: []const u8, value: []const u8, buf: []u8, i
 
     var key_esc: [128]u8 = undefined;
     var val_esc: [256]u8 = undefined;
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"set {s} = {s}"}}]}},"id":{s}}}
-    , .{ tools.jsonEscapeString(key, &key_esc), tools.jsonEscapeString(value, &val_esc), id_str }) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "set {s} = {s}", .{tools.jsonEscapeString(key, &key_esc), tools.jsonEscapeString(value, &val_esc)});
 }
 
 fn toolGetConfig(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
@@ -793,7 +739,6 @@ fn toolGetConfig(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
 }
 
 fn toolSessionSave(self: *McpServer, name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     const SessionConfig = @import("../config/SessionDef.zig");
 
     // Generate .tsess content from live state
@@ -824,14 +769,10 @@ fn toolSessionSave(self: *McpServer, name: []const u8, buf: []u8, id: ?[]const u
     var escaped_path: [1024]u8 = undefined;
     const epath = tools.jsonEscapeString(path, &escaped_path);
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"saved to {s}"}}]}},"id":{s}}}
-    , .{ epath, id_str }) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "saved to {s}", .{epath});
 }
 
 fn toolSessionRestore(self: *McpServer, name: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     const SessionConfig = @import("../config/SessionDef.zig");
 
     // Build path and read file
@@ -888,14 +829,10 @@ fn toolSessionRestore(self: *McpServer, name: []const u8, buf: []u8, id: ?[]cons
     // Mark all panes dirty
     for (self.multiplexer.panes.items) |*pane| pane.grid.dirty = true;
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"restored session {s} ({d} workspaces)"}}]}},"id":{s}}}
-    , .{ name, def.workspace_count, id_str }) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "restored session {s} ({d} workspaces)", .{name, def.workspace_count});
 }
 
 fn toolScreenshot(self: *McpServer, path: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
 
     const r = self.renderer orelse
         return tools.jsonRpcError(buf, id, -32603, "No renderer (TTY mode has no framebuffer)");
@@ -929,16 +866,12 @@ fn toolScreenshot(self: *McpServer, path: []const u8, buf: []u8, id: ?[]const u8
         };
     };
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"screenshot saved to {s} ({d}x{d})"}}]}},"id":{s}}}
-    , .{ path, width, height, id_str }) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "screenshot saved to {s} ({d}x{d})", .{path, width, height});
 }
 
 /// Ensure parent directory exists using C mkdir.
 
 fn toolScroll(self: *McpServer, pane_id: u64, direction: []const u8, lines: u32, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     const pane = self.multiplexer.getPaneById(pane_id) orelse
         return tools.jsonRpcError(buf, id, -32602, "Pane not found");
 
@@ -958,14 +891,10 @@ fn toolScroll(self: *McpServer, pane_id: u64, direction: []const u8, lines: u32,
 
     pane.grid.dirty = true;
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"scroll_offset={d}"}}]}},"id":{s}}}
-    , .{ pane.scroll_offset, id_str }) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "scroll_offset={d}", .{pane.scroll_offset});
 }
 
 fn toolWaitFor(self: *McpServer, pane_id: u64, pattern: []const u8, lines: u32, buf: []u8, id: ?[]const u8) []const u8 {
-    const id_str = id orelse "null";
     const pane = self.multiplexer.getPaneById(pane_id) orelse
         return tools.jsonRpcError(buf, id, -32602, "Pane not found");
 
@@ -1014,19 +943,13 @@ fn toolWaitFor(self: *McpServer, pane_id: u64, pattern: []const u8, lines: u32, 
                 escaped[elen] = c;
                 elen += 1;
             }
-            return std.fmt.bufPrint(buf,
-                \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"matched\":true,\"line\":\"{s}\"}}"}}]}},"id":{s}}}
-            , .{ escaped[0..elen], id_str }) catch
-                tools.jsonRpcError(buf, id, -32603, "Internal error");
+            return okText(buf, id, "{{\\\"matched\\\":true,\\\"line\\\":\\\"{s}\\\"}}", .{escaped[0..elen]});
             }
         }
 
     }
 
-    return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"{{\"matched\":false}}"}}]}},"id":{s}}}
-    , .{id_str}) catch
-        tools.jsonRpcError(buf, id, -32603, "Internal error");
+    return okText(buf, id, "{{\\\"matched\\\":false}}", .{});
 }
 
 // ── Key mapping for teru_send_keys ────────────────────────────
