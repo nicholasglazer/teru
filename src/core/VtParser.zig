@@ -915,11 +915,19 @@ fn dispatchCsi(self: *VtParser, final: u8) void {
             self.grid.setCursorPos(row, col);
         },
         'J' => { // ED — erase display
-            const mode: u8 = @intCast(self.getParam(0, 0));
+            // Clamp before narrowing: CSI params accumulate saturating to
+            // u16, so a hostile/garbled `ESC[999J` would otherwise panic on
+            // the u8 cast in ReleaseSafe. Out-of-range modes land in the
+            // clear* `else => {}` no-op (matches xterm ignoring unknown modes).
+            const mode: u8 = @intCast(@min(self.getParam(0, 0), 255));
             self.grid.clearScreen(mode);
         },
         'K' => { // EL — erase line
-            const mode: u8 = @intCast(self.getParam(0, 0));
+            // Clamp before narrowing: CSI params accumulate saturating to
+            // u16, so a hostile/garbled `ESC[999J` would otherwise panic on
+            // the u8 cast in ReleaseSafe. Out-of-range modes land in the
+            // clear* `else => {}` no-op (matches xterm ignoring unknown modes).
+            const mode: u8 = @intCast(@min(self.getParam(0, 0), 255));
             self.grid.clearLine(self.grid.cursor_row, mode);
         },
         'L' => { // IL — insert lines
@@ -2020,6 +2028,22 @@ test "CSI b — repeat last character" {
     try std.testing.expectEqual(@as(u21, 'X'), grid.cellAtConst(0, 3).char);
     try std.testing.expectEqual(@as(u21, 'X'), grid.cellAtConst(0, 4).char);
     try std.testing.expectEqual(@as(u16, 5), grid.cursor_col);
+}
+
+test "CSI ED/EL out-of-range mode does not crash (clamped, no-op)" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 3, 10);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    parser.feed("Z"); // 'Z' at (0,0)
+    // A hostile/garbled `ESC[999J` / `ESC[300K` would panic the old `u8`
+    // @intCast in ReleaseSafe (cast truncated bits). Clamped, they fall into
+    // the clear* `else => {}` branch (xterm ignores unknown ED/EL modes), so
+    // reaching the assertion below at all proves no crash, and 'Z' survives.
+    parser.feed("\x1b[999J");
+    parser.feed("\x1b[300K");
+    try std.testing.expectEqual(@as(u21, 'Z'), grid.cellAtConst(0, 0).char);
 }
 
 test "CSI backtick — HPA (same as CHA)" {
