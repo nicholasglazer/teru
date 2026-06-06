@@ -387,7 +387,13 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                 const ws_panes = r.workspace_panes[wi];
                 if (ws_panes == 0) continue;
 
-                mux.layout_engine.workspaces[wi].layout = @enumFromInt(r.workspace_layouts[wi]);
+                // Clamp before @enumFromInt — restored daemon state can carry
+                // an out-of-range layout byte; the daemon-attach path
+                // (modes/common.zig) clamps the same value, so match it here
+                // rather than panic. accordion is the highest Layout variant.
+                const L = @TypeOf(mux.layout_engine.workspaces[wi].layout);
+                mux.layout_engine.workspaces[wi].layout =
+                    @enumFromInt(@min(r.workspace_layouts[wi], @intFromEnum(L.accordion)));
                 mux.layout_engine.workspaces[wi].master_ratio = r.workspace_ratios[wi];
 
                 mux.switchWorkspace(@intCast(wi));

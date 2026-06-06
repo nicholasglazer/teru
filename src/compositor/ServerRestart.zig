@@ -213,7 +213,13 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
 
     for (0..10) |wi| {
         if (pos < n) {
-            server.layout_engine.workspaces[wi].layout = @enumFromInt(buf[pos]);
+            // Clamp the restart-file byte before @enumFromInt: a corrupt or
+            // version-mismatched /tmp/teruwm-restart.bin with an out-of-range
+            // layout byte would otherwise panic. Mirror the teru attach path
+            // (modes/common.zig). accordion is the highest Layout variant.
+            const L = @TypeOf(server.layout_engine.workspaces[wi].layout);
+            server.layout_engine.workspaces[wi].layout =
+                @enumFromInt(@min(buf[pos], @intFromEnum(L.accordion)));
             pos += 1;
         }
     }
