@@ -479,7 +479,12 @@ fn decodeKeyframe(grid: *Grid, data: []const u8) void {
         const b0: u24 = readU8(data, &pos);
         const b1: u24 = readU8(data, &pos);
         const b2: u24 = readU8(data, &pos);
-        const char: u21 = @intCast(b0 | (b1 << 8) | (b2 << 16));
+        // @truncate, not @intCast: a valid codepoint (≤ u21) round-trips
+        // exactly, but a corrupt/truncated scrollback file could pack a
+        // 24-bit value > 0x1FFFFF here, and @intCast would panic in
+        // ReleaseSafe. Take the low 21 bits — a bad cell degrades to a wrong
+        // glyph (the atlas lookup just misses), never a crash.
+        const char: u21 = @truncate(b0 | (b1 << 8) | (b2 << 16));
 
         const fg = decodeColorBounded(data, &pos);
         const bg = decodeColorBounded(data, &pos);
