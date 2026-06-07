@@ -95,6 +95,22 @@ pub fn handleXdgActivation(listener: *wlr.wl_listener, data: ?*anyopaque) callco
     }
 }
 
+/// Clipboard: a client asked to own the regular selection (it copied
+/// something). Relay it to the seat so other clients can paste it. Standard
+/// wlroots wiring — without it teruwm creates the data_device manager but
+/// never honours copies, so cross-app paste silently fails. The actual
+/// wlr_seat_set_selection (incl. serial validation) lives in C glue.
+pub fn handleRequestSetSelection(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const server = wlr.listenerParent(Server, "request_set_selection", listener);
+    wlr.miozu_relay_set_selection(data orelse return, server.seat);
+}
+
+/// Clipboard: same, for the primary selection (middle-click paste).
+pub fn handleRequestSetPrimarySelection(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const server = wlr.listenerParent(Server, "request_set_primary_selection", listener);
+    wlr.miozu_relay_set_primary_selection(data orelse return, server.seat);
+}
+
 /// xdg-decoration-v1: prefer client-side decoration so clients
 /// (Chromium, Vivaldi, GTK) handle their titlebars and context
 /// menus internally. Tiling is unaffected — the compositor still
