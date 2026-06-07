@@ -144,6 +144,12 @@ pub fn flush(self: *Self, stdout_fd: i32) usize {
             const idx = row * w + col;
             const cell = self.cells[idx];
 
+            // Wide-glyph trailer (char == 0): owned by the lead to its left and
+            // never painted on its own — emitting it would write a space over
+            // the glyph's right half (the half-render bug). The lead already
+            // advanced the host cursor two columns.
+            if (cell.char == 0) continue;
+
             // Skip unchanged cells (unless full dirty)
             if (!self.full_dirty and cell.eql(self.prev[idx])) continue;
 
@@ -159,7 +165,12 @@ pub fn flush(self: *Self, stdout_fd: i32) usize {
                 p = appendCursorPos(buf, p, @intCast(row + 1), @intCast(col + 1));
             }
             last_row = row;
-            last_col = col;
+            // Advance the tracked column by the glyph's DISPLAY width so the
+            // contiguity check stays aligned with the host cursor: a wide glyph
+            // occupies this column plus the trailer column to its right, which
+            // the loop skips above.
+            const adv: usize = if (cell.char >= 0x1100) Grid.displayWidth(cell.char) else 1;
+            last_col = col + (adv - 1);
 
             // SGR: reset if attrs changed
             const attrs_byte = @as(u8, @bitCast(cell.attrs));

@@ -145,9 +145,14 @@ teruwmctl scratchpad term       # show 'term' again
 | `$mod+B` | Toggle **top** status bar |
 | `$mod+Shift+B` | Toggle **bottom** status bar |
 | `$mod+D` | Open launcher (rofi-like) |
-| `$mod+W` | Screenshot full output → `$HOME/Pictures/screenshot_<ts>.png` |
+| `$mod+W` | Screenshot full output (native, no deps) → `<dir>/teru-<ts>.png` + a stable `<dir>/latest.png`. `<dir>` defaults to `$HOME/Pictures/teru`, set via `screenshot_dir` (must resolve under `$HOME` or `/tmp`). |
 | `$mod+Shift+W` | Screenshot focused pane |
 | `$mod+Ctrl+W` | Screenshot area (drag to select; uses `slurp` + `grim`) |
+
+> The native `$mod+W` path composites teruwm's own panes + bars and copies
+> nothing to the clipboard — pasting an image needs a Wayland clipboard
+> source (`wl-copy`, or a future native `image/png` data source). Reference
+> the file directly (e.g. `<dir>/latest.png`) to feed it to an assistant.
 | `$mod+Shift+R` | Reload config from `~/.config/teruwm/config` |
 | `$mod+'` | **Hot-restart** compositor — PTYs survive, picks up a rebuilt binary (xmonad `mod-'`) |
 | `$mod+Shift+'` | **Quit** compositor (xmonad `mod-Shift-'`) |
@@ -187,10 +192,15 @@ chord; use the mouse wheel below.
 | `Alt` + scroll up | Zoom in (+1 px) |
 | `Alt` + scroll down | Zoom out (-1 px) |
 
-Works in both binaries while a terminal is focused. In teruwm the new
-font size is applied to every terminal pane and both bars. Disable with
-`alt_scroll_zoom = false` (`teru.conf` for standalone, the teruwm config
-file for the compositor).
+Works in both binaries while a terminal is focused. In teruwm the zoom is
+**per-pane**: only the focused terminal's font size changes — other panes
+and the bars are untouched (and only that pane's atlas is re-rasterized, so
+there's no whole-compositor re-raster lag). `teruwm_zoom` (MCP) still zooms
+the whole compositor; `teruwm_zoom_focused` (MCP) matches the per-pane
+Alt+scroll gesture. Disable with `alt_scroll_zoom = false` (`teru.conf` for
+standalone, the teruwm config file for the compositor). Bound the range with
+`font_zoom_min` / `font_zoom_max` (defaults `6` / `72`; min is floored at 6
+for legibility, a max of `0` means no maximum).
 
 ## Modes
 

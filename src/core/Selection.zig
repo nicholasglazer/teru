@@ -179,6 +179,7 @@ pub fn getText(self: *const Selection, grid: *const Grid, sb: ?*const Scrollback
                 var col = col_start;
                 while (col <= col_end and col < grid.cols) : (col += 1) {
                     const cell = grid.cellAtConst(grid_row, col);
+                    if (cell.char == 0) continue; // wide-glyph trailer — its lead carries the text (and avoids a NUL in the clipboard)
                     line_len = appendUtf8(&line_buf, line_len, cell.char);
                 }
             }
