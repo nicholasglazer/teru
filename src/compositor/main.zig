@@ -130,6 +130,19 @@ pub fn main(init: std.process.Init) !void {
     _ = wlr.wl_event_loop_add_signal(event_loop, @intCast(@intFromEnum(std.posix.SIG.TERM)), handleTerminationSignal, display);
     _ = wlr.wl_event_loop_add_signal(event_loop, @intCast(@intFromEnum(std.posix.SIG.INT)), handleTerminationSignal, display);
 
+    // ── Reap exited children (SIGCHLD) ──────────────────────────
+    // The bar's non-blocking exec widgets ({exec:N:cmd}) fork `/bin/sh`
+    // directly and read its output via a pipe. cleanupExec() runs the
+    // moment the pipe yields its first line — usually BEFORE the shell
+    // (which is still waiting on its own pipeline, e.g. `nvidia-smi|awk`)
+    // has exited, so its WNOHANG waitpid reaps nothing and the child is
+    // untracked. With a 5s refresh that leaked ~1 zombie `sh` every few
+    // seconds (894 observed on a long-lived session). Drain every corpse
+    // here instead — SIGCHLD can coalesce, so loop until WNOHANG is dry.
+    // (Double-forked spawns via compat.forkExec reparent to init and are
+    // reaped there; this only catches teruwm's own direct forks.)
+    _ = wlr.wl_event_loop_add_signal(event_loop, @intCast(@intFromEnum(std.posix.SIG.CHLD)), handleChildSignal, null);
+
     // ── Run event loop ──────────────────────────────────────────
     wlr.wl_display_run(display);
 
@@ -144,6 +157,13 @@ fn handleTerminationSignal(_: c_int, data: ?*anyopaque) callconv(.c) c_int {
         const display: *wlr.wl_display = @ptrCast(@alignCast(d));
         wlr.wl_display_terminate(display);
     }
+    return 0;
+}
+
+/// SIGCHLD handler — runs in event-loop context (signalfd). Reaps every
+/// exited child so direct forks (bar exec widgets) never linger as zombies.
+fn handleChildSignal(_: c_int, _: ?*anyopaque) callconv(.c) c_int {
+    while (std.c.waitpid(-1, null, std.c.W.NOHANG) > 0) {}
     return 0;
 }
 
