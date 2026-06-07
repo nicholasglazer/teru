@@ -44,6 +44,14 @@ pub fn takeScreenshot(server: *Server) void {
         if (std.fmt.bufPrint(&latest_buf, "{s}/latest.png", .{dir})) |latest| {
             _ = takeScreenshotToPath(server, latest);
         } else |_| {}
+        // On-screen feedback: mod+w is silent otherwise, so it feels like a
+        // no-op even though the PNG saved. Pop a bar toast naming the dir.
+        // ASCII only — the {notify} marquee renders printable ASCII (32-126).
+        var msg_buf: [160]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "Screenshot saved -> {s}/latest.png", .{dir}) catch "Screenshot saved";
+        server.setNotification("", msg, "", .normal, 2500);
+    } else {
+        server.setNotification("", "Screenshot failed (see log)", "", .critical, 4000);
     }
 }
 
