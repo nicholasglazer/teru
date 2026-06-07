@@ -506,6 +506,17 @@ pub extern "c" fn miozu_seat_get_keyboard(seat: *wlr_seat) callconv(.c) ?*wlr_ke
 pub extern "c" fn miozu_seat_request_set_cursor(seat: *wlr_seat) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_seat_request_set_selection(seat: *wlr_seat) callconv(.c) *wl_signal;
 
+// Compositor-owned clipboard: read the PNG at `path` into memory and publish
+// it as the seat selection, offered as `image/png` (so screenshots can be
+// pasted into other apps). Returns 0 on success, -1 on any failure.
+pub extern "c" fn miozu_set_clipboard_png_from_file(seat: *wlr_seat, display: *wl_display, path: [*:0]const u8) callconv(.c) c_int;
+
+// Clipboard relay: forward a client's copy request (regular + primary
+// selection) to the seat. Without this, client copies are silently dropped.
+pub extern "c" fn miozu_seat_request_set_primary_selection(seat: *wlr_seat) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_relay_set_selection(event: *anyopaque, seat: *wlr_seat) callconv(.c) void;
+pub extern "c" fn miozu_relay_set_primary_selection(event: *anyopaque, seat: *wlr_seat) callconv(.c) void;
+
 // ── Additional opaque types for glue ───────────────────────────
 
 pub const wlr_scene_node = opaque {};

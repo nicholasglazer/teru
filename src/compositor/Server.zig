@@ -371,6 +371,10 @@ cursor_button: wlr.wl_listener = makeListener(Cursor.handleCursorButton),
 cursor_axis: wlr.wl_listener = makeListener(Cursor.handleCursorAxis),
 cursor_frame: wlr.wl_listener = makeListener(Cursor.handleCursorFrame),
 request_set_cursor: wlr.wl_listener = makeListener(Cursor.handleRequestSetCursor),
+// Clipboard: relay client copy requests to the seat (regular + primary
+// selection). Without these, nothing a client copies can be pasted elsewhere.
+request_set_selection: wlr.wl_listener = makeListener(Listeners.handleRequestSetSelection),
+request_set_primary_selection: wlr.wl_listener = makeListener(Listeners.handleRequestSetPrimarySelection),
 // wp_cursor_shape_v1 — Chromium M111+, GTK 4.14+, modern Qt. Without
 // this listener hover state (pointer / text / grab / resize) is frozen
 // on the default arrow over browsers.
@@ -723,6 +727,8 @@ fn registerListeners(self: *Server) void {
     wlr.wl_signal_add(wlr.miozu_cursor_axis(self.cursor), &self.cursor_axis);
     wlr.wl_signal_add(wlr.miozu_cursor_frame(self.cursor), &self.cursor_frame);
     wlr.wl_signal_add(wlr.miozu_seat_request_set_cursor(self.seat), &self.request_set_cursor);
+    wlr.wl_signal_add(wlr.miozu_seat_request_set_selection(self.seat), &self.request_set_selection);
+    wlr.wl_signal_add(wlr.miozu_seat_request_set_primary_selection(self.seat), &self.request_set_primary_selection);
     if (self.cursor_shape_mgr) |mgr| {
         wlr.wl_signal_add(wlr.miozu_cursor_shape_request_set_shape(mgr), &self.request_set_shape);
     }

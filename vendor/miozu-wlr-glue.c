@@ -652,6 +652,150 @@ struct wl_signal *miozu_seat_request_set_selection(struct wlr_seat *s) {
     return &s->events.request_set_selection;
 }
 
+/* ── Compositor-owned clipboard (screenshot → clipboard) ──────── */
+/* teruwm IS the Wayland server, so instead of shelling out to wl-copy   */
+/* we register our own wlr_data_source offering image/png and hand it to */
+/* wlr_seat_set_selection. The PNG bytes live in the source until a newer */
+/* selection replaces it (wlroots then calls our destroy cb). On paste we */
+/* double-fork a short-lived writer so a slow/non-reading client can      */
+/* never stall the compositor event loop. No runtime dependency.          */
+
+#include <wlr/types/wlr_data_device.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <errno.h>
+
+struct miozu_png_source {
+    struct wlr_data_source base;
+    unsigned char *data;
+    size_t len;
+};
+
+static void miozu_png_source_send(struct wlr_data_source *src,
+        const char *mime_type, int32_t fd) {
+    (void)mime_type; /* we only ever offer image/png */
+    struct miozu_png_source *s = wl_container_of(src, s, base);
+
+    /* Double-fork: the grandchild streams the bytes, the immediate child
+     * exits at once (reaped below) so the grandchild reparents to init —
+     * no zombie. The child path uses only async-signal-safe calls. */
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (fork() == 0) {
+            size_t off = 0;
+            while (off < s->len) {
+                ssize_t n = write(fd, s->data + off, s->len - off);
+                if (n < 0) {
+                    if (errno == EINTR) continue;
+                    break;
+                }
+                off += (size_t)n;
+            }
+            close(fd);
+            _exit(0);
+        }
+        _exit(0);
+    }
+    close(fd); /* parent never uses the write end */
+    if (pid > 0) {
+        waitpid(pid, NULL, 0); /* reap the immediate child */
+    }
+}
+
+static void miozu_png_source_destroy(struct wlr_data_source *src) {
+    struct miozu_png_source *s = wl_container_of(src, s, base);
+    /* wlroots already freed the strdup'd mime strings + the array. */
+    free(s->data);
+    free(s);
+}
+
+static const struct wlr_data_source_impl miozu_png_source_impl = {
+    .send = miozu_png_source_send,
+    .destroy = miozu_png_source_destroy,
+};
+
+/* Read `path` into memory and publish it as the seat selection (image/png).
+ * Returns 0 on success, -1 on failure (the caller's PNG is still on disk). */
+int miozu_set_clipboard_png_from_file(struct wlr_seat *seat,
+        struct wl_display *display, const char *path) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+
+    struct stat st;
+    if (fstat(fd, &st) < 0 || st.st_size <= 0) {
+        close(fd);
+        return -1;
+    }
+    size_t len = (size_t)st.st_size;
+    unsigned char *buf = malloc(len);
+    if (buf == NULL) {
+        close(fd);
+        return -1;
+    }
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = read(fd, buf + off, len - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            free(buf);
+            close(fd);
+            return -1;
+        }
+        if (n == 0) break;
+        off += (size_t)n;
+    }
+    close(fd);
+    if (off != len) {
+        free(buf);
+        return -1;
+    }
+
+    struct miozu_png_source *s = calloc(1, sizeof(*s));
+    if (s == NULL) {
+        free(buf);
+        return -1;
+    }
+    wlr_data_source_init(&s->base, &miozu_png_source_impl);
+    s->data = buf;
+    s->len = len;
+
+    char **mime = wl_array_add(&s->base.mime_types, sizeof(char *));
+    if (mime == NULL) {
+        wlr_data_source_destroy(&s->base); /* frees buf via destroy cb */
+        return -1;
+    }
+    *mime = strdup("image/png");
+
+    wlr_seat_set_selection(seat, &s->base, wl_display_next_serial(display));
+    return 0;
+}
+
+/* ── Clipboard relay: forward client copy requests to the seat ── */
+/* teruwm only CREATED the data_device + primary-selection managers; it    */
+/* never listened for clients asking to OWN the selection, so a client's   */
+/* copy was silently dropped and nothing could be pasted between apps.     */
+/* Standard wlroots wiring (matches tinywl/sway): relay the event's        */
+/* source + serial straight to wlr_seat_set_selection. Serial validation   */
+/* happens inside wlroots.                                                  */
+
+#include <wlr/types/wlr_primary_selection.h>
+
+struct wl_signal *miozu_seat_request_set_primary_selection(struct wlr_seat *s) {
+    return &s->events.request_set_primary_selection;
+}
+
+void miozu_relay_set_selection(void *event, struct wlr_seat *seat) {
+    struct wlr_seat_request_set_selection_event *e = event;
+    wlr_seat_set_selection(seat, e->source, e->serial);
+}
+
+void miozu_relay_set_primary_selection(void *event, struct wlr_seat *seat) {
+    struct wlr_seat_request_set_primary_selection_event *e = event;
+    wlr_seat_set_primary_selection(seat, e->source, e->serial);
+}
+
 /* ── xdg_activation_v1 (v0.4.17) ─────────────────────────────── */
 
 struct wl_signal *miozu_xdg_activation_request_activate(struct wlr_xdg_activation_v1 *a) {
