@@ -33,6 +33,11 @@ pub const TIOCSCTTY: c_int = switch (builtin.os.tag) {
     .macos => @bitCast(@as(c_uint, 0x20007461)), // _IO('t', 97)
     else => if (@hasDecl(posix.T, "IOCSCTTY")) @bitCast(@as(c_uint, posix.T.IOCSCTTY)) else @bitCast(@as(c_uint, 0x20007461)),
 };
+pub const TIOCGPGRP: c_int = switch (builtin.os.tag) {
+    .linux => @bitCast(@as(c_uint, posix.T.IOCGPGRP)),
+    .macos => @bitCast(@as(c_uint, 0x40047477)), // _IOR('t', 119, int)
+    else => if (@hasDecl(posix.T, "IOCGPGRP")) @bitCast(@as(c_uint, posix.T.IOCGPGRP)) else @bitCast(@as(c_uint, 0x40047477)),
+};
 
 // Win32 externs not in Zig 0.16's kernel32 bindings
 const win32 = if (builtin.os.tag == .windows) struct {
