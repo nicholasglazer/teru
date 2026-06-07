@@ -104,9 +104,16 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
             const sign: i32 = if (server.wm_config.touchpad_scroll_invert) 1 else -1;
             const pixel_delta: i32 = sign * scroll_lines * @as(i32, @intCast(cell_h));
 
-            _ = tp.pane.scrollBy(pixel_delta, cell_h, max_offset);
-            tp.pane.grid.markAllDirty();
-            tp.render();
+            // Coalesce to the frame callback instead of rendering inline.
+            // A touchpad fires dozens of axis events per gesture; a synchronous
+            // full-pane `tp.render()` per event (each one a complete repaint +
+            // scrollback overlay) cannot keep up and the gesture lags. Mark
+            // dirty + schedule a frame so many events collapse to one paint per
+            // vsync (the same coalescing the PTY-read path relies on).
+            if (tp.pane.scrollBy(pixel_delta, cell_h, max_offset)) {
+                tp.pane.grid.markAllDirty();
+                server.scheduleRender();
+            }
             return;
         }
     }
