@@ -93,6 +93,20 @@ pub const BarData = struct {
     // for the ≤32-slot budget. Slots with `.used = false` are skipped.
     push_widgets: []const PushWidget = &.{},
 
+    // Desktop notification (teruwm only). The compositor copies its live
+    // Server.Notification into these plain fields so the shared renderer
+    // stays free of compositor types. `notify_active = false` (the default)
+    // means no notification is showing and the `{notify}` widget renders
+    // nothing. The renderer composes "app: summary — body" and marquee-
+    // scrolls it by `notify_scroll` cells when it overflows the center span.
+    notify_active: bool = false,
+    /// 0=low, 1=normal, 2=critical — drives the marquee color ramp.
+    notify_urgency: u8 = 1,
+    /// Cells to advance the marquee. Wraps internally; safe at any value.
+    notify_scroll: u32 = 0,
+    notify_app: []const u8 = "",
+    notify_summary: []const u8 = "",
+    notify_body: []const u8 = "",
 };
 
 // ── Sysfs/proc cache ──────────────────────────────────────────────
@@ -364,6 +378,9 @@ pub fn renderWidgets(
                     }
                 }
             },
+            .notify => {
+                x = renderNotify(cpu, x, y, cw, s, max_x, data);
+            },
             .text => {
                 for (w.arg) |ch| {
                     if (ch < 32 or ch > 126) continue;
@@ -402,10 +419,118 @@ pub fn measureWidgets(widgets: []BarWidget.Widget, data: *const BarData, cw: usi
             .perf => 12 * cw,
             .exec => @as(usize, w.cache_len) * cw,
             .push_widget => if (findPushWidget(data, w.arg)) |pw| pw.text_len * cw else 0,
+            .notify => if (data.notify_active) notifyVisibleCells(data) * cw else 0,
             .text => w.arg.len * cw,
         };
     }
     return total;
+}
+
+// ── Notification marquee widget ─────────────────────────────────
+//
+// Renders the active desktop notification (Server.Notification, copied
+// into BarData by Bar.buildBarData) as a single line: "app: summary — body".
+// When the composed line fits inside `notify_span_cells` it renders
+// statically; when it overflows it marquee-scrolls left by `notify_scroll`
+// cells (advanced once per fast bar-tick — see Server.barTick), wrapping
+// with a " · " gap so the head reappears after the tail. Color ramps by
+// urgency. Renders nothing when no notification is active.
+
+/// Visible width of the notification widget, in cells. The marquee window
+/// is bounded so it can sit in the bottom-bar center without overrunning
+/// the side sections.
+pub const notify_span_cells: usize = 56;
+/// Separator inserted between the tail and the wrapped head of a scrolling
+/// marquee so the message reads as a loop, not a hard cut.
+const notify_gap = " · ";
+
+/// Length (in printable bytes) of the composed notification line, capped
+/// at the visible span. Used by measureWidgets for centering.
+fn notifyVisibleCells(data: *const BarData) usize {
+    const total = composedNotifyLen(data);
+    return @min(total, notify_span_cells);
+}
+
+/// Total length of "app: summary — body" honoring which fields are present.
+fn composedNotifyLen(data: *const BarData) usize {
+    var n: usize = 0;
+    if (data.notify_app.len > 0) n += data.notify_app.len + 2; // "app: "
+    n += data.notify_summary.len;
+    if (data.notify_body.len > 0) n += 3 + data.notify_body.len; // " — body"
+    return n;
+}
+
+/// Emit the i-th printable byte of the composed "app: summary — body"
+/// line, or null when i is past the end. Lets the marquee index a virtual
+/// string without materializing it into a buffer (zero-alloc hot path).
+fn composedNotifyByte(data: *const BarData, i: usize) ?u8 {
+    var off: usize = 0;
+    if (data.notify_app.len > 0) {
+        if (i < off + data.notify_app.len) return data.notify_app[i - off];
+        off += data.notify_app.len;
+        if (i == off) return ':';
+        if (i == off + 1) return ' ';
+        off += 2;
+    }
+    if (i < off + data.notify_summary.len) return data.notify_summary[i - off];
+    off += data.notify_summary.len;
+    if (data.notify_body.len > 0) {
+        if (i == off) return ' ';
+        if (i == off + 1) return '-';
+        if (i == off + 2) return ' ';
+        off += 3;
+        if (i < off + data.notify_body.len) return data.notify_body[i - off];
+    }
+    return null;
+}
+
+fn notifyColor(urgency: u8, s: anytype) u32 {
+    return switch (urgency) {
+        0 => s.ansi[8], // low → dim
+        2 => s.ansi[1], // critical → red
+        else => s.fg, // normal → fg
+    };
+}
+
+fn renderNotify(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, max_x: usize, data: *const BarData) usize {
+    if (!data.notify_active) return start_x;
+    var x = start_x;
+    const color = notifyColor(data.notify_urgency, s);
+    const total = composedNotifyLen(data);
+    if (total == 0) return x;
+
+    if (total <= notify_span_cells) {
+        // Fits — render statically, no scroll.
+        var i: usize = 0;
+        while (i < total) : (i += 1) {
+            const ch = composedNotifyByte(data, i) orelse break;
+            if (ch >= 32 and ch <= 126) {
+                Ui.blitCharAt(cpu, ch, x, y, color);
+                x += cw;
+                if (x >= max_x) break;
+            }
+        }
+        return x;
+    }
+
+    // Overflow — marquee. Virtual string is the composed line + gap; the
+    // window starts at `notify_scroll % period` and wraps.
+    const period = total + notify_gap.len;
+    const scroll = @as(usize, data.notify_scroll) % period;
+    var col: usize = 0;
+    while (col < notify_span_cells) : (col += 1) {
+        const vi = (scroll + col) % period;
+        const ch: u8 = if (vi < total)
+            (composedNotifyByte(data, vi) orelse ' ')
+        else
+            notify_gap[vi - total];
+        if (ch >= 32 and ch <= 126) {
+            Ui.blitCharAt(cpu, ch, x, y, color);
+        }
+        x += cw;
+        if (x >= max_x) break;
+    }
+    return x;
 }
 
 /// Map a push-widget Class to a ColorScheme palette entry. Keeps theming

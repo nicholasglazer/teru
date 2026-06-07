@@ -37,6 +37,57 @@ const Server = @This();
 
 pub const CursorMode = enum { normal, move, resize, border_drag };
 
+/// A desktop notification forwarded in from a freedesktop.org D-Bus helper
+/// (see tools/teruwm-notify-daemon) via the `teruwm_notify` MCP tool, or
+/// pushed directly by any MCP client. teruwm owns the presentation: the
+/// `{notify}` bar widget marquee-scrolls the text while one is active.
+///
+/// Zero-alloc fixed buffers — mirrors PushWidget's storage policy. At most
+/// one notification shows at a time (newest wins); a richer stack can come
+/// later. `received_ns` is a monotonic stamp; `timeout_ms == 0` means "use
+/// the renderer default" (treated as 5000 ms by the expiry check).
+pub const Notification = struct {
+    pub const Urgency = enum(u8) { low, normal, critical };
+
+    app_buf: [32]u8 = undefined,
+    app_len: u8 = 0,
+    summary_buf: [96]u8 = undefined,
+    summary_len: u8 = 0,
+    body_buf: [160]u8 = undefined,
+    body_len: u8 = 0,
+    urgency: Urgency = .normal,
+    received_ns: i64 = 0,
+    timeout_ms: u32 = 0,
+
+    pub fn app(self: *const Notification) []const u8 {
+        return self.app_buf[0..self.app_len];
+    }
+    pub fn summary(self: *const Notification) []const u8 {
+        return self.summary_buf[0..self.summary_len];
+    }
+    pub fn body(self: *const Notification) []const u8 {
+        return self.body_buf[0..self.body_len];
+    }
+
+    /// Effective lifetime in nanoseconds. A 0/critical timeout is clamped
+    /// to a sane default so a notification can never wedge the bar's fast
+    /// tick on permanently (which would be a CPU-drain regression).
+    pub fn lifetimeNs(self: *const Notification) i64 {
+        const ms: i64 = if (self.timeout_ms == 0) 5000 else @min(self.timeout_ms, 60_000);
+        return ms * std.time.ns_per_ms;
+    }
+
+    pub fn expired(self: *const Notification, now_ns: i64) bool {
+        return now_ns -| self.received_ns >= self.lifetimeNs();
+    }
+
+    pub fn urgencyFromString(s: []const u8) Urgency {
+        if (std.mem.eql(u8, s, "low")) return .low;
+        if (std.mem.eql(u8, s, "critical")) return .critical;
+        return .normal; // default + "normal"
+    }
+};
+
 // ── Zig allocator ─────────────────────────────────────────────
 
 zig_allocator: std.mem.Allocator,
@@ -175,6 +226,16 @@ push_widgets: [teru.render.PushWidget.max_widgets]teru.render.PushWidget.PushWid
 /// by setPushWidget / deletePushWidget so barSignature and
 /// countPushWidgets are O(1).
 push_widget_count: u8 = 0,
+
+/// Currently-shown desktop notification (null = none). Filled by
+/// setNotification (driven by the `teruwm_notify` MCP tool, which the
+/// freedesktop.org D-Bus helper forwards into). The `{notify}` bar
+/// widget reads this and marquee-scrolls it; barTick clears it on expiry
+/// and reverts the fast tick. Not persisted across hot-restart.
+current_notification: ?Notification = null,
+/// Marquee scroll offset (in cells) for the active notification. Advanced
+/// by barTick while a notification is live; reset to 0 on each new one.
+notify_scroll: u32 = 0,
 
 // Fullscreen state: tracks which node is fullscreen (null = none)
 fullscreen_node: ?u64 = null,
@@ -936,6 +997,54 @@ pub fn countPushWidgets(self: *const Server) usize {
     return self.push_widget_count;
 }
 
+// ── Desktop notification ────────────────────────────────────────
+
+/// Set the active desktop notification (newest wins). Truncates each
+/// field into the fixed buffers, stamps the monotonic receive time, resets
+/// the marquee offset, re-arms the bar tick at ~33 ms so the marquee
+/// scrolls, and schedules a frame. Called from the `teruwm_notify` MCP
+/// tool, which the D-Bus helper forwards into. `urgency`/`timeout_ms`
+/// default sensibly when the caller omits them.
+pub fn setNotification(
+    self: *Server,
+    app: []const u8,
+    summary: []const u8,
+    body: []const u8,
+    urgency: Notification.Urgency,
+    timeout_ms: u32,
+) void {
+    var n: Notification = .{};
+    const an = @min(app.len, n.app_buf.len);
+    @memcpy(n.app_buf[0..an], app[0..an]);
+    n.app_len = @intCast(an);
+    const sn = @min(summary.len, n.summary_buf.len);
+    @memcpy(n.summary_buf[0..sn], summary[0..sn]);
+    n.summary_len = @intCast(sn);
+    const bn = @min(body.len, n.body_buf.len);
+    @memcpy(n.body_buf[0..bn], body[0..bn]);
+    n.body_len = @intCast(bn);
+    n.urgency = urgency;
+    n.timeout_ms = timeout_ms;
+    n.received_ns = @intCast(teru.compat.monotonicNow());
+
+    self.current_notification = n;
+    self.notify_scroll = 0;
+    self.armNotifyTick();
+    self.scheduleRender();
+}
+
+/// Re-arm the bar tick at the fast (~33 ms) cadence so the `{notify}`
+/// marquee advances smoothly. No-op if the timer doesn't exist yet.
+/// barTick reverts to 1 Hz once the notification expires — see barTick.
+fn armNotifyTick(self: *Server) void {
+    if (self.bar_tick_src) |src| {
+        _ = wlr.wl_event_source_timer_update(src, notify_tick_ms);
+    }
+}
+
+/// Fast bar-tick cadence while a notification is on screen (~30 fps).
+pub const notify_tick_ms: c_int = 33;
+
 /// Ask wlroots to fire a frame callback on the primary output. Used after
 /// any push-widget update so the bar paints the new value without waiting
 /// for the next vsync on a dirty terminal pane.
@@ -1218,13 +1327,34 @@ fn barTick(data: ?*anyopaque) callconv(.c) c_int {
             break;
         }
     }
-    var next_ms: c_int = 1000;
+    // Notification lifecycle. While one is live we run the fast (~33 ms)
+    // marquee cadence; on expiry we clear it and fall back to 1 Hz. This
+    // is the only thing that keeps the fast tick alive, so a truly-idle
+    // bar always reverts to 1 Hz (no power-drain regression — see
+    // .claude/rules/cpu-performance.md). The fast path runs only when a
+    // notification exists.
+    var notify_active = false;
+    if (self.current_notification) |*n| {
+        const now_ns: i64 = @intCast(teru.compat.monotonicNow());
+        if (n.expired(now_ns)) {
+            self.current_notification = null;
+            self.notify_scroll = 0;
+            // Re-render once so the bar reverts to its empty center.
+            if (self.bar) |b| b.dirty = true;
+        } else {
+            notify_active = true;
+            // Advance the marquee one cell per fast tick (~30 cells/s).
+            self.notify_scroll +%= 1;
+        }
+    }
+
+    var next_ms: c_int = if (notify_active) notify_tick_ms else 1000;
     if (!self.shutting_down and any_enabled) {
         if (self.bar) |b| {
             const repainted = b.render(self);
             if (repainted) self.scheduleRender();
         }
-    } else {
+    } else if (!notify_active) {
         next_ms = 5000;
     }
     if (self.bar_tick_src) |src| {
