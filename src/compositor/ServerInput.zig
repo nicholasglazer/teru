@@ -454,8 +454,10 @@ fn applyScrollAction(tp: *TerminalPane, action: KBAction) void {
         else => return,
     }
     tp.pane.scroll_pixel = 0;
-    tp.pane.grid.dirty = true;
-    tp.render();
+    // Full repaint next vsync (the scrollback overlay shifts the whole frame),
+    // coalesced via the frame callback rather than rendered inline.
+    tp.pane.grid.markAllDirty();
+    tp.server.scheduleRender();
 }
 
 /// Resolve a `spawn_N` action variant to its configured command.

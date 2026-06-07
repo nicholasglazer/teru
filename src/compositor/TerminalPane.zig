@@ -374,6 +374,10 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     // (min > max sentinel, see Grid.clearDirty) fall back to full
     // damage — the renderer treats that as "paint everything".
     const grid = &self.pane.grid;
+    // When scrolled into the scrollback, the overlay shifts the whole frame —
+    // a partial (dirty-row) repaint would tear it. Force a full repaint so the
+    // overlay always lands on a complete frame (full damage via inverted range).
+    if (self.pane.scroll_offset > 0) grid.markAllDirty();
     const ch: c_int = @intCast(self.renderer.cell_height);
     const dirty_y0: c_int = if (grid.dirty_row_min > grid.dirty_row_max)
         -1
@@ -398,9 +402,12 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     // unfocused panes a HOLLOW outline — so two visible panes don't both look
     // active. (repaintBorderOnly re-applies cursor_focused + repaints the cursor
     // cell on focus flips, which the old border-only paint skipped.)
-    self.renderer.cursor_visible = self.pane.vt.cursor_visible;
+    // Hide the live cursor while scrolled back — it belongs to the bottom
+    // (live) row, not the historical viewport the user is looking at.
+    self.renderer.cursor_visible = self.pane.vt.cursor_visible and self.pane.scroll_offset == 0;
     self.renderer.cursor_focused = (self.server.focused_terminal == self);
     self.renderer.renderDirtyWithSelection(grid, sel_ptr, so, sbl);
+    self.applyScrollOverlay();
 
     const border: c_int = if (self.shouldDrawBorder()) blk: {
         const border_color = self.borderColor();
@@ -595,11 +602,36 @@ fn freeZoomAtlas(self: *TerminalPane) void {
 }
 
 /// Render the terminal grid into the pixel buffer + draw border.
+/// After the live grid has been painted into the framebuffer, overlay the
+/// scrollback viewport when the pane is scrolled up. teruwm's per-pane
+/// `SoftwareRenderer` only ever rasterises the live grid (scroll_offset is
+/// used solely for selection coordinate mapping), so without this call
+/// scrolling up showed the *same* live screen — history never appeared.
+/// Reuses the exact non-destructive overlay that standalone teru's windowed
+/// renderer uses (`Ui.renderScrollOverlay`), so the two stay in lockstep.
+fn applyScrollOverlay(self: *TerminalPane) void {
+    const so: u32 = self.pane.scroll_offset;
+    const sp: i32 = self.pane.scroll_pixel;
+    if (so == 0 and sp == 0) return;
+    const sb = self.pane.grid.scrollback orelse return;
+    const pad: u16 = @intCast(self.renderer.padding);
+    const cw: u32 = self.renderer.cell_width;
+    const ch: u32 = self.renderer.cell_height;
+    const sel_ptr: ?*const Selection = if (self.selection.active) &self.selection else null;
+    teru.render.Ui.renderScrollOverlay(&self.renderer, sb, so, cw, ch, .{
+        .x = pad,
+        .y = pad,
+        .width = @intCast(@as(u32, self.pane.grid.cols) * cw),
+        .height = @intCast(@as(u32, self.pane.grid.rows) * ch),
+    }, sp, sel_ptr);
+}
+
 pub fn render(self: *TerminalPane) void {
     const sel_ptr: ?*const Selection = if (self.selection.active) &self.selection else null;
     const so: u32 = self.pane.scroll_offset;
     const sbl: u32 = if (self.pane.grid.scrollback) |sb| @intCast(sb.lineCount()) else 0;
     self.renderer.renderWithSelection(&self.pane.grid, sel_ptr, so, sbl);
+    self.applyScrollOverlay();
 
     if (self.shouldDrawBorder()) {
         const border_color = self.borderColor();
