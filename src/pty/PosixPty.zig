@@ -150,6 +150,24 @@ pub fn resize(self: *const Pty, rows: u16, cols: u16) void {
     _ = posix.system.ioctl(self.master, compat.TIOCSWINSZ, @intFromPtr(&ws));
 }
 
+/// Nudge the foreground process group with SIGWINCH so the app repaints.
+/// Used after a hot-restore: the PTY is re-attached but the grid was
+/// cleared, and an idle shell (which only paints on input or resize) would
+/// otherwise show a blank pane. The kernel raises SIGWINCH on a TIOCSWINSZ
+/// only when the size actually changes, so a same-size restore can't rely on
+/// resize() — we signal explicitly. Target the terminal's current foreground
+/// pgrp (so a running TUI gets it too), falling back to the child pid.
+pub fn refresh(self: *const Pty) void {
+    if (self.master < 0) return;
+    var pgrp: posix.pid_t = 0;
+    _ = posix.system.ioctl(self.master, compat.TIOCGPGRP, @intFromPtr(&pgrp));
+    if (pgrp > 0) {
+        posix.kill(-pgrp, posix.SIG.WINCH) catch {};
+    } else if (self.child_pid) |pid| {
+        posix.kill(pid, posix.SIG.WINCH) catch {};
+    }
+}
+
 pub fn waitForExit(self: *const Pty) !u32 {
     if (self.child_pid) |pid| {
         var status: c_int = 0;

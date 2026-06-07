@@ -262,6 +262,21 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
     server.setWorkspaceVisibility(active_ws, true);
     server.arrangeworkspace(active_ws);
     server.updateFocusedTerminal();
+
+    // Force every restored shell to repaint. The re-exec cleared each grid,
+    // and an idle shell paints nothing until it next receives input or a
+    // resize — so without this nudge restored panes render blank (just a
+    // cursor) until the user types. claude-code & other always-repainting
+    // TUIs hide it; a bare fish prompt does not. SIGWINCH (Pty.refresh) makes
+    // fish/TUIs redraw their current screen now. Same-size resize can't do
+    // this — the kernel only raises SIGWINCH on an actual dimension change.
+    for (server.terminal_panes) |maybe_tp| {
+        if (maybe_tp) |tp| switch (tp.pane.backend) {
+            .local => |*p| p.refresh(),
+            .remote => {},
+        };
+    }
+
     if (server.bar) |b| _ = b.render(server);
 
     std.log.scoped(.session).info("restored {d}/{d} panes", .{ restored, pane_count });
