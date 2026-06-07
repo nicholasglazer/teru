@@ -16,21 +16,21 @@
 const std = @import("std");
 const teru = @import("teru");
 const Server = @import("Server.zig");
+const wlr = @import("wlr.zig");
 
 /// Keybind variant (mod+w): write a full-output PNG natively to the configured
 /// capture dir (default `$HOME/Pictures/teru`), plus a stable `latest.png`.
 pub fn takeScreenshot(server: *Server) void {
-    const home = teru.compat.getenv("HOME") orelse "/tmp";
-    const timestamp = teru.compat.monotonicNow();
+    // Human-readable, sortable name: `teru-YYYY-MM-DD_HH-MM-SS.png`. (The old
+    // monotonic-counter names reset every reboot and aren't chronological.)
+    var ts_buf: [32]u8 = undefined;
+    const ts = teru.compat.formatLocalTimestamp(&ts_buf);
 
-    // Capture directory: configured `screenshot_dir`, else $HOME/Pictures/teru.
-    // Created on demand so the first shot never fails.
     var dir_buf: [400]u8 = undefined;
-    const cfg = server.wm_config.screenshot_dir_buf[0..server.wm_config.screenshot_dir_len];
-    const dir = if (cfg.len > 0) cfg else (std.fmt.bufPrint(&dir_buf, "{s}/Pictures/teru", .{home}) catch return);
+    const dir = screenshotDir(server, &dir_buf) orelse return;
 
     var path_buf: [512]u8 = undefined;
-    const path = std.fmt.bufPrint(&path_buf, "{s}/teru-{d}.png", .{ dir, timestamp }) catch return;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/teru-{s}.png", .{ dir, ts }) catch return;
 
     teru.compat.ensureParentDirC(path); // mkdir -p the capture dir
 
@@ -44,15 +44,41 @@ pub fn takeScreenshot(server: *Server) void {
         if (std.fmt.bufPrint(&latest_buf, "{s}/latest.png", .{dir})) |latest| {
             _ = takeScreenshotToPath(server, latest);
         } else |_| {}
+        // Also copy to the Wayland clipboard so it can be pasted into other apps.
+        const copied = copyToClipboard(server, path);
         // On-screen feedback: mod+w is silent otherwise, so it feels like a
-        // no-op even though the PNG saved. Pop a bar toast naming the dir.
+        // no-op even though the PNG saved. Pop a bar toast naming the file.
         // ASCII only — the {notify} marquee renders printable ASCII (32-126).
-        var msg_buf: [160]u8 = undefined;
-        const msg = std.fmt.bufPrint(&msg_buf, "Screenshot saved -> {s}/latest.png", .{dir}) catch "Screenshot saved";
+        var msg_buf: [200]u8 = undefined;
+        const msg = if (copied)
+            (std.fmt.bufPrint(&msg_buf, "Screenshot saved + copied to clipboard -> {s}", .{path}) catch "Screenshot saved + copied to clipboard")
+        else
+            (std.fmt.bufPrint(&msg_buf, "Screenshot saved -> {s}", .{path}) catch "Screenshot saved");
         server.setNotification("", msg, "", .normal, 2500);
     } else {
         server.setNotification("", "Screenshot failed (see log)", "", .critical, 4000);
     }
+}
+
+/// Resolve the capture directory: configured `screenshot_dir`, else
+/// `$HOME/Pictures/screenshots` (matches the conventional screenshots folder).
+/// Returns null only on bufPrint overflow.
+fn screenshotDir(server: *Server, dir_buf: []u8) ?[]const u8 {
+    const cfg = server.wm_config.screenshot_dir_buf[0..server.wm_config.screenshot_dir_len];
+    if (cfg.len > 0) return cfg;
+    const home = teru.compat.getenv("HOME") orelse "/tmp";
+    return std.fmt.bufPrint(dir_buf, "{s}/Pictures/screenshots", .{home}) catch null;
+}
+
+/// Copy the PNG at `path` to the Wayland clipboard as `image/png`. Non-fatal:
+/// returns false if the selection couldn't be set (the file is on disk either
+/// way). teruwm owns the seat, so this is a native data source — no wl-copy.
+fn copyToClipboard(server: *Server, path: []const u8) bool {
+    var pz: [512:0]u8 = undefined;
+    if (path.len >= pz.len) return false;
+    @memcpy(pz[0..path.len], path);
+    pz[path.len] = 0;
+    return wlr.miozu_set_clipboard_png_from_file(server.seat, server.display, pz[0..path.len :0].ptr) == 0;
 }
 
 /// Named-path variant: used by MCP (teruwm_screenshot) + Server.takeScreenshot.
@@ -146,13 +172,14 @@ pub fn takeAreaScreenshot(server: *Server, rx: i32, ry: i32, rw: u32, rh: u32) b
         @memcpy(crop[dst..][0..cw], full[src..][0..cw]);
     }
 
-    // Path: configured shot dir (default $HOME/Pictures/teru) / area-<ts>.png.
-    const home = teru.compat.getenv("HOME") orelse "/tmp";
+    // Path: configured shot dir (default $HOME/Pictures/screenshots) /
+    // area-YYYY-MM-DD_HH-MM-SS.png.
     var dir_buf: [400]u8 = undefined;
-    const cfg = server.wm_config.screenshot_dir_buf[0..server.wm_config.screenshot_dir_len];
-    const dir = if (cfg.len > 0) cfg else (std.fmt.bufPrint(&dir_buf, "{s}/Pictures/teru", .{home}) catch return false);
+    const dir = screenshotDir(server, &dir_buf) orelse return false;
+    var ts_buf: [32]u8 = undefined;
+    const ts = teru.compat.formatLocalTimestamp(&ts_buf);
     var path_buf: [512]u8 = undefined;
-    const path = std.fmt.bufPrint(&path_buf, "{s}/area-{d}.png", .{ dir, teru.compat.monotonicNow() }) catch return false;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/area-{s}.png", .{ dir, ts }) catch return false;
     teru.compat.ensureParentDirC(path);
 
     if (!teru.compat.isSafeScreenshotPath(path)) return false;
@@ -166,8 +193,24 @@ pub fn takeAreaScreenshot(server: *Server, rx: i32, ry: i32, rw: u32, rh: u32) b
         return false;
     };
     std.log.scoped(.compositor).info("area screenshot {d}x{d} → {s}", .{ cw, ch, path });
-    var msg_buf: [160]u8 = undefined;
-    const msg = std.fmt.bufPrint(&msg_buf, "Area saved ({d}x{d}) -> {s}", .{ cw, ch, path }) catch "Area screenshot saved";
+
+    // Refresh latest.png so "latest screenshot" always points at the most
+    // recent shot, regardless of which capture binding produced it.
+    var latest_buf: [512:0]u8 = undefined;
+    if (std.fmt.bufPrint(&latest_buf, "{s}/latest.png", .{dir})) |latest| {
+        if (latest.len < latest_buf.len) {
+            latest_buf[latest.len] = 0;
+            teru.png.write(server.zig_allocator, @ptrCast(latest_buf[0..latest.len :0]), crop, cw, ch) catch {};
+        }
+    } else |_| {}
+
+    // Copy the cropped PNG to the Wayland clipboard.
+    const copied = copyToClipboard(server, path);
+    var msg_buf: [200]u8 = undefined;
+    const msg = if (copied)
+        (std.fmt.bufPrint(&msg_buf, "Area saved + copied to clipboard ({d}x{d})", .{ cw, ch }) catch "Area saved + copied to clipboard")
+    else
+        (std.fmt.bufPrint(&msg_buf, "Area saved ({d}x{d}) -> {s}", .{ cw, ch, path }) catch "Area screenshot saved");
     server.setNotification("", msg, "", .normal, 2500);
     return true;
 }

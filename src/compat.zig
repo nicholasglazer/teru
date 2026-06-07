@@ -194,6 +194,49 @@ fn clockGettime(clock: anytype) i128 {
     }
 }
 
+// libc time formatting — only used by the (Linux-only) compositor screenshot
+// path, but lives here so it stays the one place we touch libc time APIs.
+extern "c" fn time(t: ?*c_long) callconv(.c) c_long;
+extern "c" fn localtime_r(timer: *const c_long, result: *anyopaque) callconv(.c) ?*anyopaque;
+extern "c" fn strftime(s: [*]u8, max: usize, format: [*:0]const u8, tm: *const anyopaque) callconv(.c) usize;
+
+/// Format the current **local** wall-clock time as `YYYY-MM-DD_HH-MM-SS`
+/// into `buf`, returning the formatted slice (19 chars on success, empty on
+/// failure). Uses libc `localtime_r` + `strftime` so the system timezone and
+/// DST are honoured — these names are meant to be human-readable and sortable
+/// (unlike the old monotonic-counter names, which reset every reboot).
+/// `buf` must be at least 20 bytes.
+pub fn formatLocalTimestamp(buf: []u8) []const u8 {
+    if (builtin.os.tag == .windows) {
+        // Compositor screenshots are Linux-only; keep the shared module building
+        // on Windows with a coarse epoch-seconds fallback.
+        const secs: i64 = @intCast(@divFloor(nanoTimestamp(), std.time.ns_per_s));
+        return std.fmt.bufPrint(buf, "{d}", .{secs}) catch buf[0..0];
+    }
+    // glibc `struct tm` is 56 bytes on x86_64 (9 ints + tm_gmtoff:long +
+    // tm_zone:ptr). Over-allocate + 8-align so localtime_r can't overrun it.
+    var tm: [64]u8 align(16) = undefined;
+    const now: c_long = time(null);
+    if (localtime_r(&now, @ptrCast(&tm)) == null) return buf[0..0];
+    const n = strftime(buf.ptr, buf.len, "%Y-%m-%d_%H-%M-%S", @ptrCast(&tm));
+    return buf[0..n];
+}
+
+test "formatLocalTimestamp: YYYY-MM-DD_HH-MM-SS shape" {
+    if (builtin.os.tag == .windows) return;
+    var buf: [32]u8 = undefined;
+    const s = formatLocalTimestamp(&buf);
+    try std.testing.expectEqual(@as(usize, 19), s.len);
+    try std.testing.expectEqual(@as(u8, '-'), s[4]);
+    try std.testing.expectEqual(@as(u8, '-'), s[7]);
+    try std.testing.expectEqual(@as(u8, '_'), s[10]);
+    try std.testing.expectEqual(@as(u8, '-'), s[13]);
+    try std.testing.expectEqual(@as(u8, '-'), s[16]);
+    for ([_]usize{ 0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18 }) |i| {
+        try std.testing.expect(s[i] >= '0' and s[i] <= '9');
+    }
+}
+
 /// Build a path under `$XDG_RUNTIME_DIR` (or `/tmp` fallback) for the
 /// given file name. Used for sockets, restart state, and detached
 /// session blobs — files we want kept private to the user (runtime
