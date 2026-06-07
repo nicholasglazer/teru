@@ -18,6 +18,7 @@
 //!   {watts} / {power}   — Battery power draw (W) from power_now
 //!   {keymap} / {lang}   — Active keyboard layout (teruwm only)
 //!   {perf}              — frame avg/max µs (teruwm only)
+//!   {notify}            — desktop notification marquee (teruwm only — see Server.Notification)
 //!   {exec:N:command}    — shell command output, refreshed every N seconds
 //!   {widget:name}       — push widget, text comes from MCP (see PushWidget.zig)
 //!   literal text        — rendered as-is
@@ -42,6 +43,7 @@ pub const WidgetKind = enum {
     perf,
     exec,
     push_widget, // External push widget (compositor only — registered via MCP)
+    notify,   // Desktop notification marquee (compositor only — server.current_notification)
     text,
 };
 
@@ -133,6 +135,7 @@ fn parseToken(token: []const u8) Widget {
     if (std.mem.eql(u8, token, "watts") or std.mem.eql(u8, token, "power")) return .{ .kind = .watts };
     if (std.mem.eql(u8, token, "keymap") or std.mem.eql(u8, token, "lang")) return .{ .kind = .keymap };
     if (std.mem.eql(u8, token, "perf")) return .{ .kind = .perf };
+    if (std.mem.eql(u8, token, "notify")) return .{ .kind = .notify };
     if (std.mem.eql(u8, token, "clock")) return .{ .kind = .clock, .arg = "%H:%M" };
 
     // {clock:format}
@@ -169,7 +172,10 @@ pub const default_top_center = "{title}";
 pub const default_top_right = "{keymap} | {battery} {watts} | {clock}";
 // Bottom left: system stats — CPU %, CPU temp, RAM
 pub const default_bottom_left = "CPU {cpu} {cputemp} | RAM {mem}";
-pub const default_bottom_center = "";
+// Bottom center hosts the desktop-notification marquee. Empty until a
+// notification arrives (non-destructive — the widget renders nothing when
+// server.current_notification is null), then scrolls summary + body.
+pub const default_bottom_center = "{notify}";
 // Bottom right: GPU via exec (vendor-specific; NVIDIA by default, falls back to N/A).
 // The awk command rewrites "0, 36" → "0% 36C". Braces inside {print …} are
 // now handled correctly by the parser.
@@ -222,6 +228,12 @@ test "parse exec with embedded braces" {
     try std.testing.expectEqual(@as(u8, 1), list.count);
     try std.testing.expectEqual(WidgetKind.exec, list.items[0].kind);
     try std.testing.expectEqualStrings("awk '{print $1}' file", list.items[0].arg);
+}
+
+test "parse notify token" {
+    const list = parse("{notify}");
+    try std.testing.expectEqual(@as(u8, 1), list.count);
+    try std.testing.expectEqual(WidgetKind.notify, list.items[0].kind);
 }
 
 test "parse plain text only" {

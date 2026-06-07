@@ -118,6 +118,7 @@ pub fn create(server: *Server) ?*Bar {
 
     // Bottom bar enabled by default with system info widgets
     bar.bottom.left.widgets = BarWidget.parse(BarWidget.default_bottom_left);
+    bar.bottom.center.widgets = BarWidget.parse(BarWidget.default_bottom_center);
     bar.bottom.right.widgets = BarWidget.parse(BarWidget.default_bottom_right);
     bar.bottom.enabled = true;
 
@@ -501,6 +502,15 @@ fn barSignature(self: *Bar, server: *Server) u64 {
         }
         h ^= pw_mask;
     }
+
+    // Desktop notification — fold in presence + marquee offset so the bar
+    // repaints when one arrives, on every marquee step, and on expiry.
+    // Without this the {notify} widget never draws: barSignature stays
+    // constant, b.render() short-circuits, and the notification is invisible.
+    if (server.current_notification != null) {
+        h ^= 0x4e4f5449_00000000 ^ @as(u64, server.notify_scroll); // "NOTI" + scroll
+        h *%= prime;
+    }
     return h;
 }
 
@@ -582,6 +592,21 @@ fn buildBarData(_: *Bar, server: *Server) BarData {
     // Push widgets registered via MCP. Pass the whole fixed-size array;
     // the renderer filters by `used` and matches on name.
     data.push_widgets = &server.push_widgets;
+
+    // Desktop notification (teruwm only) — copy the live Server.Notification
+    // into the renderer's plain fields so BarRenderer (shared with teru) stays
+    // free of compositor types. notify_active stays false when none is live,
+    // so the {notify} widget renders nothing. The slices borrow the
+    // Notification's fixed buffers, which outlive this BarData (it lives in
+    // server.current_notification until barTick clears it).
+    if (server.current_notification) |*n| {
+        data.notify_active = true;
+        data.notify_urgency = @intFromEnum(n.urgency);
+        data.notify_scroll = server.notify_scroll;
+        data.notify_app = n.app();
+        data.notify_summary = n.summary();
+        data.notify_body = n.body();
+    }
 
     return data;
 }

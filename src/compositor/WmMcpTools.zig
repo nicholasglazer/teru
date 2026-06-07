@@ -639,14 +639,15 @@ fn toolScreenshot(self: *WmMcpServer, path: []const u8, buf: []u8, id: ?[]const 
     return jsonRpcError(buf, id, -32603, "Screenshot failed");
 }
 
-fn toolNotify(_: *WmMcpServer, message: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    // No overlay surface in teruwm yet — the notification goes to stderr
-    // so any tail -F of the compositor log sees it. A proper on-screen
-    // toast would need a scene_rect + a libteru text renderer anchored
-    // to the focused output; worth doing when session_lock_v1 lands
-    // (shared scene-tree plumbing).
+fn toolNotify(self: *WmMcpServer, message: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    // Show it in the bottom-bar {notify} marquee (default_bottom_center).
+    // The freedesktop.org D-Bus helper (tools/teruwm-notify-daemon) owns
+    // org.freedesktop.Notifications and forwards each Notify call here as a
+    // single pre-formatted "app: summary — body" string, so the whole line
+    // goes into the summary slot. Also logged to stderr for `tail -F`.
     std.log.scoped(.mcp).info("notify: {s}", .{message});
-    return okText(buf, id, "notification logged", .{});
+    self.server.setNotification("", message, "", .normal, 0);
+    return okText(buf, id, "notification shown", .{});
 }
 
 fn toolReloadConfig(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
