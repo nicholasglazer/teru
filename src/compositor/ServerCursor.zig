@@ -186,6 +186,12 @@ pub fn handleRequestSetShape(listener: *wlr.wl_listener, data: ?*anyopaque) call
 /// Split into four phases; the parent just sequences them. Each sub-
 /// function returns true if it claimed the event.
 pub fn processCursorButton(server: *Server, button: u32, state: u32, time: u32, super_override: ?bool) void {
+    // Native area-select owns the pointer while active: press anchors the box,
+    // release crops + saves. Don't forward the click to panes/clients.
+    if (server.cursor_mode == .area_select) {
+        if (state == 1) areaSelectPress(server) else areaSelectRelease(server);
+        return;
+    }
     if (state == 0) {
         endGrab(server, button, state, time);
         return;
@@ -522,9 +528,97 @@ fn setXcursorIfChanged(server: *Server, name: [*:0]const u8) void {
     server.last_xcursor_name = zig_name;
 }
 
+// ── Native area-select (drag-to-capture) ─────────────────────────
+// mod+shift+w arms it; the next click-drag draws a translucent box over the
+// composited output, and release crops it to a PNG (ServerScreenshot). Esc or
+// a zero-size drag cancels. No grim/slurp/layer-shell — teruwm owns its output.
+const area_overlay_color = [4]f32{ 0.40, 0.58, 0.96, 0.26 }; // translucent accent
+
+/// Arm area-select: crosshair cursor + hint toast. The overlay rect is created
+/// lazily on the first button-press so a cancel-before-drag leaves no node.
+pub fn beginAreaSelect(server: *Server) void {
+    cancelAreaSelect(server); // clear any stale state first
+    server.cursor_mode = .area_select;
+    server.area_dragging = false;
+    setXcursorIfChanged(server, "crosshair");
+    server.setNotification("", "Area select: drag to capture, Esc to cancel", "", .normal, 4000);
+}
+
+/// Tear down area-select: destroy the overlay, restore cursor + mode. Safe to
+/// call when not selecting (no-op-ish). Used by Esc and on release.
+pub fn cancelAreaSelect(server: *Server) void {
+    if (server.area_rect) |rect| {
+        wlr.wlr_scene_node_destroy(wlr.miozu_scene_rect_node(rect));
+        server.area_rect = null;
+    }
+    server.area_dragging = false;
+    if (server.cursor_mode == .area_select) {
+        server.cursor_mode = .normal;
+        setXcursorIfChanged(server, "default");
+        server.scheduleRender();
+    }
+}
+
+fn areaSelectPress(server: *Server) void {
+    server.area_anchor_x = wlr.miozu_cursor_x(server.cursor);
+    server.area_anchor_y = wlr.miozu_cursor_y(server.cursor);
+    server.area_dragging = true;
+    ensureAreaRect(server);
+    updateAreaRect(server, server.area_anchor_x, server.area_anchor_y);
+}
+
+fn areaSelectRelease(server: *Server) void {
+    const cx = wlr.miozu_cursor_x(server.cursor);
+    const cy = wlr.miozu_cursor_y(server.cursor);
+    const ax = server.area_anchor_x;
+    const ay = server.area_anchor_y;
+    const rx_f = @min(ax, cx);
+    const ry_f = @min(ay, cy);
+    const rw_f = @abs(ax - cx);
+    const rh_f = @abs(ay - cy);
+    cancelAreaSelect(server); // tear down overlay + mode + cursor BEFORE capture
+    if (rw_f >= 4 and rh_f >= 4) {
+        const rx: i32 = @intFromFloat(@max(0, rx_f));
+        const ry: i32 = @intFromFloat(@max(0, ry_f));
+        const rw: u32 = @intFromFloat(rw_f);
+        const rh: u32 = @intFromFloat(rh_f);
+        _ = server.takeAreaScreenshot(rx, ry, rw, rh);
+    }
+}
+
+fn ensureAreaRect(server: *Server) void {
+    if (server.area_rect != null) return;
+    const root = wlr.miozu_scene_tree(server.scene) orelse return;
+    var col = area_overlay_color;
+    if (wlr.wlr_scene_rect_create(root, 1, 1, &col)) |rect| {
+        server.area_rect = rect;
+        wlr.wlr_scene_node_raise_to_top(wlr.miozu_scene_rect_node(rect));
+    }
+}
+
+fn updateAreaRect(server: *Server, cx: f64, cy: f64) void {
+    const rect = server.area_rect orelse return;
+    const ax = server.area_anchor_x;
+    const ay = server.area_anchor_y;
+    const x: c_int = @intFromFloat(@min(ax, cx));
+    const y: c_int = @intFromFloat(@min(ay, cy));
+    const w: c_int = @intFromFloat(@max(1, @abs(ax - cx)));
+    const h: c_int = @intFromFloat(@max(1, @abs(ay - cy)));
+    wlr.wlr_scene_node_set_position(wlr.miozu_scene_rect_node(rect), x, y);
+    wlr.wlr_scene_rect_set_size(rect, w, h);
+    server.scheduleRender();
+}
+
 pub fn processCursorMotion(server: *Server, time: u32) void {
     const cx = wlr.miozu_cursor_x(server.cursor);
     const cy = wlr.miozu_cursor_y(server.cursor);
+
+    // Area-select drag: just resize the overlay box; the cursor has already
+    // been warped by handleCursorMotion, so skip the normal motion dispatch.
+    if (server.cursor_mode == .area_select) {
+        if (server.area_dragging) updateAreaRect(server, cx, cy);
+        return;
+    }
 
     // Active drag-select on a native terminal: forward coords to the
     // pane's Selection. Runs before every other motion dispatch so a

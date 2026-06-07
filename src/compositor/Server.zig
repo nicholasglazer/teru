@@ -35,7 +35,7 @@ const KBMods = Keybinds.Mods;
 
 const Server = @This();
 
-pub const CursorMode = enum { normal, move, resize, border_drag };
+pub const CursorMode = enum { normal, move, resize, border_drag, area_select };
 
 /// A desktop notification forwarded in from a freedesktop.org D-Bus helper
 /// (see tools/teruwm-notify-daemon) via the `teruwm_notify` MCP tool, or
@@ -249,6 +249,13 @@ grab_x: f64 = 0,
 grab_y: f64 = 0,
 grab_w: u32 = 0,
 grab_h: u32 = 0,
+
+// Native area-select (mod+shift+w): drag a box over the composited output,
+// crop on release. area_rect is the live translucent overlay scene node.
+area_dragging: bool = false,
+area_anchor_x: f64 = 0,
+area_anchor_y: f64 = 0,
+area_rect: ?*wlr.wlr_scene_rect = null,
 
 // Internal clipboard buffer (Ctrl+Shift+C/V between terminal panes)
 clipboard_buf: [8192]u8 = undefined,
@@ -1442,6 +1449,19 @@ pub fn takeScreenshot(self: *Server) void {
 /// calls it through self.server.takeScreenshotToPath. Delegates.
 pub fn takeScreenshotToPath(self: *Server, path: []const u8) bool {
     return Screenshot.takeScreenshotToPath(self, path);
+}
+
+/// Crop a region of the composited output to a PNG. Delegates.
+pub fn takeAreaScreenshot(self: *Server, rx: i32, ry: i32, rw: u32, rh: u32) bool {
+    return Screenshot.takeAreaScreenshot(self, rx, ry, rw, rh);
+}
+
+/// Enter / cancel native area-select (drag-to-capture). Delegate to Cursor.
+pub fn beginAreaSelect(self: *Server) void {
+    Cursor.beginAreaSelect(self);
+}
+pub fn cancelAreaSelect(self: *Server) void {
+    Cursor.cancelAreaSelect(self);
 }
 
 // ── Helper ─────────────────────────────────────────────────────
