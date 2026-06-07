@@ -285,7 +285,14 @@ fn writeGroundBatch(self: *VtParser, run: []const u8) void {
         // overwriting either half of an existing wide glyph orphans the other
         // half — re-blank it or it lingers as a stale glyph fragment.
         if (c + 1 < row_cells.len and row_cells[c + 1].char == 0) row_cells[c + 1] = .{ .bg = row_cells[c + 1].bg };
-        if (was_trailer and c > 0) row_cells[c - 1] = .{ .bg = row_cells[c - 1].bg };
+        // Landing on a trailer (char==0) normally means the wide lead sits at
+        // c-1 and is now orphaned. But ONLY blank c-1 if it really is a wide
+        // lead — during a left-to-right redraw over a grid that still holds a
+        // stale char==0 trailer (leftover from earlier wide-glyph output), c-1
+        // is the narrow char we JUST wrote, and blanking it eats a cell:
+        // "text is" → "textis". Guard on the actual display width.
+        if (was_trailer and c > 0 and Grid.displayWidth(row_cells[c - 1].char) == 2)
+            row_cells[c - 1] = .{ .bg = row_cells[c - 1].bg };
         col += 1;
     }
 
@@ -2453,4 +2460,31 @@ test "DECLRMM: CUB/CUF respect margin boundaries" {
     parser.feed("\x1b[1;71H"); // col 70 (0-based)
     parser.feed("\x1b[100C"); // CUF 100 — should go to col 79
     try std.testing.expectEqual(@as(u16, 79), grid.cursor_col);
+}
+
+test "writeGroundBatch: writing onto a stale wide-glyph trailer must not eat the narrow cell before it" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 4, 20);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+    // Inconsistent leftover state: a real narrow char at col 4 and a stale
+    // wide-glyph trailer (char==0) at col 5 with NO width-2 lead at col 4 —
+    // the kind of residue a redraw can land on after earlier wide-glyph output.
+    grid.cellAt(0, 4).char = 't';
+    grid.cellAt(0, 5).char = 0;
+    // Cursor jumps straight to col 5 (CUP) and writes 'i' onto the trailer.
+    parser.feed("\x1b[1;6H");
+    parser.feed("i");
+    // The narrow 't' at col 4 is NOT an orphaned wide lead — it must survive.
+    try std.testing.expectEqual(@as(u21, 't'), grid.cellAtConst(0, 4).char);
+    try std.testing.expectEqual(@as(u21, 'i'), grid.cellAtConst(0, 5).char);
+    // And a REAL orphaned wide lead must still be cleaned: 你 (width 2) at
+    // col 10 leaves a trailer at col 11; overwriting the trailer blanks the lead.
+    grid.cursor_row = 0;
+    grid.cursor_col = 10;
+    grid.write(0x4F60); // 你 → lead col10, trailer col11
+    parser.feed("\x1b[1;12H"); // cursor col 11 (the trailer)
+    parser.feed("z");
+    try std.testing.expectEqual(@as(u21, ' '), grid.cellAtConst(0, 10).char); // lead blanked
+    try std.testing.expectEqual(@as(u21, 'z'), grid.cellAtConst(0, 11).char);
 }
