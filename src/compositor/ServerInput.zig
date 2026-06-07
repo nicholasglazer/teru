@@ -82,6 +82,17 @@ pub const Keyboard = struct {
 
         kb.server.notifyActivity();
 
+        // While area-select is armed, the keyboard belongs to it: Escape
+        // cancels and every key is swallowed so a chord can't leak to a
+        // client mid-selection.
+        if (kb.server.cursor_mode == .area_select) {
+            if (key_state == 1) {
+                const sym = wlr.xkb_state_key_get_one_sym(xkb_st, keycode + 8);
+                if (sym == 0xff1b) kb.server.cancelAreaSelect(); // XKB_KEY_Escape
+            }
+            return;
+        }
+
         // Release of the currently-repeating key disarms the timers.
         // Done before dispatch so a press of a different key can re-arm
         // cleanly in the same event.
@@ -742,9 +753,9 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
             return true;
         },
         .screenshot_area => {
-            server.spawnShell(
-                "mkdir -p \"$HOME/Pictures\" && grim -g \"$(slurp)\" \"$HOME/Pictures/teruwm-area-$(date +%s).png\"",
-            );
+            // Native drag-to-select: arm area-select mode. The next click-drag
+            // draws the box and release crops it. No grim/slurp/layer-shell.
+            server.beginAreaSelect();
             return true;
         },
         .screen_record => {

@@ -552,6 +552,7 @@ pub extern "wlroots-0.18" fn wlr_scene_rect_create(parent: *wlr_scene_tree, widt
 pub extern "wlroots-0.18" fn wlr_scene_rect_set_size(rect: *wlr_scene_rect, width: c_int, height: c_int) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_scene_rect_set_color(rect: *wlr_scene_rect, color: *const [4]f32) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_scene_node_lower_to_bottom(node: *wlr_scene_node) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_scene_node_raise_to_top(node: *wlr_scene_node) callconv(.c) void;
 pub extern "c" fn miozu_scene_rect_node(rect: *wlr_scene_rect) callconv(.c) *wlr_scene_node;
 
 // xkbcommon
