@@ -19,6 +19,7 @@ pub const PushWidget = @import("PushWidget.zig");
 test {
     _ = @import("software.zig");
     _ = FontAtlas;
+    _ = @import("FontSynth.zig");
     _ = tier;
     _ = BarWidget;
     _ = BarRenderer;

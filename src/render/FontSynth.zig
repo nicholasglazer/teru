@@ -14,6 +14,8 @@
 //! Public entrypoints:
 //!   * drawBoxDrawing — overwrite U+2500–257F slots
 //!   * drawBlocks     — overwrite U+2580–259F slots
+//!   * drawSymbols    — paint synthesized checkbox/consent/mark glyphs
+//!                      (☐☑☒ ✓✔✗✘ • U+FFFD) that no font budget rasterizes
 //!
 //! Both operate on the grayscale atlas bitmap the caller owns; value
 //! 255 = opaque pixel, 0 = transparent. Diagonal codepoints
@@ -30,6 +32,16 @@ fn glyphSlot(codepoint: u21) ?u32 {
     if (codepoint >= 0x2580 and codepoint < 0x25A0) return @as(u32, codepoint - 0x2580) + 95 + 96 + 128;
     return null;
 }
+
+// ── Synthesized symbol slots (must match FontAtlas) ─────────────────
+//
+// LOCAL copy of FontAtlas.symbol_codepoints — these MUST stay in the same
+// order as the array in FontAtlas.zig (same rationale as the glyphSlot copy
+// above: avoids the FontAtlas↔FontSynth import cycle). Drift here writes the
+// synthesized glyph into the wrong atlas cell.
+const symbol_codepoints = [_]u21{ 0x2022, 0x2610, 0x2611, 0x2612, 0x2713, 0x2714, 0x2717, 0x2718, 0xFFFD };
+/// Fixed slot base = 95 (ASCII) + 96 (Latin-1) + 128 (Box) + 32 (Block) = 351.
+const symbols_slot_base: u32 = 95 + 96 + 128 + 32;
 
 // ── Box-drawing encoding table ─────────────────────────────────────
 
@@ -289,6 +301,120 @@ pub fn drawBlocks(atlas: []u8, aw: u32, cw: u32, ch: u32, glyphs_per_row: u32) v
     }
 }
 
+/// Paint the synthesized checkbox / consent / mark glyphs into their atlas
+/// slots. These codepoints live in Misc-Symbols / Dingbats and are absent
+/// from every -Dglyphs budget, so without this they render as a blank cell.
+/// Font-independent, like drawBoxDrawing / drawBlocks.
+pub fn drawSymbols(atlas: []u8, aw: u32, cw: u32, ch: u32, glyphs_per_row: u32) void {
+    // Inset the drawable box a touch from the cell edges so adjacent glyphs
+    // don't visually merge; thickness scales with cell width.
+    const inset_x: u32 = @max(1, cw / 8);
+    const inset_y: u32 = @max(1, ch / 8);
+    const thick: u32 = @max(1, cw / 12);
+
+    const bx0: i32 = @intCast(inset_x);
+    const by0: i32 = @intCast(inset_y);
+    const bx1: i32 = @intCast(cw -| inset_x);
+    const by1: i32 = @intCast(ch -| inset_y);
+
+    for (symbol_codepoints, 0..) |cp, idx| {
+        const slot = symbols_slot_base + @as(u32, @intCast(idx));
+        const glyph_col = slot % glyphs_per_row;
+        const glyph_row = slot / glyphs_per_row;
+        const ax: u32 = glyph_col * cw;
+        const ay: u32 = glyph_row * ch;
+
+        clearSlot(atlas, aw, ax, ay, cw, ch);
+
+        switch (cp) {
+            // • bullet — small centered filled disc
+            0x2022 => {
+                const r: i32 = @intCast(@max(1, cw / 6));
+                fillDisc(atlas, aw, ax, ay, @intCast(cw / 2), @intCast(ch / 2), r);
+            },
+            // ☐ ballot box — rectangle outline
+            0x2610 => drawBoxOutline(atlas, aw, ax, ay, bx0, by0, bx1, by1, thick),
+            // ☑ ballot box with check — box outline + check mark
+            0x2611 => {
+                drawBoxOutline(atlas, aw, ax, ay, bx0, by0, bx1, by1, thick);
+                drawCheck(atlas, aw, ax, ay, cw, ch, 1);
+            },
+            // ☒ ballot box with X — box outline + X across the inner box
+            0x2612 => {
+                drawBoxOutline(atlas, aw, ax, ay, bx0, by0, bx1, by1, thick);
+                drawLine(atlas, aw, ax, ay, bx0, by0, bx1, by1);
+                drawLine(atlas, aw, ax, ay, bx1, by0, bx0, by1);
+            },
+            // ✓ check mark
+            0x2713 => drawCheck(atlas, aw, ax, ay, cw, ch, 1),
+            // ✔ heavy check mark (2px thick)
+            0x2714 => drawCheck(atlas, aw, ax, ay, cw, ch, 2),
+            // ✗ ballot X — full-cell X
+            0x2717 => drawFullX(atlas, aw, ax, ay, cw, ch, 1),
+            // ✘ heavy ballot X — full-cell X, 2px thick
+            0x2718 => drawFullX(atlas, aw, ax, ay, cw, ch, 2),
+            // U+FFFD replacement char — conventional tofu box outline
+            0xFFFD => drawBoxOutline(atlas, aw, ax, ay, bx0, by0, bx1, by1, thick),
+            else => {},
+        }
+    }
+}
+
+/// Rectangle outline (4 inset edges) of the given thickness.
+fn drawBoxOutline(atlas: []u8, aw: u32, ax: u32, ay: u32, x0: i32, y0: i32, x1: i32, y1: i32, thick: u32) void {
+    if (x1 <= x0 or y1 <= y0) return;
+    const ox0: u32 = @intCast(x0);
+    const oy0: u32 = @intCast(y0);
+    const w: u32 = @intCast(x1 - x0);
+    const h: u32 = @intCast(y1 - y0);
+    // top + bottom edges
+    fillRect(atlas, aw, ax + ox0, ay + oy0, w, thick);
+    fillRect(atlas, aw, ax + ox0, ay + @as(u32, @intCast(y1)) -| thick, w, thick);
+    // left + right edges
+    fillRect(atlas, aw, ax + ox0, ay + oy0, thick, h);
+    fillRect(atlas, aw, ax + @as(u32, @intCast(x1)) -| thick, ay + oy0, thick, h);
+}
+
+/// Draw a check mark (two joined segments) scaled to the cell, `extra` extra
+/// rows/cols of thickness around each segment.
+fn drawCheck(atlas: []u8, aw: u32, ax: u32, ay: u32, cw: u32, ch: u32, extra: u32) void {
+    const x0: i32 = @intCast(cw * 20 / 100);
+    const y0: i32 = @intCast(ch * 55 / 100);
+    const x1: i32 = @intCast(cw * 42 / 100);
+    const y1: i32 = @intCast(ch * 78 / 100);
+    const x2: i32 = @intCast(cw * 80 / 100);
+    const y2: i32 = @intCast(ch * 25 / 100);
+    drawThickLine(atlas, aw, ax, ay, x0, y0, x1, y1, extra);
+    drawThickLine(atlas, aw, ax, ay, x1, y1, x2, y2, extra);
+}
+
+/// Draw a full-cell X (two diagonals) with `extra` thickness.
+fn drawFullX(atlas: []u8, aw: u32, ax: u32, ay: u32, cw: u32, ch: u32, extra: u32) void {
+    const x0: i32 = @intCast(cw * 15 / 100);
+    const y0: i32 = @intCast(ch * 15 / 100);
+    const x1: i32 = @intCast(cw * 85 / 100);
+    const y1: i32 = @intCast(ch * 85 / 100);
+    drawThickLine(atlas, aw, ax, ay, x0, y0, x1, y1, extra);
+    drawThickLine(atlas, aw, ax, ay, x1, y0, x0, y1, extra);
+}
+
+/// A Bresenham line plus, for each plotted pixel, a small `extra`-radius
+/// square so the stroke is `1 + 2*extra` px thick.
+fn drawThickLine(atlas: []u8, aw: u32, ax: u32, ay: u32, x0: i32, y0: i32, x1: i32, y1: i32, extra: u32) void {
+    if (extra == 0) {
+        drawLine(atlas, aw, ax, ay, x0, y0, x1, y1);
+        return;
+    }
+    const e: i32 = @intCast(extra);
+    var oy: i32 = -e;
+    while (oy <= e) : (oy += 1) {
+        var ox: i32 = -e;
+        while (ox <= e) : (ox += 1) {
+            drawLine(atlas, aw, ax, ay, x0 + ox, y0 + oy, x1 + ox, y1 + oy);
+        }
+    }
+}
+
 // ── Pixel primitives ───────────────────────────────────────────────
 
 fn clearSlot(atlas: []u8, aw: u32, ax: u32, ay: u32, cw: u32, ch: u32) void {
@@ -369,4 +495,102 @@ fn fillRect(atlas: []u8, aw: u32, x: u32, y: u32, w: u32, h: u32) void {
             @memset(atlas[row_off..][0..w], 255);
         }
     }
+}
+
+/// Set a pixel at cell-relative (cx, cy). Negative or out-of-cell coordinates
+/// are silently dropped, so synth glyphs can never bleed into a neighbour cell
+/// or out of the atlas.
+fn setPixelCell(atlas: []u8, aw: u32, ax: u32, ay: u32, cx: i32, cy: i32) void {
+    if (cx < 0 or cy < 0) return;
+    setPixel(atlas, aw, ax + @as(u32, @intCast(cx)), ay + @as(u32, @intCast(cy)));
+}
+
+/// Bresenham line between two cell-relative endpoints.
+fn drawLine(atlas: []u8, aw: u32, ax: u32, ay: u32, x0: i32, y0: i32, x1: i32, y1: i32) void {
+    var x = x0;
+    var y = y0;
+    const dx: i32 = @intCast(@abs(x1 - x0));
+    const dy: i32 = -@as(i32, @intCast(@abs(y1 - y0)));
+    const sx: i32 = if (x0 < x1) 1 else -1;
+    const sy: i32 = if (y0 < y1) 1 else -1;
+    var err = dx + dy;
+    while (true) {
+        setPixelCell(atlas, aw, ax, ay, x, y);
+        if (x == x1 and y == y1) break;
+        const e2 = 2 * err;
+        if (e2 >= dy) {
+            err += dy;
+            x += sx;
+        }
+        if (e2 <= dx) {
+            err += dx;
+            y += sy;
+        }
+    }
+}
+
+/// Filled disc of radius `r` centered at cell-relative (ccx, ccy).
+fn fillDisc(atlas: []u8, aw: u32, ax: u32, ay: u32, ccx: i32, ccy: i32, r: i32) void {
+    if (r <= 0) return;
+    const r2 = r * r;
+    var dy: i32 = -r;
+    while (dy <= r) : (dy += 1) {
+        var dx: i32 = -r;
+        while (dx <= r) : (dx += 1) {
+            if (dx * dx + dy * dy <= r2) {
+                setPixelCell(atlas, aw, ax, ay, ccx + dx, ccy + dy);
+            }
+        }
+    }
+}
+
+// ── Tests ──────────────────────────────────────────────────────────
+
+const std = @import("std");
+
+/// Count non-zero pixels inside one cell slot.
+fn slotPixelCount(atlas: []const u8, aw: u32, cw: u32, ch: u32, glyphs_per_row: u32, slot: u32) u32 {
+    const ax = (slot % glyphs_per_row) * cw;
+    const ay = (slot / glyphs_per_row) * ch;
+    var n: u32 = 0;
+    for (0..ch) |dy| {
+        for (0..cw) |dx| {
+            const off = (ay + @as(u32, @intCast(dy))) * aw + ax + @as(u32, @intCast(dx));
+            if (off < atlas.len and atlas[off] != 0) n += 1;
+        }
+    }
+    return n;
+}
+
+test "drawSymbols paints non-blank cells for box and check slots" {
+    const cw: u32 = 12;
+    const ch: u32 = 24;
+    const glyphs_per_row: u32 = 16;
+    // Atlas large enough to hold every synthesized symbol slot.
+    const last_slot = symbols_slot_base + symbol_codepoints.len - 1;
+    const num_rows = last_slot / glyphs_per_row + 1;
+    const aw = glyphs_per_row * cw;
+    const ah = num_rows * ch;
+    const atlas = try std.testing.allocator.alloc(u8, aw * ah);
+    defer std.testing.allocator.free(atlas);
+    @memset(atlas, 0);
+
+    drawSymbols(atlas, aw, cw, ch, glyphs_per_row);
+
+    // ☐ U+2610 is index 1 → slot 352; ✓ U+2713 is index 4 → slot 355.
+    const box_slot = symbols_slot_base + 1;
+    const check_slot = symbols_slot_base + 4;
+    try std.testing.expect(slotPixelCount(atlas, aw, cw, ch, glyphs_per_row, box_slot) > 0);
+    try std.testing.expect(slotPixelCount(atlas, aw, cw, ch, glyphs_per_row, check_slot) > 0);
+    // • U+2022 index 0 → slot 351 should also paint a disc.
+    try std.testing.expect(slotPixelCount(atlas, aw, cw, ch, glyphs_per_row, symbols_slot_base) > 0);
+}
+
+test "symbol_codepoints/slot base agree with FontAtlas layout" {
+    // Guard the local copy against drift from FontAtlas.symbol_codepoints.
+    try std.testing.expectEqual(@as(usize, 9), symbol_codepoints.len);
+    try std.testing.expectEqual(@as(u32, 351), symbols_slot_base);
+    try std.testing.expectEqual(@as(u21, 0x2610), symbol_codepoints[1]);
+    try std.testing.expectEqual(@as(u21, 0x2713), symbol_codepoints[4]);
+    try std.testing.expectEqual(@as(u21, 0xFFFD), symbol_codepoints[8]);
 }
