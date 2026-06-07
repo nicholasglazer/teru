@@ -259,10 +259,35 @@ pub fn readAndProcess(self: *Pane, buf: []u8) !usize {
         else => return err,
     };
     if (n > 0) {
+        debugLogPty(buf[0..n]);
         self.vt.feed(buf[0..n]);
         self.grid.dirty = true;
     }
     return n;
+}
+
+// ── Debug: raw PTY capture ───────────────────────────────────────
+// Set TERUWM_PTY_LOG=/path to append every byte a pane receives from its
+// PTY (before the parser sees it) to that file. Off by default (one cached
+// env check, then a single null-pointer branch per read). Used to capture
+// the exact byte stream behind the redraw-triggered "textis" shell-render
+// bug, which only manifests in long-lived live sessions: reproduce with one
+// shell open, then replay the file through VtParser to find the corruption.
+var pty_log_path: ?[]const u8 = null;
+var pty_log_checked: bool = false;
+fn debugLogPty(bytes: []const u8) void {
+    if (!pty_log_checked) {
+        pty_log_checked = true;
+        pty_log_path = compat.getenv("TERUWM_PTY_LOG");
+    }
+    const path = pty_log_path orelse return;
+    var pbuf: [256:0]u8 = undefined;
+    if (path.len >= pbuf.len) return;
+    @memcpy(pbuf[0..path.len], path);
+    pbuf[path.len] = 0;
+    const f = std.c.fopen(&pbuf, "ab") orelse return;
+    _ = std.c.fwrite(bytes.ptr, 1, bytes.len, f);
+    _ = std.c.fclose(f);
 }
 
 /// Resize this pane's grid and PTY to new dimensions.
