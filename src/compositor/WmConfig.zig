@@ -207,7 +207,8 @@ alt_scroll_zoom: bool = true,
 font_zoom_min: u16 = 6,
 font_zoom_max: u16 = 72,
 
-/// Directory for `mod+w` screenshots. Empty = the default `$HOME/Pictures/teru`.
+/// Directory for `mod+w` screenshots. Empty = the default
+/// `$HOME/Pictures/screenshots`.
 /// Must resolve under `$HOME` or `/tmp` (the screenshot path-safety check).
 screenshot_dir_buf: [256]u8 = undefined,
 screenshot_dir_len: u16 = 0,
