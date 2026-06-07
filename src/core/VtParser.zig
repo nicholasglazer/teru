@@ -275,11 +275,17 @@ fn writeGroundBatch(self: *VtParser, run: []const u8) void {
         }
         const c: usize = @min(col, cols -| 1);
         const cell = &row_cells[c];
+        const was_trailer = cell.char == 0; // landing on the 2nd half of a wide glyph?
         cell.char = @as(u21, byte);
         cell.fg = fg;
         cell.bg = bg;
         cell.attrs = attrs;
         cell.hyperlink_id = hl;
+        // Wide-glyph overwrite cleanup (ASCII written here is always width 1):
+        // overwriting either half of an existing wide glyph orphans the other
+        // half — re-blank it or it lingers as a stale glyph fragment.
+        if (c + 1 < row_cells.len and row_cells[c + 1].char == 0) row_cells[c + 1] = .{ .bg = row_cells[c + 1].bg };
+        if (was_trailer and c > 0) row_cells[c - 1] = .{ .bg = row_cells[c - 1].bg };
         col += 1;
     }
 
@@ -1871,10 +1877,11 @@ test "UTF-8 4-byte sequence (U+1F600 grinning face)" {
     defer grid.deinit(allocator);
     var parser = VtParser.init(allocator, &grid);
 
-    // U+1F600 = 0xF0 0x9F 0x98 0x80
+    // U+1F600 = 0xF0 0x9F 0x98 0x80 — a wide emoji: two display columns.
     parser.feed(&[_]u8{ 0xF0, 0x9F, 0x98, 0x80 });
     try std.testing.expectEqual(@as(u21, 0x1F600), grid.cellAtConst(0, 0).char);
-    try std.testing.expectEqual(@as(u16, 1), grid.cursor_col);
+    try std.testing.expectEqual(@as(u21, 0), grid.cellAtConst(0, 1).char); // wide-glyph trailer
+    try std.testing.expectEqual(@as(u16, 2), grid.cursor_col);
 }
 
 test "UTF-8 mixed ASCII and multi-byte" {

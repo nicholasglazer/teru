@@ -13,6 +13,7 @@ const teru = @import("teru");
 const Pane = teru.Pane;
 const Grid = teru.Grid;
 const SoftwareRenderer = teru.render.SoftwareRenderer;
+const FontAtlas = teru.render.FontAtlas;
 const Selection = teru.Selection;
 const MouseState = teru.mouse.MouseState;
 const compat = teru.compat;
@@ -35,6 +36,12 @@ scene_buffer: *wlr.wlr_scene_buffer,
 node_id: u64,
 event_source: ?*wlr.wl_event_source = null,
 read_buf: [8192]u8 = undefined,
+// Per-pane font zoom (Alt+scroll over THIS pane). 0 = follow the server's
+// base size via the shared atlas. Non-zero = this pane owns `zoom_atlas`,
+// rasterized at `pane_font_size`, so zooming one pane never re-rasterizes
+// the whole compositor (no bars/other-panes scaling, no per-tick lag).
+pane_font_size: u16 = 0,
+zoom_atlas: ?*FontAtlas = null,
 // Monotonic ns when the pane first observed pane.vt.sync_output = true
 // for the current DEC-2026 batch. 0 means "not currently in a batch".
 // Used to timeout pathological apps that open a sync batch and never
@@ -516,7 +523,7 @@ pub fn resize(self: *TerminalPane, pixel_w: u32, pixel_h: u32) void {
 /// here — `arrangeWorkspace` reflows pane positions/sizes afterwards (and
 /// re-grids again only if the bar-height change shifted this pane's rect).
 pub fn refont(self: *TerminalPane) void {
-    const fa = self.server.font_atlas orelse return;
+    const fa = self.activeAtlas() orelse return;
     if (fa.cell_width == 0 or fa.cell_height == 0) return;
 
     self.renderer.cell_width = fa.cell_width;
@@ -531,6 +538,60 @@ pub fn refont(self: *TerminalPane) void {
     self.pane.resize(self.server.zig_allocator, new_rows, new_cols) catch return;
     self.pane.grid.markAllDirty();
     self.render();
+}
+
+/// The atlas this pane renders from: its private zoom atlas if it has been
+/// zoomed, otherwise the server's shared base atlas.
+fn activeAtlas(self: *TerminalPane) ?*FontAtlas {
+    return self.zoom_atlas orelse self.server.font_atlas;
+}
+
+/// Zoom THIS pane's font in / out / reset (Alt+scroll over the pane). Per
+/// pane: rasterizes a private atlas at the new size and re-grids only this
+/// pane — bars and other panes are untouched, which is both the intended
+/// behaviour and why there is no whole-compositor re-raster lag. Returns true
+/// if the size actually changed.
+pub fn zoomFont(self: *TerminalPane, target: FontAtlas.ZoomTarget) bool {
+    const base = self.server.font_atlas orelse return false;
+    const cur: u16 = if (self.pane_font_size != 0) self.pane_font_size else self.server.font_size_base;
+
+    var new_size = FontAtlas.zoomedFontSize(target, cur, self.server.font_size_base);
+    // Clamp to configurable bounds (non-restrictive defaults). Min is floored
+    // at FontAtlas.min_font_size for legibility; max of 0 means "no maximum".
+    const lo = @max(FontAtlas.min_font_size, self.server.wm_config.font_zoom_min);
+    const hi = self.server.wm_config.font_zoom_max;
+    if (new_size < lo) new_size = lo;
+    if (hi != 0 and new_size > hi) new_size = hi;
+    if (new_size == cur) return false;
+
+    if (new_size == self.server.font_size_base) {
+        // Back to the base size → drop the private atlas and share again.
+        self.freeZoomAtlas();
+        self.pane_font_size = 0;
+    } else {
+        const fresh = base.rasterizeAtSize(new_size) catch return false;
+        const slot = self.server.zig_allocator.create(FontAtlas) catch {
+            var tmp = fresh;
+            tmp.deinit();
+            return false;
+        };
+        slot.* = fresh;
+        self.freeZoomAtlas();
+        self.zoom_atlas = slot;
+        self.pane_font_size = new_size;
+    }
+
+    self.refont();
+    self.server.scheduleRender();
+    return true;
+}
+
+fn freeZoomAtlas(self: *TerminalPane) void {
+    if (self.zoom_atlas) |za| {
+        za.deinit();
+        self.server.zig_allocator.destroy(za);
+        self.zoom_atlas = null;
+    }
 }
 
 /// Render the terminal grid into the pixel buffer + draw border.
@@ -681,6 +742,7 @@ pub fn deinit(self: *TerminalPane, allocator: std.mem.Allocator) void {
         wlr.wlr_scene_node_set_enabled(node, false);
         wlr.wlr_scene_buffer_set_buffer(self.scene_buffer, null);
     }
+    self.freeZoomAtlas();
     self.pane.deinit(allocator);
     wlr.wlr_buffer_drop(self.pixel_buffer);
 }

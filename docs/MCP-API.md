@@ -301,7 +301,7 @@ Layouts: `master-stack`, `grid`, `monocle`, `dishes`, `spiral`, `three-col`,
 |---|---|---|
 | `teru_screenshot` | `path` (string, default `/tmp/teru-screenshot.png`) | Capture current framebuffer as PNG. X11/Wayland only. |
 
-## teruwm (compositor) MCP — 37 tools
+## teruwm (compositor) MCP — 38 tools
 
 Socket: `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock`. Implementation: `src/compositor/WmMcpServer.zig`.
 
@@ -346,7 +346,8 @@ Socket: `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock`. Implementation: `src/compositor
 | `teruwm_get_config` | — | Current config as JSON: `gap`, `border_width`, `bg_color`, `cell_width`, `cell_height`, `bar_height`, `output_width`, `output_height`, `top_bar`, `bottom_bar`, `terminal_count`, `active_workspace`. |
 | `teruwm_set_config` | `key` (`gap`/`border_width`/`bg_color`), `value` | Set a config key live. `bg_color` accepts `#rrggbb` or `0xaarrggbb`. |
 | `teruwm_reload_config` | — | Re-read `~/.config/teruwm/config` and apply. |
-| `teruwm_zoom` | `direction` (`in`/`out`/`reset`) | Resize the terminal font live — the MCP path for Alt+scroll zoom. Refonts every pane and the bar. Returns `changed` (bool) and the new `font_size`. |
+| `teruwm_zoom` | `direction` (`in`/`out`/`reset`) | Resize the font for the **whole compositor** — refonts every pane and the bar. Returns `changed` (bool) and the new `font_size`. |
+| `teruwm_zoom_focused` | `direction` (`in`/`out`/`reset`) | **Per-pane** font zoom for the focused terminal only — the MCP path for Alt+scroll. Other panes and the bars are untouched. Returns `changed` (bool) and `pane_font_size`. |
 
 ### Introspection & control
 

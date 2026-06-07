@@ -17,16 +17,33 @@ const std = @import("std");
 const teru = @import("teru");
 const Server = @import("Server.zig");
 
-/// Shell-spawn variant: write a screenshot to `$HOME/Pictures/screenshot_<ts>.png`.
+/// Keybind variant (mod+w): write a full-output PNG natively to the configured
+/// capture dir (default `$HOME/Pictures/teru`), plus a stable `latest.png`.
 pub fn takeScreenshot(server: *Server) void {
-    var path_buf: [256:0]u8 = undefined;
     const home = teru.compat.getenv("HOME") orelse "/tmp";
     const timestamp = teru.compat.monotonicNow();
-    const path = std.fmt.bufPrint(&path_buf, "{s}/Pictures/screenshot_{d}.png", .{ home, timestamp }) catch return;
-    path_buf[path.len] = 0;
+
+    // Capture directory: configured `screenshot_dir`, else $HOME/Pictures/teru.
+    // Created on demand so the first shot never fails.
+    var dir_buf: [400]u8 = undefined;
+    const cfg = server.wm_config.screenshot_dir_buf[0..server.wm_config.screenshot_dir_len];
+    const dir = if (cfg.len > 0) cfg else (std.fmt.bufPrint(&dir_buf, "{s}/Pictures/teru", .{home}) catch return);
+
+    var path_buf: [512]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/teru-{d}.png", .{ dir, timestamp }) catch return;
+
+    teru.compat.ensureParentDirC(path); // mkdir -p the capture dir
 
     if (takeScreenshotToPath(server, path)) {
         std.log.scoped(.compositor).info("screenshot → {s}", .{path});
+        // Maintain a stable `latest.png` in the same dir so it's trivial to
+        // reference the most recent shot ("look at my latest screenshot"). A
+        // screenshot is a rare, user-initiated action, so re-compositing once
+        // more here is fine and keeps latest.png a real, valid PNG.
+        var latest_buf: [512]u8 = undefined;
+        if (std.fmt.bufPrint(&latest_buf, "{s}/latest.png", .{dir})) |latest| {
+            _ = takeScreenshotToPath(server, latest);
+        } else |_| {}
     }
 }
 

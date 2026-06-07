@@ -209,6 +209,7 @@ pub const Action = enum(u8) {
     screenshot,
     screenshot_pane,
     screenshot_area,
+    screen_record,
     bar_toggle_top,
     bar_toggle_bottom,
     // Media actions (compositor spawns the appropriate command)
@@ -306,6 +307,7 @@ pub const Action = enum(u8) {
             .{ "screenshot", Action.screenshot },
             .{ "screenshot:pane", Action.screenshot_pane },
             .{ "screenshot:area", Action.screenshot_area },
+            .{ "screen:record", Action.screen_record },
             .{ "bar:toggle_top", Action.bar_toggle_top },
             .{ "bar:toggle_bottom", Action.bar_toggle_bottom },
             .{ "volume:up", Action.volume_up },
@@ -715,10 +717,10 @@ pub const Keybinds = struct {
         // ('"'). Each chord is bound to the keysym it actually produces.
         _ = self.add(n, M, '\'', .compositor_restart);
         _ = self.add(n, MS, '"', .compositor_quit);
-        _ = self.add(n, M, 'w', .screenshot);
-        _ = self.add(n, MS, 'w', .screenshot_pane);
+        _ = self.add(n, M, 'w', .screenshot); // full output → PNG (native)
+        _ = self.add(n, MS, 'w', .screen_record); // toggle kapsa recording
         const MCW = Mods{ .ctrl = true, .super_ = true };
-        _ = self.add(n, MCW, 'w', .screenshot_area); // slurp + grim
+        _ = self.add(n, MCW, 'w', .screenshot_pane); // focused pane → PNG
 
         // Workspaces: $mod+1-9, $mod+shift+1-9 move pane
         for (0..9) |i| {

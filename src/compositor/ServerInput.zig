@@ -158,6 +158,17 @@ pub const Keyboard = struct {
                             tp.writeInput(buf[0..ulen]);
                             repeat_bytes = buf[0..ulen];
                         }
+                    } else {
+                        // Arrow / navigation / function keys: xkb_state_key_get_utf8
+                        // returns 0 for these, so without this they're silently
+                        // dropped in teruwm-native panes (e.g. arrows do nothing in
+                        // claude-code's menus). Encode them ourselves, DECCKM-aware
+                        // for arrows.
+                        const esc = teru.keysyms.escapeForKeysym(@intCast(sym), tp.pane.vt.app_cursor_keys);
+                        if (esc.len > 0) {
+                            tp.writeInput(esc);
+                            repeat_bytes = esc;
+                        }
                     }
                 }
 
@@ -732,6 +743,14 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
             server.spawnShell(
                 "mkdir -p \"$HOME/Pictures\" && grim -g \"$(slurp)\" \"$HOME/Pictures/teruwm-area-$(date +%s).png\"",
             );
+            return true;
+        },
+        .screen_record => {
+            // Toggle a screen recording via the standalone `kapsa` tool (spawns
+            // ffmpeg / wf-recorder; not linked). Second press finalizes the file.
+            // Needs `kapsa` on PATH; on Wayland, `wf-recorder` until kapsa's
+            // native screencopy backend lands.
+            server.spawnShell("kapsa toggle --preset product");
             return true;
         },
         .screenshot_pane => {

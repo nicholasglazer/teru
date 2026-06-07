@@ -279,30 +279,176 @@ pub fn cellAtConst(self: *const Grid, row: u16, col: u16) *const Cell {
     return &self.cells[r * @as(usize, self.cols) + c];
 }
 
-/// Write a character at the current cursor position with pen attributes,
-/// then advance the cursor. Wraps to the next line at the right margin.
+const WidthRange = struct { lo: u21, hi: u21 };
+
+/// Linear scan over ASCENDING, non-overlapping ranges. Early-exits once cp
+/// falls below a range's low bound (the ranges are sorted), so the common
+/// not-found case is cheap.
+fn inSortedRanges(cp: u21, ranges: []const WidthRange) bool {
+    for (ranges) |r| {
+        if (cp < r.lo) return false;
+        if (cp <= r.hi) return true;
+    }
+    return false;
+}
+
+// Combining marks, joiners and variation selectors — zero display columns.
+// (Compact, high-value subset: Latin/Hebrew/Arabic/Thai marks, ZWJ/ZWNJ,
+// VS1-16, symbol marks. Extend as needed.)
+const zero_width_ranges = [_]WidthRange{
+    .{ .lo = 0x0300, .hi = 0x036F },
+    .{ .lo = 0x0483, .hi = 0x0489 },
+    .{ .lo = 0x0591, .hi = 0x05BD },
+    .{ .lo = 0x0610, .hi = 0x061A },
+    .{ .lo = 0x064B, .hi = 0x065F },
+    .{ .lo = 0x0670, .hi = 0x0670 },
+    .{ .lo = 0x06D6, .hi = 0x06DC },
+    .{ .lo = 0x0E31, .hi = 0x0E31 },
+    .{ .lo = 0x0E34, .hi = 0x0E3A },
+    .{ .lo = 0x1AB0, .hi = 0x1AFF },
+    .{ .lo = 0x1DC0, .hi = 0x1DFF },
+    .{ .lo = 0x200B, .hi = 0x200F },
+    .{ .lo = 0x202A, .hi = 0x202E },
+    .{ .lo = 0x2060, .hi = 0x2064 },
+    .{ .lo = 0x20D0, .hi = 0x20FF },
+    .{ .lo = 0xFE00, .hi = 0xFE0F },
+    .{ .lo = 0xFE20, .hi = 0xFE2F },
+};
+
+// East-Asian Wide/Fullwidth + the emoji codepoints terminals render two cells
+// wide (incl. the BMP emoji-presentation set). NOTE: powerline / Nerd-Font
+// Private-Use glyphs are intentionally ABSENT — they are single-cell in every
+// common terminal, so marking them wide would itself misalign.
+const wide_ranges = [_]WidthRange{
+    .{ .lo = 0x1100, .hi = 0x115F },
+    .{ .lo = 0x231A, .hi = 0x231B },
+    .{ .lo = 0x2329, .hi = 0x232A },
+    .{ .lo = 0x23E9, .hi = 0x23EC },
+    .{ .lo = 0x23F0, .hi = 0x23F0 },
+    .{ .lo = 0x23F3, .hi = 0x23F3 },
+    .{ .lo = 0x25FD, .hi = 0x25FE },
+    .{ .lo = 0x2614, .hi = 0x2615 },
+    .{ .lo = 0x2648, .hi = 0x2653 },
+    .{ .lo = 0x267F, .hi = 0x267F },
+    .{ .lo = 0x2693, .hi = 0x2693 },
+    .{ .lo = 0x26A1, .hi = 0x26A1 },
+    .{ .lo = 0x26AA, .hi = 0x26AB },
+    .{ .lo = 0x26BD, .hi = 0x26BE },
+    .{ .lo = 0x26C4, .hi = 0x26C5 },
+    .{ .lo = 0x26CE, .hi = 0x26CE },
+    .{ .lo = 0x26D4, .hi = 0x26D4 },
+    .{ .lo = 0x26EA, .hi = 0x26EA },
+    .{ .lo = 0x26F2, .hi = 0x26F3 },
+    .{ .lo = 0x26F5, .hi = 0x26F5 },
+    .{ .lo = 0x26FA, .hi = 0x26FA },
+    .{ .lo = 0x26FD, .hi = 0x26FD },
+    .{ .lo = 0x2705, .hi = 0x2705 },
+    .{ .lo = 0x270A, .hi = 0x270B },
+    .{ .lo = 0x2728, .hi = 0x2728 },
+    .{ .lo = 0x274C, .hi = 0x274C },
+    .{ .lo = 0x274E, .hi = 0x274E },
+    .{ .lo = 0x2753, .hi = 0x2755 },
+    .{ .lo = 0x2757, .hi = 0x2757 },
+    .{ .lo = 0x2795, .hi = 0x2797 },
+    .{ .lo = 0x27B0, .hi = 0x27B0 },
+    .{ .lo = 0x27BF, .hi = 0x27BF },
+    .{ .lo = 0x2B1B, .hi = 0x2B1C },
+    .{ .lo = 0x2B50, .hi = 0x2B50 },
+    .{ .lo = 0x2B55, .hi = 0x2B55 },
+    .{ .lo = 0x2E80, .hi = 0x303E },
+    .{ .lo = 0x3041, .hi = 0x33FF },
+    .{ .lo = 0x3400, .hi = 0x4DBF },
+    .{ .lo = 0x4E00, .hi = 0x9FFF },
+    .{ .lo = 0xA000, .hi = 0xA4CF },
+    .{ .lo = 0xA960, .hi = 0xA97F },
+    .{ .lo = 0xAC00, .hi = 0xD7A3 },
+    .{ .lo = 0xF900, .hi = 0xFAFF },
+    .{ .lo = 0xFE10, .hi = 0xFE19 },
+    .{ .lo = 0xFE30, .hi = 0xFE6F },
+    .{ .lo = 0xFF00, .hi = 0xFF60 },
+    .{ .lo = 0xFFE0, .hi = 0xFFE6 },
+    .{ .lo = 0x1F000, .hi = 0x1F02F },
+    .{ .lo = 0x1F0A0, .hi = 0x1F0FF },
+    .{ .lo = 0x1F100, .hi = 0x1F1FF },
+    .{ .lo = 0x1F200, .hi = 0x1F2FF },
+    .{ .lo = 0x1F300, .hi = 0x1F64F },
+    .{ .lo = 0x1F680, .hi = 0x1F6FF },
+    .{ .lo = 0x1F700, .hi = 0x1FAFF },
+    .{ .lo = 0x20000, .hi = 0x3FFFD },
+};
+
+/// Display width (terminal columns) of a codepoint: 0 for combining marks /
+/// joiners / variation selectors, 2 for East-Asian Wide/Fullwidth + the emoji
+/// blocks terminals render double-wide, otherwise 1. This MUST agree with how
+/// the *host* terminal advances its cursor — if it doesn't, teru's grid-column
+/// model drifts ahead/behind and the diff renderer paints the rest of the line
+/// at the wrong column (the "half renders when I type" bug).
+pub fn displayWidth(cp: u21) u16 {
+    if (cp < 0x0300) return 1; // ASCII + Latin-1: always one cell — the hot path
+    if (inSortedRanges(cp, &zero_width_ranges)) return 0;
+    if (inSortedRanges(cp, &wide_ranges)) return 2;
+    return 1;
+}
+
+/// Write a character at the current cursor position with pen attributes, then
+/// advance the cursor by the glyph's DISPLAY WIDTH (1 or 2). Wraps at the right
+/// margin; a double-width glyph never straddles the margin. Zero-width
+/// codepoints (combining marks) take no column and are dropped (a Cell holds a
+/// single codepoint), keeping column counting in lockstep with the host.
 pub fn write(self: *Grid, char: u21) void {
+    const cw: u16 = displayWidth(char);
+
+    if (cw == 0) {
+        // Combining mark / joiner / variation selector: occupies no column.
+        self.markRowDirty(self.cursor_row);
+        return;
+    }
+
     const wrap_col: u16 = @intCast(self.getRightMargin());
-    if (self.cursor_col >= wrap_col) {
+    if (@as(u32, self.cursor_col) + cw > wrap_col) {
         if (self.auto_wrap) {
-            // Wrap: move to left margin of next line
+            // Wrap the whole glyph to the next line (never split a wide glyph).
             self.cursor_col = @intCast(self.getLeftMargin());
             self.cursorDown();
         } else {
-            // DECAWM reset (ESC[?7l): overwrite the rightmost column in place;
-            // the cursor does not advance past the right margin (xterm).
-            self.cursor_col = wrap_col -| 1;
+            // DECAWM reset (ESC[?7l): keep the glyph within the last cw columns.
+            self.cursor_col = wrap_col -| cw;
         }
     }
 
-    const cell = self.cellAt(self.cursor_row, self.cursor_col);
+    const col = self.cursor_col;
+
+    // Overwrite cleanup (left): if we land on the trailing half of an existing
+    // wide glyph, blank its now-orphaned leading cell to the left.
+    if (col > 0 and self.cellAt(self.cursor_row, col).char == 0) {
+        const lead = self.cellAt(self.cursor_row, col - 1);
+        lead.* = .{ .bg = lead.bg };
+    }
+
+    const cell = self.cellAt(self.cursor_row, col);
     cell.char = char;
     cell.fg = self.pen_fg;
     cell.bg = self.pen_bg;
     cell.attrs = self.pen_attrs;
     cell.hyperlink_id = self.pen_hyperlink_id; // OSC 8 link, matching writeGroundBatch
 
-    self.cursor_col += 1;
+    if (cw == 2 and col + 1 < self.cols) {
+        // Trailer cell: char == 0 marks "owned by the wide glyph to the left".
+        // It carries the same pen so the background stays contiguous; the
+        // renderer, scrollback encoder and clipboard all skip char == 0.
+        const trailer = self.cellAt(self.cursor_row, col + 1);
+        trailer.* = .{ .char = 0, .fg = self.pen_fg, .bg = self.pen_bg, .attrs = self.pen_attrs };
+    }
+
+    // Overwrite cleanup (right): if the cell just past this glyph is now an
+    // orphaned trailer (its lead sat inside the span we just wrote), blank it.
+    const past = col + cw;
+    if (past < self.cols and self.cellAt(self.cursor_row, past).char == 0) {
+        const orphan = self.cellAt(self.cursor_row, past);
+        orphan.* = .{ .bg = orphan.bg };
+    }
+
+    self.cursor_col = col + cw;
     self.markRowDirty(self.cursor_row);
 }
 
@@ -1415,4 +1561,80 @@ test "scrollDown shifts row_meta down" {
     // Old rows shift down
     try std.testing.expectEqual(PromptMark.prompt_start, grid.row_meta[1].prompt_mark);
     try std.testing.expectEqual(PromptMark.output_start, grid.row_meta[2].prompt_mark);
+}
+
+test "displayWidth: narrow, wide, zero-width, and PUA stays narrow" {
+    try std.testing.expectEqual(@as(u16, 1), displayWidth('A'));
+    try std.testing.expectEqual(@as(u16, 1), displayWidth(0x00E9)); // é precomposed
+    try std.testing.expectEqual(@as(u16, 2), displayWidth(0x4F60)); // 你 CJK
+    try std.testing.expectEqual(@as(u16, 2), displayWidth(0xFF21)); // fullwidth A
+    try std.testing.expectEqual(@as(u16, 2), displayWidth(0x1F389)); // 🎉
+    try std.testing.expectEqual(@as(u16, 2), displayWidth(0x2728)); // ✨ (BMP emoji-presentation)
+    try std.testing.expectEqual(@as(u16, 2), displayWidth(0x2705)); // ✅
+    try std.testing.expectEqual(@as(u16, 0), displayWidth(0x0301)); // combining acute
+    try std.testing.expectEqual(@as(u16, 0), displayWidth(0x200D)); // ZWJ
+    try std.testing.expectEqual(@as(u16, 0), displayWidth(0xFE0F)); // VS16
+    // Powerline/Nerd PUA must NOT be width 2, or it re-introduces misalignment.
+    try std.testing.expectEqual(@as(u16, 1), displayWidth(0xE0B0)); // powerline separator
+    try std.testing.expectEqual(@as(u16, 1), displayWidth(0xF00C)); // nerd check
+}
+
+test "write: wide glyph occupies two cells with a trailer and advances by 2" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 2, 10);
+    defer grid.deinit(allocator);
+
+    grid.write('A');
+    grid.write(0x4F60); // 你 (wide)
+    grid.write('B');
+
+    try std.testing.expectEqual(@as(u21, 'A'), grid.cellAtConst(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 0x4F60), grid.cellAtConst(0, 1).char); // lead
+    try std.testing.expectEqual(@as(u21, 0), grid.cellAtConst(0, 2).char); // trailer sentinel
+    try std.testing.expectEqual(@as(u21, 'B'), grid.cellAtConst(0, 3).char);
+    try std.testing.expectEqual(@as(u16, 4), grid.cursor_col); // 1 + 2 + 1
+}
+
+test "write: combining mark consumes no column" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 2, 10);
+    defer grid.deinit(allocator);
+
+    grid.write('e');
+    grid.write(0x0301); // combining acute — dropped, no advance
+    grid.write('x');
+
+    try std.testing.expectEqual(@as(u21, 'e'), grid.cellAtConst(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'x'), grid.cellAtConst(0, 1).char);
+    try std.testing.expectEqual(@as(u16, 2), grid.cursor_col);
+}
+
+test "write: narrow overwriting a wide glyph clears the orphaned trailer" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 2, 10);
+    defer grid.deinit(allocator);
+
+    grid.write(0x4F60); // 你 at cols 0-1 (lead + trailer)
+    grid.cursor_col = 0;
+    grid.write('X'); // overwrite the lead with a narrow char
+
+    try std.testing.expectEqual(@as(u21, 'X'), grid.cellAtConst(0, 0).char);
+    // The old trailer at col 1 must be re-blanked to a space, never left char=0.
+    try std.testing.expectEqual(@as(u21, ' '), grid.cellAtConst(0, 1).char);
+}
+
+test "write: wide glyph wraps whole at the right margin, never split" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 3, 4); // 4 columns
+    defer grid.deinit(allocator);
+
+    grid.write('a');
+    grid.write('b');
+    grid.write('c'); // cursor now at col 3 — only 1 column left
+    grid.write(0x4F60); // wide glyph cannot fit in 1 col -> wraps to row 1
+
+    try std.testing.expectEqual(@as(u21, 0x4F60), grid.cellAtConst(1, 0).char);
+    try std.testing.expectEqual(@as(u21, 0), grid.cellAtConst(1, 1).char); // trailer
+    try std.testing.expectEqual(@as(u16, 1), grid.cursor_row);
+    try std.testing.expectEqual(@as(u16, 2), grid.cursor_col);
 }

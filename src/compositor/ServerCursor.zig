@@ -33,7 +33,6 @@ const Server = @import("Server.zig");
 const XdgView = @import("XdgView.zig");
 const NodeRegistry = @import("Node.zig");
 const Focus = @import("ServerFocus.zig");
-const ServerFont = @import("ServerFont.zig");
 
 // ── Signal handlers ──────────────────────────────────────────
 
@@ -83,7 +82,11 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
         server.focused_terminal != null and delta != 0 and readAltHeld(server))
     {
         const target: teru.render.FontAtlas.ZoomTarget = if (delta < 0) .in else .out;
-        _ = ServerFont.applyFontZoom(server, target);
+        // Per-pane zoom: only the focused terminal's font changes — the bars
+        // and other panes are untouched, and only one pane's atlas is
+        // re-rasterized (no whole-compositor re-raster lag). Matches the
+        // standalone-terminal Alt+scroll behaviour.
+        _ = server.focused_terminal.?.zoomFont(target);
         return;
     }
 

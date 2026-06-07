@@ -111,6 +111,20 @@ fn toolZoom(self: *WmMcpServer, dir: []const u8, buf: []u8, id: ?[]const u8) []c
     return okText(buf, id, "{{\\\"changed\\\":{},\\\"font_size\\\":{d}}}", .{changed, self.server.font_size});
 }
 
+/// Per-pane font zoom for the FOCUSED terminal — same effect as Alt+scroll.
+/// Only that pane's font changes; the bars and other panes are untouched.
+pub fn thunkZoomFocused(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const dir = extractNestedJsonString(p, "direction") orelse
+        return jsonRpcError(buf, id, -32602, "Missing direction");
+    const target: teru.render.FontAtlas.ZoomTarget =
+        if (std.mem.eql(u8, dir, "in")) .in else if (std.mem.eql(u8, dir, "out")) .out else if (std.mem.eql(u8, dir, "reset")) .reset else return jsonRpcError(buf, id, -32602, "direction must be in, out, or reset");
+    const tp = self.server.focused_terminal orelse
+        return jsonRpcError(buf, id, -32602, "no focused terminal pane");
+    const changed = tp.zoomFont(target);
+    const size: u16 = if (tp.pane_font_size != 0) tp.pane_font_size else self.server.font_size_base;
+    return okText(buf, id, "{{\\\"changed\\\":{},\\\"pane_font_size\\\":{d}}}", .{ changed, size });
+}
+
 pub fn thunkGetConfig(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     _ = p;
     return toolGetConfig(self, buf, id);

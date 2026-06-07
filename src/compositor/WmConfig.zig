@@ -195,10 +195,22 @@ allow_virtual_input: bool = true,
 /// natural-scrolling convention "scroll down → older content".
 touchpad_scroll_invert: bool = false,
 
-/// Alt+scroll wheel over a focused terminal pane resizes the shared font
-/// (zoom) instead of scrolling scrollback. True by default; set false to
-/// free the Alt+wheel gesture for the focused application.
+/// Alt+scroll wheel over a focused terminal pane resizes that pane's font
+/// (per-pane zoom) instead of scrolling scrollback. True by default; set
+/// false to free the Alt+wheel gesture for the focused application.
 alt_scroll_zoom: bool = true,
+
+/// Lower / upper bound (in px) for Alt+scroll font zoom. Deliberately
+/// non-restrictive defaults. `font_zoom_min` is additionally floored at
+/// FontAtlas.min_font_size (6) for legibility; `font_zoom_max` of 0 means
+/// "no maximum".
+font_zoom_min: u16 = 6,
+font_zoom_max: u16 = 72,
+
+/// Directory for `mod+w` screenshots. Empty = the default `$HOME/Pictures/teru`.
+/// Must resolve under `$HOME` or `/tmp` (the screenshot path-safety check).
+screenshot_dir_buf: [256]u8 = undefined,
+screenshot_dir_len: u16 = 0,
 
 /// Pixel width of the border-drag hit zone inside each pane. Clicks
 /// within this distance of a pane's edge start a border-resize drag
@@ -547,6 +559,14 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.touchpad_scroll_invert = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "alt_scroll_zoom")) {
         self.alt_scroll_zoom = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+    } else if (std.mem.eql(u8, key, "font_zoom_min")) {
+        self.font_zoom_min = std.fmt.parseInt(u16, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "font_zoom_max")) {
+        self.font_zoom_max = std.fmt.parseInt(u16, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "screenshot_dir")) {
+        const n = @min(value.len, self.screenshot_dir_buf.len);
+        @memcpy(self.screenshot_dir_buf[0..n], value[0..n]);
+        self.screenshot_dir_len = @intCast(n);
     } else if (std.mem.eql(u8, key, "border_drag_insensitive_px")) {
         self.border_drag_insensitive_px = std.fmt.parseInt(i32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "border_drag_zone_px")) {
@@ -960,4 +980,14 @@ test "alt_scroll_zoom defaults on and parses false" {
     var on = WmConfig{};
     on.parse("alt_scroll_zoom = true\n");
     try std.testing.expect(on.alt_scroll_zoom);
+}
+
+test "font_zoom_min/max defaults and parse" {
+    try std.testing.expectEqual(@as(u16, 6), (WmConfig{}).font_zoom_min);
+    try std.testing.expectEqual(@as(u16, 72), (WmConfig{}).font_zoom_max);
+
+    var c = WmConfig{};
+    c.parse("font_zoom_min = 10\nfont_zoom_max = 40\n");
+    try std.testing.expectEqual(@as(u16, 10), c.font_zoom_min);
+    try std.testing.expectEqual(@as(u16, 40), c.font_zoom_max);
 }

@@ -758,7 +758,16 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                             }
 
                             var key_buf: [32]u8 = undefined;
-                            const len = kb.processKey(key.keycode, &key_buf);
+                            // DECCKM: when the focused app enabled application-cursor
+                            // keys (ESC[?1h), arrows must be SS3 (ESC O x), not the CSI
+                            // form processKey emits — claude-code and other readline /
+                            // ncurses TUIs need this or arrow keys do nothing in menus.
+                            const app_cursor = if (mux.getActivePane()) |p| p.vt.app_cursor_keys else false;
+                            const ss3 = if (app_cursor) ks.ss3Arrow(keysym) else "";
+                            const len = if (ss3.len > 0) blk: {
+                                @memcpy(key_buf[0..ss3.len], ss3);
+                                break :blk ss3.len;
+                            } else kb.processKey(key.keycode, &key_buf);
 
                             // Nested-teru Alt-forwarding. When the focused pane is
                             // itself a teru that announced it wants Alt (OSC 9998;1),
