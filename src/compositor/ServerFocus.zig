@@ -57,6 +57,14 @@ pub fn focusView(server: *Server, view: *XdgView) void {
     server.focused_view = view;
     server.focused_terminal = null;
     refreshAllBorders(server);
+    // Repaint terminal cursors too: focusView nulls focused_terminal, so any
+    // terminal that held focus (solid cursor) must drop to hollow. Without this,
+    // focusing an XDG client (e.g. Vivaldi) left the prior terminal showing a
+    // stale solid cursor — and cycling back made two panes look focused at once.
+    // (focusXwaylandSurface already does this for the X11 path.)
+    for (server.terminal_panes) |maybe_tp| {
+        if (maybe_tp) |tp| tp.repaintBorderOnly();
+    }
     if (!was_focused) {
         std.log.scoped(.compositor).debug("focusView ran node={d} focused_terminal->null", .{view.node_id});
     }
@@ -203,14 +211,17 @@ pub fn cycleFocusAll(server: *Server, forward: bool) void {
                             if (server.focused_xwayland) |prev_xw| {
                                 wlr.wlr_xwayland_surface_activate(prev_xw, false);
                             }
-                            const prev_focused = server.focused_terminal;
                             server.focused_terminal = tp;
                             server.focused_view = null;
                             server.focused_xwayland = null;
-                            if (prev_focused) |p| {
-                                if (p != tp) p.repaintBorderOnly();
+                            // Repaint ALL terminal cursors, not just the
+                            // immediately-previous one: if focus passed through
+                            // a Wayland client, focused_terminal was nulled, so a
+                            // terminal focused before that would keep a stale
+                            // solid cursor (two panes looking focused at once).
+                            for (server.terminal_panes) |maybe_other| {
+                                if (maybe_other) |other| other.repaintBorderOnly();
                             }
-                            tp.repaintBorderOnly();
                             refreshAllBorders(server);
                             if (server.bar) |b| {
                                 b.dirty = true;
