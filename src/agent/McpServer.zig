@@ -190,7 +190,19 @@ pub fn emitEvent(self: *McpServer, json_line: []const u8) void {
     buf[n] = '\n';
     const total = n + 1;
     const w = std.c.write(self.event_subscriber_fd, &buf, total);
-    if (w <= 0) {
+    // EAGAIN on a non-blocking socket means the kernel buffer is full;
+    // drop this event but keep the subscriber. Only close on real
+    // terminal errors (EPIPE, EBADF, etc). Before this fix the branch
+    // treated EAGAIN as "subscriber gone" and silently closed it, so
+    // the first event went through and the rest were black-holed.
+    const EAGAIN: i32 = 11;
+    if (w < 0) {
+        const errno = std.c._errno().*;
+        if (errno == EAGAIN) return; // keep subscriber, drop event
+        _ = posix.system.close(self.event_subscriber_fd);
+        self.event_subscriber_fd = invalid_fd;
+    } else if (w == 0) {
+        // 0 isn't normal for stream sockets — treat as closed.
         _ = posix.system.close(self.event_subscriber_fd);
         self.event_subscriber_fd = invalid_fd;
     }

@@ -419,8 +419,11 @@ pub fn write(self: *Grid, char: u21) void {
     const col = self.cursor_col;
 
     // Overwrite cleanup (left): if we land on the trailing half of an existing
-    // wide glyph, blank its now-orphaned leading cell to the left.
-    if (col > 0 and self.cellAt(self.cursor_row, col).char == 0) {
+    // wide glyph, blank its now-orphaned leading cell to the left. Guard on the
+    // actual display width: a stale char==0 trailer (leftover from earlier
+    // wide-glyph output) sitting over a freshly-written NARROW char at col-1 is
+    // NOT an orphaned wide lead — blanking it eats a cell ("text is" → "textis").
+    if (col > 0 and self.cellAt(self.cursor_row, col).char == 0 and displayWidth(self.cellAt(self.cursor_row, col - 1).char) == 2) {
         const lead = self.cellAt(self.cursor_row, col - 1);
         lead.* = .{ .bg = lead.bg };
     }
@@ -1103,6 +1106,36 @@ test "write characters and cursor advance" {
     try std.testing.expectEqual(@as(u21, '!'), grid.cellAtConst(0, 2).char);
     try std.testing.expectEqual(@as(u16, 0), grid.cursor_row);
     try std.testing.expectEqual(@as(u16, 3), grid.cursor_col);
+}
+
+test "write: writing onto a stale wide-glyph trailer must not eat the narrow cell before it" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 4, 20);
+    defer grid.deinit(allocator);
+
+    // Inconsistent leftover state: a real narrow char at col 4 and a stale
+    // wide-glyph trailer (char==0) at col 5 with NO width-2 lead at col 4 —
+    // the kind of residue a redraw can land on after earlier wide-glyph output.
+    grid.cellAt(0, 4).char = 't';
+    grid.cellAt(0, 5).char = 0;
+    // Cursor lands on the trailer (col 5) and writes a narrow 'i' onto it.
+    grid.cursor_row = 0;
+    grid.cursor_col = 5;
+    grid.write('i');
+    // The narrow 't' at col 4 is NOT an orphaned wide lead — it must survive.
+    try std.testing.expectEqual(@as(u21, 't'), grid.cellAtConst(0, 4).char);
+    try std.testing.expectEqual(@as(u21, 'i'), grid.cellAtConst(0, 5).char);
+
+    // And a REAL orphaned wide lead must still be cleaned: 你 (width 2) at
+    // col 10 leaves a trailer at col 11; overwriting the trailer blanks the lead.
+    grid.cursor_row = 0;
+    grid.cursor_col = 10;
+    grid.write(0x4F60); // 你 → lead col10, trailer col11
+    grid.cursor_row = 0;
+    grid.cursor_col = 11;
+    grid.write('z');
+    try std.testing.expectEqual(@as(u21, ' '), grid.cellAtConst(0, 10).char); // lead blanked
+    try std.testing.expectEqual(@as(u21, 'z'), grid.cellAtConst(0, 11).char);
 }
 
 test "write wraps at right margin" {

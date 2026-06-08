@@ -339,12 +339,9 @@ fn deserializeNode(reader: anytype, allocator: Allocator) !SerializedNode {
 
         const role_len = try reader.readInt(u16, .little);
         const role = try allocator.alloc(u8, role_len);
+        errdefer allocator.free(role);
         const role_read = try reader.readAll(role);
-        if (role_read != role_len) {
-            allocator.free(role);
-            allocator.free(group);
-            return error.UnexpectedEof;
-        }
+        if (role_read != role_len) return error.UnexpectedEof;
 
         agent_group = group;
         agent_role = role;
@@ -572,6 +569,30 @@ test "agent metadata round-trip" {
     const sn = session.graph_snapshot[0];
     try std.testing.expectEqualStrings("team-qa", sn.agent_group.?);
     try std.testing.expectEqualStrings("auditor", sn.agent_role.?);
+}
+
+test "deserializeNode: truncated mid agent-role errors without leak or double-free" {
+    const allocator = std.testing.allocator;
+    var graph = ProcessGraph.init(allocator);
+    defer graph.deinit();
+
+    const id = try graph.spawn(.{
+        .name = "code-reviewer",
+        .kind = .agent,
+        .agent = .{ .group = "team-qa", .role = "auditor" },
+    });
+
+    // Serialize the single node directly (agent_role is the last field written).
+    var buf: [2048]u8 = undefined;
+    var writer = compat.MemWriter{ .buffer = &buf };
+    try serializeNode(graph.getNode(id).?, &writer);
+
+    // Cut off the trailing role payload bytes: the role length prefix is still
+    // present but readAll() short-reads, hitting the role error branch. If the
+    // double-free regresses, std.testing.allocator aborts here.
+    const written = writer.getWritten();
+    var reader = compat.MemReader{ .buffer = written[0 .. written.len - 3] };
+    try std.testing.expectError(error.UnexpectedEof, deserializeNode(&reader, allocator));
 }
 
 test "file save and load round-trip" {
