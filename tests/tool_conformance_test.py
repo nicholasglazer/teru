@@ -25,7 +25,6 @@ Usage:
 If binaries not specified, auto-discovers from zig-out/bin or ~/.local/bin.
 """
 
-import glob
 import json
 import os
 import signal
@@ -226,34 +225,38 @@ class TeruWMMCP:
 
 
 def launch_teru() -> Tuple[subprocess.Popen, str]:
-    """Launch teru daemon, return (proc, socket_path)."""
+    """Launch our OWN teru daemon, return (proc, socket_path).
+
+    Hermetic by design: the socket is keyed to OUR proc.pid
+    (teru-mcp-{pid}.sock), so conformance never connects to (and never
+    mutates) the user's live daemon."""
     env = dict(os.environ)
     env.pop("WAYLAND_DISPLAY", None)
     env.pop("DISPLAY", None)
-    
+
     log = open("/tmp/teru-conformance.log", "w")
     proc = subprocess.Popen([TERU_BIN, "--daemon", "conformance"],
                             env=env, stdout=log, stderr=log,
                             start_new_session=True)
-    
-    sock = None
+
+    sock = os.path.join(RUNTIME_DIR, f"teru-mcp-{proc.pid}.sock")
     for _ in range(40):
         time.sleep(0.1)
-        socks = glob.glob(os.path.join(RUNTIME_DIR, "teru-mcp-*.sock"))
-        if socks:
-            sock = sorted(socks, key=os.path.getmtime)[-1]
-            break
-    
-    if not sock:
-        proc.send_signal(signal.SIGTERM)
-        raise RuntimeError("teru did not create MCP socket")
-    
-    time.sleep(0.2)
-    return proc, sock
+        if os.path.exists(sock):
+            time.sleep(0.2)
+            return proc, sock
+
+    proc.send_signal(signal.SIGTERM)
+    raise RuntimeError("teru did not create MCP socket")
 
 
 def launch_teruwm() -> Tuple[subprocess.Popen, str]:
-    """Launch teruwm headless, return (proc, socket_path)."""
+    """Launch our OWN headless teruwm, return (proc, socket_path).
+
+    Hermetic by design: the socket is keyed to OUR proc.pid
+    (teruwm-mcp-{pid}.sock), so conformance never connects to (and never
+    mutates) the user's live compositor. We never unlink sockets we didn't
+    create."""
     env = dict(os.environ)
     env.update({
         "WLR_BACKENDS": "headless",
@@ -262,32 +265,20 @@ def launch_teruwm() -> Tuple[subprocess.Popen, str]:
     })
     env.pop("WAYLAND_DISPLAY", None)
     env.pop("DISPLAY", None)
-    
-    for stale in glob.glob(os.path.join(RUNTIME_DIR, "teruwm-mcp-*.sock")):
-        try:
-            os.unlink(stale)
-        except:
-            pass
-    
+
     log = open("/tmp/teruwm-conformance.log", "w")
     proc = subprocess.Popen([TERUWM_BIN], env=env, stdout=log, stderr=log,
                             start_new_session=True)
-    
-    sock = None
+
+    sock = os.path.join(RUNTIME_DIR, f"teruwm-mcp-{proc.pid}.sock")
     for _ in range(40):
         time.sleep(0.1)
-        socks = [s for s in glob.glob(os.path.join(RUNTIME_DIR, "teruwm-mcp-*.sock"))
-                 if "events" not in s]
-        if socks:
-            sock = socks[0]
-            break
-    
-    if not sock:
-        proc.send_signal(signal.SIGTERM)
-        raise RuntimeError("teruwm did not create MCP socket")
-    
-    time.sleep(0.3)
-    return proc, sock
+        if os.path.exists(sock):
+            time.sleep(0.3)
+            return proc, sock
+
+    proc.send_signal(signal.SIGTERM)
+    raise RuntimeError("teruwm did not create MCP socket")
 
 
 def check_response(r: Dict[str, Any], request_id: int, tool: str) -> Tuple[bool, str]:

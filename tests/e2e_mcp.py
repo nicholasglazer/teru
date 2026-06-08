@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """teru MCP end-to-end test harness.
 
-Connects to a running teru instance via MCP socket, executes test cases
-with real pane operations, takes snapshots, and verifies actual content.
+Spawns its OWN throwaway `teru --daemon`, executes test cases with real
+(destructive) pane operations against it, takes snapshots, and verifies
+actual content. Hermetic by design — it never touches a pre-existing
+daemon: the socket is keyed to OUR proc.pid, and the daemon is SIGTERM'd
+in a finally block.
 
 Usage:
-    python3 tests/e2e_mcp.py [socket_path]
+    python3 tests/e2e_mcp.py [teru_bin]
 
-If no socket given, auto-discovers the most recent teru-mcp-*.sock.
+teru_bin: argv override, else zig-out/bin/teru, else ~/.local/bin/teru,
+else `teru` on PATH.
 """
 
 import socket
@@ -15,7 +19,8 @@ import json
 import time
 import sys
 import os
-import glob
+import signal
+import subprocess
 import re
 
 # ── MCP client ─────────────────────────────────────────────────
@@ -820,30 +825,62 @@ def run_tests(mcp):
 
 # ── Main ───────────────────────────────────────────────────────
 
-def find_socket():
-    socks = sorted(glob.glob('/run/user/*/teru-mcp-*.sock'), key=os.path.getmtime, reverse=True)
-    for s in socks:
-        try:
-            test = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            test.settimeout(1)
-            test.connect(s)
-            test.close()
-            return s
-        except:
-            continue
-    return None
+def _resolve_teru_bin():
+    """argv[1] (if a real path) → zig-out/bin/teru → ~/.local/bin/teru → PATH."""
+    if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
+        return sys.argv[1]
+    for cand in ('zig-out/bin/teru', os.path.expanduser('~/.local/bin/teru')):
+        if os.path.exists(cand):
+            return cand
+    return 'teru'
+
+
+def launch_daemon(teru_bin):
+    """Launch a throwaway `teru --daemon` and return (proc, sock).
+
+    Hermetic by design: the socket is keyed to OUR proc.pid, so this E2E
+    (which creates/closes panes, switches workspaces, save/restores
+    sessions, broadcasts input) never mutates the user's live daemon."""
+    runtime = os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
+    env = dict(os.environ)
+    env.pop('WAYLAND_DISPLAY', None)
+    env.pop('DISPLAY', None)
+    proc = subprocess.Popen(
+        [teru_bin, '--daemon', 'e2e_mcp'],
+        env=env,
+        stdout=open('/tmp/teru-e2e-mcp.log', 'w'),
+        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+        start_new_session=True)
+    sock = os.path.join(runtime, f'teru-mcp-{proc.pid}.sock')
+    for _ in range(50):
+        time.sleep(0.2)
+        if os.path.exists(sock):
+            time.sleep(0.3)  # let the default pane's shell settle
+            return proc, sock
+    proc.kill()
+    raise RuntimeError(f'teru --daemon did not create {sock} '
+                       '(see /tmp/teru-e2e-mcp.log)')
+
 
 def main():
-    sock_path = sys.argv[1] if len(sys.argv) > 1 else find_socket()
-    if not sock_path:
-        print('ERROR: No teru MCP socket found')
-        sys.exit(1)
+    teru_bin = _resolve_teru_bin()
+    if '/' in teru_bin and not os.path.exists(teru_bin):
+        print(f'ERROR: teru binary not found: {teru_bin}')
+        sys.exit(2)
 
-    print(f'Socket: {sock_path}')
+    proc, sock_path = launch_daemon(teru_bin)
+    print(f'Daemon pid {proc.pid}  socket {sock_path}')
     print()
 
     mcp = TeruMCP(sock_path)
-    results = run_tests(mcp)
+    try:
+        results = run_tests(mcp)
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=4)
+        except subprocess.TimeoutExpired:
+            proc.kill()
 
     # Report
     print()
