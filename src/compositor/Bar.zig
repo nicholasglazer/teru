@@ -559,7 +559,9 @@ fn buildBarData(_: *Bar, server: *Server) BarData {
     }
 
     if (server.focused_terminal) |tp| {
-        data.title = if (tp.pane.vt.title_len > 0) tp.pane.vt.title[0..tp.pane.vt.title_len] else "shell";
+        // No app-set title (OSC 0/2) → show nothing rather than a confusing
+        // generic "shell". (A cwd-based title would need OSC 7 tracking.)
+        data.title = if (tp.pane.vt.title_len > 0) tp.pane.vt.title[0..tp.pane.vt.title_len] else "";
     }
 
     const active_ws = server.layout_engine.getActiveWorkspace();
