@@ -213,6 +213,24 @@ pub fn updateVisibility(self: *Bar) void {
 /// bar-tick uses this to decide whether to scheduleRender (and so
 /// avoids waking the compositor on a truly-idle frame).
 pub fn render(self: *Bar, server: *Server) bool {
+    // While the launcher owns the top bar, EVERY bar repaint must paint the
+    // launcher, not the normal bar. The launcher overlay and the normal bar
+    // share the top bar's scene buffer, and the overlay never updates
+    // last_top_sig — so without this guard the next b.render() (the 1 Hz clock
+    // tick, a desktop notification, a focus change, a client map/unmap…)
+    // repaints the normal bar over the launcher. `active` stays true, so it
+    // reappears on the next keystroke: that async clobber is the "launcher
+    // disappears on spaces sometimes" bug — async renders land during typing
+    // pauses, which fall on word boundaries. Funnel all callers through the
+    // overlay here so nothing can erase it mid-typing.
+    if (server.launcher.active) {
+        if (self.top.enabled) {
+            server.launcher.render(&self.top.renderer);
+            wlr.wlr_scene_buffer_set_buffer_with_damage(self.top.scene_buffer, self.top.pixel_buffer, null);
+        }
+        return self.top.enabled;
+    }
+
     // Refresh cached sysfs/proc data (TTL-gated, non-blocking reads).
     // Must happen before barSignature so value changes trigger re-render.
     const now = teru.compat.monotonicNow();
