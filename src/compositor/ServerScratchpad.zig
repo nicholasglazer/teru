@@ -17,6 +17,8 @@ const teru = @import("teru");
 const Server = @import("Server.zig");
 const TerminalPane = @import("TerminalPane.zig");
 const NodeRegistry = @import("Node.zig");
+const Focus = @import("ServerFocus.zig");
+const wlr = @import("wlr.zig");
 const Pane = teru.Pane;
 
 const max_auto_name_len = 32;
@@ -149,6 +151,24 @@ fn buildSpawnConfig(
 
 // ── Hide / show / spawn ──────────────────────────────────────
 
+/// Move focus to a scratchpad terminal, de-focusing whatever held it before.
+/// Terminal borders are decided at render time by `focused_terminal == self`,
+/// so the previously-focused pane (a tiled pane OR another already-open
+/// scratchpad) must be repainted or it keeps its focused (orange) border —
+/// the "both scratchpads look selected" bug. Mirrors updateFocusedTerminal's
+/// de-focus of any XDG/Xwayland holder so the one-of-three focus invariant holds.
+fn focusScratchpad(server: *Server, tp: *TerminalPane) void {
+    if (server.focused_view) |pv| _ = wlr.wlr_xdg_toplevel_set_activated(pv.toplevel, false);
+    if (server.focused_xwayland) |px| wlr.wlr_xwayland_surface_activate(px, false);
+    server.focused_terminal = tp;
+    server.focused_view = null;
+    server.focused_xwayland = null;
+    for (server.terminal_panes) |maybe_other| {
+        if (maybe_other) |other| if (other != tp) other.repaintBorderOnly();
+    }
+    Focus.refreshAllBorders(server);
+}
+
 /// Promote a parked scratchpad slot onto workspace `ws` and focus it.
 /// Reparents the scene buffer back into the scene root if it was
 /// parked — see hide() for why we can't just rely on set_enabled.
@@ -169,8 +189,7 @@ fn show(server: *Server, slot: u16, ws: u8) void {
             tp.setVisible(true);
             tp.resize(rect.w, rect.h);
             tp.setPosition(rect.x, rect.y);
-            server.focused_terminal = tp;
-            server.focused_view = null;
+            focusScratchpad(server, tp);
             tp.render();
         }
     }
@@ -193,7 +212,15 @@ fn hide(server: *Server, slot: u16) void {
                 tp.reparent(parked);
             }
             tp.setVisible(false);
-            if (server.focused_terminal == tp) server.focused_terminal = null;
+            // Return focus to the window that was active before the scratchpad
+            // came up. Scratchpads are floating and never become the tiled
+            // active_node, so updateFocusedTerminal re-focuses exactly that
+            // pre-scratchpad pane (and repaints every border). Previously this
+            // just nulled focus, so it fell back to the default (master) pane.
+            if (server.focused_terminal == tp) {
+                server.focused_terminal = null;
+                Focus.updateFocusedTerminal(server);
+            }
         }
     }
 }
@@ -243,8 +270,7 @@ fn spawn(server: *Server, name: []const u8, ws: u8) ?u16 {
         }
     }
 
-    server.focused_terminal = tp;
-    server.focused_view = null;
+    focusScratchpad(server, tp);
     std.log.scoped(.pty).info("scratchpad '{s}' spawned on ws={d}", .{ name, ws });
     return slot;
 }
