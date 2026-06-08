@@ -532,7 +532,14 @@ fn setXcursorIfChanged(server: *Server, name: [*:0]const u8) void {
 // mod+ctrl+w arms it; the next click-drag draws a translucent box over the
 // composited output, and release crops it to a PNG (ServerScreenshot). Esc or
 // a zero-size drag cancels. No grim/slurp/layer-shell — teruwm owns its output.
-const area_overlay_color = [4]f32{ 0.40, 0.58, 0.96, 0.26 }; // translucent accent
+// Figma-style area-select overlay. wlroots scene_rect colours are
+// PRE-MULTIPLIED alpha (see Node.argbToFloats), so rgb is already scaled by a —
+// the old straight {0.40,0.58,0.96,0.26} rendered washed-out for that reason.
+// Fill: indigo #6366F1 @ 22% over the live screen content.
+// Border: deeper indigo #4F46E5, opaque, for a crisp frame.
+const area_fill_color = [4]f32{ 0.085, 0.088, 0.208, 0.22 }; // #6366F1 * 0.22
+const area_border_color = [4]f32{ 0.310, 0.275, 0.898, 1.0 }; // #4F46E5 opaque
+const area_border_px: c_int = 2;
 
 /// Arm area-select: crosshair cursor + hint toast. The overlay rect is created
 /// lazily on the first button-press so a cancel-before-drag leaves no node.
@@ -550,6 +557,12 @@ pub fn cancelAreaSelect(server: *Server) void {
     if (server.area_rect) |rect| {
         wlr.wlr_scene_node_destroy(wlr.miozu_scene_rect_node(rect));
         server.area_rect = null;
+    }
+    for (&server.area_border) |*slot| {
+        if (slot.*) |edge| {
+            wlr.wlr_scene_node_destroy(wlr.miozu_scene_rect_node(edge));
+            slot.* = null;
+        }
     }
     server.area_dragging = false;
     if (server.cursor_mode == .area_select) {
@@ -586,13 +599,25 @@ fn areaSelectRelease(server: *Server) void {
     }
 }
 
+fn setRect(rect: *wlr.wlr_scene_rect, x: c_int, y: c_int, w: c_int, h: c_int) void {
+    wlr.wlr_scene_node_set_position(wlr.miozu_scene_rect_node(rect), x, y);
+    wlr.wlr_scene_rect_set_size(rect, w, h);
+}
+
 fn ensureAreaRect(server: *Server) void {
     if (server.area_rect != null) return;
     const root = wlr.miozu_scene_tree(server.scene) orelse return;
-    var col = area_overlay_color;
-    if (wlr.wlr_scene_rect_create(root, 1, 1, &col)) |rect| {
-        server.area_rect = rect;
-        wlr.wlr_scene_node_raise_to_top(wlr.miozu_scene_rect_node(rect));
+    var fill = area_fill_color;
+    const rect = wlr.wlr_scene_rect_create(root, 1, 1, &fill) orelse return;
+    server.area_rect = rect;
+    wlr.wlr_scene_node_raise_to_top(wlr.miozu_scene_rect_node(rect));
+    // Border edges, raised above the fill so the frame stays crisp on its edge.
+    var border = area_border_color;
+    for (&server.area_border) |*slot| {
+        if (wlr.wlr_scene_rect_create(root, 1, 1, &border)) |edge| {
+            slot.* = edge;
+            wlr.wlr_scene_node_raise_to_top(wlr.miozu_scene_rect_node(edge));
+        }
     }
 }
 
@@ -604,8 +629,13 @@ fn updateAreaRect(server: *Server, cx: f64, cy: f64) void {
     const y: c_int = @intFromFloat(@min(ay, cy));
     const w: c_int = @intFromFloat(@max(1, @abs(ax - cx)));
     const h: c_int = @intFromFloat(@max(1, @abs(ay - cy)));
-    wlr.wlr_scene_node_set_position(wlr.miozu_scene_rect_node(rect), x, y);
-    wlr.wlr_scene_rect_set_size(rect, w, h);
+    setRect(rect, x, y, w, h);
+    // Border frame (thickness clamped so a tiny box stays valid; sizes >= 1).
+    const bt: c_int = @max(1, @min(area_border_px, @min(w, h)));
+    if (server.area_border[0]) |e| setRect(e, x, y, w, bt); // top
+    if (server.area_border[1]) |e| setRect(e, x, y + h - bt, w, bt); // bottom
+    if (server.area_border[2]) |e| setRect(e, x, y, bt, h); // left
+    if (server.area_border[3]) |e| setRect(e, x + w - bt, y, bt, h); // right
     server.scheduleRender();
 }
 
