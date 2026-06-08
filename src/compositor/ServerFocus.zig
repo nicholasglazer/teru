@@ -71,9 +71,16 @@ pub fn focusView(server: *Server, view: *XdgView) void {
         wlr.miozu_xdg_toplevel_base(view.toplevel) orelse return,
     ) orelse return;
 
-    // Leaf-if-same-client else root.
+    // Leaf-if-same-client else root. Read the leaf from the seat's pointer
+    // focus (wlroots keeps it valid and auto-nulls it on surface destroy)
+    // rather than our own latched `last_pointer_surface` raw pointer, which
+    // dangles when the surface under the cursor was a popup/subsurface that got
+    // destroyed — e.g. Thunar's right-click menu before its Properties dialog
+    // maps. Dereferencing that stale pointer in miozu_surfaces_same_client →
+    // wl_resource_get_client(<freed>) crashed teruwm (SIGSEGV; coredump 177443).
+    const leaf_opt = wlr.miozu_seat_pointer_focused_surface(server.seat);
     const target: *wlr.wlr_surface = blk: {
-        if (server.last_pointer_surface) |leaf| {
+        if (leaf_opt) |leaf| {
             if (wlr.miozu_surfaces_same_client(leaf, root_surface) != 0) {
                 break :blk leaf;
             }
@@ -88,7 +95,7 @@ pub fn focusView(server: *Server, view: *XdgView) void {
     wlr.wlr_seat_keyboard_notify_enter(server.seat, target, keycodes, num_keycodes, modifiers);
     std.log.scoped(.compositor).debug(
         "keyboard_notify_enter target={x} (root={x} leaf={?x})",
-        .{ @intFromPtr(target), @intFromPtr(root_surface), if (server.last_pointer_surface) |l| @intFromPtr(l) else null },
+        .{ @intFromPtr(target), @intFromPtr(root_surface), if (leaf_opt) |l| @intFromPtr(l) else null },
     );
 
     if (server.bar) |b| _ = b.render(server);

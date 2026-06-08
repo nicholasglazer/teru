@@ -642,6 +642,15 @@ struct wlr_keyboard *miozu_seat_get_keyboard(struct wlr_seat *s) {
     return wlr_seat_get_keyboard(s);
 }
 
+/* The pointer's currently-focused surface. wlroots keeps this valid and
+ * auto-nulls it on surface destroy (its own internal destroy listener), so
+ * it is always safe to read — unlike a raw latched surface pointer, which
+ * dangles when a popup/subsurface under the cursor is destroyed (e.g. a
+ * right-click menu) and then dereferenced. */
+struct wlr_surface *miozu_seat_pointer_focused_surface(struct wlr_seat *s) {
+    return s->pointer_state.focused_surface;
+}
+
 /* ── Seat request signals ────────────────────────────────────── */
 
 struct wl_signal *miozu_seat_request_set_cursor(struct wlr_seat *s) {
@@ -666,6 +675,7 @@ struct wl_signal *miozu_seat_request_set_selection(struct wlr_seat *s) {
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include <signal.h>
 
 struct miozu_png_source {
     struct wlr_data_source base;
@@ -684,6 +694,10 @@ static void miozu_png_source_send(struct wlr_data_source *src,
     pid_t pid = fork();
     if (pid == 0) {
         if (fork() == 0) {
+            /* If the paste target closes the read end early, write() would
+             * raise SIGPIPE whose default action kills this writer before the
+             * graceful EPIPE break below. Ignore it so the loop exits cleanly. */
+            signal(SIGPIPE, SIG_IGN);
             size_t off = 0;
             while (off < s->len) {
                 ssize_t n = write(fd, s->data + off, s->len - off);

@@ -171,6 +171,24 @@ pub fn execRestart(server: *Server) void {
     // FD_CLOEXEC-cleared above and are independent of wlroots, so they survive
     // this teardown and the execve — terminals keep running.
     server.shutting_down = true;
+
+    // Detach the keyboard from the seat and unhook our per-keyboard listeners
+    // BEFORE wlr_backend_destroy. The backend teardown finalizes each input
+    // device; wlr_keyboard_finish fires a final release-all key notify, and if
+    // the keyboard is still the seat's active keyboard (with our key listeners
+    // attached) that notify routes into a half-freed seat/grab and jumps to a
+    // NULL fn pointer → SIGSEGV *before* the execve below (verbatim in the
+    // 2026-06-04 --restore coredump: wlr_keyboard_notify_key ← wlr_keyboard_finish).
+    // That abort is what turned $mod+' into a crash+respawn — new PID, dropped
+    // DRM master, the VT text-mode flash — instead of a clean in-place exec.
+    // Detaching first makes the teardown inert so the execve actually runs.
+    wlr.wlr_seat_set_keyboard(server.seat, null);
+    for (server.keyboards.items) |kb| {
+        wlr.wl_list_remove(&kb.key_listener.link);
+        wlr.wl_list_remove(&kb.modifiers_listener.link);
+        wlr.wl_list_remove(&kb.destroy_listener.link);
+    }
+
     wlr.wlr_backend_destroy(server.backend);
     if (server.session) |sess| wlr.wlr_session_destroy(sess);
 
