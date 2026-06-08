@@ -378,15 +378,17 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     // a partial (dirty-row) repaint would tear it. Force a full repaint so the
     // overlay always lands on a complete frame (full damage via inverted range).
     if (self.pane.scroll_offset > 0) grid.markAllDirty();
-    const ch: c_int = @intCast(self.renderer.cell_height);
-    const dirty_y0: c_int = if (grid.dirty_row_min > grid.dirty_row_max)
-        -1
-    else
-        @as(c_int, grid.dirty_row_min) * ch;
-    const dirty_y1: c_int = if (grid.dirty_row_min > grid.dirty_row_max)
-        -1
-    else
-        (@as(c_int, grid.dirty_row_max) + 1) * ch;
+    // Full-buffer damage (dirty_y0 < 0). Per-row partial damage (the perf opt in
+    // commit 738d0d4) HALF-RENDERS native panes on the GLES/nvidia path: wlroots'
+    // partial texture re-upload of our reused data-ptr buffer only covers roughly
+    // the top of each dirty row, leaving the bottom of the glyphs stale. Verified:
+    // pixman renders the partial band fine, gles2 truncates it to ~half — so it
+    // never reproduced in the headless pixman tests, only on the real GPU.
+    // renderDirtyWithSelection below still re-paints ONLY the dirty rows, so CPU
+    // stays cheap; we just always present full damage so the GPU re-uploads the
+    // whole pane. (Revisit with buffer double-buffering if upload cost ever bites.)
+    const dirty_y0: c_int = -1;
+    const dirty_y1: c_int = -1;
 
     // Render the dirty range with selection overlay applied per-cell.
     // `terminalMouseMotion` / `terminalMousePress` in ServerCursor now
@@ -439,23 +441,22 @@ pub fn repaintBorderOnly(self: *TerminalPane) void {
     // a full re-blit, so the original perf intent holds.
     self.renderer.cursor_focused = (self.server.focused_terminal == self);
     const grid = &self.pane.grid;
-    const ch: usize = self.renderer.cell_height;
-    const cy: usize = @as(usize, grid.cursor_row) * ch; // padding = 0 in the compositor fb
-    const cy1: usize = @min(cy + ch, @as(usize, self.renderer.height));
     grid.markRowDirty(grid.cursor_row);
     self.renderer.renderDirty(grid); // repaints the cursor row + cursor in the new style
 
     const has_border = self.shouldDrawBorder();
     if (has_border) self.drawBorder(self.borderColor());
-    // Damage region = the cursor row band (+ border strips when present).
+    // Full-buffer damage: a partial (cursor-row) band half-renders on the GLES
+    // path (same root cause as renderIfDirty). Only the cursor row was
+    // re-rendered, so CPU stays cheap; full damage just re-uploads the pane.
     wlr.miozu_scene_buffer_commit_dirty(
         self.scene_buffer,
         self.pixel_buffer,
         @intCast(self.renderer.width),
         @intCast(self.renderer.height),
-        @intCast(cy),
-        @intCast(cy1),
-        if (has_border) @as(c_int, 2) else @as(c_int, 0),
+        -1,
+        -1,
+        0,
     );
 }
 
