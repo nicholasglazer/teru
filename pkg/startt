@@ -64,8 +64,24 @@ rm -f "/run/user/$(id -u)/wayland-"*.lock 2>/dev/null || true
 # made the compositor exit when DPMS/idle changed the dGPU power state. Pinning
 # the DRM backend to the Intel card renders + scans out on one GPU and lets the
 # dGPU sleep. Override (e.g. for an nvidia-routed external monitor) by exporting
-# WLR_DRM_DEVICES before startt, or delete this line.
-export WLR_DRM_DEVICES="${WLR_DRM_DEVICES:-/dev/dri/by-path/pci-0000:00:02.0-card}"
+# WLR_DRM_DEVICES before startt, or delete this block.
+#
+# CRITICAL: WLR_DRM_DEVICES is COLON-separated (like $PATH). The stable
+# /dev/dri/by-path/pci-0000:00:02.0-card name contains colons (PCI address),
+# so handing wlroots the by-path verbatim makes it split on those colons into
+# three garbage device paths → "Found 0 GPUs, cannot create backend" → teruwm
+# never starts. Resolve the by-path symlink to the colon-free /dev/dri/cardN
+# node first, and only export if that node actually exists (otherwise leave
+# WLR_DRM_DEVICES unset so wlroots autoselects and the compositor still comes up).
+if [ -z "${WLR_DRM_DEVICES:-}" ]; then
+    _igpu_card="$(readlink -f /dev/dri/by-path/pci-0000:00:02.0-card 2>/dev/null)"
+    case "$_igpu_card" in
+        *:*) _igpu_card="" ;;  # paranoia: never export a colon-bearing value
+    esac
+    if [ -n "$_igpu_card" ] && [ -e "$_igpu_card" ]; then
+        export WLR_DRM_DEVICES="$_igpu_card"
+    fi
+fi
 
 # Persist teruwm's stderr so a crash/exit reason survives the TTY scrolling
 # away (the compositor logs to stderr; without this a silent exit is a mystery).
@@ -83,9 +99,24 @@ printf '\n=== startt %s ===\n' "$(date '+%F %T')" >> "$TERU_LOG"
 # `set +e` so a non-zero exit doesn't trip `set -e` before the error help;
 # `tee` keeps the error on the TTY AND appends it to the log; PIPESTATUS[0]
 # captures teruwm's real exit (not tee's).
+_run_teruwm() {
+    "$HOME/.local/bin/teruwm" 2>&1 | tee -a "$TERU_LOG"
+    return "${PIPESTATUS[0]}"
+}
+
 set +e
-"$HOME/.local/bin/teruwm" 2>&1 | tee -a "$TERU_LOG"
-status=${PIPESTATUS[0]}
+_run_teruwm
+status=$?
+# Self-heal: if teruwm failed AND we pinned the GPU, the pin is the likeliest
+# culprit (bad device node, GPU renamed across reboot, etc). Retry once on the
+# default GPU so a GPU-pin mistake can never leave you stranded at the TTY.
+if [ "$status" -ne 0 ] && [ -n "${WLR_DRM_DEVICES:-}" ]; then
+    printf '\n[startt] teruwm exited %d with WLR_DRM_DEVICES=%s — retrying on the default GPU\n' \
+        "$status" "$WLR_DRM_DEVICES" | tee -a "$TERU_LOG"
+    unset WLR_DRM_DEVICES
+    _run_teruwm
+    status=$?
+fi
 set -e
 if [ "$status" -ne 0 ]; then
     echo
