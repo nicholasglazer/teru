@@ -256,6 +256,10 @@ area_dragging: bool = false,
 area_anchor_x: f64 = 0,
 area_anchor_y: f64 = 0,
 area_rect: ?*wlr.wlr_scene_rect = null,
+// Four edge rects (top, bottom, left, right) forming a crisp border frame
+// around area_rect's translucent fill — the Figma-style selection look.
+// Created/destroyed alongside area_rect.
+area_border: [4]?*wlr.wlr_scene_rect = .{ null, null, null, null },
 
 // Internal clipboard buffer (Ctrl+Shift+C/V between terminal panes)
 clipboard_buf: [8192]u8 = undefined,
