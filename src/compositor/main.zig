@@ -65,23 +65,35 @@ pub fn main(init: std.process.Init) !void {
         return err;
     };
     // Defer order matters. LIFO unwind means the LAST defer registered
-    // runs FIRST. We want:
-    //   1. shutting_down = true — gates handlers like
-    //      Output.handleDestroy from pushing state into a wlroots
-    //      manager that's itself being torn down.
-    //   2. wl_display_destroy_clients — tears down every client
-    //      connection (Chromium, Emacs, etc.) and fires each surface's
-    //      destroy listeners while Server state is still alive.
-    //   3. wl_display_destroy — tears down globals + the event loop.
-    //      Without step 2, scene nodes and per-surface listeners for
-    //      still-mapped clients get walked with dangling notify
-    //      pointers → "Segmentation fault" inside libwayland-server.
-    //   4. server.deinit — frees Server-owned heap memory last.
+    // runs FIRST. Desired run order:
+    //   1. shutting_down = true — gates handlers like Output.handleDestroy
+    //      from pushing state into a wlroots manager that's itself being
+    //      torn down.
+    //   2. destroyXwayland — kill Xwayland + unlink its :0 lock/socket
+    //      BEFORE destroying clients (matches sway/tinywl; avoids racing
+    //      Xwayland's own connection teardown).
+    //   3. wl_display_destroy_clients — tears down every client connection
+    //      (Vivaldi, Emacs, …) and fires each surface's destroy listeners
+    //      while Server state is still alive. Without this, scene nodes and
+    //      per-surface listeners for still-mapped clients get walked with
+    //      dangling notify pointers → "Segmentation fault" in libwayland.
+    //   4. releaseSeat — drop the keyboard, then wlr_backend_destroy (closes
+    //      DRM + input fds via the live session), then wlr_session_destroy
+    //      (libseat ReleaseControl → VT restored to text mode). On a bare TTY
+    //      this is what un-freezes the console; without it Mod+Shift+Q /
+    //      Mod+Shift+' left the VT in graphics mode showing the last frame —
+    //      a "hang" only a reboot cleared. MUST precede wl_display_destroy
+    //      (backend teardown needs the live event loop) and MUST precede
+    //      deinit (which no longer touches the now-freed backend signals).
+    //   5. wl_display_destroy — tears down globals + the event loop.
+    //   6. server.deinit — frees Server-owned heap memory last.
     // Registered LAST runs FIRST, so we register in reverse of the
     // desired run order.
     defer server.deinit();
     defer wlr.wl_display_destroy(display);
+    defer server.releaseSeat();
     defer wlr.wl_display_destroy_clients(display);
+    defer server.destroyXwayland();
     defer server.shutting_down = true;
 
     // ── Apply config to server ──────────────────────────────────

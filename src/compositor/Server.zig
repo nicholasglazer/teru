@@ -948,8 +948,11 @@ pub fn deinit(self: *Server) void {
     // Listeners without a live link (link.next == null) were never
     // registered (optional protocol paths: xwayland, xdg-activation,
     // xdg-decoration).
-    safeRemoveListener(&self.new_output);
-    safeRemoveListener(&self.new_input);
+    // new_output / new_input listen on the *backend's* signals, which
+    // releaseSeat() destroyed before deinit ran (main.zig defer order:
+    // releaseSeat → wl_display_destroy → deinit). Removing them here would
+    // walk an already-freed wl_signal list → use-after-free. releaseSeat
+    // detaches them itself, immediately before wlr_backend_destroy.
     safeRemoveListener(&self.new_xdg_toplevel);
     safeRemoveListener(&self.xdg_activate);
     safeRemoveListener(&self.new_xdg_decoration);
@@ -982,6 +985,66 @@ pub fn deinit(self: *Server) void {
 fn safeRemoveListener(listener: *wlr.wl_listener) void {
     if (listener.link.next != null) {
         wlr.wl_list_remove(&listener.link);
+    }
+}
+
+/// Tear down XWayland: kills the Xwayland process and unlinks its display
+/// lock + socket (/tmp/.X{N}-lock, /tmp/.X11-unix/X{N}). No-op if XWayland was
+/// never started. MUST run before wl_display_destroy_clients so Xwayland's own
+/// wayland-connection teardown doesn't race the wrapper free (matches sway /
+/// tinywl ordering). Shared by the quit path (main.zig defers) and the
+/// hot-restart path (ServerRestart) so both reclaim :0 cleanly.
+pub fn destroyXwayland(self: *Server) void {
+    if (self.xwayland) |xwl| {
+        wlr.wlr_xwayland_destroy(xwl);
+        self.xwayland = null;
+    }
+}
+
+/// Release the DRM / logind seat IN-PROCESS. On a bare TTY wlr_backend_autocreate
+/// took libseat control, the DRM master, and every input device; neither exit()
+/// nor execve() runs wlroots destructors, so without this the VT is left in
+/// graphics mode displaying teruwm's last frame with the keyboard in raw mode —
+/// indistinguishable from a hang, recoverable only by reboot. (This is why
+/// Mod+Shift+' / Mod+Shift+Q "froze" the machine; headless/X11 backends have no
+/// seat, so it never surfaced in tests.)
+///
+/// Order is load-bearing:
+///   1. Detach new_output / new_input — they listen on the backend's signals,
+///      which step 4 frees; leaving them attached would dangle into freed memory
+///      when deinit later walks them.
+///   2. Drop the seat keyboard + remove per-keyboard listeners. wlr_keyboard_finish
+///      (fired inside backend destroy) sends a final release-all key notify; if the
+///      keyboard is still the seat's active keyboard with our key_listener attached,
+///      that notify routes into a half-freed seat/grab → SIGSEGV. Detaching first
+///      makes the teardown inert.
+///   3. wlr_backend_destroy — closes the DRM + input fds THROUGH the still-live
+///      session.
+///   4. wlr_session_destroy — its close releases libseat control (logind
+///      ReleaseControl), which restores the VT to text mode. This is the step that
+///      actually un-freezes the console on exit.
+///
+/// Call EXACTLY ONCE per process (not idempotent — a second call double-removes
+/// listeners + double-destroys the backend): the quit path calls it via a
+/// main.zig defer (before wl_display_destroy); the restart path calls it directly
+/// before execve. Those paths are mutually exclusive (restart execve/exits, so
+/// its defers never run). deinit() must run AFTER this and must NOT re-remove
+/// new_output / new_input.
+pub fn releaseSeat(self: *Server) void {
+    safeRemoveListener(&self.new_output);
+    safeRemoveListener(&self.new_input);
+
+    wlr.wlr_seat_set_keyboard(self.seat, null);
+    for (self.keyboards.items) |kb| {
+        wlr.wl_list_remove(&kb.key_listener.link);
+        wlr.wl_list_remove(&kb.modifiers_listener.link);
+        wlr.wl_list_remove(&kb.destroy_listener.link);
+    }
+
+    wlr.wlr_backend_destroy(self.backend);
+    if (self.session) |sess| {
+        wlr.wlr_session_destroy(sess);
+        self.session = null;
     }
 }
 

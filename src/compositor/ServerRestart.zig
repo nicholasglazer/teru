@@ -172,38 +172,20 @@ pub fn execRestart(server: *Server) void {
     // this teardown and the execve — terminals keep running.
     server.shutting_down = true;
 
-    // Destroy XWayland before the exec so its display lock + socket
-    // (/tmp/.X{N}-lock, /tmp/.X11-unix/X{N}) are unlinked. An in-place exec
-    // KEEPS the PID, so a lingering lazy-XWayland lock still names this live
-    // PID — the re-exec'd wlr_xwayland_create then sees :0 as "in use by a live
-    // server", claims :1 instead, and the display number drifts up every
-    // restart (DISPLAY=:0 in the shells goes stale → X apps break; after enough
-    // restarts XWayland init fails outright). Tearing it down first lets the new
-    // instance reclaim :0 cleanly each time.
-    if (server.xwayland) |xwl| {
-        wlr.wlr_xwayland_destroy(xwl);
-        server.xwayland = null;
-    }
-
-    // Detach the keyboard from the seat and unhook our per-keyboard listeners
-    // BEFORE wlr_backend_destroy. The backend teardown finalizes each input
-    // device; wlr_keyboard_finish fires a final release-all key notify, and if
-    // the keyboard is still the seat's active keyboard (with our key listeners
-    // attached) that notify routes into a half-freed seat/grab and jumps to a
-    // NULL fn pointer → SIGSEGV *before* the execve below (verbatim in the
-    // 2026-06-04 --restore coredump: wlr_keyboard_notify_key ← wlr_keyboard_finish).
-    // That abort is what turned $mod+' into a crash+respawn — new PID, dropped
-    // DRM master, the VT text-mode flash — instead of a clean in-place exec.
-    // Detaching first makes the teardown inert so the execve actually runs.
-    wlr.wlr_seat_set_keyboard(server.seat, null);
-    for (server.keyboards.items) |kb| {
-        wlr.wl_list_remove(&kb.key_listener.link);
-        wlr.wl_list_remove(&kb.modifiers_listener.link);
-        wlr.wl_list_remove(&kb.destroy_listener.link);
-    }
-
-    wlr.wlr_backend_destroy(server.backend);
-    if (server.session) |sess| wlr.wlr_session_destroy(sess);
+    // XWayland + seat teardown — the SAME sequence the quit path runs (see
+    // Server.destroyXwayland / Server.releaseSeat for the full rationale). Here
+    // it's performed in-process because execve never runs main's defers:
+    //   • destroyXwayland unlinks the :0 lock/socket so the re-exec'd instance
+    //     reclaims :0 (an in-place exec KEEPS the PID, so a lazy-XWayland lock
+    //     naming this live PID would push the new server to :1, :2, … and
+    //     eventually fail — DISPLAY=:0 in the shells would go stale).
+    //   • releaseSeat detaches the keyboard before destroying the backend
+    //     (wlr_keyboard_finish's release-all notify into a still-attached seat
+    //     was the 2026-06-04 --restore SIGSEGV), then drops libseat control so
+    //     the new image's TakeControl succeeds. Without it $mod+' "closed the
+    //     session" on real hardware (headless has no seat, so tests never hit it).
+    server.destroyXwayland();
+    server.releaseSeat();
 
     var argv_buf: [3:null]?[*:0]const u8 = .{ self_exe, @ptrCast("--restore"), null };
     _ = std.posix.system.execve(self_exe, @ptrCast(&argv_buf), std.c.environ);
