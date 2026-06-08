@@ -146,15 +146,15 @@ teruwmctl scratchpad term       # show 'term' again
 | `$mod+Shift+B` | Toggle **bottom** status bar |
 | `$mod+D` | Open launcher (rofi-like) |
 | `$mod+W` | Screenshot full output (native, no deps) → `<dir>/teru-<YYYY-MM-DD_HH-MM-SS>.png` + a stable `<dir>/latest.png`, **and copied to the clipboard**. `<dir>` defaults to `$HOME/Pictures/screenshots`, set via `screenshot_dir` (must resolve under `$HOME` or `/tmp`). |
-| `$mod+Shift+W` | **Area select** — native drag-to-select: drag a box, release crops the composited output → `<dir>/area-<YYYY-MM-DD_HH-MM-SS>.png`, refreshes `latest.png`, **and copied to the clipboard**. `Esc` cancels. No external deps. |
-| `$mod+Ctrl+W` | Toggle screen recording via `kapsa` (gif/video; needs `kapsa` on PATH) |
+| `$mod+Ctrl+W` | **Area select** — native drag-to-select: drag a box, release crops the composited output → `<dir>/area-<YYYY-MM-DD_HH-MM-SS>.png`, refreshes `latest.png`, **and copied to the clipboard**. `Esc` cancels. No external deps. |
+| `$mod+Shift+W` | Toggle screen recording via `kapsa` (gif/video; needs `kapsa` on PATH) |
 | `$mod+Ctrl+Shift+W` | Screenshot focused pane |
 
 > All three screenshot paths are **native** — teruwm composites its own panes +
 > bars (and crops for area-select), so no `grim`/`slurp`/layer-shell. They do NOT
 > capture external GUI clients (vivaldi/firefox) — those pixels live in client
 > buffers and need `wlr-screencopy` (`grim`). Each pops a toast naming the file.
-> `$mod+W` and `$mod+Shift+W` also copy the PNG to the Wayland clipboard as
+> `$mod+W` and `$mod+Ctrl+W` also copy the PNG to the Wayland clipboard as
 > `image/png` (a native `wlr_data_source` — teruwm needs no `wl-copy` to *write*
 > it). To **paste** it elsewhere the consuming app reads the clipboard, which on
 > Wayland means it needs `wl-clipboard` installed (e.g. CLI tools like Claude

@@ -250,7 +250,7 @@ grab_y: f64 = 0,
 grab_w: u32 = 0,
 grab_h: u32 = 0,
 
-// Native area-select (mod+shift+w): drag a box over the composited output,
+// Native area-select (mod+ctrl+w): drag a box over the composited output,
 // crop on release. area_rect is the live translucent overlay scene node.
 area_dragging: bool = false,
 area_anchor_x: f64 = 0,

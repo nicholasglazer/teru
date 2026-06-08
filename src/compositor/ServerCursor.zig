@@ -529,7 +529,7 @@ fn setXcursorIfChanged(server: *Server, name: [*:0]const u8) void {
 }
 
 // ── Native area-select (drag-to-capture) ─────────────────────────
-// mod+shift+w arms it; the next click-drag draws a translucent box over the
+// mod+ctrl+w arms it; the next click-drag draws a translucent box over the
 // composited output, and release crops it to a PNG (ServerScreenshot). Esc or
 // a zero-size drag cancels. No grim/slurp/layer-shell — teruwm owns its output.
 const area_overlay_color = [4]f32{ 0.40, 0.58, 0.96, 0.26 }; // translucent accent
