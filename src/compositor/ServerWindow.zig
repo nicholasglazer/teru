@@ -383,7 +383,7 @@ pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
     const aws = &self.layout_engine.workspaces[aws_idx];
     if (aws.active_node == null and aws.node_ids.items.len > 0) {
         const idx = @min(aws.active_index, aws.node_ids.items.len - 1);
-        aws.active_node = aws.node_ids.items[idx];
+        aws.setFocus(aws.node_ids.items[idx]); // A1 normalize point (active_node + active_index)
     }
     updateFocusedTerminal(self);
     if (self.bar) |b| _ = b.render(self);

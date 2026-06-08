@@ -403,13 +403,13 @@ fn focusTerminalByNode(server: *Server, nid: u64) void {
     if (server.bar) |b| _ = b.render(server);
 }
 
+// Route click-focus through the Workspace focus normalize point (A1).
+// Was: set active_index only (and only for tiled nodes), leaving active_node
+// stale — so clicking in a split-tree layout left getActiveNodeId() pointing
+// at the previously-active node, and clicking a floating window synced nothing.
+// setFocus sets active_node = nid and syncs active_index when tiled.
 fn syncWsActiveIndex(ws: anytype, nid: u64) void {
-    for (ws.node_ids.items, 0..) |id2, idx| {
-        if (id2 == nid) {
-            ws.active_index = @intCast(idx);
-            return;
-        }
-    }
+    ws.setFocus(nid);
 }
 
 // ── Motion dispatch ──────────────────────────────────────────

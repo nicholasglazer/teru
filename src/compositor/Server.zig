@@ -280,6 +280,13 @@ autostart_fired: bool = false,
 // workspace switch.
 prev_workspace: ?u8 = null,
 
+// The node that held focus immediately before a scratchpad was raised
+// (A1). Captured in ServerScratchpad.focusScratchpad, consumed in hide()
+// to restore the exact pre-scratchpad window — terminal, XDG or XWayland,
+// tiled or floating. null when nothing meaningful was focused. Mirrors the
+// prev_workspace single-slot pattern (toggle is synchronous).
+scratchpad_prev_focus: ?u64 = null,
+
 // User-defined spawn chord commands. Each slot pairs with the
 // spawn_0..spawn_31 action variants; the keybind table maps chords
 // to those actions, this array resolves to the shell command.
@@ -409,6 +416,17 @@ idle_inhibitor_count: u16 = 0,
 new_inhibitor: wlr.wl_listener = makeListener(Listeners.handleNewInhibitor),
 inhibitor_trackers: std.ArrayList(*Listeners.InhibitorTracker) = .empty,
 shutting_down: bool = false,
+
+// Deferred scene-node destroy queue (#11). TerminalPane.deinit runs
+// mid-dispatch (PTY-fd / keybind / MCP callback); destroying the pane's
+// wlr_scene_buffer node synchronously there crashed at teardown (a
+// buffer-internal signal fired after the pane memory was freed). deinit
+// detaches the node + enqueues it here; drainSceneDestroy — a one-shot
+// wl_event_loop_add_idle — destroys it once the loop goes idle (after the
+// current dispatch unwinds). Holds raw wlroots pointers only, never a
+// *TerminalPane (the pane struct is freed immediately after deinit).
+pending_scene_destroy: std.ArrayList(SceneDestroyRecord) = .empty,
+pending_scene_destroy_armed: bool = false,
 
 // wlr_output_power_management_v1 — wlopm / swayidle dpms hook.
 // Clients call set_mode with ON/OFF per output; we commit the
@@ -822,6 +840,59 @@ pub fn execRestart(self: *Server) void {
     Restart.execRestart(self);
 }
 
+// A detached pane scene node awaiting deferred destruction (#11). Both
+// pointers are wlroots-owned and outlive the *TerminalPane that enqueued them.
+pub const SceneDestroyRecord = struct {
+    node: *wlr.wlr_scene_node,
+    buffer: *wlr.wlr_buffer,
+};
+
+/// Enqueue a detached scene node (+ its backing buffer) for destruction once
+/// the event loop is next idle, and arm a one-shot idle drain if not already
+/// armed. Returns false if the work couldn't be queued (no event loop, or OOM)
+/// — the caller must then fall back to its own safe handling. The node MUST
+/// already be detached (wlr_scene_buffer_set_buffer(.., null)) by the caller.
+pub fn queueSceneDestroy(self: *Server, node: *wlr.wlr_scene_node, buffer: *wlr.wlr_buffer) bool {
+    if (self.shutting_down) return false;
+    const loop = self.event_loop orelse return false;
+    self.pending_scene_destroy.append(self.zig_allocator, .{ .node = node, .buffer = buffer }) catch return false;
+    if (!self.pending_scene_destroy_armed) {
+        if (wlr.wl_event_loop_add_idle(loop, drainSceneDestroy, self) == null) {
+            // Couldn't arm the idle — pop the record back off so the caller's
+            // fallback owns it (avoids a node that's queued but never drained).
+            _ = self.pending_scene_destroy.pop();
+            return false;
+        }
+        self.pending_scene_destroy_armed = true;
+    }
+    return true;
+}
+
+/// One-shot idle callback: destroy every queued scene node now that the loop
+/// is idle (the enqueueing dispatch has fully unwound, so no buffer-internal
+/// signal can fire against freed pane memory). The idle source auto-removes
+/// after this returns — do not remove it here.
+fn drainSceneDestroy(data: ?*anyopaque) callconv(.c) void {
+    const self: *Server = @ptrCast(@alignCast(data orelse return));
+    self.pending_scene_destroy_armed = false;
+    if (self.shutting_down) {
+        // wl_display_destroy will reclaim the scene; don't double-destroy.
+        self.pending_scene_destroy.clearRetainingCapacity();
+        return;
+    }
+    // Safe to iterate items directly: wlr_scene_node_destroy + wlr_buffer_drop
+    // do not re-enter teruwm (no teruwm listeners on these scene nodes /
+    // pixel buffers — the buffer_release listener was already removed by the
+    // set_buffer(null) in deinit), so nothing calls queueSceneDestroy mid-loop
+    // to realloc the backing store. If a future change adds such a listener,
+    // snapshot the slice into a temp before this loop.
+    for (self.pending_scene_destroy.items) |rec| {
+        wlr.wlr_scene_node_destroy(rec.node);
+        wlr.wlr_buffer_drop(rec.buffer);
+    }
+    self.pending_scene_destroy.clearRetainingCapacity();
+}
+
 pub fn deinit(self: *Server) void {
     // Flag before teardown so any destroy-signal handler that fires
     // during wl_display_destroy (idle-inhibit trackers, etc.) skips
@@ -859,6 +930,13 @@ pub fn deinit(self: *Server) void {
         self.zig_allocator.destroy(tracker);
     }
     self.inhibitor_trackers.deinit(self.zig_allocator);
+
+    // Free the deferred scene-destroy queue's backing array. Do NOT destroy
+    // its node pointers: wl_display_destroy ran before this (main.zig defer
+    // order) and already reclaimed the whole scene, so they're dangling. The
+    // backing buffers leak harmlessly here (process is exiting) rather than
+    // risk a drop after display-destroy.
+    self.pending_scene_destroy.deinit(self.zig_allocator);
 
     if (self.wm_mcp) |mcp| mcp.deinit(self.zig_allocator);
 

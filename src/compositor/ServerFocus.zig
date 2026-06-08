@@ -183,15 +183,12 @@ pub fn cycleFocusAll(server: *Server, forward: bool) void {
     else if (idx == 0) count - 1 else idx - 1;
     const target_nid = ring[next_idx];
 
-    // Sync workspace.active_index when target is tiled so later
-    // layout keybinds (swap_next/prev, promote) see the same anchor.
-    for (ws.node_ids.items, 0..) |nid, i| {
-        if (nid == target_nid) {
-            ws.active_index = @intCast(i);
-            ws.active_node = null;
-            break;
-        }
-    }
+    // Normalize Workspace focus to the target (A1). setFocus sets active_node
+    // = target and syncs active_index when tiled; for a FLOATING target it
+    // records active_node = target (the old code left active_node stale here,
+    // so a later updateFocusedTerminal after a workspace switch could bounce
+    // focus back to the previous tiled pane).
+    ws.setFocus(target_nid);
 
     // Dispatch by actual target id, NOT by workspace.active_index.
     // A floating terminal isn't in ws.node_ids so

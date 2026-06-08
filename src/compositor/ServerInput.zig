@@ -721,7 +721,18 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
             return true;
         },
         .pane_focus_master => {
-            server.layout_engine.getActiveWorkspace().focusMaster();
+            // Route through the focus normalize point (A1) + reconcile. The
+            // old Workspace.focusMaster() set only active_index=0; once A1
+            // made click/cycle leave active_node non-null, that index-only
+            // write was shadowed (updateFocusedTerminal reads active_node
+            // first) so Mod+M targeted the stale pane. setFocus(node_ids[0])
+            // sets both fields, and the updateFocusedTerminal call also fixes
+            // the pre-existing no-repaint bug (focusMaster never repainted).
+            const ws = server.layout_engine.getActiveWorkspace();
+            if (ws.node_ids.items.len > 0) {
+                ws.setFocus(ws.node_ids.items[0]);
+                server.updateFocusedTerminal();
+            }
             return true;
         },
         .float_toggle => {

@@ -762,20 +762,27 @@ pub fn deinit(self: *TerminalPane, allocator: std.mem.Allocator) void {
         _ = wlr.wl_event_source_remove(es);
         self.event_source = null;
     }
-    // Hide the scene node without destroying it. Disabling stops the
-    // last-painted "ghost" frame from rendering on an otherwise empty
-    // workspace, but leaves the scene_buffer in the tree so wlroots'
-    // own shutdown walker (wl_display_destroy → scene destroy) is the
-    // one to free it. An explicit wlr_scene_node_destroy here triggered
-    // a segfault at shutdown — a listener attached to the buffer's
-    // internal signals still fired after the Zig pane memory was gone.
-    // wlroots handles full teardown correctly; we just need the node
-    // invisible between close and display-destroy.
+    // Disable + detach the scene node, then hand it to the server's deferred
+    // destroy queue (#11). A synchronous wlr_scene_node_destroy here crashed
+    // at teardown — a buffer-internal signal fired after this pane's Zig
+    // memory was freed (deinit runs mid-dispatch and the caller destroys the
+    // *TerminalPane immediately after). queueSceneDestroy detaches the node
+    // now and destroys it from a one-shot idle once the loop unwinds, so the
+    // node no longer leaks until display-destroy. set_buffer(null) releases
+    // the scene's ref to pixel_buffer; the deferred drain drops it.
+    self.freeZoomAtlas();
+    self.pane.deinit(allocator);
     if (wlr.miozu_scene_buffer_node(self.scene_buffer)) |node| {
         wlr.wlr_scene_node_set_enabled(node, false);
         wlr.wlr_scene_buffer_set_buffer(self.scene_buffer, null);
+        if (!self.server.queueSceneDestroy(node, self.pixel_buffer)) {
+            // Couldn't defer (shutting down / no loop / OOM): fall back to the
+            // historical safe-but-leaky behavior — leave the detached node for
+            // wl_display_destroy to reap, and drop the buffer now.
+            wlr.wlr_buffer_drop(self.pixel_buffer);
+        }
+    } else {
+        // No scene node to defer; drop the buffer directly.
+        wlr.wlr_buffer_drop(self.pixel_buffer);
     }
-    self.freeZoomAtlas();
-    self.pane.deinit(allocator);
-    wlr.wlr_buffer_drop(self.pixel_buffer);
 }
