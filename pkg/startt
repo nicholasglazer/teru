@@ -57,14 +57,36 @@ KB_ENV="$HOME/.config/environment.d/10-miozu-keyboard.conf"
 # Clear stale Wayland locks left by a crashed session.
 rm -f "/run/user/$(id -u)/wayland-"*.lock 2>/dev/null || true
 
+# Render on the integrated GPU only (dual-GPU PRIME laptop). The Intel iGPU
+# (card1, pci 00:02.0) drives the panel (eDP-1); the NVIDIA dGPU is render-only
+# with no display heads. Letting wlroots render on the dGPU keeps the RTX awake
+# (battery drain + endless `nvidia-modeset: Correcting number of heads` spam) and
+# made the compositor exit when DPMS/idle changed the dGPU power state. Pinning
+# the DRM backend to the Intel card renders + scans out on one GPU and lets the
+# dGPU sleep. Override (e.g. for an nvidia-routed external monitor) by exporting
+# WLR_DRM_DEVICES before startt, or delete this line.
+export WLR_DRM_DEVICES="${WLR_DRM_DEVICES:-/dev/dri/by-path/pci-0000:00:02.0-card}"
+
+# Persist teruwm's stderr so a crash/exit reason survives the TTY scrolling
+# away (the compositor logs to stderr; without this a silent exit is a mystery).
+TERU_LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/teru"
+mkdir -p "$TERU_LOG_DIR"
+TERU_LOG="$TERU_LOG_DIR/teruwm.log"
+printf '\n=== startt %s ===\n' "$(date '+%F %T')" >> "$TERU_LOG"
+
 # Run teruwm. NOT `exec` on purpose: if the compositor fails to acquire the
 # DRM seat (e.g. another compositor/Xorg holds it) it exits immediately, and
 # `exec` would replace this shell — bouncing you to the login prompt before
 # you can read the error. Running it as a child keeps the error on screen and
 # drops you back to the shell. Hot-restart ($mod+') is unaffected: teruwm
 # re-execs itself in place regardless of its parent.
-"$HOME/.local/bin/teruwm"
-status=$?
+# `set +e` so a non-zero exit doesn't trip `set -e` before the error help;
+# `tee` keeps the error on the TTY AND appends it to the log; PIPESTATUS[0]
+# captures teruwm's real exit (not tee's).
+set +e
+"$HOME/.local/bin/teruwm" 2>&1 | tee -a "$TERU_LOG"
+status=${PIPESTATUS[0]}
+set -e
 if [ "$status" -ne 0 ]; then
     echo
     echo "── teruwm exited with status $status. Common causes on a bare TTY:"
