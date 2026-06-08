@@ -451,6 +451,8 @@ pub extern "c" fn miozu_xdg_toplevel_request_show_window_menu(toplevel: *wlr_xdg
 pub extern "c" fn miozu_xdg_toplevel_base(toplevel: *wlr_xdg_toplevel) callconv(.c) ?*wlr_xdg_surface;
 pub extern "c" fn miozu_xdg_toplevel_app_id(toplevel: *wlr_xdg_toplevel) callconv(.c) ?[*:0]const u8;
 pub extern "c" fn miozu_xdg_toplevel_title(toplevel: *wlr_xdg_toplevel) callconv(.c) ?[*:0]const u8;
+pub extern "c" fn miozu_xdg_toplevel_parent(toplevel: *wlr_xdg_toplevel) callconv(.c) ?*wlr_xdg_toplevel;
+pub extern "wlroots-0.18" fn wlr_xdg_surface_get_geometry(surface: *wlr_xdg_surface, box: *wlr_box) callconv(.c) void;
 
 // XDG surface signals
 pub extern "c" fn miozu_xdg_surface_new_popup(surface: *wlr_xdg_surface) callconv(.c) *wl_signal;
