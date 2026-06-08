@@ -262,6 +262,17 @@ pub fn reloadWmConfig(self: *Server) void {
     // Use libc fopen/fread to reload config (no Io needed)
     self.wm_config = WmConfig.loadWithLibc();
 
+    // Re-seed the xmonad-parity scratchpad rects. loadWithLibc() returns a
+    // fresh WmConfig with scratchpad_rule_count = 0, so any user
+    // `[scratchpad.NAME]` sections are re-parsed but the DEFAULT geometry
+    // for names the user hasn't customised (terminalBR/SR/BL/SL) is gone
+    // until we re-seed — exactly as applyConfig does after the initial
+    // WmConfig.load. Without this, reload (Mod+Shift+R / teruwm_reload_config
+    // / config-watch) leaves every default scratchpad falling back to the
+    // centered defaultRect, so mod+t and mod+shift+t both open the same
+    // centered window instead of their distinct xmonad rects.
+    applyDefaultScratchpadRules(self);
+
     // Re-apply bar configuration — widget layout or thresholds may
     // have changed in ways the signature hash doesn't detect
     // (widgets.count alone can't express a widget's internal fmt).
