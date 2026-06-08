@@ -404,12 +404,18 @@ pub fn handleKey(server: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) b
     if (wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_CTRL, wlr.XKB_STATE_MODS_EFFECTIVE) > 0) mods.ctrl = true;
     if (wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_LOGO, wlr.XKB_STATE_MODS_EFFECTIVE) > 0) mods.super_ = true;
 
-    // Launcher mode swallows every key until deactivated.
+    // Launcher mode swallows EVERY key until deactivated — including ones it
+    // doesn't act on. handleKey only consumes printable / Tab / Enter / Esc /
+    // BackSpace; previously returning false for the rest (arrows, Home/End,
+    // F-keys, unbound chords) fell through to keybind dispatch AND then to the
+    // focused-terminal byte-input path below — so a stray key while the
+    // launcher was open could fire a WM action or leak bytes into the shell
+    // underneath. VT-switch (handled above) is the only intentional exception.
     if (server.launcher.active) {
         if (server.launcher.handleKey(sym, server)) {
             server.renderLauncherBar();
-            return true;
         }
+        return true;
     }
 
     // Scratchpad: Alt+RAlt+1..9 picks scratchpad N.
