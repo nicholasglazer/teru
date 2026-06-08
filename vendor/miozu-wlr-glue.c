@@ -126,6 +126,13 @@ const char *miozu_xdg_toplevel_title(struct wlr_xdg_toplevel *t) {
     return t->title;
 }
 
+/* The transient parent, if any. Non-NULL marks a dialog / modal (delete
+ * confirmation, file chooser, properties) the client anchored to another
+ * toplevel — teruwm floats these instead of tiling them. */
+struct wlr_xdg_toplevel *miozu_xdg_toplevel_parent(struct wlr_xdg_toplevel *t) {
+    return t->parent;
+}
+
 /* ── XDG surface fields ──────────────────────────────────────── */
 
 struct wlr_surface *miozu_xdg_surface_surface(struct wlr_xdg_surface *s) {

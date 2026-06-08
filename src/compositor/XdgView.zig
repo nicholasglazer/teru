@@ -118,8 +118,18 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         }
     }
 
-    // Add to tiling engine workspace
-    server.layout_engine.workspaces[ws].addNode(server.zig_allocator, view.node_id) catch return;
+    // Transient toplevels (a dialog/modal the client anchored to a parent —
+    // delete confirmation, file chooser, properties) FLOAT centered instead of
+    // joining the tiling layout, which would split the screen "like a new
+    // window". Detected via xdg_toplevel.parent. Everything else tiles.
+    const is_dialog = wlr.miozu_xdg_toplevel_parent(view.toplevel) != null;
+    if (is_dialog and slot != null) {
+        server.nodes.floating[slot.?] = true;
+        centerFloat(server, slot.?, view.toplevel);
+    } else {
+        // Add to tiling engine workspace
+        server.layout_engine.workspaces[ws].addNode(server.zig_allocator, view.node_id) catch return;
+    }
 
     server.emitMcpEventKind(
         "window_mapped",
@@ -153,6 +163,25 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
 
     // Focus the new surface
     server.focusView(view);
+}
+
+/// Center a floating node on the active output, sized to the client's own
+/// window geometry so a dialog keeps its natural size (applyRect's set_size is
+/// then a no-op the client already agreed to). Falls back to a sane default if
+/// the geometry isn't reported yet.
+fn centerFloat(server: *Server, slot: u16, toplevel: *wlr.wlr_xdg_toplevel) void {
+    var w: i32 = 480;
+    var h: i32 = 280;
+    if (wlr.miozu_xdg_toplevel_base(toplevel)) |xdg_surface| {
+        var geo: wlr.wlr_box = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        wlr.wlr_xdg_surface_get_geometry(xdg_surface, &geo);
+        if (geo.width > 0) w = geo.width;
+        if (geo.height > 0) h = geo.height;
+    }
+    const dims = server.activeOutputDims();
+    const x = @max(0, @divTrunc(@as(i32, @intCast(dims.w)) - w, 2));
+    const y = @max(0, @divTrunc(@as(i32, @intCast(dims.h)) - h, 2));
+    server.nodes.applyRect(slot, x, y, @intCast(w), @intCast(h));
 }
 
 fn handleFtlActivate(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
