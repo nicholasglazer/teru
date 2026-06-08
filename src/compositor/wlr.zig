@@ -502,6 +502,10 @@ pub extern "c" fn miozu_output_layout_change(layout: *wlr_output_layout) callcon
 // Seat keyboard accessor
 pub extern "c" fn miozu_seat_get_keyboard(seat: *wlr_seat) callconv(.c) ?*wlr_keyboard;
 
+// Pointer's focused surface — wlroots-managed (auto-nulled on destroy), safe to
+// read. Use instead of a raw latched surface pointer that can dangle on popups.
+pub extern "c" fn miozu_seat_pointer_focused_surface(seat: *wlr_seat) callconv(.c) ?*wlr_surface;
+
 // Seat request signals
 pub extern "c" fn miozu_seat_request_set_cursor(seat: *wlr_seat) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_seat_request_set_selection(seat: *wlr_seat) callconv(.c) *wl_signal;
@@ -547,7 +551,7 @@ pub extern "wlroots-0.18" fn wlr_scene_output_send_frame_done(scene_output: *wlr
 pub extern "wlroots-0.18" fn wlr_keyboard_set_keymap(keyboard: *wlr_keyboard, keymap: *xkb_keymap) callconv(.c) bool;
 pub extern "wlroots-0.18" fn wlr_keyboard_set_repeat_info(keyboard: *wlr_keyboard, rate: i32, delay: i32) callconv(.c) void;
 
-pub extern "wlroots-0.18" fn wlr_seat_set_keyboard(seat: *wlr_seat, keyboard: *wlr_keyboard) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_seat_set_keyboard(seat: *wlr_seat, keyboard: ?*wlr_keyboard) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_seat_set_capabilities(seat: *wlr_seat, capabilities: u32) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_seat_keyboard_notify_enter(seat: *wlr_seat, surface: *wlr_surface, keycodes: ?[*]const u32, num_keycodes: usize, modifiers: ?*anyopaque) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_seat_keyboard_notify_key(seat: *wlr_seat, time_msec: u32, key: u32, state: u32) callconv(.c) void;
