@@ -717,16 +717,16 @@ pub const Keybinds = struct {
         // ('"'). Each chord is bound to the keysym it actually produces.
         _ = self.add(n, M, '\'', .compositor_restart);
         _ = self.add(n, MS, '"', .compositor_quit);
-        // Capture cluster on `w` (xmonad used mod+w / mod+ctrl+w for shot/area):
+        // Capture cluster on `w`:
         //   $mod+w              full output → PNG (native)
-        //   $mod+shift+w        AREA select → drag a box, crop → PNG (native)
-        //   $mod+ctrl+w         toggle screen recording (kapsa)
+        //   $mod+ctrl+w         AREA select → drag a box, crop → PNG (native)
+        //   $mod+shift+w        toggle screen recording (kapsa)
         //   $mod+ctrl+shift+w   focused pane → PNG
         const MCW = Mods{ .ctrl = true, .super_ = true };
         const MCS = Mods{ .ctrl = true, .super_ = true, .shift = true };
         _ = self.add(n, M, 'w', .screenshot); // full output → PNG (native)
-        _ = self.add(n, MS, 'w', .screenshot_area); // drag-to-select region → PNG
-        _ = self.add(n, MCW, 'w', .screen_record); // toggle kapsa recording
+        _ = self.add(n, MCW, 'w', .screenshot_area); // mod+ctrl+w: drag-to-select region → PNG
+        _ = self.add(n, MS, 'w', .screen_record); // mod+shift+w: toggle kapsa recording (swapped off ctrl)
         _ = self.add(n, MCS, 'w', .screenshot_pane); // focused pane → PNG
 
         // Workspaces: $mod+1-9, $mod+shift+1-9 move pane
