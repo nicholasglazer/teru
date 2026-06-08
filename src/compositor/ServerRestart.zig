@@ -172,6 +172,19 @@ pub fn execRestart(server: *Server) void {
     // this teardown and the execve — terminals keep running.
     server.shutting_down = true;
 
+    // Destroy XWayland before the exec so its display lock + socket
+    // (/tmp/.X{N}-lock, /tmp/.X11-unix/X{N}) are unlinked. An in-place exec
+    // KEEPS the PID, so a lingering lazy-XWayland lock still names this live
+    // PID — the re-exec'd wlr_xwayland_create then sees :0 as "in use by a live
+    // server", claims :1 instead, and the display number drifts up every
+    // restart (DISPLAY=:0 in the shells goes stale → X apps break; after enough
+    // restarts XWayland init fails outright). Tearing it down first lets the new
+    // instance reclaim :0 cleanly each time.
+    if (server.xwayland) |xwl| {
+        wlr.wlr_xwayland_destroy(xwl);
+        server.xwayland = null;
+    }
+
     // Detach the keyboard from the seat and unhook our per-keyboard listeners
     // BEFORE wlr_backend_destroy. The backend teardown finalizes each input
     // device; wlr_keyboard_finish fires a final release-all key notify, and if
