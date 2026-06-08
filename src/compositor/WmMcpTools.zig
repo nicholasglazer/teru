@@ -467,11 +467,9 @@ fn toolFocusWindow(self: *WmMcpServer, node_id: u64, buf: []u8, id: ?[]const u8)
         const ws_idx = srv.nodes.workspace[slot];
         if (ws_idx >= 10) return jsonRpcError(buf, id, -32602, "Window is hidden/scratchpad");
         const workspace = &srv.layout_engine.workspaces[ws_idx];
-        // Find node in the workspace list and set active_index
-        for (workspace.node_ids.items, 0..) |nid, idx| {
-            if (nid == node_id) { workspace.active_index = idx; break; }
-        }
-        workspace.active_node = node_id;
+        // Funnel through the single focus normalize point (A1): sets
+        // active_node + syncs active_index when tiled.
+        workspace.setFocus(node_id);
         srv.updateFocusedTerminal();
         if (srv.bar) |b| _ = b.render(srv);
         return okText(buf, id, "focused window {d}", .{node_id});

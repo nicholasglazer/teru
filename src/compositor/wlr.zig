@@ -110,6 +110,17 @@ pub extern "wayland-server" fn wl_event_source_timer_update(
     source: *wl_event_source,
     ms_delay: c_int,
 ) callconv(.c) c_int;
+// Idle event source — fires ONCE the next time the event loop goes idle
+// (i.e. after the current dispatch fully unwinds), then auto-removes itself.
+// Used to defer wlr_scene_node_destroy out of a mid-dispatch close path so a
+// buffer's internal signal can't fire against freed pane memory. NOTE: the
+// idle func returns void (unlike the timer func's c_int) and the source must
+// NOT be wl_event_source_remove'd from inside its own callback.
+pub extern "wayland-server" fn wl_event_loop_add_idle(
+    loop: *wl_event_loop,
+    func: *const fn (?*anyopaque) callconv(.c) void,
+    data: ?*anyopaque,
+) callconv(.c) ?*wl_event_source;
 // libwayland event-mask bits (wayland-server-core.h). Only READABLE is
 // passed to wl_event_loop_add_fd; HANGUP/ERROR are never requested but
 // epoll always reports them, so fd handlers must test for them.

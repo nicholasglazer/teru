@@ -157,7 +157,31 @@ fn buildSpawnConfig(
 /// scratchpad) must be repainted or it keeps its focused (orange) border —
 /// the "both scratchpads look selected" bug. Mirrors updateFocusedTerminal's
 /// de-focus of any XDG/Xwayland holder so the one-of-three focus invariant holds.
+/// Resolve the node id currently holding focus (terminal / XDG / XWayland),
+/// or null if nothing is focused. Used to remember the pre-scratchpad focus
+/// target. XWayland surfaces carry no node_id, so reverse-look-up the registry.
+fn currentFocusedNodeId(server: *Server) ?u64 {
+    if (server.focused_terminal) |tp| return tp.node_id;
+    if (server.focused_view) |v| return v.node_id;
+    if (server.focused_xwayland) |xw| {
+        for (0..NodeRegistry.max_nodes) |i| {
+            if (server.nodes.kind[i] == .empty) continue;
+            if (server.nodes.xwayland_surface[i] == xw) return server.nodes.node_id[i];
+        }
+    }
+    return null;
+}
+
 fn focusScratchpad(server: *Server, tp: *TerminalPane) void {
+    // Remember what was focused BEFORE the scratchpad takes over, so hide()
+    // can restore the exact pre-scratchpad window — terminal/XDG/XWayland,
+    // tiled or floating (A1). Captured here because we're about to overwrite
+    // the focus pointers below. Don't capture the scratchpad's own id.
+    server.scratchpad_prev_focus = blk: {
+        const prev = currentFocusedNodeId(server) orelse break :blk null;
+        break :blk if (prev == tp.node_id) null else prev;
+    };
+
     if (server.focused_view) |pv| _ = wlr.wlr_xdg_toplevel_set_activated(pv.toplevel, false);
     if (server.focused_xwayland) |px| wlr.wlr_xwayland_surface_activate(px, false);
     server.focused_terminal = tp;
@@ -207,18 +231,37 @@ fn hide(server: *Server, slot: u16) void {
     server.nodes.moveSlotToWorkspace(slot, NodeRegistry.HIDDEN_WS);
     if (server.nodes.kind[slot] == .terminal) {
         const nid = server.nodes.node_id[slot];
+        // A parked scratchpad must never stay a workspace's active_node, or a
+        // later updateFocusedTerminal would focus an invisible parked pane
+        // (e.g. after a nested scratchpad-over-scratchpad restore). Clear it.
+        const aws = server.layout_engine.getActiveWorkspace();
+        if (aws.active_node) |an| {
+            if (an == nid) aws.active_node = null;
+        }
         if (server.terminalPaneById(nid)) |tp| {
             if (server.getOrCreateHiddenTree()) |parked| {
                 tp.reparent(parked);
             }
             tp.setVisible(false);
-            // Return focus to the window that was active before the scratchpad
-            // came up. Scratchpads are floating and never become the tiled
-            // active_node, so updateFocusedTerminal re-focuses exactly that
-            // pre-scratchpad pane (and repaints every border). Previously this
-            // just nulled focus, so it fell back to the default (master) pane.
+            // Restore focus to whatever was active before the scratchpad came
+            // up (A1). The captured node id covers terminal/XDG/XWayland AND
+            // floating targets — which the old "just null + updateFocusedTerminal"
+            // could not, because updateFocusedTerminal only re-derives from the
+            // tiled active_node/active_index. We funnel the captured id through
+            // setFocus, then let updateFocusedTerminal reflect it onto the Server
+            // pointers + borders. Falls back to the plain re-derive when the
+            // captured target is gone, hidden, or on another workspace.
             if (server.focused_terminal == tp) {
                 server.focused_terminal = null;
+                const prev = server.scratchpad_prev_focus;
+                server.scratchpad_prev_focus = null;
+                if (prev) |pid| {
+                    if (server.nodes.findById(pid)) |pslot| {
+                        if (server.nodes.workspace[pslot] == server.layout_engine.active_workspace) {
+                            server.layout_engine.getActiveWorkspace().setFocus(pid);
+                        }
+                    }
+                }
                 Focus.updateFocusedTerminal(server);
             }
         }

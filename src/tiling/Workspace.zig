@@ -274,6 +274,28 @@ pub fn getActiveNodeId(self: *const Workspace) ?u64 {
     return self.node_ids.items[self.active_index];
 }
 
+/// The single "this node is now focused" normalize point (A1). Sets
+/// `active_node` (read first by Server.updateFocusedTerminal, so it's the
+/// authoritative target for tiled AND floating nodes) and, when the node is
+/// in the tiled list, syncs `active_index` in lockstep so `getActiveNodeId`
+/// agrees in flat-layout mode. Floating nodes aren't in `node_ids`, so
+/// `active_index` is left untouched for them — `active_node` carries the
+/// truth. Tolerates an id not currently present (still records `active_node`,
+/// e.g. for a just-mapped or floating window). Every focus-setting path
+/// (click, cycle, MCP focus_window, exit re-seat, scratchpad restore) should
+/// funnel Workspace-layer focus through here instead of writing the two
+/// fields independently — the independent writes were the dual-source-of-truth
+/// behind the recurring wrong-pane / two-borders focus bugs.
+pub fn setFocus(self: *Workspace, node_id: u64) void {
+    self.active_node = node_id;
+    for (self.node_ids.items, 0..) |id, idx| {
+        if (id == node_id) {
+            self.active_index = idx;
+            return;
+        }
+    }
+}
+
 pub fn nodeCount(self: *const Workspace) usize {
     return self.node_ids.items.len;
 }
