@@ -264,6 +264,7 @@ pub fn closeNode(self: *Server, node_id: u64) bool {
                 if (self.nodes.findById(node_id)) |_| _ = self.nodes.remove(node_id);
 
                 clearFocusRefs(self, node_id);
+                _ = self.pane_index.remove(node_id);
 
                 tp.deinit(self.zig_allocator);
                 self.zig_allocator.destroy(tp);

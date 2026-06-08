@@ -34,16 +34,17 @@ pub fn takeScreenshot(server: *Server) void {
 
     teru.compat.ensureParentDirC(path); // mkdir -p the capture dir
 
-    if (takeScreenshotToPath(server, path)) {
+    // Maintain a stable `latest.png` in the same dir so it's trivial to
+    // reference the most recent shot ("look at my latest screenshot").
+    var latest_buf: [512]u8 = undefined;
+    const latest: ?[]const u8 = std.fmt.bufPrint(&latest_buf, "{s}/latest.png", .{dir}) catch null;
+
+    // Composite the output ONCE and write both the dated path and latest.png
+    // from that single in-memory buffer. The composite step is a full per-pane
+    // render; doing it twice (once per file) doubled the work on the
+    // single-threaded wl_display loop for no benefit.
+    if (compositeAndWrite(server, path, latest)) {
         std.log.scoped(.compositor).info("screenshot → {s}", .{path});
-        // Maintain a stable `latest.png` in the same dir so it's trivial to
-        // reference the most recent shot ("look at my latest screenshot"). A
-        // screenshot is a rare, user-initiated action, so re-compositing once
-        // more here is fine and keeps latest.png a real, valid PNG.
-        var latest_buf: [512]u8 = undefined;
-        if (std.fmt.bufPrint(&latest_buf, "{s}/latest.png", .{dir})) |latest| {
-            _ = takeScreenshotToPath(server, latest);
-        } else |_| {}
         // Also copy to the Wayland clipboard so it can be pasted into other apps.
         const copied = copyToClipboard(server, path);
         // On-screen feedback: mod+w is silent otherwise, so it feels like a
@@ -84,6 +85,15 @@ fn copyToClipboard(server: *Server, path: []const u8) bool {
 /// Named-path variant: used by MCP (teruwm_screenshot) + Server.takeScreenshot.
 /// Returns true on PNG write success. Rejects paths containing `../`.
 pub fn takeScreenshotToPath(server: *Server, path: []const u8) bool {
+    return compositeAndWrite(server, path, null);
+}
+
+/// Composite the active output ONCE into a single pixel buffer, then encode it
+/// to `path` and (if non-null) `also` — reusing the same composited buffer for
+/// both. Returns true if `path` was written. Rejects paths containing `../`.
+/// Pulling the composite out of the per-file loop is what kills mod+w's
+/// double full-render: the second file used to re-composite from scratch.
+fn compositeAndWrite(server: *Server, path: []const u8, also: ?[]const u8) bool {
     if (!teru.compat.isSafeScreenshotPath(path)) return false;
     const dims_ss = server.activeOutputDims();
     const out_w: u32 = dims_ss.w;
@@ -96,6 +106,20 @@ pub fn takeScreenshotToPath(server: *Server, path: []const u8) bool {
 
     compositeOutput(server, pixels, out_w, out_h);
 
+    if (!writePng(server, path, pixels, out_w, out_h)) return false;
+
+    // Secondary path (e.g. latest.png) shares the buffer; its failure is
+    // non-fatal since the primary file is already on disk.
+    if (also) |a| {
+        if (teru.compat.isSafeScreenshotPath(a)) {
+            _ = writePng(server, a, pixels, out_w, out_h);
+        }
+    }
+    return true;
+}
+
+/// Encode `pixels` to `path` as PNG. Returns false on overflow or write error.
+fn writePng(server: *Server, path: []const u8, pixels: []const u32, out_w: u32, out_h: u32) bool {
     var path_z: [512:0]u8 = undefined;
     if (path.len >= path_z.len) return false;
     @memcpy(path_z[0..path.len], path);

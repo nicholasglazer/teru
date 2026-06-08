@@ -273,6 +273,19 @@ pub fn reloadWmConfig(self: *Server) void {
     // centered window instead of their distinct xmonad rects.
     applyDefaultScratchpadRules(self);
 
+    // Re-bind user [keybind] spawn + scratchpad chords. loadWithLibc()
+    // refreshed the chord DATA (wm_config.spawn_chords / scratchpad_chords),
+    // but the keybinds trigger→Action table and the Action→command payload
+    // tables (spawn_table / scratchpad_table) are only populated by these
+    // two appliers — they run at init from applyConfig. Without re-running
+    // them on reload, a newly added chord is dead until restart and an
+    // edited chord keeps firing the STALE command (the appliers re-@memcpy
+    // the fresh command into its deterministic slot). Re-applier-only is
+    // deliberate: a full keybinds reset would wipe init-time teru.conf
+    // [keybinds.*] overrides.
+    applyWmSpawnChords(self);
+    applyWmScratchpadChords(self);
+
     // Re-apply bar configuration — widget layout or thresholds may
     // have changed in ways the signature hash doesn't detect
     // (widgets.count alone can't express a widget's internal fmt).
