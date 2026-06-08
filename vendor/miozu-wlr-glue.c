@@ -108,6 +108,12 @@ struct wlr_xdg_surface *miozu_xdg_popup_base(struct wlr_xdg_popup *p) {
     return p->base;
 }
 
+/* Fires when an xdg_popup is destroyed. Lets us free the per-popup tracking
+ * struct + unhook the recursive new_popup listener that catches submenus. */
+struct wl_signal *miozu_xdg_popup_destroy(struct wlr_xdg_popup *p) {
+    return &p->events.destroy;
+}
+
 struct wlr_xdg_surface *miozu_xdg_toplevel_base(struct wlr_xdg_toplevel *t) {
     return t->base;
 }

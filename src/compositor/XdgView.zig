@@ -297,27 +297,63 @@ fn handleCommit(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
 }
 
 
-/// xdg_surface.new_popup handler. Creates a scene node for popups
-/// (context menus, tooltips) and constrains them to the output area.
-fn handleNewPopup(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
-    const view: *XdgView = @fieldParentPtr("new_popup", listener);
-    const popup: *wlr.wlr_xdg_popup = @ptrCast(@alignCast(data orelse return));
-    const popup_surface = wlr.miozu_xdg_popup_base(popup) orelse return;
-    std.log.scoped(.compositor).debug("new_popup node={d} popup_surface={*}", .{ view.node_id, popup_surface });
-    if (wlr.wlr_scene_xdg_surface_create(view.scene_tree, popup_surface) == null) return;
+/// Per-xdg_popup tracking. A popup (context menu, tooltip, submenu) is its own
+/// surface whose parent is EITHER a toplevel OR another popup. The toplevel's
+/// new_popup only fires for first-level popups; a submenu's new_popup fires on
+/// the *parent popup's* surface. Without a listener there, nested popups never
+/// get a scene tree → the submenu is invisible (and wlroots logs "configure
+/// scheduled for an uninitialized xdg_surface"). So we track each popup and
+/// recursively listen for its children — arbitrary menu depth works.
+///
+/// `root_view` is the owning toplevel, threaded down the whole chain so the
+/// unconstrain box is computed in the root toplevel's surface-local coords —
+/// what wlr_xdg_popup_unconstrain_from_box expects (matches sway). The scene
+/// tree is owned by the wlr_scene xdg-surface helper (auto-destroyed when the
+/// surface dies), so destroy only frees this struct + unhooks our 2 listeners.
+const Popup = struct {
+    server: *Server,
+    root_view: *XdgView,
+    scene_tree: *wlr.wlr_scene_tree,
+    new_popup: wlr.wl_listener,
+    destroy: wlr.wl_listener,
+};
 
-    // Constrain the popup to the output area. Without this the popup
-    // never receives a configure event and the client never commits a
-    // buffer — the context menu simply doesn't appear.
-    //
-    // Constraint box is in parent-surface-local coordinates. Origin is
-    // (-vx, -vy) assuming a single output at (0,0). Multi-monitor with
-    // offset outputs would need the output's layout position subtracted
-    // as well: (output.x - vx, output.y - vy).
-    const slot = view.server.nodes.findById(view.node_id) orelse return;
-    const vx = view.server.nodes.pos_x[slot];
-    const vy = view.server.nodes.pos_y[slot];
-    const dims = view.server.activeOutputDims();
+/// Wire up a popup: create its scene tree under `parent_tree`, constrain it to
+/// the output, and start tracking it so its own child popups (submenus) are
+/// caught too. Shared by the toplevel's new_popup (parent_tree = view tree) and
+/// the recursive popup new_popup (parent_tree = parent popup's tree).
+fn setupPopup(server: *Server, root_view: *XdgView, parent_tree: *wlr.wlr_scene_tree, popup: *wlr.wlr_xdg_popup) void {
+    const popup_surface = wlr.miozu_xdg_popup_base(popup) orelse return;
+    const scene_tree = wlr.wlr_scene_xdg_surface_create(parent_tree, popup_surface) orelse return;
+    // A nested popup (submenu) logs parent_tree == an earlier line's scene_tree.
+    std.log.scoped(.compositor).debug("popup setup root_node={d} parent_tree={*} -> scene_tree={*}", .{ root_view.node_id, parent_tree, scene_tree });
+
+    // Constrain first — without it the popup never gets a configure, so the
+    // client never commits a buffer and the menu doesn't appear. This must
+    // run even if the tracking alloc below fails, so the popup still shows.
+    unconstrainPopup(server, root_view, popup);
+
+    const p = server.zig_allocator.create(Popup) catch return;
+    p.* = .{
+        .server = server,
+        .root_view = root_view,
+        .scene_tree = scene_tree,
+        .new_popup = makeListener(handlePopupNewPopup),
+        .destroy = makeListener(handlePopupDestroy),
+    };
+    wlr.wl_signal_add(wlr.miozu_xdg_surface_new_popup(popup_surface), &p.new_popup);
+    wlr.wl_signal_add(wlr.miozu_xdg_popup_destroy(popup), &p.destroy);
+}
+
+/// Constrain a popup to the active output. Box is in the ROOT toplevel's
+/// surface-local coordinates (origin = output (0,0) minus the root view's
+/// position). Multi-monitor with offset outputs would also subtract the
+/// output's layout position: (output.x - vx, output.y - vy).
+fn unconstrainPopup(server: *Server, root_view: *XdgView, popup: *wlr.wlr_xdg_popup) void {
+    const slot = server.nodes.findById(root_view.node_id) orelse return;
+    const vx = server.nodes.pos_x[slot];
+    const vy = server.nodes.pos_y[slot];
+    const dims = server.activeOutputDims();
     var constraint_box = wlr.wlr_box{
         .x = -vx,
         .y = -vy,
@@ -325,6 +361,33 @@ fn handleNewPopup(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) vo
         .height = @intCast(dims.h),
     };
     wlr.wlr_xdg_popup_unconstrain_from_box(popup, &constraint_box);
+}
+
+/// xdg_surface.new_popup handler on a TOPLEVEL — first-level popups (the
+/// right-click / menubar menu itself).
+fn handleNewPopup(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const view: *XdgView = @fieldParentPtr("new_popup", listener);
+    const popup: *wlr.wlr_xdg_popup = @ptrCast(@alignCast(data orelse return));
+    setupPopup(view.server, view, view.scene_tree, popup);
+}
+
+/// xdg_surface.new_popup handler on a POPUP — submenus / nested popups. Their
+/// scene tree must nest under the parent popup's tree, and they keep the same
+/// root_view so unconstrain stays in root-toplevel coordinates.
+fn handlePopupNewPopup(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const p: *Popup = @fieldParentPtr("new_popup", listener);
+    const popup: *wlr.wlr_xdg_popup = @ptrCast(@alignCast(data orelse return));
+    setupPopup(p.server, p.root_view, p.scene_tree, popup);
+}
+
+/// xdg_popup.destroy handler — unhook our listeners + free the tracking struct.
+/// The scene tree is owned by the wlr_scene helper, which tears it down on the
+/// same surface-destroy; we must not touch it here.
+fn handlePopupDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const p: *Popup = @fieldParentPtr("destroy", listener);
+    wlr.wl_list_remove(&p.new_popup.link);
+    wlr.wl_list_remove(&p.destroy.link);
+    p.server.zig_allocator.destroy(p);
 }
 
 /// xdg_toplevel.show_window_menu handler. Toggle floating on the
