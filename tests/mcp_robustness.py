@@ -6,22 +6,24 @@ Covers: garbage bytes, oversized payloads, partial requests, unknown methods.
 
 Two parts:
   A. TERU AGENT (line-JSON: write <json>\n, read until \n)
-     - Reuse TeruMCP from tests/e2e_mcp.py (.call(tool,args,timeout)->(text,err))
-     - Launch: teru --daemon NAME
-     - Auto-discover: /run/user/UID/teru-mcp-*.sock (newest non-events)
+     - Spawns its OWN throwaway `teru --daemon robustness`
+     - Targets the pid-keyed socket /run/user/UID/teru-mcp-<our_pid>.sock
      - Error codes: -32602 (bad args), -32603 (internal/spawn/no-renderer)
 
   B. TERUWM COMPOSITOR (HTTP-over-unix-socket, line-JSON body)
-     - Reuse Mcp client from tests/teruwm_mcp_audit.py or new minimal client
-     - Launch headless: env WLR_BACKENDS=headless WLR_RENDERER=pixman
-     - Sockets: /run/user/UID/teruwm-mcp-*.sock (requests) + events
+     - Spawns its OWN headless teruwm (env WLR_BACKENDS=headless WLR_RENDERER=pixman)
+     - Targets the pid-keyed socket /run/user/UID/teruwm-mcp-<our_pid>.sock
+
+Hermetic by design: both instances are ours and are SIGTERM'd in a finally
+block, so the hostile/malformed traffic NEVER reaches the user's live
+daily-driver session.
 
 Assertions after each test:
   1. Server is still alive (subsequent valid tools/list succeeds)
   2. No crash, no hang (5s timeout per request)
 
 Usage:
-    python3 tests/mcp_robustness.py
+    python3 tests/mcp_robustness.py [teru_bin] [teruwm_bin]
 """
 
 import json
@@ -30,7 +32,6 @@ import socket
 import subprocess
 import sys
 import time
-import glob
 import signal
 
 RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
@@ -200,30 +201,70 @@ class TeruWmMCP:
         return resp, None
 
 
-def find_teru_socket():
-    """Discover the most recent teru-mcp-*.sock (not -events)."""
-    socks = []
-    for s in glob.glob(f'{RUNTIME_DIR}/teru-mcp-*.sock'):
-        # events socket is teru-mcp-events-<PID>.sock — exclude the push channel
-        if '-events-' not in os.path.basename(s):
-            socks.append(s)
-    if not socks:
-        return None
-    socks.sort(key=os.path.getmtime, reverse=True)
-    return socks[0]
+def _resolve_bin(argi, name):
+    """argv[argi] (if a real path) → zig-out/bin/<name> → ~/.local/bin/<name> → PATH."""
+    if len(sys.argv) > argi and os.path.exists(sys.argv[argi]):
+        return sys.argv[argi]
+    for cand in (f'zig-out/bin/{name}', os.path.expanduser(f'~/.local/bin/{name}')):
+        if os.path.exists(cand):
+            return cand
+    return name
 
 
-def find_teruwm_socket():
-    """Discover the most recent teruwm-mcp-*.sock (not -events)."""
-    socks = []
-    for s in glob.glob(f'{RUNTIME_DIR}/teruwm-mcp-*.sock'):
-        # events socket is teruwm-mcp-events-<PID>.sock — exclude the push channel
-        if '-events-' not in os.path.basename(s):
-            socks.append(s)
-    if not socks:
-        return None
-    socks.sort(key=os.path.getmtime, reverse=True)
-    return socks[0]
+def launch_teru(teru_bin):
+    """Launch our OWN throwaway `teru --daemon`, return (proc, sock).
+
+    Hermetic by design: the socket is keyed to OUR proc.pid
+    (teru-mcp-{pid}.sock), so the hostile/malformed traffic this test fires
+    can never reach the user's live daemon."""
+    env = dict(os.environ)
+    env.pop('WAYLAND_DISPLAY', None)
+    env.pop('DISPLAY', None)
+    proc = subprocess.Popen(
+        [teru_bin, '--daemon', 'robustness'],
+        env=env,
+        stdout=open('/tmp/teru-robustness.log', 'w'),
+        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+        start_new_session=True)
+    sock = os.path.join(RUNTIME_DIR, f'teru-mcp-{proc.pid}.sock')
+    for _ in range(50):
+        time.sleep(0.2)
+        if os.path.exists(sock):
+            time.sleep(0.3)
+            return proc, sock
+    proc.kill()
+    raise RuntimeError(f'teru --daemon did not create {sock} '
+                       '(see /tmp/teru-robustness.log)')
+
+
+def launch_teruwm(teruwm_bin):
+    """Launch our OWN headless teruwm, return (proc, sock).
+
+    Hermetic by design: the socket is keyed to OUR proc.pid
+    (teruwm-mcp-{pid}.sock), so the hostile/malformed traffic this test
+    fires can never reach the user's live compositor. We never unlink
+    sockets we didn't create."""
+    env = dict(os.environ)
+    env.update(WLR_BACKENDS='headless', WLR_HEADLESS_OUTPUTS='1',
+               WLR_RENDERER='pixman', TERU_LOG='error',
+               XDG_RUNTIME_DIR=RUNTIME_DIR)
+    env.pop('WAYLAND_DISPLAY', None)
+    env.pop('DISPLAY', None)
+    proc = subprocess.Popen(
+        [teruwm_bin],
+        env=env,
+        stdout=open('/tmp/teruwm-robustness.log', 'w'),
+        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+        start_new_session=True)
+    sock = os.path.join(RUNTIME_DIR, f'teruwm-mcp-{proc.pid}.sock')
+    for _ in range(60):
+        time.sleep(0.2)
+        if os.path.exists(sock):
+            time.sleep(0.4)
+            return proc, sock
+    proc.kill()
+    raise RuntimeError(f'teruwm did not create {sock} '
+                       '(see /tmp/teruwm-robustness.log)')
 
 
 # ── Test fixtures ──────────────────────────────────────────────
@@ -402,47 +443,67 @@ def test_teruwm_robustness(mcp):
 
 # ── Main ───────────────────────────────────────────────────────
 
+def _terminate(proc):
+    """SIGTERM a launched instance, escalating to kill if it lingers."""
+    if proc is None:
+        return
+    proc.send_signal(signal.SIGTERM)
+    try:
+        proc.wait(timeout=4)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
 def main():
     print("MCP Robustness Tests")
     print("=" * 60)
 
-    teru_sock = find_teru_socket()
-    teruwm_sock = find_teruwm_socket()
+    teru_bin = _resolve_bin(1, 'teru')
+    teruwm_bin = _resolve_bin(2, 'teruwm')
 
-    if not teru_sock:
-        print("ERROR: No teru-mcp-*.sock found (is teru --daemon running?)")
-        print(f"       Expected: {RUNTIME_DIR}/teru-mcp-*.sock")
-        return 1
-
-    if not teruwm_sock:
-        print("WARNING: No teruwm-mcp-*.sock found (is teruwm headless running?)")
-        print(f"         Expected: {RUNTIME_DIR}/teruwm-mcp-*.sock")
-        teruwm_sock = None
-
-    print(f"teru socket:   {teru_sock}")
-    if teruwm_sock:
-        print(f"teruwm socket: {teruwm_sock}")
-    print()
-
+    teru_proc = None
+    teruwm_proc = None
     passed = 0
     failed = 0
 
-    # Test teru
-    mcp_teru = TeruMCP(teru_sock)
-    if test_teru_robustness(mcp_teru):
-        passed += 1
-    else:
-        failed += 1
+    try:
+        # Launch our OWN teru daemon (hostile traffic must never hit the live one).
+        try:
+            teru_proc, teru_sock = launch_teru(teru_bin)
+        except (RuntimeError, OSError) as e:
+            print(f"ERROR: could not launch teru daemon: {e}")
+            return 1
+        print(f"teru socket:   {teru_sock}  (pid {teru_proc.pid})")
 
-    # Test teruwm (if available)
-    if teruwm_sock:
-        mcp_teruwm = TeruWmMCP(teruwm_sock)
-        if test_teruwm_robustness(mcp_teruwm):
+        # Launch our OWN headless teruwm (best-effort: skip if it can't start).
+        teruwm_sock = None
+        try:
+            teruwm_proc, teruwm_sock = launch_teruwm(teruwm_bin)
+            print(f"teruwm socket: {teruwm_sock}  (pid {teruwm_proc.pid})")
+        except (RuntimeError, OSError) as e:
+            print(f"WARNING: could not launch headless teruwm: {e}")
+            print("         (skipping teruwm robustness tests)")
+        print()
+
+        # Test teru
+        mcp_teru = TeruMCP(teru_sock)
+        if test_teru_robustness(mcp_teru):
             passed += 1
         else:
             failed += 1
-    else:
-        print("\n(skipping teruwm tests — no socket found)")
+
+        # Test teruwm (if we launched one)
+        if teruwm_sock:
+            mcp_teruwm = TeruWmMCP(teruwm_sock)
+            if test_teruwm_robustness(mcp_teruwm):
+                passed += 1
+            else:
+                failed += 1
+        else:
+            print("\n(skipping teruwm tests — could not launch headless teruwm)")
+    finally:
+        _terminate(teru_proc)
+        _terminate(teruwm_proc)
 
     print()
     print("=" * 60)

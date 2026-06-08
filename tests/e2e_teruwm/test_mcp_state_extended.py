@@ -28,7 +28,6 @@ Runnable headless: env WLR_BACKENDS=headless WLR_RENDERER=pixman.
 from __future__ import annotations
 
 import contextlib
-import glob
 import json
 import os
 import shutil
@@ -101,35 +100,29 @@ class Mcp:
 
 
 def launch(teruwm_bin: str) -> tuple[subprocess.Popen, str]:
-    """Launch teruwm headless, wait for MCP socket, return (proc, sock_path)."""
+    """Launch our OWN headless teruwm, wait for ITS MCP socket, return (proc, sock_path).
+
+    Hermetic by design: the socket is keyed to OUR proc.pid
+    (teruwm-mcp-{pid}.sock), so the tests never connect to (and never mutate)
+    the user's live compositor session. We never unlink sockets we didn't
+    create."""
     env = dict(os.environ)
     env.update(WLR_BACKENDS="headless", WLR_HEADLESS_OUTPUTS="1",
                WLR_RENDERER="pixman", TERU_LOG="info", XDG_RUNTIME_DIR=RUNTIME_DIR)
     # Don't nest in a parent compositor's socket
     env.pop("WAYLAND_DISPLAY", None)
     env.pop("DISPLAY", None)
-    # Clean stale sockets
-    for stale in glob.glob(os.path.join(RUNTIME_DIR, "teruwm-mcp-*.sock")):
-        try:
-            os.unlink(stale)
-        except OSError:
-            pass
     log = open("/tmp/teruwm-mcp-state-extended-test.log", "w")
     proc = subprocess.Popen([teruwm_bin], env=env, stdout=log, stderr=log,
                             start_new_session=True)
-    sock = None
+    sock = os.path.join(RUNTIME_DIR, f"teruwm-mcp-{proc.pid}.sock")
     for _ in range(40):
         time.sleep(0.25)
-        socks = [s for s in glob.glob(os.path.join(RUNTIME_DIR, "teruwm-mcp-*.sock"))
-                 if "events" not in s]
-        if socks:
-            sock = socks[0]
-            break
-    if not sock:
-        proc.send_signal(signal.SIGTERM)
-        raise RuntimeError("teruwm did not create an MCP socket — see /tmp/teruwm-mcp-state-extended-test.log")
-    time.sleep(0.4)
-    return proc, sock
+        if os.path.exists(sock):
+            time.sleep(0.4)
+            return proc, sock
+    proc.send_signal(signal.SIGTERM)
+    raise RuntimeError("teruwm did not create an MCP socket — see /tmp/teruwm-mcp-state-extended-test.log")
 
 
 RESULTS = []
