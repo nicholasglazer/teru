@@ -73,13 +73,20 @@ rm -f "/run/user/$(id -u)/wayland-"*.lock 2>/dev/null || true
 # never starts. Resolve the by-path symlink to the colon-free /dev/dri/cardN
 # node first, and only export if that node actually exists (otherwise leave
 # WLR_DRM_DEVICES unset so wlroots autoselects and the compositor still comes up).
+_startt_pinned_gpu=0   # 1 only if WE pinned the GPU below (gates the self-heal)
 if [ -z "${WLR_DRM_DEVICES:-}" ]; then
-    _igpu_card="$(readlink -f /dev/dri/by-path/pci-0000:00:02.0-card 2>/dev/null)"
+    # `|| true`: under `set -e`, a bare assignment from a failing command
+    # substitution aborts the script. readlink -f exits non-zero when
+    # /dev/dri/by-path/ itself is absent (e.g. no udev by-path rules) — without
+    # `|| true` that would strand us at the TTY here, the very failure this
+    # block exists to prevent. The guards below handle the resulting empty value.
+    _igpu_card="$(readlink -f /dev/dri/by-path/pci-0000:00:02.0-card 2>/dev/null || true)"
     case "$_igpu_card" in
         *:*) _igpu_card="" ;;  # paranoia: never export a colon-bearing value
     esac
     if [ -n "$_igpu_card" ] && [ -e "$_igpu_card" ]; then
         export WLR_DRM_DEVICES="$_igpu_card"
+        _startt_pinned_gpu=1
     fi
 fi
 
@@ -107,10 +114,13 @@ _run_teruwm() {
 set +e
 _run_teruwm
 status=$?
-# Self-heal: if teruwm failed AND we pinned the GPU, the pin is the likeliest
+# Self-heal: if teruwm failed AND *we* pinned the GPU, the pin is the likeliest
 # culprit (bad device node, GPU renamed across reboot, etc). Retry once on the
 # default GPU so a GPU-pin mistake can never leave you stranded at the TTY.
-if [ "$status" -ne 0 ] && [ -n "${WLR_DRM_DEVICES:-}" ]; then
+# Gated on _startt_pinned_gpu (not just "is WLR_DRM_DEVICES set") so a user's
+# deliberate pre-exported override is respected, not silently clobbered — if
+# their own pin fails they get the error help + log below to debug it.
+if [ "$status" -ne 0 ] && [ "$_startt_pinned_gpu" -eq 1 ]; then
     printf '\n[startt] teruwm exited %d with WLR_DRM_DEVICES=%s — retrying on the default GPU\n' \
         "$status" "$WLR_DRM_DEVICES" | tee -a "$TERU_LOG"
     unset WLR_DRM_DEVICES
