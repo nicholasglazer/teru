@@ -461,6 +461,7 @@ pub extern "c" fn miozu_xdg_surface_initial_commit(surface: *wlr_xdg_surface) ca
 
 // XDG popup fields
 pub extern "c" fn miozu_xdg_popup_base(popup: *wlr_xdg_popup) callconv(.c) ?*wlr_xdg_surface;
+pub extern "c" fn miozu_xdg_popup_destroy(popup: *wlr_xdg_popup) callconv(.c) *wl_signal;
 
 // XDG popup positioning
 pub extern "c" fn wlr_xdg_popup_unconstrain_from_box(popup: *wlr_xdg_popup, box: ?*const wlr_box) callconv(.c) void;
