@@ -155,9 +155,11 @@ teruwmctl scratchpad term       # show 'term' again
 > capture external GUI clients (vivaldi/firefox) — those pixels live in client
 > buffers and need `wlr-screencopy` (`grim`). Each pops a toast naming the file.
 > `$mod+W` and `$mod+Shift+W` also copy the PNG to the Wayland clipboard as
-> `image/png` (a native `wlr_data_source` — no `wl-copy` dependency), so you can
-> paste straight into another app. You can also reference the file directly (e.g.
-> `<dir>/latest.png`) to feed it to an assistant.
+> `image/png` (a native `wlr_data_source` — teruwm needs no `wl-copy` to *write*
+> it). To **paste** it elsewhere the consuming app reads the clipboard, which on
+> Wayland means it needs `wl-clipboard` installed (e.g. CLI tools like Claude
+> Code call `wl-paste`; install `wl-clipboard` or paste won't find the image).
+> You can always reference the file directly instead (e.g. `<dir>/latest.png`).
 | `$mod+Shift+R` | Reload config from `~/.config/teruwm/config` |
 | `$mod+'` | **Hot-restart** compositor — PTYs survive, picks up a rebuilt binary (xmonad `mod-'`) |
 | `$mod+Shift+'` | **Quit** compositor (xmonad `mod-Shift-'`) |
