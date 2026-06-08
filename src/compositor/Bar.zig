@@ -26,6 +26,7 @@ const BarData = BarRenderer.BarData;
 const LayoutEngine = teru.LayoutEngine;
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
+const Process = @import("ServerProcess.zig");
 
 const Bar = @This();
 
@@ -323,6 +324,14 @@ fn refreshSectionExecs(self: *Bar, section: *Section, server: *Server, now_ns: i
             _ = std.c.dup2(write_fd, posix.STDOUT_FILENO);
             _ = std.c.dup2(write_fd, posix.STDERR_FILENO);
             _ = posix.system.close(write_fd);
+
+            // Close every other inherited fd >= 3 before exec. The dup2'd
+            // pipe write end now lives on fds 1/2 (< 3) so it survives; the
+            // original write_fd was just closed above. Without this, every
+            // bar-exec child (the GPU widget re-forks ~every 5s) inherits a
+            // live copy of every pane's NON-CLOEXEC PTY master — pinning closed
+            // shells alive and violating the restart-survival invariant.
+            Process.closeInheritedFds();
 
             const cmd_slice: [:0]const u8 = cmd_z[0..w.arg.len :0];
             const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", cmd_slice.ptr, null };

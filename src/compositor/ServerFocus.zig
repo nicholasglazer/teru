@@ -345,6 +345,17 @@ pub fn updateFocusedTerminal(server: *Server) void {
                     if (maybe_tp) |tp| tp.repaintBorderOnly();
                 }
                 return;
+            } else if (server.nodes.xwayland_surface[slot]) |xw| {
+                // X11 clients (Emacs, Steam, ...) have no xdg_view —
+                // route through the xwayland path so key events reach
+                // the client. Without this the branch fell through with
+                // focused_terminal=null and no keyboard enter (e.g.
+                // hiding a scratchpad over Emacs left focus nowhere).
+                focusXwaylandSurface(server, xw);
+                for (server.terminal_panes) |maybe_tp| {
+                    if (maybe_tp) |tp| tp.repaintBorderOnly();
+                }
+                return;
             }
         }
     }
