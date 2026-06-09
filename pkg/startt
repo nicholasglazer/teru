@@ -87,6 +87,22 @@ if [ -z "${WLR_DRM_DEVICES:-}" ]; then
     if [ -n "$_igpu_card" ] && [ -e "$_igpu_card" ]; then
         export WLR_DRM_DEVICES="$_igpu_card"
         _startt_pinned_gpu=1
+        # Also pin the RENDER device to the iGPU. WLR_DRM_DEVICES restricts the
+        # DRM *backend* (scanout), but wlroots' GLES/EGL still enumerates+opens
+        # the dGPU render node (renderD129) via eglQueryDevicesEXT, holding the
+        # NVIDIA GPU out of runtime-suspend (battery drain). Pinning the render
+        # node to the Intel one aims to keep EGL off the dGPU. Same defensive
+        # resolution as the card. NOTE: only takes effect on a FRESH startt
+        # (mod+' inherits the launch env). Uncertain — verify the dGPU goes to
+        # 'suspended' (cat /sys/class/drm/card0/device/power/runtime_status);
+        # if not, it's harmless. The self-heal below unsets it too on failure.
+        _igpu_render="$(readlink -f /dev/dri/by-path/pci-0000:00:02.0-render 2>/dev/null || true)"
+        case "$_igpu_render" in
+            *:*) _igpu_render="" ;;  # paranoia: never export a colon-bearing value
+        esac
+        if [ -n "$_igpu_render" ] && [ -e "$_igpu_render" ]; then
+            export WLR_RENDER_DRM_DEVICE="$_igpu_render"
+        fi
     fi
 fi
 
@@ -124,6 +140,7 @@ if [ "$status" -ne 0 ] && [ "$_startt_pinned_gpu" -eq 1 ]; then
     printf '\n[startt] teruwm exited %d with WLR_DRM_DEVICES=%s — retrying on the default GPU\n' \
         "$status" "$WLR_DRM_DEVICES" | tee -a "$TERU_LOG"
     unset WLR_DRM_DEVICES
+    unset WLR_RENDER_DRM_DEVICE
     _run_teruwm
     status=$?
 fi

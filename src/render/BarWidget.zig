@@ -179,7 +179,10 @@ pub const default_bottom_center = "{notify}";
 // Bottom right: GPU via exec (vendor-specific; NVIDIA by default, falls back to N/A).
 // The awk command rewrites "0, 36" → "0% 36C". Braces inside {print …} are
 // now handled correctly by the parser.
-pub const default_bottom_right = "GPU {exec:5:nvidia-smi --query-gpu=utilization.gpu,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | awk -F, '{print $1\"% \"$2\"C\"}' || echo N/A}";
+// 30s refresh (not 5s): on a dual-GPU PRIME laptop each nvidia-smi call wakes the
+// dGPU out of runtime-suspend; 30s keeps the readout without hammering battery.
+// Fully overridable via [bar.bottom] right = … {exec:N:cmd} in the teruwm config.
+pub const default_bottom_right = "GPU {exec:30:nvidia-smi --query-gpu=utilization.gpu,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | awk -F, '{print $1\"% \"$2\"C\"}' || echo N/A}";
 
 // ── Tests ──────────────────────────────────────────────────────
 
