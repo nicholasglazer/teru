@@ -55,6 +55,19 @@ pub fn setWorkspaceVisibility(self: *Server, ws: u8, visible: bool) void {
             }
         }
     }
+    // Floating nodes (dialogs, mouse-floated windows) live in the registry but
+    // NOT in the tiling node_ids list, so the loop above misses them — without
+    // this a floated dialog would stay visible after switching away from its
+    // workspace. Walk the registry for floats on this ws. (The multi-output
+    // path uses recomputeVisibility, which already covers floats; this keeps the
+    // no-focused-output fallback + ServerRestart restore correct too.)
+    var it = self.nodes.by_id.valueIterator();
+    while (it.next()) |slot_ptr| {
+        const slot = slot_ptr.*;
+        if (self.nodes.floating[slot] and self.nodes.workspace[slot] == ws) {
+            setSlotVisible(self, slot, visible);
+        }
+    }
 }
 
 // ── Float toggle ────────────────────────────────────────────
