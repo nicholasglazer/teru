@@ -52,8 +52,16 @@ pub fn thunkListWindows(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]con
 }
 
 pub fn thunkSpawnTerminal(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
-    const ws = extractNestedJsonInt(p, "workspace") orelse 0;
-    return toolSpawnTerminal(self, @intCast(ws), buf, id);
+    // Default to the ACTIVE workspace, not a hardcoded 0: an agent that
+    // switched workspaces and spawns "here" expects the terminal where it's
+    // looking, not silently on ws0. An explicit, in-range "workspace" overrides.
+    const ws: u8 = blk: {
+        if (extractNestedJsonInt(p, "workspace")) |w| {
+            if (w >= 0 and w < 10) break :blk @intCast(w);
+        }
+        break :blk self.server.layout_engine.active_workspace;
+    };
+    return toolSpawnTerminal(self, ws, buf, id);
 }
 
 pub fn thunkCloseWindow(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {

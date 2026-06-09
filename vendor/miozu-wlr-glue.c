@@ -379,7 +379,7 @@ int miozu_cursor_shape_event_from_focused(
  * libinput-backed (headless backend, virtual pointer) the handle lookup
  * returns NULL and we silently skip — no-op is the correct behavior. */
 
-void miozu_configure_libinput_pointer(struct wlr_input_device *dev) {
+void miozu_configure_libinput_pointer(struct wlr_input_device *dev, int natural_scroll) {
     if (!dev) return;
     if (!wlr_input_device_is_libinput(dev)) return;
 
@@ -401,10 +401,11 @@ void miozu_configure_libinput_pointer(struct wlr_input_device *dev) {
             LIBINPUT_CONFIG_TAP_MAP_LRM);
     }
 
-    /* Natural scrolling ON for touchpads (macOS-style). Users who want
-     * the old behavior can override via config later. */
+    /* Natural scrolling (macOS-style) for touchpads — driven by the
+     * `natural_scroll` config key (default ON). Set natural_scroll=false in
+     * ~/.config/teruwm/config for traditional/reverse scrolling. */
     if (libinput_device_config_scroll_has_natural_scroll(h)) {
-        libinput_device_config_scroll_set_natural_scroll_enabled(h, 1);
+        libinput_device_config_scroll_set_natural_scroll_enabled(h, natural_scroll ? 1 : 0);
     }
 
     /* Disable-while-typing: prevents palm hits while writing code. */

@@ -43,11 +43,12 @@ pub fn handleNewInput(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c
         setupKeyboard(server, device);
     } else if (device_type == wlr.WLR_INPUT_DEVICE_POINTER) {
         wlr.wlr_cursor_attach_input_device(server.cursor, device);
-        // Turn on the laptop-touchpad defaults (tap-to-click + natural
-        // scroll + disable-while-typing). libinput ships with every
-        // useful option OFF; without this the touchpad feels broken
-        // even when clicks-via-physical-button still work.
-        wlr.miozu_configure_libinput_pointer(device);
+        // Turn on the laptop-touchpad defaults (tap-to-click + disable-while-
+        // typing + natural scroll). libinput ships with every useful option
+        // OFF; without this the touchpad feels broken even when clicks-via-
+        // physical-button still work. natural_scroll is config-driven
+        // (default ON) — set natural_scroll=false for traditional scrolling.
+        wlr.miozu_configure_libinput_pointer(device, @intFromBool(server.wm_config.natural_scroll));
     }
 
     var caps: u32 = wlr.WL_SEAT_CAPABILITY_POINTER;
