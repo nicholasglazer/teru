@@ -76,6 +76,57 @@ pub fn scrollBy(self: *Pane, pixel_delta: i32, cell_height: u32, max_offset: u32
     return changed;
 }
 
+/// Map a pointer axis (scroll) event to a scrollback pixel delta for `scrollBy`.
+/// Pure — no `self`, so it's unit-testable without a live PTY/compositor.
+///
+/// `discrete` is the wl_pointer high-resolution wheel step (1/120ths of a
+/// notch; 0 for touchpad / continuous scroll). A notched wheel moves a fixed
+/// `wheel_lines` per notch — crisp and predictable. A touchpad tracks the
+/// finger proportionally via the continuous `delta` (× `factor`). The old
+/// compositor path applied a fixed 3 lines PER libinput event, and a touchpad
+/// fires dozens of events per gesture — that's the runaway "too sensitive"
+/// scroll. `sign` (+1/-1) carries the natural/invert convention the caller
+/// resolves from config. Returns pixels (sign = intended scrollback direction);
+/// 0 means "no scroll".
+pub fn axisScrollPixels(
+    delta: f64,
+    discrete: i32,
+    cell_height: u32,
+    sign: i32,
+    wheel_lines: u32,
+    factor: f32,
+) i32 {
+    if (delta == 0) return 0;
+    const ch: i32 = @intCast(@max(@as(u32, 1), cell_height));
+    if (discrete != 0) {
+        // Notched wheel: N notches × wheel_lines. delta_discrete shares the
+        // sign of delta; the v8 hi-res unit is 1/120th of a notch.
+        const notches: i32 = @divTrunc(discrete, 120);
+        const n: i32 = if (notches != 0) notches else (if (delta > 0) @as(i32, 1) else -1);
+        return sign * n * @as(i32, @intCast(@max(@as(u32, 1), wheel_lines))) * ch;
+    }
+    // Touchpad / continuous: proportional to finger travel (1:1 × factor).
+    const scaled: f64 = delta * @as(f64, factor);
+    var px: i32 = @intFromFloat(@round(scaled));
+    if (px == 0) px = if (delta > 0) 1 else -1; // never swallow a tiny flick
+    return sign * px;
+}
+
+/// Drag-select auto-scroll decision. `ly` is the pane-local content Y in
+/// pixels (0 = top content row); `content_h` is the visible content height in
+/// pixels. Returns how a held drag that has run past an edge should auto-scroll:
+///   dir = +1 → cursor above the top   → scroll into older history
+///   dir = -1 → cursor below the bottom → scroll toward the live tail
+///   dir =  0 → cursor inside viewport  → normal motion handling owns it
+/// `steps` (lines/frame) grows gently with how far past the edge the cursor is
+/// (1 at the edge … 6 when dragged far past), so a parked cursor keeps moving.
+pub fn dragEdgeScroll(ly: i32, content_h: i32, cell_height: u32) struct { dir: i32, steps: i32 } {
+    const ch: i32 = @intCast(@max(@as(u32, 1), cell_height));
+    if (ly < 0) return .{ .dir = 1, .steps = 1 + @min(@divTrunc(-ly, ch), 5) };
+    if (ly >= content_h) return .{ .dir = -1, .steps = 1 + @min(@divTrunc(ly - content_h, ch), 5) };
+    return .{ .dir = 0, .steps = 0 };
+}
+
 pub fn init(allocator: Allocator, rows: u16, cols: u16, id: u64, spawn_config: SpawnConfig) !Pane {
     var grid = try Grid.init(allocator, rows, cols);
     errdefer grid.deinit(allocator);
@@ -421,4 +472,45 @@ test "Pane resize" {
     try pane.resize(allocator, 40, 120);
     try std.testing.expectEqual(@as(u16, 40), pane.grid.rows);
     try std.testing.expectEqual(@as(u16, 120), pane.grid.cols);
+}
+
+test "axisScrollPixels: notched wheel is fixed lines-per-notch, ignores delta magnitude" {
+    // sign=-1 (TUI default: scroll-down → newer), 3 lines/notch, cell_height 16.
+    // One notch down (delta>0, discrete=120) → -3 lines = -48 px.
+    try std.testing.expectEqual(@as(i32, -48), Pane.axisScrollPixels(15.0, 120, 16, -1, 3, 1.0));
+    // A huge wheel delta still moves exactly one notch — magnitude is ignored.
+    try std.testing.expectEqual(@as(i32, -48), Pane.axisScrollPixels(99.0, 120, 16, -1, 3, 1.0));
+    // Two notches up (delta<0, discrete=-240) → +6 lines = +96 px.
+    try std.testing.expectEqual(@as(i32, 96), Pane.axisScrollPixels(-30.0, -240, 16, -1, 3, 1.0));
+    // invert flips the direction.
+    try std.testing.expectEqual(@as(i32, 48), Pane.axisScrollPixels(15.0, 120, 16, 1, 3, 1.0));
+}
+
+test "axisScrollPixels: touchpad is proportional to finger travel, not fixed lines" {
+    // discrete=0 → continuous. A small flick of 10 units → 10 px (× factor), not 3 lines.
+    try std.testing.expectEqual(@as(i32, -10), Pane.axisScrollPixels(10.0, 0, 16, -1, 3, 1.0));
+    // factor scales sensitivity.
+    try std.testing.expectEqual(@as(i32, -5), Pane.axisScrollPixels(10.0, 0, 16, -1, 3, 0.5));
+    // A sub-pixel delta never gets swallowed — at least one px, still sign-mapped
+    // (delta>0 with the default invert=-1 → -1 px, same direction as a big delta).
+    try std.testing.expectEqual(@as(i32, -1), Pane.axisScrollPixels(0.2, 0, 16, -1, 3, 0.1));
+    try std.testing.expectEqual(@as(i32, 1), Pane.axisScrollPixels(0.2, 0, 16, 1, 3, 0.1));
+    // Zero delta → no scroll.
+    try std.testing.expectEqual(@as(i32, 0), Pane.axisScrollPixels(0.0, 0, 16, -1, 3, 1.0));
+}
+
+test "dragEdgeScroll: inside viewport is a no-op; edges scroll the right way" {
+    const rows_px: i32 = 24 * 16; // 24-row pane, 16px cells → 384px content height
+    // Cursor well inside the viewport → no auto-scroll.
+    try std.testing.expectEqual(@as(i32, 0), Pane.dragEdgeScroll(100, rows_px, 16).dir);
+    // Just past the bottom → toward the live tail (dir -1), 1 line.
+    const below = Pane.dragEdgeScroll(rows_px + 1, rows_px, 16);
+    try std.testing.expectEqual(@as(i32, -1), below.dir);
+    try std.testing.expectEqual(@as(i32, 1), below.steps);
+    // Above the top → into history (dir +1), accelerating with distance.
+    const above = Pane.dragEdgeScroll(-100, rows_px, 16);
+    try std.testing.expectEqual(@as(i32, 1), above.dir);
+    try std.testing.expectEqual(@as(i32, 6), above.steps); // 100/16=6 → 1+min(6,5)=6
+    // Far past the bottom is capped at 6 lines/frame.
+    try std.testing.expectEqual(@as(i32, 6), Pane.dragEdgeScroll(rows_px + 9999, rows_px, 16).steps);
 }

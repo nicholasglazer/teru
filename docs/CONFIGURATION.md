@@ -478,6 +478,8 @@ These keys are set above any section header.
 | `unfocused_opacity` | float 0.0–1.0 | `1.0` | *(Since v0.4.16.)* Alpha applied to unfocused terminal panes on focus change. `1.0` disables fading; `0.85` is subtle. wlroots blends at composite, so there's no CPU renderer cost. Currently terminal panes only — XDG client fade is a follow-up |
 | `natural_scroll` | bool | `true` | libinput natural ("macOS-style") touchpad scrolling for **all** apps: fingers down → content up. Set `false` for traditional/reverse scrolling (fingers down → content down). Applied when a pointer device connects, so restart teruwm (`Mod+'`) or re-plug the touchpad to apply a change. Distinct from `touchpad_scroll_invert` (terminal-scrollback only) |
 | `touchpad_scroll_invert` | bool | `false` | Flip the **native-terminal scrollback** direction only. `false` = scroll down → newer content (TUI convention); `true` = scroll down → older content. Does not affect Wayland clients — use `natural_scroll` for a global change |
+| `wheel_scroll_lines` | u32 | `3` | Lines of scrollback moved per **notch of a discrete mouse wheel** over a focused terminal pane. Touchpad / high-resolution continuous scroll ignores this and tracks the finger proportionally (see `touchpad_scroll_factor`) |
+| `touchpad_scroll_factor` | float | `1.0` | Sensitivity multiplier for **touchpad / continuous (non-notched)** scrolling over a focused terminal pane. `1.0` tracks the finger 1:1 in pixels; lower is calmer, higher is faster. Only affects continuous scroll — a notched wheel always moves `wheel_scroll_lines` per notch. (Before this, every libinput axis event jumped a fixed 3 lines, so a touchpad — which fires dozens of events per gesture — scrolled far too fast.) |
 
 ### `[bar.top]` and `[bar.bottom]`
 

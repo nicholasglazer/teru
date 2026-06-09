@@ -98,11 +98,21 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
         const max_offset: u32 = @intCast(tp.pane.scrollback.total_lines);
         if (max_offset > 0) {
             const cell_h: u32 = if (server.font_atlas) |fa| fa.cell_height else 16;
-            const scroll_lines: i32 = if (delta > 0) 3 else -3;
             // TUI convention: physical scroll-down → newer scrollback.
             // Invert via touchpad_scroll_invert for traditional scrolling.
             const sign: i32 = if (server.wm_config.touchpad_scroll_invert) 1 else -1;
-            const pixel_delta: i32 = sign * scroll_lines * @as(i32, @intCast(cell_h));
+            // Notched wheel → fixed lines/notch; touchpad → proportional to the
+            // continuous delta. The old fixed ±3-lines-per-event over-scrolled
+            // touchpads (dozens of events/gesture). See Pane.axisScrollPixels.
+            const discrete = wlr.miozu_pointer_axis_delta_discrete(event);
+            const pixel_delta = teru.Pane.axisScrollPixels(
+                delta,
+                discrete,
+                cell_h,
+                sign,
+                server.wm_config.wheel_scroll_lines,
+                server.wm_config.touchpad_scroll_factor,
+            );
 
             // Coalesce to the frame callback instead of rendering inline.
             // A touchpad fires dozens of axis events per gesture; a synchronous
@@ -110,7 +120,7 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
             // scrollback overlay) cannot keep up and the gesture lags. Mark
             // dirty + schedule a frame so many events collapse to one paint per
             // vsync (the same coalescing the PTY-read path relies on).
-            if (tp.pane.scrollBy(pixel_delta, cell_h, max_offset)) {
+            if (pixel_delta != 0 and tp.pane.scrollBy(pixel_delta, cell_h, max_offset)) {
                 tp.pane.grid.markAllDirty();
                 server.scheduleRender();
             }
@@ -514,6 +524,57 @@ fn terminalMouseMotion(server: *Server, tp: anytype, cx: f64, cy: f64) void {
 fn terminalMouseRelease(server: *Server, tp: anytype) void {
     tp.mouse.mouse_down = false;
     server.drag_terminal = null;
+}
+
+/// Continue a held drag-select that has run past the pane's top/bottom
+/// content edge by auto-scrolling the scrollback. Driven from the frame
+/// callback (not just on motion) so it keeps scrolling while the cursor is
+/// PARKED past the edge — the missing "drag to the bottom and it won't
+/// scroll" behaviour. No-op unless a native-terminal drag is in progress and
+/// the cursor is actually outside the viewport. Each scroll re-schedules a
+/// frame, so the loop self-sustains until the cursor returns in-bounds, the
+/// button releases, or the scrollback hits an end.
+pub fn tickDragAutoScroll(server: *Server) void {
+    const tp = server.drag_terminal orelse return;
+    if (!tp.mouse.mouse_down) return;
+
+    const slot = server.nodes.findById(tp.node_id) orelse return;
+    const pane_y: i32 = server.nodes.pos_y[slot];
+    const pad: i32 = @intCast(tp.renderer.padding);
+    const cell_h: u32 = tp.renderer.cell_height;
+    const rows: i32 = @intCast(tp.pane.grid.rows);
+    const content_h: i32 = rows * @as(i32, @intCast(cell_h));
+
+    const cy = wlr.miozu_cursor_y(server.cursor);
+    const ly: i32 = @as(i32, @intFromFloat(cy)) - pane_y - pad;
+
+    const dec = teru.Pane.dragEdgeScroll(ly, content_h, cell_h);
+    if (dec.dir == 0) return; // inside the viewport — terminalMouseMotion owns it
+
+    const max_offset: u32 = @intCast(tp.pane.scrollback.total_lines);
+    if (max_offset == 0) return;
+
+    const pixel_delta: i32 = dec.dir * dec.steps * @as(i32, @intCast(cell_h));
+    if (!tp.pane.scrollBy(pixel_delta, cell_h, max_offset)) return; // hit an end; stop
+
+    // The scrollback overlay shifts the whole frame — repaint it all.
+    tp.pane.grid.markAllDirty();
+
+    // Extend the selection to the edge row the cursor is pinned against, at the
+    // cursor's clamped column, in the freshly-scrolled coordinate space.
+    const cx = wlr.miozu_cursor_x(server.cursor);
+    const rc = paneLocalCell(tp, cx, cy);
+    const edge_row: u16 = if (dec.dir > 0) 0 else @intCast(rows - 1);
+    const so: u32 = tp.pane.scroll_offset;
+    const sbl: u32 = if (tp.pane.grid.scrollback) |sb| @intCast(sb.lineCount()) else 0;
+    if (!tp.selection.active) {
+        tp.selection.begin(tp.mouse.mouse_start_row, tp.mouse.mouse_start_col, so, sbl);
+    }
+    tp.selection.update(edge_row, rc.col, so, sbl);
+
+    // Re-schedule so the auto-scroll keeps going next vsync even if the mouse
+    // doesn't move. Stops naturally when dir→0 / scrollBy→false above.
+    server.scheduleRender();
 }
 
 /// Set the xcursor image only when the shape actually changes. Skips
