@@ -606,31 +606,19 @@ fn findNodeName(graph: *ProcessGraph, pane_id: u64) []const u8 {
     return "shell";
 }
 
-/// Get the CWD of a pane. On Linux, reads /proc/<pid>/cwd.
-/// Falls back to empty string on non-Linux or on error.
+/// Get the CWD of the pane's foreground process (Linux only).
 fn getPaneCwd(pane: anytype, buf: []u8) []const u8 {
-    if (builtin.os.tag != .linux) return "";
-    const pid = pane.childPid() orelse return "";
-    var proc_path: [64:0]u8 = undefined;
-    const path = std.fmt.bufPrint(&proc_path, "/proc/{d}/cwd", .{pid}) catch return "";
-    proc_path[path.len] = 0;
-    const rc = std.c.readlink(&proc_path, buf.ptr, buf.len);
-    if (rc > 0) return buf[0..@intCast(rc)];
-    return "";
+    return pane.foregroundCwd(buf);
 }
 
-/// Get the command of a pane via compat.readProcCmdline.
-///
-/// NOTE: intentional divergence from the teruwm compositor save path
-/// (compositor/Session.zig), which captures the PTY *foreground* process
-/// (the running app — `claude`, `vim`) so a restored pane re-launches it.
-/// This multiplexer path still captures the bare shell pid because the
-/// matching restore side here (`restore`) spawns via a single-`shell`
-/// SpawnConfig and can't carry the multi-arg argv a foreground command needs.
-/// Bringing parity requires fixing BOTH sides — tracked as a follow-up.
+/// Get the command of the pane's foreground process — the running app (`claude`,
+/// `vim`), not the bare shell — so a restored pane re-launches it. Parity with
+/// the teruwm compositor save path; both delegate to Pane.foregroundCmdline.
+/// The matching restore side here runs the saved command through
+/// `mux.spawnPaneWithCommand` → `/bin/sh -c`, which carries the multi-arg
+/// command (and quoting) the foreground capture produces.
 fn getPaneCmd(pane: anytype, buf: []u8) []const u8 {
-    const pid = pane.childPid() orelse return "";
-    return compat.readProcCmdline(@intCast(pid), buf);
+    return pane.foregroundCmdline(buf);
 }
 
 /// Ensure the parent directory of a path exists.

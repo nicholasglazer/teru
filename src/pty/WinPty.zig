@@ -180,6 +180,13 @@ pub fn resize(self: *const WinPty, rows: u16, cols: u16) void {
     _ = ResizePseudoConsole(self.hpc, makeCoord(cols, rows));
 }
 
+/// Windows has no tty foreground process group; report the child pid (null on
+/// Windows, which uses process handles). Mirrors PosixPty.foregroundPid so
+/// Pane.foregroundPid resolves on every platform.
+pub fn foregroundPid(self: *const WinPty) ?i32 {
+    return self.child_pid;
+}
+
 pub fn waitForExit(self: *const WinPty) !u32 {
     _ = WaitForSingleObject(self.process_handle, INFINITE);
     var exit_code: u32 = 0;
