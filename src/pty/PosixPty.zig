@@ -168,6 +168,22 @@ pub fn refresh(self: *const Pty) void {
     }
 }
 
+/// The PTY's current foreground process-group leader pid — the program the
+/// user is actually interacting with (a TUI/agent like `claude`, `vim`,
+/// `htop`), or the login shell when the pane is idle. Falls back to the child
+/// shell pid when the tty reports no foreground pgrp (master closed, etc).
+///
+/// Session save uses this instead of `child_pid` so a restored pane
+/// re-launches the command that was running, not just the bare shell.
+pub fn foregroundPid(self: *const Pty) ?posix.pid_t {
+    if (self.master >= 0) {
+        var pgrp: posix.pid_t = 0;
+        _ = posix.system.ioctl(self.master, compat.TIOCGPGRP, @intFromPtr(&pgrp));
+        if (pgrp > 0) return pgrp;
+    }
+    return self.child_pid;
+}
+
 pub fn waitForExit(self: *const Pty) !u32 {
     if (self.child_pid) |pid| {
         var status: c_int = 0;
