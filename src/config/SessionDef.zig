@@ -620,6 +620,14 @@ fn getPaneCwd(pane: anytype, buf: []u8) []const u8 {
 }
 
 /// Get the command of a pane via compat.readProcCmdline.
+///
+/// NOTE: intentional divergence from the teruwm compositor save path
+/// (compositor/Session.zig), which captures the PTY *foreground* process
+/// (the running app — `claude`, `vim`) so a restored pane re-launches it.
+/// This multiplexer path still captures the bare shell pid because the
+/// matching restore side here (`restore`) spawns via a single-`shell`
+/// SpawnConfig and can't carry the multi-arg argv a foreground command needs.
+/// Bringing parity requires fixing BOTH sides — tracked as a follow-up.
 fn getPaneCmd(pane: anytype, buf: []u8) []const u8 {
     const pid = pane.childPid() orelse return "";
     return compat.readProcCmdline(@intCast(pid), buf);

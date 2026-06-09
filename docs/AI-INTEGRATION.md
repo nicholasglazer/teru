@@ -313,6 +313,33 @@ mcp teru_session_save name=proj
 Templates live in `~/.config/teru/templates/` then `./examples/`. See
 `examples/claude-power.tsess` for a 10-workspace 34-pane example.
 
+### What save captures — and surviving a reboot
+
+`teruwm_session_save` snapshots each pane's **foreground process** (the program
+actually running — `claude`, `nvim`, `htop` — or the login shell when the pane
+is idle), together with its working directory. So a pane running
+`claude --resume <id>` is saved as exactly that command, and restore relaunches
+it. The capture reads the PTY's foreground process group, so a backgrounded app
+(or a detached `setsid` process) falls back to the shell.
+
+A running process never survives a reboot — but the *command* does. The
+reboot-survivable agent pattern is therefore two parts:
+
+1. **Launch the agent as a resumable command** (`claude --resume <session-id>`)
+   so the captured `cmd` re-enters the same conversation rather than starting
+   fresh.
+2. **Restore the `.tsess` on boot** (`teruwm_session_restore`, or a startt
+   autostart line). The pane comes back running the resumable command; the
+   agent rebuilds its context from its own server-side history.
+
+Within a single boot, `teruwm_restart` (`$mod+'`) is stronger still: it re-execs
+the compositor in place and the PTYs (and the live agent processes) survive
+untouched — no resume needed.
+
+> The non-compositor `teru` multiplexer's `session_save` currently captures the
+> bare shell rather than the foreground process; foreground capture is teruwm
+> only for now.
+
 ## Pattern summary — when to use what
 
 | If you want to… | Use |

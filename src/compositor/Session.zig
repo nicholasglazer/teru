@@ -131,10 +131,34 @@ pub fn restore(server: *Server, name: []const u8) !void {
             var cwd_buf: [512]u8 = undefined;
             const cwd_expanded: ?[]const u8 = if (pd.cwd.len > 0) expandTilde(pd.cwd, &cwd_buf) else null;
 
-            const spawn_config = Pane.SpawnConfig{
-                .shell = if (pd.cmd.len > 0) pd.cmd else null,
-                .cwd = cwd_expanded,
-            };
+            // Re-launch the captured command via execvp(argv) so a multi-arg
+            // foreground command (e.g. `claude --resume <id>`, captured from the
+            // pane's foreground process by session save) restores correctly.
+            // Pty.spawn execve()s `.shell` as a single literal argv[0] path and
+            // can't carry arguments; exec_argv routes through execvp instead.
+            // Whitespace tokenisation only — arguments containing spaces aren't
+            // reconstructable from the space-joined /proc/<pid>/cmdline anyway.
+            // argv_storage/argv_ptrs live on this stack frame, valid across the
+            // createWithSpawn → Pane.init → Pty.spawn fork (same as scratchpad).
+            var argv_storage: [16][256:0]u8 = undefined;
+            var argv_ptrs: [17]?[*:0]const u8 = undefined;
+            var spawn_config = Pane.SpawnConfig{ .cwd = cwd_expanded };
+            if (pd.cmd.len > 0) {
+                var it = std.mem.tokenizeAny(u8, pd.cmd, " \t");
+                var ai: usize = 0;
+                while (it.next()) |tok| {
+                    if (ai >= argv_storage.len) break;
+                    const len = @min(tok.len, argv_storage[ai].len);
+                    @memcpy(argv_storage[ai][0..len], tok[0..len]);
+                    argv_storage[ai][len] = 0;
+                    argv_ptrs[ai] = argv_storage[ai][0..len :0].ptr;
+                    ai += 1;
+                }
+                if (ai > 0) {
+                    argv_ptrs[ai] = null;
+                    spawn_config.exec_argv = @ptrCast(&argv_ptrs);
+                }
+            }
 
             const tp = TerminalPane.createWithSpawn(server, ws_idx, 24, 80, spawn_config) orelse {
                 std.log.scoped(.session).err("session restore: failed to spawn pane on ws={d}", .{ws_idx});
@@ -189,9 +213,21 @@ fn workspaceHasRole(server: *Server, ws_idx: u8, role: []const u8) bool {
     return false;
 }
 
+/// The pid to snapshot for a pane: its PTY's foreground process group (the
+/// running app — `claude`, `vim`, …) when present, else the login shell. This
+/// is what makes a restored pane come back as the command that was actually
+/// running, not just `/usr/bin/fish`. Mirrors `Pane.childPid()` but resolves
+/// the foreground pgrp via the tty (see `PosixPty.foregroundPid`).
+fn paneCapturePid(pane: *const Pane) ?i32 {
+    return switch (pane.backend) {
+        .local => |*p| p.foregroundPid(),
+        .remote => null,
+    };
+}
+
 fn getChildCwd(pane: *const Pane, buf: []u8) []const u8 {
     if (builtin.os.tag != .linux) return "";
-    const pid = pane.childPid() orelse return "";
+    const pid = paneCapturePid(pane) orelse return "";
     var proc_path: [64:0]u8 = undefined;
     const path = std.fmt.bufPrint(&proc_path, "/proc/{d}/cwd", .{pid}) catch return "";
     proc_path[path.len] = 0;
@@ -201,8 +237,18 @@ fn getChildCwd(pane: *const Pane, buf: []u8) []const u8 {
 }
 
 fn getChildCmd(pane: *const Pane, buf: []u8) []const u8 {
-    const pid = pane.childPid() orelse return "";
-    return teru.compat.readProcCmdline(@intCast(pid), buf);
+    const pid = paneCapturePid(pane) orelse return "";
+    const cmd = teru.compat.readProcCmdline(@intCast(pid), buf);
+    // A login shell is exec'd with a leading-dash argv[0] (`-fish`, `-bash`)
+    // to signal a login session, and /proc/<pid>/cmdline preserves the dash.
+    // Now that we capture the *foreground* process, that form can reach here
+    // (e.g. a pane running `su -`, `bash -l`, tmux, or `ssh localhost`). There
+    // is no PATH entry literally named `-fish`, so execvp() on restore would
+    // ENOENT and the pane would be silently dropped. Strip the single leading
+    // dash so the saved command is restorable; it comes back as a non-login
+    // shell, which is the correct fallback.
+    if (cmd.len > 1 and cmd[0] == '-') return cmd[1..];
+    return cmd;
 }
 
 fn expandTilde(path: []const u8, buf: []u8) ?[]const u8 {
