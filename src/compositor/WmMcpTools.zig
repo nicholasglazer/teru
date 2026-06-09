@@ -753,12 +753,15 @@ fn toolPerf(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
     const max_us = if (perf.frame_time_max_us == std.math.maxInt(u64)) @as(u64, 0) else perf.frame_time_max_us;
 
     return std.fmt.bufPrint(buf,
-        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"frames: {d}, avg: {d}us, max: {d}us, min: {d}us, pty_reads: {d}, pty_bytes: {d}, terminals: {d}"}}]}},"id":{s}}}
+        \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"frames: {d}, avg: {d}us, max: {d}us, min: {d}us, work_sum: {d}, interval_sum: {d}, commit_sum: {d}, pty_reads: {d}, pty_bytes: {d}, terminals: {d}"}}]}},"id":{s}}}
     , .{
         perf.frame_count,
         perf.avgFrameUs(),
         max_us,
         if (perf.frame_time_min_us == std.math.maxInt(u64)) @as(u64, 0) else perf.frame_time_min_us,
+        perf.frame_time_sum_us,
+        perf.frame_interval_sum_us,
+        perf.commit_time_sum_us,
         perf.pty_reads,
         perf.pty_bytes,
         self.server.terminal_count,
