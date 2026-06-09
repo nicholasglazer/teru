@@ -465,12 +465,32 @@ pub const PerfStats = struct {
     frame_time_min_us: u64 = std.math.maxInt(u64),
     pty_reads: u64 = 0,
     pty_bytes: u64 = 0,
+    // Frame-phase profiling: gap between consecutive frame callbacks (the
+    // effective frame PERIOD) and the time spent inside wlr_scene_output_commit.
+    // With frame_time_sum (total handleFrame work) these split each frame into
+    // work / commit / inter-frame-wait — to localize a low-fps-but-low-CPU cap.
+    frame_interval_sum_us: u64 = 0,
+    commit_time_sum_us: u64 = 0,
+    // i64 (not i128): an i128 field would raise Server's alignment to 16 and
+    // break the @fieldParentPtr listener recovery (parent assumes 8). Monotonic
+    // ns since boot fits in i64 (~292 years) with room to spare.
+    prev_frame_start_ns: i64 = 0,
 
     pub fn recordFrame(self: *PerfStats, elapsed_us: u64) void {
         self.frame_count += 1;
         self.frame_time_sum_us += elapsed_us;
         if (elapsed_us > self.frame_time_max_us) self.frame_time_max_us = elapsed_us;
         if (elapsed_us < self.frame_time_min_us) self.frame_time_min_us = elapsed_us;
+    }
+
+    /// Accumulate the gap since the previous frame callback (effective period).
+    pub fn recordInterval(self: *PerfStats, frame_start_ns: i128) void {
+        const now: i64 = @intCast(frame_start_ns); // monotonic ns fits in i64
+        if (self.prev_frame_start_ns != 0) {
+            const gap_ns = now - self.prev_frame_start_ns;
+            if (gap_ns > 0) self.frame_interval_sum_us += @intCast(@divTrunc(gap_ns, 1000));
+        }
+        self.prev_frame_start_ns = now;
     }
 
     pub fn recordPtyRead(self: *PerfStats, bytes: usize) void {

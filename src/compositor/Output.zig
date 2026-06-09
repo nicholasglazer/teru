@@ -136,6 +136,7 @@ fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const output: *Output = @fieldParentPtr("frame", listener);
     const server = output.server;
     const frame_start = compat.monotonicNow();
+    server.perf.recordInterval(frame_start); // gap since previous frame callback
 
     // Global, cross-output side effects run on the focused output's
     // frame callback only — otherwise on N monitors at 60 Hz each we'd
@@ -200,7 +201,9 @@ fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     }
 
     const scene_output = wlr.wlr_scene_get_scene_output(server.scene, output.wlr_output) orelse return;
+    const commit_start = compat.monotonicNow();
     _ = wlr.wlr_scene_output_commit(scene_output, null);
+    server.perf.commit_time_sum_us += @intCast(@max(0, @divTrunc(compat.monotonicNow() - commit_start, 1000)));
 
     // Fire wl_surface.frame callbacks so Wayland clients know the frame
     // landed and can submit their next buffer. Chromium/Ozone — and
