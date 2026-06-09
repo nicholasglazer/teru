@@ -325,7 +325,7 @@ pub extern "c" fn miozu_cursor_shape_name(shape: c_int) callconv(.c) ?[*:0]const
 
 // libinput touchpad config — enables tap-to-click + natural scroll + DWT
 // for any libinput-backed pointer device. No-op on non-libinput devices.
-pub extern "c" fn miozu_configure_libinput_pointer(device: *wlr_input_device) callconv(.c) void;
+pub extern "c" fn miozu_configure_libinput_pointer(device: *wlr_input_device, natural_scroll: c_int) callconv(.c) void;
 
 // ── Protocol pack #2 — clipboard managers + tearing opt-in ─────
 //

@@ -458,7 +458,7 @@ Boolean options accept: `true`, `yes`, `1` for true; `false`, `no`, `0` for fals
 
 The teruwm compositor reads a **separate** config file, `~/.config/teruwm/config`, for **compositor-level** concerns only: gaps, borders, bars, window rules, opacity, keyboard layout, and spawn chords. Everything that describes *the terminal itself* — font (incl. bold/italic variants), colors/palette/theme, cursor shape & color, selection, scrollback, shell, `$TERM`, tab width, and **`padding`** — comes from `~/.config/teru/teru.conf` and is applied identically to native compositor panes and to the standalone windowed terminal. A native pane *is* a libteru terminal; the only thing the compositor changes is how panes are tiled and composited, not how a terminal looks. *(Since 0.9.1 native panes are actually fed these settings; before that they silently used libteru defaults.)*
 
-One exception: `scroll_speed` / `touchpad_scroll_invert` / `alt_scroll_zoom` are driven by the compositor's input layer for native panes, so set them in `~/.config/teruwm/config` (their `teru.conf` copies are inert inside teruwm).
+One exception: `scroll_speed` / `touchpad_scroll_invert` / `alt_scroll_zoom` are driven by the compositor's input layer for native panes, so set them in `~/.config/teruwm/config` (their `teru.conf` copies are inert inside teruwm). The device-level `natural_scroll` toggle (libinput touchpad scroll direction for every app) also lives there.
 
 If `~/.config/teruwm/config` does not exist, all defaults are used.
 
@@ -476,6 +476,8 @@ These keys are set above any section header.
 | `border_width` | integer | `2` | Border width in pixels around focused and unfocused windows. Suppressed ("smart borders") when a pane is the only window on its workspace — a focus indicator on the sole visible window carries no information |
 | `bg_color` (or `bg`) | hex color | `0xFF1a1d24` | Compositor background color, visible through gaps. Accepts `#rrggbb`, `0xrrggbb`, `rrggbb` (alpha defaulted to `0xFF`), or full ARGB `0xaarrggbb` |
 | `unfocused_opacity` | float 0.0–1.0 | `1.0` | *(Since v0.4.16.)* Alpha applied to unfocused terminal panes on focus change. `1.0` disables fading; `0.85` is subtle. wlroots blends at composite, so there's no CPU renderer cost. Currently terminal panes only — XDG client fade is a follow-up |
+| `natural_scroll` | bool | `true` | libinput natural ("macOS-style") touchpad scrolling for **all** apps: fingers down → content up. Set `false` for traditional/reverse scrolling (fingers down → content down). Applied when a pointer device connects, so restart teruwm (`Mod+'`) or re-plug the touchpad to apply a change. Distinct from `touchpad_scroll_invert` (terminal-scrollback only) |
+| `touchpad_scroll_invert` | bool | `false` | Flip the **native-terminal scrollback** direction only. `false` = scroll down → newer content (TUI convention); `true` = scroll down → older content. Does not affect Wayland clients — use `natural_scroll` for a global change |
 
 ### `[bar.top]` and `[bar.bottom]`
 

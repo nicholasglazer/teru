@@ -195,6 +195,15 @@ allow_virtual_input: bool = true,
 /// natural-scrolling convention "scroll down → older content".
 touchpad_scroll_invert: bool = false,
 
+/// libinput natural ("macOS-style") scrolling on touchpads: pushing fingers
+/// down moves content up. true (default) matches the built-in touchpad
+/// default; set false for traditional/reverse scrolling (fingers down → view
+/// down) consistently across every app. Applied when a pointer device
+/// connects, so a change takes effect on the next touchpad (re)connect or
+/// after a compositor restart (Mod+'). Distinct from touchpad_scroll_invert,
+/// which only flips the native-terminal scrollback direction.
+natural_scroll: bool = true,
+
 /// Alt+scroll wheel over a focused terminal pane resizes that pane's font
 /// (per-pane zoom) instead of scrolling scrollback. True by default; set
 /// false to free the Alt+wheel gesture for the focused application.
@@ -558,6 +567,8 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.resize_min_px = std.fmt.parseInt(i32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "touchpad_scroll_invert")) {
         self.touchpad_scroll_invert = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+    } else if (std.mem.eql(u8, key, "natural_scroll")) {
+        self.natural_scroll = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "alt_scroll_zoom")) {
         self.alt_scroll_zoom = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "font_zoom_min")) {
