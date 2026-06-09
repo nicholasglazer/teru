@@ -62,6 +62,7 @@ struct wl_signal *miozu_output_destroy(struct wlr_output *o) {
 
 int miozu_output_width(struct wlr_output *o) { return o->width; }
 int miozu_output_height(struct wlr_output *o) { return o->height; }
+int miozu_output_refresh_mhz(struct wlr_output *o) { return o->refresh; } /* current mode refresh, mHz */
 const char *miozu_output_name(struct wlr_output *o) { return o->name; }
 
 /* ── XDG shell signals ───────────────────────────────────────── */
