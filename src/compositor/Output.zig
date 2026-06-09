@@ -151,6 +151,11 @@ fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
             server.layout_dirty = false;
         }
 
+        // Advance a held drag-select that's parked past a pane edge — this is
+        // what makes "drag to the bottom and keep going" actually scroll the
+        // scrollback. No-op unless a native-terminal drag is active.
+        server.tickDragAutoScroll();
+
         // Apply deferred terminal resize from floating drag.
         if (server.resize_pending_id) |rid| {
             for (server.terminal_panes) |maybe_tp| {

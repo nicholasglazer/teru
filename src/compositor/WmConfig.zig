@@ -204,6 +204,19 @@ touchpad_scroll_invert: bool = false,
 /// which only flips the native-terminal scrollback direction.
 natural_scroll: bool = true,
 
+/// Lines of scrollback moved per notch of a discrete mouse wheel over a
+/// focused terminal pane. 3 matches the long-standing terminal default.
+/// Touchpad / high-resolution continuous scroll ignores this and tracks the
+/// finger proportionally — see `touchpad_scroll_factor`.
+wheel_scroll_lines: u32 = 3,
+
+/// Sensitivity multiplier for touchpad / continuous (non-notched) scrolling
+/// over a focused terminal pane. 1.0 tracks the finger 1:1 in pixels; lower
+/// is calmer, higher is faster. Only affects continuous scroll — a notched
+/// wheel always moves `wheel_scroll_lines` per notch. Fixes the old runaway
+/// "too sensitive" scroll where every libinput event jumped a fixed 3 lines.
+touchpad_scroll_factor: f32 = 1.0,
+
 /// Alt+scroll wheel over a focused terminal pane resizes that pane's font
 /// (per-pane zoom) instead of scrolling scrollback. True by default; set
 /// false to free the Alt+wheel gesture for the focused application.
@@ -569,6 +582,10 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.touchpad_scroll_invert = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "natural_scroll")) {
         self.natural_scroll = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+    } else if (std.mem.eql(u8, key, "wheel_scroll_lines")) {
+        self.wheel_scroll_lines = std.fmt.parseInt(u32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "touchpad_scroll_factor")) {
+        self.touchpad_scroll_factor = std.fmt.parseFloat(f32, value) catch return;
     } else if (std.mem.eql(u8, key, "alt_scroll_zoom")) {
         self.alt_scroll_zoom = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "font_zoom_min")) {
@@ -980,6 +997,17 @@ test "empty keyboard section leaves all xkb fields null" {
     try std.testing.expect(cfg.getXkbLayout() == null);
     try std.testing.expect(cfg.getXkbVariant() == null);
     try std.testing.expect(cfg.getXkbOptions() == null);
+}
+
+test "scroll sensitivity knobs default and parse" {
+    const def = WmConfig{};
+    try std.testing.expectEqual(@as(u32, 3), def.wheel_scroll_lines);
+    try std.testing.expectEqual(@as(f32, 1.0), def.touchpad_scroll_factor);
+
+    var cfg = WmConfig{};
+    cfg.parse("wheel_scroll_lines = 5\ntouchpad_scroll_factor = 0.4\n");
+    try std.testing.expectEqual(@as(u32, 5), cfg.wheel_scroll_lines);
+    try std.testing.expectEqual(@as(f32, 0.4), cfg.touchpad_scroll_factor);
 }
 
 test "alt_scroll_zoom defaults on and parses false" {

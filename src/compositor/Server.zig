@@ -1242,6 +1242,12 @@ pub fn scheduleRender(self: *Server) void {
     }
 }
 
+/// Frame-callback hook: advance a held drag-select that has run past a pane
+/// edge (auto-scroll). No-op unless a native-terminal drag is in progress.
+pub fn tickDragAutoScroll(self: *Server) void {
+    Cursor.tickDragAutoScroll(self);
+}
+
 
 // ── Layout facade ──────────────────────────────────────────────
 // Thin forwarders so external callers (Session, Output, WmMcpServer,
