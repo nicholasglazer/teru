@@ -345,6 +345,45 @@ pub fn childPid(self: *const Pane) ?i32 {
     };
 }
 
+/// The pid of the pane's PTY foreground process group — the program actually
+/// running (a TUI/agent like `claude`, `vim`, `htop`), or the login shell when
+/// the pane is idle. Falls back to the child shell pid. Session save uses this
+/// (not `childPid`) so a restored pane re-launches the running command rather
+/// than just the bare shell.
+pub fn foregroundPid(self: *const Pane) ?i32 {
+    return switch (self.backend) {
+        .local => |*p| p.foregroundPid(),
+        .remote => null,
+    };
+}
+
+/// The command line of the pane's foreground process, read from /proc with the
+/// NUL-separated argv joined by spaces. A *login* shell is exec'd with a
+/// leading-dash argv[0] (`-fish`, `-bash`); that form has no PATH entry, so
+/// re-launching it via execvp / `sh -c` on restore would ENOENT and silently
+/// drop the pane — strip the single leading dash so the saved command stays
+/// restorable (it comes back as a non-login shell, the correct fallback).
+/// Used by both session-save paths (teruwm + the teru multiplexer).
+pub fn foregroundCmdline(self: *const Pane, buf: []u8) []const u8 {
+    const pid = self.foregroundPid() orelse return "";
+    const cmd = compat.readProcCmdline(@intCast(pid), buf);
+    if (cmd.len > 1 and cmd[0] == '-') return cmd[1..];
+    return cmd;
+}
+
+/// The working directory of the pane's foreground process (Linux only; empty
+/// string elsewhere or on error). Restores each pane where its app was running.
+pub fn foregroundCwd(self: *const Pane, buf: []u8) []const u8 {
+    if (builtin.os.tag != .linux) return "";
+    const pid = self.foregroundPid() orelse return "";
+    var proc_path: [64:0]u8 = undefined;
+    const path = std.fmt.bufPrint(&proc_path, "/proc/{d}/cwd", .{pid}) catch return "";
+    proc_path[path.len] = 0;
+    const rc = std.c.readlink(&proc_path, buf.ptr, buf.len);
+    if (rc > 0) return buf[0..@intCast(rc)];
+    return "";
+}
+
 // ── Tests ────────────────────────────────────────────────────────
 
 test "Pane init and deinit" {

@@ -336,9 +336,10 @@ Within a single boot, `teruwm_restart` (`$mod+'`) is stronger still: it re-execs
 the compositor in place and the PTYs (and the live agent processes) survive
 untouched — no resume needed.
 
-> The non-compositor `teru` multiplexer's `session_save` currently captures the
-> bare shell rather than the foreground process; foreground capture is teruwm
-> only for now.
+Both save paths capture the foreground process the same way: the teruwm
+compositor (`teruwm_session_save`) and the `teru` multiplexer (`teru_session_save`,
+the one you use over SSH on a server). So the reboot-survivable pattern works
+identically for a local teruwm session and a remote `teru -n NAME` daemon.
 
 ## Pattern summary — when to use what
 

@@ -213,42 +213,16 @@ fn workspaceHasRole(server: *Server, ws_idx: u8, role: []const u8) bool {
     return false;
 }
 
-/// The pid to snapshot for a pane: its PTY's foreground process group (the
-/// running app — `claude`, `vim`, …) when present, else the login shell. This
-/// is what makes a restored pane come back as the command that was actually
-/// running, not just `/usr/bin/fish`. Mirrors `Pane.childPid()` but resolves
-/// the foreground pgrp via the tty (see `PosixPty.foregroundPid`).
-fn paneCapturePid(pane: *const Pane) ?i32 {
-    return switch (pane.backend) {
-        .local => |*p| p.foregroundPid(),
-        .remote => null,
-    };
-}
-
+// Per-pane cwd + command for the snapshot. Both delegate to Pane, which
+// resolves the PTY *foreground* process (the running app, not the bare shell)
+// and strips a login shell's leading-dash argv[0]. Same source of truth as the
+// teru multiplexer save path (SessionDef.zig).
 fn getChildCwd(pane: *const Pane, buf: []u8) []const u8 {
-    if (builtin.os.tag != .linux) return "";
-    const pid = paneCapturePid(pane) orelse return "";
-    var proc_path: [64:0]u8 = undefined;
-    const path = std.fmt.bufPrint(&proc_path, "/proc/{d}/cwd", .{pid}) catch return "";
-    proc_path[path.len] = 0;
-    const rc = std.c.readlink(&proc_path, buf.ptr, buf.len);
-    if (rc > 0) return buf[0..@intCast(rc)];
-    return "";
+    return pane.foregroundCwd(buf);
 }
 
 fn getChildCmd(pane: *const Pane, buf: []u8) []const u8 {
-    const pid = paneCapturePid(pane) orelse return "";
-    const cmd = teru.compat.readProcCmdline(@intCast(pid), buf);
-    // A login shell is exec'd with a leading-dash argv[0] (`-fish`, `-bash`)
-    // to signal a login session, and /proc/<pid>/cmdline preserves the dash.
-    // Now that we capture the *foreground* process, that form can reach here
-    // (e.g. a pane running `su -`, `bash -l`, tmux, or `ssh localhost`). There
-    // is no PATH entry literally named `-fish`, so execvp() on restore would
-    // ENOENT and the pane would be silently dropped. Strip the single leading
-    // dash so the saved command is restorable; it comes back as a non-login
-    // shell, which is the correct fallback.
-    if (cmd.len > 1 and cmd[0] == '-') return cmd[1..];
-    return cmd;
+    return pane.foregroundCmdline(buf);
 }
 
 fn expandTilde(path: []const u8, buf: []u8) ?[]const u8 {
