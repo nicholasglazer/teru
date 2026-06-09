@@ -243,7 +243,16 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
     for (0..pane_count) |_| {
         if (pos + 13 > n) break;
 
-        const ws = buf[pos]; pos += 1;
+        const raw_ws = buf[pos]; pos += 1;
+        // A scratchpad pane is serialized with HIDDEN_WS (0xFF), but the tiling
+        // engine only has workspaces 0..<len. Restoring it as-is makes
+        // createRestored index workspaces[255] → "index out of bounds" PANIC,
+        // which aborts the re-exec'd binary BEFORE it can take/restore the
+        // display — a frozen TTY on $mod+' for anyone with a scratchpad open.
+        // Remap any out-of-range workspace to the active one: the shell comes
+        // back as a normal window instead of crashing the restart. (Scratchpad
+        // identity isn't in the save format, so it can't be fully restored yet.)
+        const ws: u8 = if (raw_ws < server.layout_engine.workspaces.len) raw_ws else active_ws;
         const pty_fd = std.mem.readInt(i32, buf[pos..][0..4], .little); pos += 4;
         const rows = std.mem.readInt(u16, buf[pos..][0..2], .little); pos += 2;
         const cols = std.mem.readInt(u16, buf[pos..][0..2], .little); pos += 2;
