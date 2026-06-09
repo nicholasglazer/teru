@@ -82,7 +82,9 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
     const name = wlr.miozu_output_name(wlr_output) orelse "unknown";
     const w = wlr.miozu_output_width(wlr_output);
     const h = wlr.miozu_output_height(wlr_output);
-    std.log.scoped(.compositor).info("output '{s}' connected ({d}x{d})", .{ name, w, h });
+    // refresh is in mHz; round to whole Hz for the log.
+    const refresh_hz = @divTrunc(wlr.miozu_output_refresh_mhz(wlr_output) + 500, 1000);
+    std.log.scoped(.compositor).info("output '{s}' connected ({d}x{d}@{d}Hz)", .{ name, w, h, refresh_hz });
 
     // On first output: create background, bars, then spawn terminal
     if (server.terminal_count == 0) {

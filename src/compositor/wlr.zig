@@ -435,6 +435,7 @@ pub extern "c" fn miozu_output_frame(output: *wlr_output) callconv(.c) *wl_signa
 pub extern "c" fn miozu_output_request_state(output: *wlr_output) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_output_destroy(output: *wlr_output) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_output_width(output: *wlr_output) callconv(.c) c_int;
+pub extern "c" fn miozu_output_refresh_mhz(output: *wlr_output) callconv(.c) c_int;
 pub extern "c" fn miozu_output_height(output: *wlr_output) callconv(.c) c_int;
 pub extern "c" fn miozu_output_name(output: *wlr_output) callconv(.c) ?[*:0]const u8;
 
