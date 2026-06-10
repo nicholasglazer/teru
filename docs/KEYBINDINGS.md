@@ -361,7 +361,7 @@ These require `loadMediaDefaults()` at startup (on by default in compositor):
 | `Ctrl+Shift+C` | Copy selection |
 | `Ctrl+Shift+V` | Paste |
 
-Or set `copy_on_select = true` in config for auto-copy on mouse release.
+**Copy-on-select is ON by default** in both teru and teruwm: finishing a drag-select copies to the clipboard immediately (no `Ctrl+Shift+C` needed). Set `copy_on_select = false` for explicit-copy-only. Typing or pasting snaps the view back to the live bottom (`scroll_to_bottom_on_input`).
 
 **In teruwm**, `Ctrl+Shift+C` on a native pane copies the mouse drag
 selection (falling back to the cursor line when nothing is selected) to the
