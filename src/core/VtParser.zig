@@ -879,6 +879,19 @@ fn resetCsiState(self: *VtParser) void {
     self.intermediate = 0;
 }
 
+/// Leave the alt screen as if `ESC[?1049l` had arrived. Used to recover from an
+/// ORPHANED alt screen — a full-screen program (SSH'd TUI, vim) that died
+/// without sending the leave sequence (broken pipe, SIGKILL), so the dead frame
+/// would otherwise show through under the recovered shell. Keeps alt_screen in
+/// sync with the grid (a later `ESC[?1049h` must still engage). No-op if not on
+/// the alt screen.
+pub fn forceLeaveAltScreen(self: *VtParser) void {
+    if (!self.alt_screen) return;
+    self.alt_screen = false;
+    self.grid.switchToMainScreen();
+    self.nested_alt_forward = false;
+}
+
 /// Get CSI param with default value.
 fn getParam(self: *const VtParser, idx: u8, default: u16) u16 {
     if (idx >= self.param_count) return default;
@@ -1881,6 +1894,29 @@ test "SGR colon truecolor 38:2 and 256 38:5 set fg" {
     // colon 256-color: 48:5:42 → bg indexed 42
     parser.feed("\x1b[48:5:42mB");
     try std.testing.expectEqual(Grid.Color{ .indexed = 42 }, grid.cellAtConst(0, 1).bg);
+}
+
+test "forceLeaveAltScreen recovers an orphaned alt screen" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 24, 80);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    // Enter the alt screen + draw (a TUI / SSH'd app), then the app dies WITHOUT
+    // sending ESC[?1049l (broken pipe / SIGKILL).
+    parser.feed("\x1b[?1049h\x1b[HGHOST");
+    try std.testing.expect(parser.alt_screen);
+
+    // Recovery: leave the orphaned alt screen. Both the parser flag AND the
+    // grid must flip (else a later ESC[?1049h won't engage).
+    parser.forceLeaveAltScreen();
+    try std.testing.expect(!parser.alt_screen);
+    try std.testing.expect(!grid.on_alt_screen);
+
+    // A fresh ESC[?1049h must still work (no desync).
+    parser.feed("\x1b[?1049h");
+    try std.testing.expect(parser.alt_screen);
+    try std.testing.expect(grid.on_alt_screen);
 }
 
 test "SU/SD/REP clamp huge counts (DoS guard #41)" {

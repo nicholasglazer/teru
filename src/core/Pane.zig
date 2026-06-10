@@ -413,6 +413,28 @@ pub fn childPid(self: *const Pane) ?i32 {
     };
 }
 
+/// Recover from an ORPHANED alt screen. If the pane is on the alt buffer but
+/// the PTY foreground process group is just the pane's own shell — i.e. NO
+/// program is running — then whatever entered the alt screen exited without
+/// sending the leave sequence (`ESC[?1049l`): an SSH session dropped on a
+/// broken pipe, or a TUI was SIGKILL'd. The dead frame would otherwise show
+/// through beneath the recovered shell prompt (the "I closed it but still see
+/// it" overlap). Leave the alt screen so the shell gets a clean main screen.
+///
+/// Tight + safe: a live full-screen app is ALWAYS the foreground job, so
+/// `foreground == shell` while on the alt screen can only mean "orphaned".
+/// Cheap: the `alt_screen` short-circuit skips the TIOCGPGRP syscall in the
+/// common (not-on-alt) case. Returns true if it acted (the caller schedules a
+/// repaint — switchToMainScreen already marks the grid fully dirty).
+pub fn reconcileAltScreen(self: *Pane) bool {
+    if (!self.vt.alt_screen) return false;
+    const fg = self.foregroundPid() orelse return false;
+    const shell = self.childPid() orelse return false;
+    if (fg != shell) return false; // a foreground program is running — legit alt screen
+    self.vt.forceLeaveAltScreen();
+    return true;
+}
+
 /// The pid of the pane's PTY foreground process group — the program actually
 /// running (a TUI/agent like `claude`, `vim`, `htop`), or the login shell when
 /// the pane is idle. Falls back to the child shell pid. Session save uses this

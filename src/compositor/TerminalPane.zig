@@ -360,6 +360,9 @@ pub fn poll(self: *TerminalPane) bool {
         self.server.perf.recordPtyRead(n);
         any = true;
     }
+    // Recover an orphaned alt screen (SSH dropped / TUI killed without sending
+    // ESC[?1049l) — otherwise the dead frame shows through under the shell.
+    if (self.pane.reconcileAltScreen()) any = true;
     return any;
 }
 
