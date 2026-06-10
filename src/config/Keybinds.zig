@@ -550,7 +550,16 @@ pub const Keybinds = struct {
         // path passes the raw (Shift-uppercased) keysym; folding here makes all
         // of them agree so `mod+q` matches a Shift'd or unshifted press, and
         // `Mod+Q`/`mod+q` configs are equivalent. Non-letters pass through.
-        const key = if (keysym >= 'A' and keysym <= 'Z') keysym + 0x20 else keysym;
+        // Also fold the Shift'd number row back to the base digit (xkb delivers
+        // `@` for Shift+2, not `2`), so `Mod+Shift+2` matches a bind defined on
+        // `2` — without this, the multiplexer's Alt+Shift+1..0
+        // (pane_move_to_workspace) silently never fired in the standalone
+        // terminal. Idempotent with teruwm's ServerInput pre-normalization.
+        const key = if (keysym >= 'A' and keysym <= 'Z') keysym + 0x20 else switch (keysym) {
+            '!' => '1', '@' => '2', '#' => '3', '$' => '4', '%' => '5',
+            '^' => '6', '&' => '7', '*' => '8', '(' => '9', ')' => '0',
+            else => keysym,
+        };
         // 1. Exact mode match (keysym bindings)
         for (self.bindings[0..self.count]) |b| {
             if (!b.is_keycode and b.mode == active_mode and mods.eql(b.mods) and b.key == key) {
@@ -973,6 +982,17 @@ test "Keybinds defaults and lookup" {
     try std.testing.expect(kb.lookup(.scroll, Mods.CTRL_SHIFT, 'c').? == .copy_selection);
     // Unknown key returns null
     try std.testing.expect(kb.lookup(.normal, Mods.NONE, 'q') == null);
+
+    // Alt+Shift+2 moves the active pane to workspace 2. xkb delivers the
+    // SHIFTED keysym '@' (0x40), not '2' — lookup must fold it to the base
+    // digit or this silently never fires (the bug behind "Alt+Shift+N doesn't
+    // move panes in the multiplexer").
+    const alt_shift = Mods{ .alt = true, .shift = true };
+    try std.testing.expect(kb.lookup(.normal, alt_shift, '@').? == .pane_move_to_2);
+    try std.testing.expect(kb.lookup(.normal, alt_shift, '!').? == .pane_move_to_1);
+    try std.testing.expect(kb.lookup(.normal, alt_shift, ')').? == .pane_move_to_0);
+    // The base digit still works too (idempotent with teruwm's pre-normalize).
+    try std.testing.expect(kb.lookup(.normal, alt_shift, '2').? == .pane_move_to_2);
 }
 
 test "Keybinds quit/restart on apostrophe mirror xmonad" {
