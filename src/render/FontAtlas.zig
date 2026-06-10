@@ -279,7 +279,7 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     //   Geometric Shapes: 0x25A0-0x25FF (96 glyphs)   [extended, full]
     //   Cyrillic:        0x0400-0x04FF (256 glyphs)   [full only]
     //   Braille Patterns: 0x2800-0x28FF (256 glyphs)  [full only]
-    // Totals: 360 (ascii) / 456 (extended) / 968 (full)
+    // Totals: 360 (ascii) / 1384 (extended) / 1640 (full)
     const total_glyphs: u32 = atlas_total_glyphs;
     const glyphs_per_row: u32 = 16;
     const num_rows: u32 = (total_glyphs + glyphs_per_row - 1) / glyphs_per_row;
