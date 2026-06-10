@@ -335,9 +335,16 @@ fn tryBeginBorderDrag(server: *Server, cx: f64) bool {
     const ins = server.wm_config.border_drag_insensitive_px;
     const zone = server.wm_config.border_drag_zone_px;
 
+    const cur_ws = server.layout_engine.active_workspace;
     for (server.terminal_panes) |maybe_tp| {
         const tp = maybe_tp orelse continue;
         const slot = server.nodes.findById(tp.node_id) orelse continue;
+        // Only VISIBLE panes' edges are draggable. Without this, a parked
+        // scratchpad (workspace == HIDDEN_WS 255) or a pane on another
+        // workspace whose right edge happened to line up under the cursor
+        // created an invisible "dead-click strip" that hijacked the click
+        // into a master-ratio drag (#45).
+        if (server.nodes.workspace[slot] != cur_ws) continue;
         const px = server.nodes.pos_x[slot];
         const pw: i32 = @intCast(server.nodes.width[slot]);
         const right_edge = px + pw;

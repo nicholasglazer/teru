@@ -291,22 +291,23 @@ pub fn closeNode(self: *Server, node_id: u64) bool {
         }
     }
 
-    // XDG view: find the view with matching node_id and send close request.
-    // Defensive: the view may already be gone (the client crashed /
-    // unmapped between the MCP caller's list_windows and this call);
-    // dereferencing view.toplevel then feeds a dead wl_resource to
-    // wl_resource_post_event, which aborts. Cross-check NodeRegistry
-    // before touching the toplevel.
-    if (self.focused_view) |view| {
-        if (view.node_id == node_id and self.nodes.findById(node_id) != null) {
-            clearFocusRefs(self, node_id);
-            wlr.wlr_xdg_toplevel_send_close(view.toplevel);
-            return true;
+    // XDG view: close ANY mapped toplevel by node_id — not just the focused
+    // one. NodeRegistry is the liveness source of truth: its xdg_toplevel is
+    // nulled in remove(), so a non-null entry in a live slot is a valid
+    // wl_resource (safe to send_close without the dead-resource abort). The
+    // old code only handled self.focused_view, so Mod+X / teruwm_close_window
+    // silently no-op'd on every unfocused XDG window (#45 — "unkillable"
+    // windows). Xwayland surfaces register with xdg_toplevel==null (no stored
+    // pointer); closing those by node_id is a separate, tracked gap.
+    if (self.nodes.findById(node_id)) |slot| {
+        if (self.nodes.kind[slot] == .wayland_surface) {
+            if (self.nodes.xdg_toplevel[slot]) |toplevel| {
+                clearFocusRefs(self, node_id);
+                wlr.wlr_xdg_toplevel_send_close(toplevel);
+                return true;
+            }
         }
     }
-    // Search all XDG views for node_id match (walk the scene? no tracking, so
-    // we need to iterate differently). For now, handle only focused_view —
-    // MCP callers close by node_id through NodeRegistry instead.
     return false;
 }
 
