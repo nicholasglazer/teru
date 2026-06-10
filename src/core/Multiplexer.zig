@@ -525,6 +525,9 @@ pub fn pollPtys(self: *Multiplexer, buf: []u8) bool {
     var any_output = false;
     for (self.panes.items) |*pane| {
         const n = pane.readAndProcess(buf) catch 0;
+        // Recover an orphaned alt screen (SSH dropped / TUI killed without the
+        // ESC[?1049l leave sequence) so the dead frame doesn't show through.
+        if (pane.reconcileAltScreen()) any_output = true;
         if (n > 0) {
             any_output = true;
             // Set attention on non-active workspaces with output.
