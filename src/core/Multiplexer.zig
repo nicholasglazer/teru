@@ -769,6 +769,32 @@ test "Multiplexer switchWorkspace" {
     try t.expectEqual(@as(u8, 3), mux.active_workspace);
 }
 
+test "Multiplexer movePaneToWorkspace — Alt+Shift+N moves active pane" {
+    var mux = Multiplexer.init(t.allocator);
+    defer mux.deinit();
+
+    // Two panes on workspace 0 (the active one).
+    _ = try mux.spawnPane(10, 20);
+    _ = try mux.spawnPane(10, 20);
+    try t.expectEqual(@as(usize, 2), mux.layout_engine.workspaces[0].node_ids.items.len);
+    try t.expectEqual(@as(usize, 0), mux.layout_engine.workspaces[1].node_ids.items.len);
+
+    // Move the active pane to workspace 1 (what Alt+Shift+2 → pane_move_to_2
+    // → moveToIndex()==1 → movePaneToWorkspace(1) does).
+    try t.expect(mux.movePaneToWorkspace(1));
+
+    // It LEFT ws0 and LANDED on ws1; the pane object still exists (moved, not
+    // closed), and the source workspace re-derived its active node.
+    try t.expectEqual(@as(usize, 1), mux.layout_engine.workspaces[0].node_ids.items.len);
+    try t.expectEqual(@as(usize, 1), mux.layout_engine.workspaces[1].node_ids.items.len);
+    try t.expectEqual(@as(usize, 2), mux.panes.items.len);
+
+    // Out-of-range target is a safe no-op (moveNodeToWorkspace rejects >=10).
+    const before = mux.layout_engine.workspaces[0].node_ids.items.len;
+    _ = mux.movePaneToWorkspace(99);
+    try t.expectEqual(before, mux.layout_engine.workspaces[0].node_ids.items.len);
+}
+
 test "Multiplexer cycleLayout — legacy (no layout list)" {
     var mux = Multiplexer.init(t.allocator);
     defer mux.deinit();
