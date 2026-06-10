@@ -19,6 +19,7 @@
 //! ```
 
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 const HookHandler = @import("HookHandler.zig");
 const compat = @import("../compat.zig");
@@ -141,6 +142,10 @@ pub fn poll(self: *HookListener) void {
         if (n_raw == 0) break; // peer closed
         switch (posix.errno(n_raw)) {
             .AGAIN, .INTR => {
+                // posix.poll / posix.pollfd don't exist on the Windows target
+                // (ws2_32 has no pollfd, 0.17 std). The agent hook listener is a
+                // Unix-socket feature; on Windows just proceed with what we have.
+                if (builtin.os.tag == .windows) break;
                 var pfd = [_]posix.pollfd{.{ .fd = client_fd, .events = posix.POLL.IN, .revents = 0 }};
                 const pr = posix.poll(&pfd, 200) catch break;
                 if (pr == 0) break; // 200ms with no more data — proceed with what we have

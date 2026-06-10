@@ -302,16 +302,23 @@ pub fn isSafeScreenshotPath(path: []const u8) bool {
 ///
 /// Returns -1 on error. Caller must close().
 pub fn openFileNoFollow(path: [*:0]const u8) c_int {
-    // Linux: O_WRONLY=1, O_CREAT=64 (0o100), O_TRUNC=512 (0o1000),
-    // O_NOFOLLOW=131072 (0o400000). macOS uses different bits but the
-    // pattern works equivalently via std.posix.O.
-    const flags = std.posix.O{
-        .ACCMODE = .WRONLY,
-        .CREAT = true,
-        .TRUNC = true,
-        .NOFOLLOW = true,
-    };
-    return std.c.open(path, flags, @as(std.posix.mode_t, 0o600));
+    // POSIX only. std.posix.O is `void` on Windows (0.17 std) and this backs
+    // screenshot writes — a teruwm (Linux) feature — so Windows never calls it.
+    // Keeping the posix block inside the comptime-false branch means it isn't
+    // analyzed on the Windows target.
+    if (builtin.os.tag != .windows) {
+        // Linux: O_WRONLY=1, O_CREAT=64 (0o100), O_TRUNC=512 (0o1000),
+        // O_NOFOLLOW=131072 (0o400000). macOS uses different bits but the
+        // pattern works equivalently via std.posix.O.
+        const flags = std.posix.O{
+            .ACCMODE = .WRONLY,
+            .CREAT = true,
+            .TRUNC = true,
+            .NOFOLLOW = true,
+        };
+        return std.c.open(path, flags, @as(std.posix.mode_t, 0o600));
+    }
+    return -1;
 }
 
 /// Portable nanosleep. On Windows uses Sleep(), on POSIX uses nanosleep.

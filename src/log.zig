@@ -59,5 +59,8 @@ fn logFn(
     var buf: [4096]u8 = undefined;
     const line: []const u8 = std.fmt.bufPrint(&buf, prefix ++ format ++ "\n", args) catch
         prefix ++ "<log line too long; truncated>\n";
+    // stderr write. NOTE: std.c.write's fd-arg type differs on the Windows
+    // libc binding (0.17 std) — the Windows port (task) must route this through
+    // the Win32 stderr HANDLE. Fine on Linux/macOS, which is what ships today.
     _ = std.c.write(2, line.ptr, line.len);
 }
