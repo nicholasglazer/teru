@@ -155,6 +155,9 @@ fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         // what makes "drag to the bottom and keep going" actually scroll the
         // scrollback. No-op unless a native-terminal drag is active.
         server.tickDragAutoScroll();
+        // Ease any in-progress smooth-scroll animation toward its target so
+        // wheel/touchpad scrolling reads as continuous motion, not jumps.
+        server.tickScrollAnim();
 
         // Apply deferred terminal resize from floating drag.
         if (server.resize_pending_id) |rid| {

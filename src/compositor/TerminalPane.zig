@@ -36,6 +36,11 @@ scene_buffer: *wlr.wlr_scene_buffer,
 node_id: u64,
 event_source: ?*wlr.wl_event_source = null,
 read_buf: [8192]u8 = undefined,
+// Smooth-scroll animation state (ServerCursor.tickScrollAnim eases the live
+// scroll position toward this pixel target over frames). target_px is an
+// absolute scrollback offset in pixels (scroll_offset*cell_h + scroll_pixel).
+scroll_anim_active: bool = false,
+scroll_anim_target_px: i64 = 0,
 // Per-pane font zoom (Alt+scroll over THIS pane). 0 = follow the server's
 // base size via the shared atlas. Non-zero = this pane owns `zoom_atlas`,
 // rasterized at `pane_font_size`, so zooming one pane never re-rasterizes

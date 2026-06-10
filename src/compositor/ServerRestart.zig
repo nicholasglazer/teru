@@ -348,57 +348,51 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
     server.recomputeVisibility();
     server.updateFocusedTerminal();
 
-    // ── v2 display-memory section ──────────────────────────────
-    // Replay each pane's snapshot through its fresh parser; jiggle any
-    // pane that has no usable snapshot. An old-writer blob has no section
-    // at all → jiggle everything (the pre-v2 behavior, upgraded from the
-    // same-size SIGWINCH that Node/Ink apps ignore).
+    // ── v3 display-memory + scrollback section ─────────────────
+    // Per pane: replay the scrollback history stream (so the user can scroll
+    // back through it after the restart — it was lost with the old process
+    // image), then the visible-grid snapshot. Jiggle any pane with no usable
+    // snapshot. An old-writer blob (no TWMG, or v1/v2 magic) → jiggle
+    // everything (the same-size-SIGWINCH path, which Node/Ink ignore).
     //
     // Runs AFTER arrangeworkspace deliberately: arrange's resize path
     // (TerminalPane.resize → Grid.resize) resets the scroll region and
-    // discards the alt-screen backup even at unchanged rows/cols (the
-    // framebuffer pixel dims differ from the tile rect almost always).
-    // Feeding first would let arrange wipe the just-restored DECSTBM/alt
-    // state; feeding after, the snapshot lands on the final geometry.
+    // discards the alt-screen backup even at unchanged rows/cols. Feeding
+    // first would let arrange wipe the just-restored state.
     var any_jiggled = false;
-    if (pos + 5 <= blob.len and std.mem.eql(u8, blob[pos..][0..4], "TWMG") and blob[pos + 4] == 1) {
+    const has_v3 = pos + 5 <= blob.len and std.mem.eql(u8, blob[pos..][0..4], "TWMG") and blob[pos + 4] == 3;
+    if (has_v3) {
         var spos = pos + 5;
+        // Pad of newlines fed between the scrollback stream and the snapshot:
+        // it pushes the last `rows` history lines (still on-screen at the end
+        // of the stream) into the fresh scrollback before the snapshot's ED2
+        // clears them, so no recent history is lost at the boundary.
+        var nlpad: [256]u8 = undefined;
+        @memset(&nlpad, '\n');
         for (0..pane_count) |i| {
-            if (spos + 4 > blob.len) {
-                // Truncated section — jiggle the panes we can't replay.
-                if (i < tps.len) {
-                    for (tps[i..]) |maybe_tp| if (maybe_tp) |tp| {
-                        jiggleDown(tp);
-                        any_jiggled = true;
-                    };
-                }
+            // Read [snap_len][snap][sb_len][sb]; any short read → jiggle the rest.
+            const snap = readChunk(blob, &spos) orelse {
+                jiggleRest(tps, i, &any_jiggled);
                 break;
-            }
-            const slen: usize = std.mem.readInt(u32, blob[spos..][0..4], .little);
-            spos += 4;
-            // Width-proof bounds form (slen is untrusted u32; spos ≤ blob.len
-            // is guaranteed by the check above, so the subtraction is safe).
-            if (slen > blob.len - spos) {
-                if (i < tps.len) {
-                    for (tps[i..]) |maybe_tp| if (maybe_tp) |tp| {
-                        jiggleDown(tp);
-                        any_jiggled = true;
-                    };
-                }
+            };
+            const sbk = readChunk(blob, &spos) orelse {
+                jiggleRest(tps, i, &any_jiggled);
                 break;
+            };
+            if (i >= tps.len) continue;
+            const tp = tps[i] orelse continue;
+            if (snap.len == 0) {
+                jiggleDown(tp);
+                any_jiggled = true;
+                continue;
             }
-            if (i < tps.len) {
-                if (tps[i]) |tp| {
-                    if (slen > 0) {
-                        tp.pane.vt.feed(blob[spos..][0..slen]);
-                        tp.pane.grid.markAllDirty();
-                    } else {
-                        jiggleDown(tp);
-                        any_jiggled = true;
-                    }
-                }
+            if (sbk.len > 0) {
+                tp.pane.vt.feed(sbk);
+                const pad = @min(@as(usize, tp.pane.grid.rows), nlpad.len);
+                tp.pane.vt.feed(nlpad[0..pad]);
             }
-            spos += slen;
+            tp.pane.vt.feed(snap);
+            tp.pane.grid.markAllDirty();
         }
     } else {
         for (tps) |maybe_tp| if (maybe_tp) |tp| {
@@ -441,29 +435,76 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
 /// pane instead. The stream itself is plain VT bytes (see
 /// VtParser.dumpReplaySnapshot), so a version-skewed or corrupt snapshot
 /// degrades to garbled text in one pane — never a parser crash.
+/// Per-pane scrollback cap in the restart blob (bytes). 1 MiB ≈ thousands of
+/// lines; bounds blob size + replay cost while preserving the recent history a
+/// user actually scrolls back through.
+const scrollback_blob_cap: usize = 1024 * 1024;
+
 fn writeSnapshotSection(server: *Server, f: *std.c.FILE) void {
-    _ = std.c.fwrite("TWMG\x01", 1, 5, f);
+    // v3: per-pane `[u32 snap_len][snap][u32 sb_len][sb]`. snap = visible-grid
+    // VT replay (display memory); sb = scrollback VT-line stream (history). The
+    // reader feeds sb THEN snap so history scrolls into the fresh scrollback
+    // and the visible grid lands on top. v1/v2 readers stopped at snap; bump
+    // the magic so an old reader on a v3 blob falls back to the jiggle rather
+    // than mis-parsing sb bytes.
+    _ = std.c.fwrite("TWMG\x03", 1, 5, f);
     for (server.terminal_panes) |maybe_tp| {
         if (maybe_tp) |tp| {
-            var wrote = false;
+            var wrote_snap = false;
             if (tp.pane.backend == .local) {
                 const need = teru.VtParser.replaySnapshotBufSize(tp.pane.grid.rows, tp.pane.grid.cols);
                 if (server.zig_allocator.alloc(u8, need)) |sbuf| {
                     defer server.zig_allocator.free(sbuf);
                     const slen = tp.pane.vt.dumpReplaySnapshot(sbuf);
-                    var lenb: [4]u8 = undefined;
-                    std.mem.writeInt(u32, &lenb, @intCast(slen), .little);
-                    _ = std.c.fwrite(&lenb, 1, 4, f);
+                    writeU32Len(f, @intCast(slen));
                     if (slen > 0) _ = std.c.fwrite(sbuf.ptr, 1, slen, f);
-                    wrote = true;
+                    wrote_snap = true;
                 } else |_| {}
             }
-            if (!wrote) {
-                const zero: [4]u8 = .{ 0, 0, 0, 0 };
-                _ = std.c.fwrite(&zero, 1, 4, f);
+            if (!wrote_snap) writeU32Len(f, 0);
+
+            // Scrollback history (best-effort; 0 on alloc failure / remote).
+            var wrote_sb = false;
+            if (tp.pane.backend == .local) {
+                if (server.zig_allocator.alloc(u8, scrollback_blob_cap)) |sbbuf| {
+                    defer server.zig_allocator.free(sbbuf);
+                    const n = tp.pane.scrollback.dumpReplayStream(sbbuf, 100_000);
+                    writeU32Len(f, @intCast(n));
+                    if (n > 0) _ = std.c.fwrite(sbbuf.ptr, 1, n, f);
+                    wrote_sb = true;
+                } else |_| {}
             }
+            if (!wrote_sb) writeU32Len(f, 0);
         }
     }
+}
+
+fn writeU32Len(f: *std.c.FILE, n: u32) void {
+    var lenb: [4]u8 = undefined;
+    std.mem.writeInt(u32, &lenb, n, .little);
+    _ = std.c.fwrite(&lenb, 1, 4, f);
+}
+
+/// Read a `[u32 len][len bytes]` chunk from `blob` at `*pos`, advancing it.
+/// Returns the byte slice (possibly empty), or null on a short/overflowing
+/// read (untrusted u32; width-proof bounds). On null `*pos` is left as-is.
+fn readChunk(blob: []const u8, pos: *usize) ?[]const u8 {
+    if (pos.* + 4 > blob.len) return null;
+    const len: usize = std.mem.readInt(u32, blob[pos.*..][0..4], .little);
+    if (len > blob.len - (pos.* + 4)) return null;
+    const start = pos.* + 4;
+    pos.* = start + len;
+    return blob[start..][0..len];
+}
+
+/// Jiggle every still-unprocessed restored pane from index `from` onward
+/// (used when the blob's display-memory section is truncated mid-stream).
+fn jiggleRest(tps: []?*TerminalPane, from: usize, any: *bool) void {
+    if (from >= tps.len) return;
+    for (tps[from..]) |maybe_tp| if (maybe_tp) |tp| {
+        jiggleDown(tp);
+        any.* = true;
+    };
 }
 
 /// Phase 1 of the repaint jiggle: shrink the PTY winsize by one column

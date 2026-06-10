@@ -1274,6 +1274,12 @@ pub fn tickDragAutoScroll(self: *Server) void {
     Cursor.tickDragAutoScroll(self);
 }
 
+/// Frame-callback hook: ease smooth-scroll animations toward their target.
+/// No-op unless a pane is mid-scroll-animation.
+pub fn tickScrollAnim(self: *Server) void {
+    Cursor.tickScrollAnim(self);
+}
+
 
 // ── Layout facade ──────────────────────────────────────────────
 // Thin forwarders so external callers (Session, Output, WmMcpServer,
