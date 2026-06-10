@@ -116,7 +116,14 @@ fn initWithSpawn(server: *Server, rows: u16, cols: u16, spawn_config: Pane.Spawn
 
     if (wlr.miozu_pixel_buffer_data(pixel_buffer)) |data| {
         const needed = @as(usize, pixel_w) * @as(usize, pixel_h);
-        if (needed > 0) renderer.framebuffer = data[0..needed];
+        if (needed > 0) {
+            // Adopt the wlr buffer's memory as the framebuffer; free the one
+            // initWithScheme just allocated, else it's orphaned for the pane's
+            // whole life (~1 MB/pane leak — the renderer's deinit is never
+            // called once it points at borrowed wlr memory).
+            allocator.free(renderer.framebuffer);
+            renderer.framebuffer = data[0..needed];
+        }
     }
     if (server.font_atlas) |fa| {
         renderer.glyph_atlas = fa.atlas_data;
@@ -226,7 +233,14 @@ pub fn createRestored(server: *Server, ws: u8, pane: *Pane) ?*TerminalPane {
     renderer.padding = pad; // content margin, same key/meaning as windowed teru
     if (wlr.miozu_pixel_buffer_data(pixel_buffer)) |data| {
         const needed = @as(usize, pixel_w) * @as(usize, pixel_h);
-        if (needed > 0) renderer.framebuffer = data[0..needed];
+        if (needed > 0) {
+            // Adopt the wlr buffer's memory as the framebuffer; free the one
+            // initWithScheme just allocated, else it's orphaned for the pane's
+            // whole life (~1 MB/pane leak — the renderer's deinit is never
+            // called once it points at borrowed wlr memory).
+            allocator.free(renderer.framebuffer);
+            renderer.framebuffer = data[0..needed];
+        }
     }
     if (server.font_atlas) |fa| {
         renderer.glyph_atlas = fa.atlas_data;

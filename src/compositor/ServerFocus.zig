@@ -125,6 +125,15 @@ pub fn clearFocusRefs(server: *Server, node_id: u64) void {
         server.grab_node_id = null;
         server.cursor_mode = .normal;
     };
+    // The drag-select pointer is the fourth pane reference, and the only one
+    // button-up clears — so a pane that exits (shell quit, or an MCP agent
+    // closing it) WHILE a drag is held leaves drag_terminal dangling, and
+    // tickDragAutoScroll / terminalMouseMotion deref it at vsync / motion
+    // rate → freed-pointer crash. Clear it on every close path (both route
+    // through clearFocusRefs).
+    if (server.drag_terminal) |d| if (d.node_id == node_id) {
+        server.drag_terminal = null;
+    };
 }
 
 /// Reconcile focused_terminal/focused_view with the layout engine's

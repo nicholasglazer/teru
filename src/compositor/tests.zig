@@ -15,4 +15,5 @@ test {
     _ = @import("Bar.zig");
     _ = @import("WmConfig.zig");
     _ = @import("wlr.zig");
+    _ = @import("WmMcpTools.zig");
 }
