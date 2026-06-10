@@ -100,10 +100,24 @@ pub fn switchWorkspace(self: *LayoutEngine, index: u8) void {
 
 pub fn moveNodeToWorkspace(self: *LayoutEngine, node_id: u64, target: u8) !void {
     if (target >= 10) return error.InvalidWorkspace;
+    // Drop from EVERY workspace's flat list AND its split tree. The tree
+    // removal is the bit the move path used to miss: a workspace in a split
+    // layout kept rendering the moved pane as a ghost (renderAll draws from the
+    // split tree when present), so Alt+Shift+N appeared to leave the pane
+    // behind. The close path already pairs these two — mirror it here.
     for (&self.workspaces) |*ws| {
         ws.removeNode(node_id);
+        ws.removeNodeFromTree(node_id);
     }
-    try self.workspaces[target].addNode(self.allocator, node_id);
+    // Add to the target. If the target is itself in a split layout, join its
+    // tree (addNodeSplit maintains BOTH the flat list and the tree); otherwise
+    // a plain flat add preserves its master-stack / auto layout.
+    const tws = &self.workspaces[target];
+    if (tws.split_root != null) {
+        try tws.addNodeSplit(self.allocator, node_id, .vertical);
+    } else {
+        try tws.addNode(self.allocator, node_id);
+    }
 }
 
 pub fn getActiveWorkspace(self: *LayoutEngine) *Workspace {

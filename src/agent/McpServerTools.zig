@@ -837,6 +837,23 @@ fn toolScreenshot(self: *McpServer, path: []const u8, buf: []u8, id: ?[]const u8
     const r = self.renderer orelse
         return tools.jsonRpcError(buf, id, -32603, "No renderer (TTY mode has no framebuffer)");
 
+    // Render the active workspace into the framebuffer FIRST so the snapshot
+    // reflects CURRENT state. Without this we dump whatever the frame loop last
+    // painted — stale after any MCP-driven change (move/spawn/layout), and
+    // frozen entirely for a window that isn't receiving frame callbacks.
+    // Mirrors teruwm_screenshot_pane's render-on-demand.
+    switch (r.*) {
+        .cpu => |*cpu| self.multiplexer.renderAll(
+            cpu,
+            cpu.width,
+            cpu.height,
+            cpu.cell_width,
+            cpu.cell_height,
+            self.status_bar_h,
+        ),
+        .tty => {},
+    }
+
     const pixels = r.getFramebuffer() orelse
         return tools.jsonRpcError(buf, id, -32603, "No framebuffer available");
 

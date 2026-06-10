@@ -795,6 +795,32 @@ test "Multiplexer movePaneToWorkspace — Alt+Shift+N moves active pane" {
     try t.expectEqual(before, mux.layout_engine.workspaces[0].node_ids.items.len);
 }
 
+test "moveNodeToWorkspace updates the SPLIT TREE (no ghost on source ws)" {
+    var mux = Multiplexer.init(t.allocator);
+    defer mux.deinit();
+
+    _ = try mux.spawnPane(10, 20); // pane 1
+    _ = try mux.spawnPane(10, 20); // pane 2
+    const ws0 = &mux.layout_engine.workspaces[0];
+    // Build a split layout on ws0 (what teru_create_pane / a prefix-split does).
+    try ws0.addNodeSplit(t.allocator, 2, .vertical);
+    try t.expect(ws0.split_root != null);
+    var buf: [8]u64 = undefined;
+    try t.expectEqual(@as(usize, 2), ws0.getTreePaneIds(&buf)); // tree has both
+
+    // Move pane 2 to ws1.
+    try mux.layout_engine.moveNodeToWorkspace(2, 1);
+
+    // Source ws0 must NOT render pane 2 anymore — the bug was that the split
+    // tree kept it (renderAll draws from the tree when present → ghost).
+    const n0 = ws0.getTreePaneIds(&buf);
+    for (buf[0..n0]) |pid| try t.expect(pid != 2);
+    try t.expectEqual(@as(usize, 1), mux.layout_engine.workspaces[0].node_ids.items.len);
+    // Target ws1 has pane 2.
+    try t.expectEqual(@as(usize, 1), mux.layout_engine.workspaces[1].node_ids.items.len);
+    try t.expectEqual(@as(u64, 2), mux.layout_engine.workspaces[1].node_ids.items[0]);
+}
+
 test "Multiplexer cycleLayout — legacy (no layout list)" {
     var mux = Multiplexer.init(t.allocator);
     defer mux.deinit();
