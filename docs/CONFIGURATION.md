@@ -255,10 +255,12 @@ cursor_blink = true
 |--------|------|---------|-------------|
 | `scroll_speed` | integer | `3` | Scroll wheel speed multiplier (pixels per scroll event) |
 | `alt_scroll_zoom` | bool | `true` | `Alt`+scroll wheel resizes the font (zoom) instead of scrolling scrollback. Set `false` to free the gesture for the focused app. Also honoured by teruwm. |
+| `zoom_units_per_step` | integer | `24` | (teruwm) Touchpad axis travel per one font-size step during `Alt`+scroll zoom. Higher = slower/calmer zoom. Mouse-wheel notches are always one step each (this only affects continuous/touchpad zoom). |
 
 ```conf
 scroll_speed = 5
 alt_scroll_zoom = true
+zoom_units_per_step = 32   # calmer touchpad zoom
 ```
 
 ### Keybindings

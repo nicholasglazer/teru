@@ -82,12 +82,30 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
     if (orientation == 0 and server.wm_config.alt_scroll_zoom and
         server.focused_terminal != null and delta != 0 and readAltHeld(server))
     {
-        const target: teru.render.FontAtlas.ZoomTarget = if (delta < 0) .in else .out;
+        const tp = server.focused_terminal.?;
         // Per-pane zoom: only the focused terminal's font changes — the bars
         // and other panes are untouched, and only one pane's atlas is
-        // re-rasterized (no whole-compositor re-raster lag). Matches the
-        // standalone-terminal Alt+scroll behaviour.
-        _ = server.focused_terminal.?.zoomFont(target);
+        // re-rasterized (no whole-compositor re-raster lag).
+        const discrete = wlr.miozu_pointer_axis_delta_discrete(event);
+        if (discrete != 0) {
+            // Mouse wheel: exactly one font step per notch (crisp, expected).
+            const target: teru.render.FontAtlas.ZoomTarget = if (delta < 0) .in else .out;
+            var n = @abs(discrete);
+            while (n > 0) : (n -= 1) _ = tp.zoomFont(target);
+            server.zoom_accum = 0; // reset the continuous accumulator
+            return;
+        }
+        // Touchpad / continuous: a single pinch-less zoom gesture fires a dense
+        // stream of small deltas. Stepping the font on EVERY event made zoom
+        // runaway-sensitive and jumpy. Accumulate and step once per
+        // `zoom_units_per_step` of travel — proportional + smooth.
+        server.zoom_accum += delta;
+        const step: f64 = @max(1.0, @as(f64, @floatFromInt(server.wm_config.zoom_units_per_step)));
+        while (@abs(server.zoom_accum) >= step) {
+            const target: teru.render.FontAtlas.ZoomTarget = if (server.zoom_accum < 0) .in else .out;
+            _ = tp.zoomFont(target);
+            server.zoom_accum -= if (server.zoom_accum < 0) -step else step;
+        }
         return;
     }
 
