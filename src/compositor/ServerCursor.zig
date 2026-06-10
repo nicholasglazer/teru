@@ -101,41 +101,46 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
             // TUI convention: physical scroll-down → newer scrollback.
             // Invert via touchpad_scroll_invert for traditional scrolling.
             const sign: i32 = if (server.wm_config.touchpad_scroll_invert) 1 else -1;
-            // Notched wheel → fixed lines/notch; touchpad → proportional to the
-            // continuous delta. The old fixed ±3-lines-per-event over-scrolled
-            // touchpads (dozens of events/gesture). See Pane.axisScrollPixels.
             const discrete = wlr.miozu_pointer_axis_delta_discrete(event);
-            const pixel_delta = teru.Pane.axisScrollPixels(
-                delta,
-                discrete,
-                cell_h,
-                sign,
-                server.wm_config.wheel_scroll_lines,
-                server.wm_config.touchpad_scroll_factor,
-            );
 
-            if (pixel_delta == 0) return;
-
-            if (server.wm_config.smooth_scroll) {
-                // Smooth path: accumulate into a pixel TARGET and let the frame
-                // callback ease the actual position toward it (tickScrollAnim).
-                // This decouples scroll motion from the (chunky, sub-60fps)
-                // axis-event cadence — a wheel notch glides instead of jumping,
-                // and a touchpad gesture stays continuous between events.
-                const max_px: i64 = @as(i64, max_offset) * @as(i64, cell_h);
-                const cur_px: i64 = @as(i64, tp.pane.scroll_offset) * @as(i64, cell_h) + tp.pane.scroll_pixel;
-                const base: i64 = if (tp.scroll_anim_active) tp.scroll_anim_target_px else cur_px;
-                tp.scroll_anim_target_px = std.math.clamp(base + pixel_delta, 0, max_px);
-                tp.scroll_anim_active = true;
-                server.scheduleRender();
+            if (discrete != 0) {
+                // ── Notched mouse wheel ──────────────────────────────
+                // Fixed lines/notch. With smooth_scroll the discrete jump
+                // GLIDES via the frame callback (tickScrollAnim); else it's
+                // applied instantly. (A wheel notch is the case that benefits
+                // from animation — a touchpad is already continuous.)
+                const pixel_delta = teru.Pane.axisScrollPixels(
+                    delta, discrete, cell_h, sign, server.wm_config.wheel_scroll_lines, 1.0,
+                );
+                if (pixel_delta == 0) return;
+                if (server.wm_config.smooth_scroll) {
+                    const max_px: i64 = @as(i64, max_offset) * @as(i64, cell_h);
+                    const cur_px: i64 = @as(i64, tp.pane.scroll_offset) * @as(i64, cell_h) + tp.pane.scroll_pixel;
+                    const base: i64 = if (tp.scroll_anim_active) tp.scroll_anim_target_px else cur_px;
+                    tp.scroll_anim_target_px = std.math.clamp(base + pixel_delta, 0, max_px);
+                    tp.scroll_anim_active = true;
+                    server.scheduleRender();
+                } else if (tp.pane.scrollBy(pixel_delta, cell_h, max_offset)) {
+                    tp.pane.grid.markAllDirty();
+                    server.scheduleRender();
+                }
                 return;
             }
 
-            // Instant path (smooth_scroll = false): coalesce to the frame
-            // callback. A touchpad fires dozens of axis events per gesture; a
-            // synchronous full-pane render per event can't keep up. Mark dirty +
-            // schedule so many events collapse to one paint per vsync.
-            if (tp.pane.scrollBy(pixel_delta, cell_h, max_offset)) {
+            // ── Touchpad / continuous scroll ─────────────────────────
+            // Direct, fractional, sub-pixel — NOT animated. The animation +
+            // the old ±1px floor turned near-rest sensor noise into a 1-2px
+            // back-and-forth jitter on slow scrolls. Fractional accumulation
+            // tracks the finger 1:1 and lets noise cancel (see
+            // Pane.fractionalScrollStep). A live touchpad gesture already
+            // arrives as a dense event stream, so per-vsync coalescing in the
+            // frame callback keeps it smooth without a target-chasing animation.
+            const px = teru.Pane.fractionalScrollStep(
+                &tp.scroll_frac_px, delta, server.wm_config.touchpad_scroll_factor, sign,
+            );
+            // A continuous gesture supersedes any in-flight wheel glide.
+            tp.scroll_anim_active = false;
+            if (px != 0 and tp.pane.scrollBy(px, cell_h, max_offset)) {
                 tp.pane.grid.markAllDirty();
                 server.scheduleRender();
             }

@@ -41,6 +41,10 @@ read_buf: [8192]u8 = undefined,
 // absolute scrollback offset in pixels (scroll_offset*cell_h + scroll_pixel).
 scroll_anim_active: bool = false,
 scroll_anim_target_px: i64 = 0,
+// Sub-pixel carry for touchpad/continuous scroll (Pane.fractionalScrollStep):
+// lets slow scrolling move smoothly and near-rest sensor noise cancel out
+// instead of jittering ±1px.
+scroll_frac_px: f64 = 0,
 // Per-pane font zoom (Alt+scroll over THIS pane). 0 = follow the server's
 // base size via the shared atlas. Non-zero = this pane owns `zoom_atlas`,
 // rasterized at `pane_font_size`, so zooming one pane never re-rasterizes

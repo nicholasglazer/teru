@@ -112,6 +112,23 @@ pub fn axisScrollPixels(
     return sign * px;
 }
 
+/// Touchpad / continuous scroll step with FRACTIONAL accumulation. Adds the
+/// scaled delta to `frac` (a per-pane carry), returns the whole-pixel amount to
+/// scroll now, and leaves the sub-pixel remainder in `frac` for next time.
+///
+/// Why not just round each event (axisScrollPixels): rounding a tiny delta to a
+/// ±1px floor turns a touchpad's near-rest SENSOR NOISE (tiny alternating-sign
+/// deltas) into a 1-2px back-and-forth JITTER, which looks awful during slow
+/// scrolling. Accumulating instead: noise cancels (alternating deltas sum to
+/// ~0, `frac` stays put, returns 0), while a genuine slow drag accumulates to
+/// 1px over a few events — smooth, no floor. `sign` carries natural/invert.
+pub fn fractionalScrollStep(frac: *f64, delta: f64, factor: f32, sign: i32) i32 {
+    frac.* += delta * @as(f64, factor);
+    const whole = @trunc(frac.*);
+    frac.* -= whole;
+    return sign * @as(i32, @intFromFloat(whole));
+}
+
 /// Drag-select auto-scroll decision. `ly` is the pane-local content Y in
 /// pixels (0 = top content row); `content_h` is the visible content height in
 /// pixels. Returns how a held drag that has run past an edge should auto-scroll:
@@ -497,6 +514,31 @@ test "axisScrollPixels: touchpad is proportional to finger travel, not fixed lin
     try std.testing.expectEqual(@as(i32, 1), Pane.axisScrollPixels(0.2, 0, 16, 1, 3, 0.1));
     // Zero delta → no scroll.
     try std.testing.expectEqual(@as(i32, 0), Pane.axisScrollPixels(0.0, 0, 16, -1, 3, 1.0));
+}
+
+test "fractionalScrollStep: noise cancels, slow drag accumulates, no jitter" {
+    // Near-rest sensor noise: alternating tiny ± deltas must NET ZERO motion
+    // (this is the 1-2px back-and-forth jitter the floor caused).
+    var frac: f64 = 0;
+    var moved: i32 = 0;
+    var k: usize = 0;
+    while (k < 20) : (k += 1) {
+        const d: f64 = if (k % 2 == 0) 0.3 else -0.3;
+        moved += Pane.fractionalScrollStep(&frac, d, 1.0, -1);
+    }
+    try std.testing.expectEqual(@as(i32, 0), moved); // noise produced NO net scroll
+
+    // A steady slow drag accumulates to whole pixels over a few events.
+    frac = 0;
+    var total: i32 = 0;
+    k = 0;
+    while (k < 10) : (k += 1) total += Pane.fractionalScrollStep(&frac, 0.5, 1.0, -1);
+    // 10 × 0.5 = 5 px of travel, sign -1 → -5 (≈, within the carried remainder).
+    try std.testing.expect(total == -5 or total == -4);
+
+    // factor scales; a big delta moves immediately.
+    frac = 0;
+    try std.testing.expectEqual(@as(i32, -8), Pane.fractionalScrollStep(&frac, 16.0, 0.5, -1));
 }
 
 test "dragEdgeScroll: inside viewport is a no-op; edges scroll the right way" {
