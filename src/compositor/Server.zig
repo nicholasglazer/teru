@@ -250,6 +250,11 @@ grab_x: f64 = 0,
 grab_y: f64 = 0,
 grab_w: u32 = 0,
 grab_h: u32 = 0,
+/// Accumulated touchpad axis delta for Alt+scroll font zoom. A touchpad
+/// gesture fires dozens of small axis events; stepping the font on each one
+/// made zoom wildly over-sensitive. We accumulate here and step once per
+/// `zoom_units_per_step` of travel (wheel notches bypass this — one step each).
+zoom_accum: f64 = 0,
 
 // Native area-select (mod+ctrl+w): drag a box over the composited output,
 // crop on release. area_rect is the live translucent overlay scene node.

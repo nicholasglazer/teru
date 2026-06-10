@@ -245,6 +245,13 @@ alt_scroll_zoom: bool = true,
 font_zoom_min: u16 = 6,
 font_zoom_max: u16 = 72,
 
+/// Touchpad axis-delta units accumulated per ONE font-size step during
+/// Alt+scroll zoom. A touchpad fires many small deltas per gesture; stepping
+/// on each made zoom over-sensitive and jumpy. Higher = slower/calmer zoom.
+/// Mouse-wheel notches ignore this (one step per notch). ~24 ≈ a touch calmer
+/// than one wheel notch (≈15 units).
+zoom_units_per_step: u16 = 24,
+
 /// Directory for `mod+w` screenshots. Empty = the default
 /// `$HOME/Pictures/screenshots`.
 /// Must resolve under `$HOME` or `/tmp` (the screenshot path-safety check).
@@ -614,6 +621,9 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.font_zoom_min = std.fmt.parseInt(u16, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "font_zoom_max")) {
         self.font_zoom_max = std.fmt.parseInt(u16, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "zoom_units_per_step")) {
+        const v = std.fmt.parseInt(u16, value, 10) catch return;
+        if (v > 0) self.zoom_units_per_step = v; // 0 would divide-by-loop forever
     } else if (std.mem.eql(u8, key, "screenshot_dir")) {
         const n = @min(value.len, self.screenshot_dir_buf.len);
         @memcpy(self.screenshot_dir_buf[0..n], value[0..n]);
@@ -1058,4 +1068,14 @@ test "font_zoom_min/max defaults and parse" {
     c.parse("font_zoom_min = 10\nfont_zoom_max = 40\n");
     try std.testing.expectEqual(@as(u16, 10), c.font_zoom_min);
     try std.testing.expectEqual(@as(u16, 40), c.font_zoom_max);
+}
+
+test "zoom_units_per_step default + parse + 0 rejected" {
+    try std.testing.expectEqual(@as(u16, 24), (WmConfig{}).zoom_units_per_step);
+    var c = WmConfig{};
+    c.parse("zoom_units_per_step = 40\n");
+    try std.testing.expectEqual(@as(u16, 40), c.zoom_units_per_step);
+    // 0 would make the step-loop spin forever; the parser keeps the default.
+    c.parse("zoom_units_per_step = 0\n");
+    try std.testing.expectEqual(@as(u16, 40), c.zoom_units_per_step);
 }
