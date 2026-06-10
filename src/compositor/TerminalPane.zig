@@ -484,7 +484,21 @@ pub fn repaintBorderOnly(self: *TerminalPane) void {
 }
 
 /// Write input to the terminal's PTY.
+/// Jump the scrollback view back to the live bottom. Called when the user
+/// types or pastes (scroll_to_bottom_on_input) — the same reflex every
+/// terminal has: you're interacting, so show the prompt. No-op if already at
+/// the bottom. Does NOT run for scroll keybinds (those never write to the PTY).
+pub fn snapToBottom(self: *TerminalPane) void {
+    if (self.pane.scroll_offset == 0 and self.pane.scroll_pixel == 0) return;
+    self.pane.scroll_offset = 0;
+    self.pane.scroll_pixel = 0;
+    self.scroll_frac_px = 0;
+    self.scroll_anim_active = false;
+    self.pane.grid.markAllDirty();
+}
+
 pub fn writeInput(self: *TerminalPane, data: []const u8) void {
+    if (self.server.wm_config.scroll_to_bottom_on_input) self.snapToBottom();
     _ = self.pane.ptyWrite(data) catch {};
     // Reset the per-vsync edge-trigger fallback counter so the next few
     // frames poll every PTY for the imminent shell echo. After ~4 frames

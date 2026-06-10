@@ -204,25 +204,28 @@ touchpad_scroll_invert: bool = false,
 /// which only flips the native-terminal scrollback direction.
 natural_scroll: bool = true,
 
-/// Animate scrollback scrolling instead of jumping instantly. On (default),
-/// a wheel notch or touchpad gesture glides to its target over a few frames
-/// (~0.15s ease), so scrolling reads as continuous motion rather than discrete
-/// jumps. Set false for instant, 1:1 scroll (the pre-animation behaviour) — a
-/// zero-rebuild escape hatch if the glide ever feels laggy.
+/// Glide a wheel notch over a few frames instead of jumping instantly.
+/// Scrollback renders on line boundaries, so the glide steps line-by-line
+/// (not pixel-smooth — that's a renderer follow-up). Set false for an instant
+/// jump. Zero-rebuild escape hatch either way.
 smooth_scroll: bool = true,
 
 /// Lines of scrollback moved per notch of a discrete mouse wheel over a
-/// focused terminal pane. 3 matches the long-standing terminal default.
-/// Touchpad / high-resolution continuous scroll ignores this and tracks the
-/// finger proportionally — see `touchpad_scroll_factor`.
-wheel_scroll_lines: u32 = 3,
+/// focused terminal pane. Touchpad / high-resolution continuous scroll ignores
+/// this and tracks the finger proportionally — see `touchpad_scroll_factor`.
+wheel_scroll_lines: u32 = 5,
 
 /// Sensitivity multiplier for touchpad / continuous (non-notched) scrolling
-/// over a focused terminal pane. 1.0 tracks the finger 1:1 in pixels; lower
-/// is calmer, higher is faster. Only affects continuous scroll — a notched
-/// wheel always moves `wheel_scroll_lines` per notch. Fixes the old runaway
-/// "too sensitive" scroll where every libinput event jumped a fixed 3 lines.
-touchpad_scroll_factor: f32 = 1.0,
+/// over a focused terminal pane. 1.0 tracks the finger 1:1; higher is faster
+/// (1.5 = a scrollback line per ~⅔ cell of travel), lower is calmer. Only
+/// affects continuous scroll — a notched wheel uses `wheel_scroll_lines`.
+touchpad_scroll_factor: f32 = 1.5,
+
+/// Snap the scrollback view back to the live bottom when the user TYPES or
+/// PASTES into a pane (like every terminal — you're interacting, so show the
+/// prompt). True by default; set false to keep the scrolled-back position and
+/// type "blindly" while reading history.
+scroll_to_bottom_on_input: bool = true,
 
 /// Alt+scroll wheel over a focused terminal pane resizes that pane's font
 /// (per-pane zoom) instead of scrolling scrollback. True by default; set
@@ -591,6 +594,8 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.natural_scroll = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "smooth_scroll")) {
         self.smooth_scroll = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+    } else if (std.mem.eql(u8, key, "scroll_to_bottom_on_input")) {
+        self.scroll_to_bottom_on_input = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "wheel_scroll_lines")) {
         self.wheel_scroll_lines = std.fmt.parseInt(u32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "touchpad_scroll_factor")) {
@@ -1010,15 +1015,17 @@ test "empty keyboard section leaves all xkb fields null" {
 
 test "scroll sensitivity knobs default and parse" {
     const def = WmConfig{};
-    try std.testing.expectEqual(@as(u32, 3), def.wheel_scroll_lines);
-    try std.testing.expectEqual(@as(f32, 1.0), def.touchpad_scroll_factor);
+    try std.testing.expectEqual(@as(u32, 5), def.wheel_scroll_lines);
+    try std.testing.expectEqual(@as(f32, 1.5), def.touchpad_scroll_factor);
     try std.testing.expect(def.smooth_scroll);
+    try std.testing.expect(def.scroll_to_bottom_on_input);
 
     var cfg = WmConfig{};
-    cfg.parse("wheel_scroll_lines = 5\ntouchpad_scroll_factor = 0.4\nsmooth_scroll = false\n");
-    try std.testing.expectEqual(@as(u32, 5), cfg.wheel_scroll_lines);
+    cfg.parse("wheel_scroll_lines = 3\ntouchpad_scroll_factor = 0.4\nsmooth_scroll = false\nscroll_to_bottom_on_input = false\n");
+    try std.testing.expectEqual(@as(u32, 3), cfg.wheel_scroll_lines);
     try std.testing.expectEqual(@as(f32, 0.4), cfg.touchpad_scroll_factor);
     try std.testing.expect(!cfg.smooth_scroll);
+    try std.testing.expect(!cfg.scroll_to_bottom_on_input);
 }
 
 test "alt_scroll_zoom defaults on and parses false" {

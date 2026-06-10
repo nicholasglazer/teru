@@ -61,6 +61,9 @@ pub fn copySelection(server: *Server, tp: *TerminalPane) void {
 /// fire-and-forget writeInput could.
 fn pasteInternal(server: *Server, tp: *TerminalPane) void {
     if (server.clipboard_len == 0) return;
+    // Paste counts as input → jump to the live bottom (writeInput does this for
+    // typing; pasteText goes straight to the PTY so snap explicitly here).
+    if (server.wm_config.scroll_to_bottom_on_input) tp.snapToBottom();
     teru.Clipboard.pasteText(&tp.pane, server.clipboard_buf[0..server.clipboard_len]);
     // Same echo-poll nudge TerminalPane.writeInput does.
     server.frames_since_pty_input = 0;
@@ -181,6 +184,7 @@ fn finishPaste(server: *Server) void {
     for (server.terminal_panes) |maybe_tp| {
         if (maybe_tp) |tp| {
             if (tp.node_id == target) {
+                if (server.wm_config.scroll_to_bottom_on_input) tp.snapToBottom();
                 teru.Clipboard.pasteText(&tp.pane, server.paste_buf[0..len]);
                 // Same echo-poll nudge TerminalPane.writeInput does.
                 server.frames_since_pty_input = 0;
