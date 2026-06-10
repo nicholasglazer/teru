@@ -972,11 +972,15 @@ fn dispatchCsi(self: *VtParser, final: u8) void {
             self.grid.deleteChars(n);
         },
         'S' => { // SU — scroll up
-            const n = self.getParam(0, 1);
+            // Clamp to the screen height: scrolling more than `rows` lines only
+            // blanks the region + pushes blank lines, but the loop in scrollUpN
+            // runs `n` times (each a full-width scrollback encode), so an
+            // unclamped `ESC[65535S` from pane content is a CPU DoS (#41).
+            const n = @min(self.getParam(0, 1), self.grid.rows);
             self.grid.scrollUpN(n);
         },
         'T' => { // SD — scroll down
-            const n = self.getParam(0, 1);
+            const n = @min(self.getParam(0, 1), self.grid.rows);
             self.grid.scrollDownN(n);
         },
         'X' => { // ECH — erase characters (overwrite with blanks, no shift)
@@ -992,8 +996,12 @@ fn dispatchCsi(self: *VtParser, final: u8) void {
             self.grid.cursor_col = if (col == 0) 0 else @min(col - 1, self.grid.cols -| 1);
         },
         'b' => { // REP — repeat last character
-            const n = self.getParam(0, 1);
-            var i: u16 = 0;
+            // Clamp to one screenful (rows*cols): the visible effect saturates
+            // there, so a huge `ESC[65535b` from pane content is just a CPU DoS
+            // (#41). Computed in u32 to avoid u16 overflow on large grids.
+            const cap: u32 = @as(u32, self.grid.rows) *| @as(u32, self.grid.cols);
+            const n: u32 = @min(@as(u32, self.getParam(0, 1)), cap);
+            var i: u32 = 0;
             while (i < n) : (i += 1) {
                 self.grid.write(self.last_char);
             }
@@ -1873,6 +1881,22 @@ test "SGR colon truecolor 38:2 and 256 38:5 set fg" {
     // colon 256-color: 48:5:42 → bg indexed 42
     parser.feed("\x1b[48:5:42mB");
     try std.testing.expectEqual(Grid.Color{ .indexed = 42 }, grid.cellAtConst(0, 1).bg);
+}
+
+test "SU/SD/REP clamp huge counts (DoS guard #41)" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 24, 80);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    // These would loop 65535× unclamped (CPU DoS from pane content). They must
+    // complete fast and leave the grid in a sane state — the assertion is that
+    // we reach here at all (no hang) plus cursor stays in bounds.
+    parser.feed("X\x1b[65535b"); // REP 65535 of 'X' → clamped to one screenful
+    parser.feed("\x1b[65535S"); // SU 65535 → clamped to rows
+    parser.feed("\x1b[65535T"); // SD 65535 → clamped to rows
+    try std.testing.expect(grid.cursor_row < grid.rows);
+    try std.testing.expect(grid.cursor_col < grid.cols);
 }
 
 test "SGR semicolon 4;3 stays two groups (underline + italic)" {
