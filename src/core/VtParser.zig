@@ -55,6 +55,12 @@ response_ctx: ?*anyopaque = null,
 /// CSI parameter accumulation
 params: [MAX_PARAMS]u16 = @splat(0),
 param_count: u8 = 0,
+/// Per-param separator kind: param_sub[i] = true when param i was introduced
+/// by a colon ':' (an ECMA-48 sub-parameter joined to the previous param),
+/// false for ';' or the first param. Lets SGR tell `4:3` (curly underline,
+/// one group) from `4;3` (underline + italic, two groups) and consume colon
+/// sub-params of 38/48/58 instead of misreading them as standalone SGRs.
+param_sub: [MAX_PARAMS]bool = @splat(false),
 /// CSI prefix byte ('?', '>', '=', '<', or 0 for none)
 csi_prefix: u8 = 0,
 /// Intermediate byte (e.g., ' ', '!', '"', etc.)
@@ -573,9 +579,11 @@ fn handleCsiEntry(self: *VtParser, byte: u8) void {
             self.param_count = 1;
             self.state = .csi_param;
         },
-        ';' => {
-            // Empty first param (defaults to 0)
+        ';', ':' => {
+            // Empty first param (defaults to 0). A leading ':' is malformed
+            // but must still not abort the sequence; treat it as a separator.
             self.param_count = 2;
+            self.param_sub[1] = (byte == ':');
             self.state = .csi_param;
         },
         0x20...0x2F => {
@@ -605,11 +613,18 @@ fn handleCsiParam(self: *VtParser, byte: u8) void {
                 self.params[idx] = self.params[idx] *| 10 +| (byte - '0');
             }
         },
-        ';' => {
+        ';', ':' => {
+            // ';' starts a new parameter; ':' starts a sub-parameter (ECMA-48
+            // colon convention — undercurl `4:3`, underline color `58:2:…`,
+            // colon-form truecolor `38:2:…`). Both advance the param slot; only
+            // ':' marks it as a sub-param. Critically, ':' must NOT abort the
+            // sequence (the old `else => ground` dropped it, so nvim/modern
+            // colorschemes printed the tail as literal text).
             if (self.param_count < MAX_PARAMS) {
                 self.param_count += 1;
                 if (self.param_count <= MAX_PARAMS) {
                     self.params[self.param_count - 1] = 0;
+                    self.param_sub[self.param_count - 1] = (byte == ':');
                 }
             }
         },
@@ -858,6 +873,7 @@ pub fn consumeAgentEvent(self: *VtParser) ?[]const u8 {
 
 fn resetCsiState(self: *VtParser) void {
     self.params = @splat(0);
+    self.param_sub = @splat(false);
     self.param_count = 0;
     self.csi_prefix = 0;
     self.intermediate = 0;
@@ -1195,12 +1211,21 @@ fn dispatchSgr(self: *VtParser) void {
     var i: u8 = 0;
     while (i < self.param_count) {
         const p = self.params[i];
+        // Group end: leader at `i` plus any colon sub-params that follow.
+        // `4:3`, `58:2:r:g:b`, `38:5:n` form one group; `4;3` does not.
+        var gend = i + 1;
+        while (gend < self.param_count and self.param_sub[gend]) gend += 1;
+        const has_sub = gend > i + 1;
+
         switch (p) {
             0 => self.grid.resetPen(),
             1 => self.grid.pen_attrs.bold = true,
             2 => self.grid.pen_attrs.dim = true,
             3 => self.grid.pen_attrs.italic = true,
-            4 => self.grid.pen_attrs.underline = true,
+            // 4 = underline; 4:0 = off, 4:1..5 = styled (curly/dotted/dashed —
+            // degraded to a plain underline, which is the right fallback when
+            // we don't render the style yet). Without the sub-param, plain on.
+            4 => self.grid.pen_attrs.underline = if (has_sub) self.params[i + 1] != 0 else true,
             5 => self.grid.pen_attrs.blink = true,
             7 => self.grid.pen_attrs.inverse = true,
             8 => self.grid.pen_attrs.hidden = true,
@@ -1225,18 +1250,62 @@ fn dispatchSgr(self: *VtParser) void {
             90...97 => self.grid.pen_fg = .{ .indexed = @intCast(p - 90 + 8) },
             // Bright background (100-107)
             100...107 => self.grid.pen_bg = .{ .indexed = @intCast(p - 100 + 8) },
-            // Extended color: 38;5;N or 38;2;R;G;B
+            // Extended color. Semicolon form (38;5;N / 38;2;R;G;B) advances via
+            // parseExtendedColor; colon form (38:5:N / 38:2:cs:R:G:B) is one
+            // group and is parsed within [i+1, gend).
             38 => {
-                i = self.parseExtendedColor(i, true);
-                continue;
+                if (has_sub) {
+                    self.parseExtendedColorColon(i + 1, gend, true);
+                } else {
+                    i = self.parseExtendedColor(i, true);
+                    continue;
+                }
             },
             48 => {
-                i = self.parseExtendedColor(i, false);
-                continue;
+                if (has_sub) {
+                    self.parseExtendedColorColon(i + 1, gend, false);
+                } else {
+                    i = self.parseExtendedColor(i, false);
+                    continue;
+                }
             },
-            else => {}, // Unknown SGR param: ignore
+            // 58/59 = underline color (set/default). We don't store an
+            // underline color, but must CONSUME the colon sub-params so they
+            // aren't misread as standalone SGRs (the visible garble). Falling
+            // through to the group-advance below does exactly that.
+            58, 59 => {},
+            else => {}, // Unknown SGR param: ignore (group consumed below)
         }
-        i += 1;
+        // Advance past the leader AND any colon sub-params of this group, so a
+        // sub-param is never reinterpreted as its own SGR code.
+        i = gend;
+    }
+}
+
+/// Parse a colon-form extended color group `[gstart, gend)` where gstart points
+/// at the type field: `2[:colorspace]:R:G:B` (truecolor) or `5:N` (256-color).
+/// For truecolor the R/G/B are taken as the LAST three values of the group, so
+/// it works whether or not the optional colorspace-id field is present.
+fn parseExtendedColorColon(self: *VtParser, gstart: u8, gend: u8, is_fg: bool) void {
+    if (gstart >= gend) return;
+    switch (self.params[gstart]) {
+        5 => {
+            if (gstart + 1 >= gend) return;
+            const idx: u8 = @intCast(@min(self.params[gstart + 1], 255));
+            if (is_fg) self.grid.pen_fg = .{ .indexed = idx } else self.grid.pen_bg = .{ .indexed = idx };
+        },
+        2 => {
+            if (gend - gstart < 4) return; // need at least 2:R:G:B
+            const r: u8 = @intCast(@min(self.params[gend - 3], 255));
+            const g: u8 = @intCast(@min(self.params[gend - 2], 255));
+            const b_val: u8 = @intCast(@min(self.params[gend - 1], 255));
+            if (is_fg) {
+                self.grid.pen_fg = .{ .rgb = .{ .r = r, .g = g, .b = b_val } };
+            } else {
+                self.grid.pen_bg = .{ .rgb = .{ .r = r, .g = g, .b = b_val } };
+            }
+        },
+        else => {},
     }
 }
 
@@ -1753,6 +1822,70 @@ test "multiple CSI params" {
     try std.testing.expect(cell.attrs.underline);
     try std.testing.expectEqual(Grid.Color{ .indexed = 1 }, cell.fg);
     try std.testing.expectEqual(Grid.Color{ .indexed = 4 }, cell.bg);
+}
+
+test "SGR colon sub-params: undercurl 4:3 underlines without garbling" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 24, 80);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    // nvim undercurl: ESC[4:3m must underline (style degraded), NOT abort to
+    // ground (which would print "3m" literally) and NOT set italic.
+    parser.feed("\x1b[4:3mX");
+    const c = grid.cellAtConst(0, 0);
+    try std.testing.expectEqual(@as(u21, 'X'), c.char); // 'X' landed at col 0 — no literal "3m"
+    try std.testing.expect(c.attrs.underline);
+    try std.testing.expect(!c.attrs.italic);
+    try std.testing.expectEqual(@as(u16, 1), grid.cursor_col); // only one glyph advanced
+
+    // 4:0 turns underline off.
+    parser.feed("\x1b[4:0mY");
+    try std.testing.expect(!grid.cellAtConst(0, 1).attrs.underline);
+}
+
+test "SGR colon sub-params: 58 underline-color is consumed, not misread" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 24, 80);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    // ESC[58:2:255:0:0m (set underline color) must be swallowed — fg/bg/attrs
+    // unchanged, no spurious dim(2)/blink and no literal text.
+    parser.feed("\x1b[58:2::255:0:0mZ");
+    const c = grid.cellAtConst(0, 0);
+    try std.testing.expectEqual(@as(u21, 'Z'), c.char);
+    try std.testing.expectEqual(Grid.Color.default, c.fg);
+    try std.testing.expectEqual(Grid.Color.default, c.bg);
+    try std.testing.expect(!c.attrs.dim);
+}
+
+test "SGR colon truecolor 38:2 and 256 38:5 set fg" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 24, 80);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    // colon truecolor WITH colorspace id: 38:2:0:10:20:30 → rgb(10,20,30)
+    parser.feed("\x1b[38:2:0:10:20:30mA");
+    try std.testing.expectEqual(Grid.Color{ .rgb = .{ .r = 10, .g = 20, .b = 30 } }, grid.cellAtConst(0, 0).fg);
+
+    // colon 256-color: 48:5:42 → bg indexed 42
+    parser.feed("\x1b[48:5:42mB");
+    try std.testing.expectEqual(Grid.Color{ .indexed = 42 }, grid.cellAtConst(0, 1).bg);
+}
+
+test "SGR semicolon 4;3 stays two groups (underline + italic)" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 24, 80);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    // Regression: a SEMICOLON between 4 and 3 is two separate SGRs.
+    parser.feed("\x1b[4;3mX");
+    const c = grid.cellAtConst(0, 0);
+    try std.testing.expect(c.attrs.underline);
+    try std.testing.expect(c.attrs.italic);
 }
 
 test "scroll region" {
