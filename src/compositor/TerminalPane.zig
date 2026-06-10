@@ -400,7 +400,9 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     // When scrolled into the scrollback, the overlay shifts the whole frame —
     // a partial (dirty-row) repaint would tear it. Force a full repaint so the
     // overlay always lands on a complete frame (full damage via inverted range).
-    if (self.pane.scroll_offset > 0) grid.markAllDirty();
+    // Also fire on a pure sub-pixel offset (scroll_offset==0, scroll_pixel>0):
+    // smooth scroll moves the frame by a few px before the line boundary.
+    if (self.pane.scroll_offset > 0 or self.pane.scroll_pixel > 0) grid.markAllDirty();
     // Full-buffer damage (dirty_y0 < 0). Per-row partial damage (the perf opt in
     // commit 738d0d4) HALF-RENDERS native panes on the GLES/nvidia path: wlroots'
     // partial texture re-upload of our reused data-ptr buffer only covers roughly

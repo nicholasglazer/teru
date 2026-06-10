@@ -413,21 +413,19 @@ pub fn renderScrollOverlay(
     const rh: usize = pane_rect.height;
     if (rh < ch or rw < cw) return;
 
-    // WHOLE-LINE scrollback render. The sub-pixel (`scroll_pixel`) path used to
-    // shift content by `lines_to_show*ch - sub_px`, which DECREASES as you
-    // scroll deeper into a line (it should increase) — so within a line the
-    // content crept the WRONG way, then snapped at the boundary: the "text
-    // jumps 1-2px up then down" jitter on slow scrolls. Rendering on line
-    // boundaries (like kitty/alacritty) is monotonic and correct. True
-    // sub-pixel smooth scroll needs a top-clipped partial-line blit
-    // (blitGlyphInRect can't clip its top edge yet) — tracked as a follow-up.
-    _ = scroll_pixel;
-    const pane_rows: u32 = @intCast(rh / ch);
-    const lines_to_show = @min(scroll_offset, @min(sb_lines, pane_rows));
-    const sub_px: usize = 0;
-    const shift_px = lines_to_show * @as(u32, @intCast(ch));
+    // SMOOTH sub-pixel scrollback render. One scalar drives it all:
+    //   voff = scroll_offset*ch + scroll_pixel   (total px of history above the
+    //   live top). The already-rendered grid content shifts DOWN by voff (capped
+    //   to the pane); scrollback lines fill the gap, the TOP line clipped to the
+    //   sub-pixel fraction that peeks past the pane top. voff is monotonic, so
+    //   there's no within-line jitter; whole-line scroll is just sub_px==0.
+    const ich: i32 = @intCast(ch);
+    const sub_px: usize = if (scroll_pixel > 0) @min(@as(usize, @intCast(scroll_pixel)), ch - 1) else 0;
+    const voff: usize = scroll_offset * ch + sub_px;
+    const shift_px: usize = @min(voff, rh);
+
+    // Shift the live grid content down by voff (the memcpy fast-path).
     if (shift_px > 0 and shift_px < rh) {
-        // Shift grid content down to make room for scrollback lines at top
         var y: usize = ry + rh - 1;
         while (y >= ry + shift_px) : (y -= 1) {
             const dst_start = y * fb_w + rx;
@@ -438,11 +436,7 @@ pub fn renderScrollOverlay(
             if (y == ry) break;
         }
     }
-    // When shift >= rh, entire pane is scrollback — clear everything
-    // (scrollback text render below will fill it)
-
-    // Fill the scrollback area with background color before rendering text.
-    // When shift >= rh, clear the entire pane (all scrollback, no grid visible).
+    // Clear the exposed scrollback band (text fills over it).
     const clear_rows = if (shift_px >= rh) rh else shift_px;
     for (ry..@min(ry + clear_rows, ry + rh)) |y| {
         const row_start = y * fb_w + rx;
@@ -451,24 +445,33 @@ pub fn renderScrollOverlay(
         }
     }
 
-    // Render scrollback text into the top rows of the pane.
-    // Parses SGR escape sequences to preserve fg/bg colors and attributes.
-    var line: u32 = 0;
-    while (line < lines_to_show) : (line += 1) {
-        // lines_to_show can include one synthetic "pixel-extra" line past
-        // scroll_offset on a smooth-scroll boundary (and scroll_offset may be
-        // 0 while scroll_pixel > 0). That line has no backing scrollback row;
-        // skip it before the unsigned subtraction below, which would otherwise
-        // underflow-panic in safe builds (`scroll_offset - 1 - line` < 0).
-        if (line >= scroll_offset) continue;
-        const sb_offset = scroll_offset - 1 - line;
-        const text = sb.getLineByOffset(sb_offset) orelse continue;
+    // Draw scrollback lines newest→oldest (offset 0 sits just above the grid).
+    // The grid's top edge is conceptually at ry + voff (may be below the pane
+    // when fully scrolled). Line at offset `o` has its top at
+    // (ry + voff) - (o+1)*ch; the topmost visible line is clipped via top_skip.
+    const pane_rows: u32 = @intCast(rh / ch);
+    const grid_top: i32 = @as(i32, @intCast(ry)) + @as(i32, @intCast(voff));
+    const pane_top: i32 = @intCast(ry);
+    const pane_bottom: i32 = @intCast(ry + rh);
+    const max_draw: usize = @as(usize, pane_rows) + 2;
+    var drawn: usize = 0;
+    // Deep scroll: skip lines whose top is below the viewport.
+    var o: usize = if (voff > rh) (voff - rh) / ch else 0;
+    while (o < sb_lines and drawn < max_draw) : (o += 1) {
+        const top_i: i32 = grid_top - @as(i32, @intCast((o + 1) * ch));
+        if (top_i >= pane_bottom) continue; // below the viewport
+        if (top_i + ich <= pane_top) break; // fully above — older lines only go higher
+        const top_skip: usize = if (top_i < pane_top) @intCast(pane_top - top_i) else 0;
+        if (top_skip >= ch) continue;
+        const text = sb.getLineByOffset(o) orelse continue;
+        drawn += 1;
 
-        // Offset text Y by the sub-pixel amount (scrolls text up within the area)
-        const base_y = ry + @as(usize, line) * ch;
-        const screen_y = if (sub_px <= base_y) base_y - sub_px else 0;
-        if (screen_y + ch > ry + rh) break;
-        if (screen_y < ry) continue; // clipped above pane rect
+        const screen_y: usize = @intCast(top_i + @as(i32, @intCast(top_skip))); // >= ry
+        const vis_h: usize = ch - top_skip; // visible rows of this (possibly clipped) line
+        // Selection row: the whole-line screen index, matching the main grid's
+        // (scroll_offset + grid_row) convention. Partial top line (o==scroll_offset)
+        // maps to -1 and is left unhighlighted — acceptable for a 1-px sliver.
+        const sel_row: i32 = @as(i32, @intCast(scroll_offset)) - 1 - @as(i32, @intCast(o));
 
         var col: usize = 0;
         var fg_color: u32 = s.fg;
@@ -603,15 +606,17 @@ pub fn renderScrollOverlay(
 
             // Selection highlight in scrollback
             if (sel) |sl| {
-                const sb_lines_count: u32 = @intCast(sb.lineCount());
-                if (sl.isSelected(@intCast(line), @intCast(col), scroll_offset, sb_lines_count)) {
-                    eff_bg = s.selection_bg;
-                    if (eff_fg == eff_bg) eff_fg = s.ansi[15];
+                if (sel_row >= 0) {
+                    const sb_lines_count: u32 = @intCast(sb.lineCount());
+                    if (sl.isSelected(@intCast(sel_row), @intCast(col), scroll_offset, sb_lines_count)) {
+                        eff_bg = s.selection_bg;
+                        if (eff_fg == eff_bg) eff_fg = s.ansi[15];
+                    }
                 }
             }
 
-            // Fill cell background
-            const max_y = @min(screen_y + ch, ry + rh);
+            // Fill cell background (only the visible rows of a clipped line)
+            const max_y = @min(screen_y + vis_h, ry + rh);
             const max_x = @min(screen_x + cw, rx + rw);
             if (eff_bg != s.bg) {
                 for (screen_y..max_y) |py| {
@@ -627,9 +632,10 @@ pub fn renderScrollOverlay(
             if (cpu.atlas_width > 0 and cpu.glyph_atlas.len > 0) {
                 if (FontAtlas.glyphSlot(@intCast(cp))) |slot| {
                     const atlas = cpu.getAtlasForAttrs(is_bold, false);
-                    Compositor.blitGlyphInRect(cpu, @intCast(slot), screen_x, screen_y, max_x, max_y, eff_fg, eff_bg, atlas);
-                } else if (cp < 127 and cp >= 32) {
-                    // Fallback to simple ASCII blit
+                    Compositor.blitGlyphInRect(cpu, @intCast(slot), screen_x, screen_y, max_x, max_y, eff_fg, eff_bg, atlas, top_skip);
+                } else if (cp < 127 and cp >= 32 and top_skip == 0) {
+                    // Fallback to simple ASCII blit (no top-clip support — skip
+                    // on the partial top line rather than overdraw above it).
                     blitCharAt(cpu, @intCast(cp), screen_x, screen_y, eff_fg);
                 }
             }

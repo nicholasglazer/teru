@@ -50,7 +50,7 @@ zig build run -- --raw                # run debug teru (TTY mode)
 - `src/config/` — Config parser, `Keybinds.zig` (configurable), `ConfigWatcher.zig` (inotify/kqueue/poll), `themes.zig`
 - `src/render/` — `software.zig` (SIMD renderer), `FontAtlas.zig` (stb_truetype), `BarRenderer.zig` (shared), `BarWidget.zig`, `PushWidget.zig`
 - `src/platform/` — X11 (XCB) + Wayland (xdg-shell) + AppKit + Win32; keyboard translation per OS
-- `src/compositor/` — **teruwm only.** `main.zig`, `Server.zig`, `Bar.zig`, `TerminalPane.zig`, `XdgView.zig`, `XwaylandView.zig`, `WmMcpServer.zig` (37 tools), `WmConfig.zig`, `Node.zig`, wlroots `wlr.zig` bindings, `miozu-wlr-glue.c`
+- `src/compositor/` — **teruwm only.** `main.zig`, `Server.zig`, `Bar.zig`, `TerminalPane.zig`, `XdgView.zig`, `XwaylandView.zig`, `WmMcpServer.zig` (39 tools), `WmConfig.zig`, `Node.zig`, wlroots `wlr.zig` bindings, `miozu-wlr-glue.c`
 - `src/compat.zig` — `monotonicNow`, `sleepNs`, `getPid`, `getUid`, `posixFork`, `forkExec`, `MemWriter/MemReader`
 - `tools/bench.zig` — vtebench payload throughput harness (zig build bench)
 
@@ -58,10 +58,10 @@ Map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## MCP
 
-Two servers. 60 tools total.
+Two servers. 61 tools total.
 
 - **teru agent** (`src/agent/McpServer.zig`) — 22 tools + event push channel, sockets `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock` (requests) and `teru-mcp-events-$PID.sock` (events). Since v0.4.19 transparently forwards `teruwm_*` tools to the compositor socket.
-- **teruwm compositor** (`src/compositor/WmMcpServer.zig`) — 38 tools + event push channel, sockets `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock` (requests) and `teruwm-mcp-events-$PID.sock` (events)
+- **teruwm compositor** (`src/compositor/WmMcpServer.zig`) — 39 tools + event push channel, sockets `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock` (requests) and `teruwm-mcp-events-$PID.sock` (events)
 
 Reference: [docs/MCP-API.md](docs/MCP-API.md).
 
@@ -83,7 +83,7 @@ python3 tests/daemon_resize_stress.py # daemon is uncrashable by client resize(0
 python3 tests/many_pane_e2e.py        # every pane drained at 40 panes (no poll-set cap)
 python3 tests/interactive_attach_e2e.py  # multi-pane render + click-focus routing + nested mode
 make e2e-wm                           # teruwm CPU-spin regression net (bar-exec leak, shell-exit)
-make audit-wm                         # teruwm MCP sweep: all 37 tools + 58 keybind actions + 8 layouts
+make audit-wm                         # teruwm MCP sweep: all 39 tools + 58 keybind actions + 8 layouts
 bash tools/run-bench.sh               # reproduce benchmarks from docs/BENCHMARKS.md
 ```
 
@@ -133,7 +133,7 @@ place:
 - [docs/INSTALLING.md](docs/INSTALLING.md) — per-platform install + teruwm TTY caveat
 - [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md) — every default keybind for both binaries
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — teru.conf, teruwm/config, widgets, thresholds, rules
-- [docs/MCP-API.md](docs/MCP-API.md) — all 59 tools with schemas + examples
+- [docs/MCP-API.md](docs/MCP-API.md) — all 61 tools with schemas + examples
 - [docs/AI-INTEGRATION.md](docs/AI-INTEGRATION.md) — CustomPaneBackend, push widgets, OSC 9999, .tsess templates
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module map, rendering pipeline, hot-restart, gap arithmetic
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — methodology + numbers, explicitly-not-measured items
