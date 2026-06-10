@@ -187,6 +187,12 @@ fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         for (server.terminal_panes) |maybe_tp| {
             if (maybe_tp) |tp| {
                 if (should_poll_ptys) _ = tp.poll();
+                // Drain PTYs above ALWAYS (agents must never block), but skip
+                // the PAINT for panes that aren't on screen — a fleet on a
+                // background workspace would otherwise cost a full SIMD render +
+                // buffer upload every vsync (#46). The grid stays dirty and
+                // repaints when the workspace is shown again.
+                if (!tp.visible) continue;
                 const rendered = tp.renderIfDirty();
                 if (!rendered and tp.pane.grid.dirty) {
                     // DEC-2026 sync batch hold or similar — render

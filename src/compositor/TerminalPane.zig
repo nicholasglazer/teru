@@ -58,6 +58,14 @@ zoom_atlas: ?*FontAtlas = null,
 // frozen-pane look.
 sync_started_ns: i128 = 0,
 
+/// Mirrors the scene node's enabled state (driven by setVisible). When false
+/// the pane is on a non-active workspace / parked, so the frame loop skips its
+/// paint — an agent fleet on a background workspace shouldn't burn a full SIMD
+/// render + buffer upload every vsync (#46). PTY polling continues regardless,
+/// so the agents never block. Defaults true (render until proven hidden — the
+/// safe failure mode is over-rendering, never a blank pane).
+visible: bool = true,
+
 /// Set by poll() when VtParser.sync_flushed was true after a PTY read
 /// cycle — the app closed its DEC-2026 batch (even if it re-opened it
 /// in the same write). Read and cleared by renderIfDirty to skip the
@@ -733,6 +741,7 @@ pub fn borderColor(self: *const TerminalPane) u32 {
 }
 
 pub fn setVisible(self: *TerminalPane, visible: bool) void {
+    self.visible = visible;
     if (wlr.miozu_scene_buffer_node(self.scene_buffer)) |node| {
         wlr.wlr_scene_node_set_enabled(node, visible);
     }
