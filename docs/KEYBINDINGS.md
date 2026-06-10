@@ -363,6 +363,16 @@ These require `loadMediaDefaults()` at startup (on by default in compositor):
 
 Or set `copy_on_select = true` in config for auto-copy on mouse release.
 
+**In teruwm**, `Ctrl+Shift+C` on a native pane copies the mouse drag
+selection (falling back to the cursor line when nothing is selected) to the
+**Wayland clipboard** as a native `wlr_data_source` — Wayland and Xwayland
+apps can paste it, no `wl-copy` needed — and pops a "Copied to clipboard"
+toast in the bar. `Ctrl+Shift+V` pastes the current seat selection (from any
+app) into the pane, bracketed-paste aware. With a GUI client focused the
+chords pass through to the app (Chromium devtools, browser paste, etc.).
+Both are rebindable via `copy:selection` / `paste:clipboard` in
+`[keybinds.shared]`.
+
 ## Mouse
 
 | Action | Effect |

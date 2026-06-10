@@ -801,6 +801,136 @@ int miozu_set_clipboard_png_from_file(struct wlr_seat *seat,
     return 0;
 }
 
+/* ── Compositor-owned TEXT clipboard (native-pane copy/paste) ──── */
+/* Same pattern as the PNG source above, but for terminal selection text. */
+/* Offers the UTF-8 mime family (incl. the X11 names so Xwayland clients  */
+/* can paste it via the xwm selection proxy). A static pointer tracks the */
+/* live text source so paste can take the zero-copy internal path when    */
+/* teruwm still owns the selection (avoids a pipe round-trip to itself).  */
+
+struct miozu_text_source {
+    struct wlr_data_source base;
+    char *data;
+    size_t len;
+};
+
+static struct miozu_text_source *miozu_own_text_source = NULL;
+
+static void miozu_text_source_send(struct wlr_data_source *src,
+        const char *mime_type, int32_t fd) {
+    (void)mime_type; /* every offered type gets the same UTF-8 bytes */
+    struct miozu_text_source *s = wl_container_of(src, s, base);
+
+    /* Double-fork writer — same rationale as miozu_png_source_send. */
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (fork() == 0) {
+            signal(SIGPIPE, SIG_IGN);
+            size_t off = 0;
+            while (off < s->len) {
+                ssize_t n = write(fd, s->data + off, s->len - off);
+                if (n < 0) {
+                    if (errno == EINTR) continue;
+                    break;
+                }
+                off += (size_t)n;
+            }
+            close(fd);
+            _exit(0);
+        }
+        _exit(0);
+    }
+    close(fd);
+    if (pid > 0) {
+        waitpid(pid, NULL, 0);
+    }
+}
+
+static void miozu_text_source_destroy(struct wlr_data_source *src) {
+    struct miozu_text_source *s = wl_container_of(src, s, base);
+    if (miozu_own_text_source == s) {
+        miozu_own_text_source = NULL;
+    }
+    free(s->data);
+    free(s);
+}
+
+static const struct wlr_data_source_impl miozu_text_source_impl = {
+    .send = miozu_text_source_send,
+    .destroy = miozu_text_source_destroy,
+};
+
+/* Publish `data` (UTF-8, not NUL-terminated) as the seat selection.
+ * Returns 0 on success, -1 on failure. */
+int miozu_set_clipboard_text(struct wlr_seat *seat,
+        struct wl_display *display, const char *data, size_t len) {
+    struct miozu_text_source *s = calloc(1, sizeof(*s));
+    if (s == NULL) return -1;
+
+    s->data = malloc(len > 0 ? len : 1);
+    if (s->data == NULL) {
+        free(s);
+        return -1;
+    }
+    memcpy(s->data, data, len);
+    s->len = len;
+
+    wlr_data_source_init(&s->base, &miozu_text_source_impl);
+
+    static const char *mimes[] = {
+        "text/plain;charset=utf-8", "text/plain",
+        "UTF8_STRING", "STRING", "TEXT",
+    };
+    for (size_t i = 0; i < sizeof(mimes) / sizeof(mimes[0]); i++) {
+        char **slot = wl_array_add(&s->base.mime_types, sizeof(char *));
+        if (slot == NULL) {
+            wlr_data_source_destroy(&s->base); /* frees data via destroy cb */
+            return -1;
+        }
+        *slot = strdup(mimes[i]);
+        if (*slot == NULL) {
+            wlr_data_source_destroy(&s->base);
+            return -1;
+        }
+    }
+
+    miozu_own_text_source = s;
+    wlr_seat_set_selection(seat, &s->base, wl_display_next_serial(display));
+    return 0;
+}
+
+/* ── Paste-side selection access ─────────────────────────────── */
+
+struct wlr_data_source *miozu_seat_selection_source(struct wlr_seat *s) {
+    return s->selection_source;
+}
+
+/* 1 when teruwm's own text source still owns the seat selection —
+ * paste can then use the internal buffer instead of a pipe to itself. */
+int miozu_selection_is_own_text(struct wlr_seat *seat) {
+    return miozu_own_text_source != NULL &&
+        seat->selection_source == &miozu_own_text_source->base;
+}
+
+/* Pick the best text mime a foreign source offers, in preference order.
+ * Returns a pointer INTO the source's own mime array (stable while the
+ * source lives), or NULL when the selection isn't text (e.g. an image). */
+const char *miozu_data_source_pick_text_mime(struct wlr_data_source *src) {
+    static const char *prefs[] = {
+        "text/plain;charset=utf-8", "UTF8_STRING", "text/plain",
+        "TEXT", "STRING",
+    };
+    for (size_t i = 0; i < sizeof(prefs) / sizeof(prefs[0]); i++) {
+        char **mime;
+        wl_array_for_each(mime, &src->mime_types) {
+            if (*mime != NULL && strcmp(*mime, prefs[i]) == 0) {
+                return *mime;
+            }
+        }
+    }
+    return NULL;
+}
+
 /* ── Clipboard relay: forward client copy requests to the seat ── */
 /* teruwm only CREATED the data_device + primary-selection managers; it    */
 /* never listened for clients asking to OWN the selection, so a client's   */

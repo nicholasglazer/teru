@@ -190,8 +190,13 @@ asymmetry from rounding.
 `teruwm_restart` MCP tool → sets `restart_pending = true` → next frame
 callback calls `execRestart()`:
 
-1. Serialize to `/tmp/teruwm-restart.bin`: pane count, active workspace,
-   per-workspace layouts, per-pane `{workspace, pty_fd, rows, cols, pid}`.
+1. Serialize to `$XDG_RUNTIME_DIR/teruwm-restart.bin`: pane count, active
+   workspace, per-workspace layouts, per-pane
+   `{workspace, pty_fd, rows, cols, pid}` — followed by the v2
+   **display-memory section** (`TWMG` magic): one VT replay snapshot per
+   pane (`VtParser.dumpReplaySnapshot` — visible cells with colors/attrs,
+   cursor, pen, scroll region, alt-screen flag, and the interaction modes:
+   mouse tracking, bracketed paste, DECCKM, cursor visibility).
 2. Clear `FD_CLOEXEC` on every PTY master so the fds survive `exec()`.
 3. Re-resolve the on-disk binary path (`readlink /proc/self/exe`,
    stripping the kernel's `" (deleted)"` suffix) and
@@ -204,11 +209,21 @@ callback calls `execRestart()`:
    the `xmonad --restart` workflow: rebuild, then `$mod+'` (or
    the `teruwm_restart` MCP tool) picks up the new binary with PTYs intact.
 
-New binary's `restoreSession()` reads the file and reconstructs the
-`TerminalPane`s via `Pane.attach(fd)`. Shells never notice — their
-stdin/stdout are unchanged.
+New binary's `restoreSession()` reads the file, reconstructs the
+`TerminalPane`s via `Pane.attach(fd)`, then **feeds each pane's replay
+snapshot through its fresh parser** — the screen comes back exactly as it
+was, without waiting for the app to repaint. (Before v2, restored panes
+rendered blank until the app next drew something; a same-size SIGWINCH
+nudge didn't help Node/Ink TUIs like claude-code, which swallow it.)
+Shells never notice — their stdin/stdout are unchanged. A pane with no
+usable snapshot (old-writer blob, snapshot alloc failure) instead gets a
+TIOCSWINSZ jiggle (cols−1, then back): two *real* size changes that force
+even WINCH-immune apps to re-layout and repaint.
 
 Intentionally NOT persisted through restart:
+- Scrollback history (separate persistence project) and the inactive
+  alt/main screen backup — leaving an alt-screen app after a restart
+  falls back to an empty main screen, not a corrupt one
 - Push widgets (daemons re-register on reconnect)
 - Scene graph positions (recomputed by `arrangeworkspace`)
 - Focus (resets to first terminal)
