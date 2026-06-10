@@ -26,6 +26,7 @@ const teru = @import("teru");
 const Server = @import("Server.zig");
 const TerminalPane = @import("TerminalPane.zig");
 const Session = @import("Session.zig");
+const ServerClipboard = @import("ServerClipboard.zig");
 
 const Keybinds = teru.Keybinds;
 const KBAction = Keybinds.Action;
@@ -115,7 +116,6 @@ pub const Keyboard = struct {
                 var buf: [8]u8 = undefined;
                 const sym = wlr.xkb_state_key_get_one_sym(xkb_st, keycode + 8);
                 const ctrl = wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_CTRL, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
-                const shift = wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_SHIFT, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
                 const logo = wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_LOGO, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
 
                 // $mod (Super) is a window-manager modifier, never terminal
@@ -130,15 +130,13 @@ pub const Keyboard = struct {
                     return;
                 }
 
-                if (ctrl and shift and (sym == 'C' or sym == 'c')) {
-                    kb.server.clipboardCopyCursorLine(tp);
-                    return;
-                }
-
-                if (ctrl and shift and (sym == 'V' or sym == 'v')) {
-                    kb.server.clipboardPaste(tp);
-                    return;
-                }
+                // Ctrl+Shift+C/V are no longer special-cased here: the
+                // .shared keybind (Keybinds.zig loadDefaults) resolves them
+                // to .copy_selection/.paste_clipboard, which executeAction
+                // now handles — so handleKey consumed them above. If a user
+                // UNBINDS the chord, it falls through to xkb utf8 encoding
+                // (0x03/0x16 to the PTY) — intentional, matches other
+                // terminals' rebindable copy/paste.
 
                 // Pressing a different key while another is held-repeating
                 // takes ownership; arm with the new byte sequence after
@@ -841,6 +839,24 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
         => {
             if (server.focused_terminal) |tp| applyScrollAction(tp, action);
             return true;
+        },
+        // Native-pane clipboard. The `return false` when no terminal is
+        // focused is load-bearing: it lets the chord fall through to
+        // wlr_seat_keyboard_notify_key so Wayland clients keep their own
+        // Ctrl+Shift+C/V (e.g. Chromium devtools / plain-paste).
+        .copy_selection => {
+            if (server.focused_terminal) |tp| {
+                ServerClipboard.copySelection(server, tp);
+                return true;
+            }
+            return false;
+        },
+        .paste_clipboard => {
+            if (server.focused_terminal) |tp| {
+                ServerClipboard.paste(server, tp);
+                return true;
+            }
+            return false;
         },
         else => {
             if (tryRunScratchpadChord(server, action)) return true;

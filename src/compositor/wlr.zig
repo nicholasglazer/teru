@@ -530,6 +530,21 @@ pub extern "c" fn miozu_seat_request_set_selection(seat: *wlr_seat) callconv(.c)
 // pasted into other apps). Returns 0 on success, -1 on any failure.
 pub extern "c" fn miozu_set_clipboard_png_from_file(seat: *wlr_seat, display: *wl_display, path: [*:0]const u8) callconv(.c) c_int;
 
+// Compositor-owned TEXT clipboard (native-pane copy). Publishes a copy of
+// `data` as the seat selection, offered as the UTF-8 mime family (+ the
+// X11 names so Xwayland clients can paste via the xwm selection proxy).
+// Returns 0 on success, -1 on failure.
+pub extern "c" fn miozu_set_clipboard_text(seat: *wlr_seat, display: *wl_display, data: [*]const u8, len: usize) callconv(.c) c_int;
+
+// Paste-side selection access. `wlr_data_source` is the wlroots-owned
+// source behind the current seat selection; `send` asks its owner to write
+// the given mime representation into a pipe fd.
+pub const wlr_data_source = opaque {};
+pub extern "c" fn miozu_seat_selection_source(seat: *wlr_seat) callconv(.c) ?*wlr_data_source;
+pub extern "c" fn miozu_selection_is_own_text(seat: *wlr_seat) callconv(.c) c_int;
+pub extern "c" fn miozu_data_source_pick_text_mime(src: *wlr_data_source) callconv(.c) ?[*:0]const u8;
+pub extern "wlroots-0.18" fn wlr_data_source_send(src: *wlr_data_source, mime: [*:0]const u8, fd: c_int) callconv(.c) void;
+
 // Clipboard relay: forward a client's copy request (regular + primary
 // selection) to the seat. Without this, client copies are silently dropped.
 pub extern "c" fn miozu_seat_request_set_primary_selection(seat: *wlr_seat) callconv(.c) *wl_signal;

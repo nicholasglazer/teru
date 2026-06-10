@@ -1276,6 +1276,105 @@ fn parseExtendedColor(self: *VtParser, start: u8, is_fg: bool) u8 {
     }
 }
 
+// ── Replay snapshot (hot-restart display memory) ─────────────────
+
+/// Worst-case buffer size for `dumpReplaySnapshot` on a rows×cols grid:
+/// per cell up to ~36B of attr reset+reapply, ~38B of truecolor fg+bg,
+/// 4B of UTF-8; per row a CUP; plus a fixed epilogue.
+pub fn replaySnapshotBufSize(rows: u16, cols: u16) usize {
+    return @as(usize, rows) * (@as(usize, cols) * 80 + 24) + 256;
+}
+
+fn putBytes(buf: []u8, pos: *usize, s: []const u8) void {
+    if (pos.* + s.len <= buf.len) {
+        @memcpy(buf[pos.*..][0..s.len], s);
+        pos.* += s.len;
+    }
+}
+
+/// Serialize the visible screen + the parser's interaction modes as a VT
+/// byte stream which, fed through a FRESH parser/grid of the same size,
+/// reproduces the content, cursor, pen, scroll region, and modes.
+///
+/// This is the compositor hot-restart's "display memory": grid contents die
+/// with the old process image (only PTY fds survive the exec), and an idle
+/// app can't be relied on to repaint — Node/Ink (claude) swallows same-size
+/// SIGWINCH entirely, which is why restored panes rendered blank until a
+/// real resize. Replaying this stream needs no app cooperation at all.
+///
+/// Validation is inherent: the receiving end is the VT parser itself, so a
+/// stale or corrupt snapshot degrades to garbled text — never a bad enum
+/// tag or out-of-bounds write (the hazard a raw-Cell-memcpy format would
+/// have had across two different binaries in ReleaseSafe).
+///
+/// Deliberately NOT captured: scrollback (separate persistence project),
+/// the inactive alt/main screen backup, hyperlink table, and left/right
+/// margins (DECSLRM). When `alt_screen` is set the stream opens with
+/// `?1049h`, so the painted cells land in the alt buffer and a later
+/// `?1049l` from the app falls back to an empty (not corrupt) main screen.
+pub fn dumpReplaySnapshot(self: *const VtParser, buf: []u8) usize {
+    const grid = self.grid;
+    var pos: usize = 0;
+
+    if (self.alt_screen) putBytes(buf, &pos, "\x1b[?1049h");
+    // No autowrap while painting (every row starts with an explicit CUP),
+    // clean pen, clear screen so trimmed blank cells stay default.
+    putBytes(buf, &pos, "\x1b[?7l\x1b[0m\x1b[2J");
+
+    var row: u16 = 0;
+    while (row < grid.rows) : (row += 1) {
+        pos += grid.dumpRowAnsi(row, buf[pos..]);
+    }
+
+    var tmp: [32]u8 = undefined;
+
+    // Scroll region (emitted before cursor restore — DECSTBM homes it).
+    if (grid.scroll_top != 0 or grid.scroll_bottom != grid.rows - 1) {
+        const s = std.fmt.bufPrint(&tmp, "\x1b[{d};{d}r", .{
+            @as(u32, grid.scroll_top) + 1,
+            @as(u32, grid.scroll_bottom) + 1,
+        }) catch "";
+        putBytes(buf, &pos, s);
+    }
+
+    // Pen, then saved cursor (DECSC), then the live cursor.
+    pos += grid.dumpPenAnsi(buf[pos..]);
+    if (grid.saved_cursor_row != 0 or grid.saved_cursor_col != 0) {
+        const s = std.fmt.bufPrint(&tmp, "\x1b[{d};{d}H\x1b7", .{
+            @as(u32, grid.saved_cursor_row) + 1,
+            @as(u32, grid.saved_cursor_col) + 1,
+        }) catch "";
+        putBytes(buf, &pos, s);
+    }
+    const cur = std.fmt.bufPrint(&tmp, "\x1b[{d};{d}H", .{
+        @as(u32, grid.cursor_row) + 1,
+        @as(u32, grid.cursor_col) + 1,
+    }) catch "";
+    putBytes(buf, &pos, cur);
+
+    // Modes. Parser defaults are the "off" state, so only "on" needs
+    // emitting — except autowrap, which we disabled above for painting.
+    putBytes(buf, &pos, if (grid.auto_wrap) "\x1b[?7h" else "\x1b[?7l");
+    if (!self.cursor_visible) putBytes(buf, &pos, "\x1b[?25l");
+    if (self.app_cursor_keys) putBytes(buf, &pos, "\x1b[?1h");
+    if (self.bracketed_paste) putBytes(buf, &pos, "\x1b[?2004h");
+    switch (self.mouse_tracking) {
+        .none => {},
+        .normal => putBytes(buf, &pos, "\x1b[?1000h"),
+        .button_event => putBytes(buf, &pos, "\x1b[?1002h"),
+        .any_event => putBytes(buf, &pos, "\x1b[?1003h"),
+    }
+    if (self.mouse_sgr) putBytes(buf, &pos, "\x1b[?1006h");
+    if (self.g0_line_drawing) putBytes(buf, &pos, "\x1b(0");
+    putBytes(buf, &pos, switch (grid.cursor_shape) {
+        .block => "\x1b[2 q",
+        .underline => "\x1b[4 q",
+        .bar => "\x1b[6 q",
+    });
+
+    return pos;
+}
+
 // ── Tests ────────────────────────────────────────────────────────
 
 test "plain text" {
@@ -2487,4 +2586,97 @@ test "writeGroundBatch: writing onto a stale wide-glyph trailer must not eat the
     parser.feed("z");
     try std.testing.expectEqual(@as(u21, ' '), grid.cellAtConst(0, 10).char); // lead blanked
     try std.testing.expectEqual(@as(u21, 'z'), grid.cellAtConst(0, 11).char);
+}
+
+test "dumpReplaySnapshot: roundtrip restores cells, cursor, pen, and modes" {
+    const allocator = std.testing.allocator;
+    var grid_a = try Grid.init(allocator, 6, 20);
+    defer grid_a.deinit(allocator);
+    var pa = VtParser.init(allocator, &grid_a);
+    pa.feed("plain \x1b[1;31mBOLDRED\x1b[0m\r\n");
+    pa.feed("line2 \x1b[44mbluebg\x1b[0m and \x1b[4;38;5;208munder\x1b[0m\r\n");
+    pa.feed("wide: \xe4\xbd\xa0\xe5\xa5\xbd end"); // 你好 — wide glyphs + trailers
+    pa.feed("\x1b[?25l\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[?1h");
+    pa.feed("\x1b[38;2;10;200;30m"); // pen: truecolor green
+    pa.feed("\x1b[3;5H"); // park the cursor mid-screen
+
+    var sbuf: [32768]u8 = undefined;
+    const n = pa.dumpReplaySnapshot(&sbuf);
+    try std.testing.expect(n > 0);
+
+    var grid_b = try Grid.init(allocator, 6, 20);
+    defer grid_b.deinit(allocator);
+    var pb = VtParser.init(allocator, &grid_b);
+    pb.feed(sbuf[0..n]);
+
+    for (0..6) |r| {
+        for (0..20) |c| {
+            const ca = grid_a.cellAtConst(@intCast(r), @intCast(c));
+            const cb = grid_b.cellAtConst(@intCast(r), @intCast(c));
+            const same = ca.char == cb.char and std.meta.eql(ca.fg, cb.fg) and
+                std.meta.eql(ca.bg, cb.bg) and
+                @as(u8, @bitCast(ca.attrs)) == @as(u8, @bitCast(cb.attrs));
+            try std.testing.expect(same);
+        }
+    }
+    try std.testing.expectEqual(grid_a.cursor_row, grid_b.cursor_row);
+    try std.testing.expectEqual(grid_a.cursor_col, grid_b.cursor_col);
+    try std.testing.expect(std.meta.eql(grid_a.pen_fg, grid_b.pen_fg));
+    try std.testing.expectEqual(pa.cursor_visible, pb.cursor_visible);
+    try std.testing.expectEqual(pa.bracketed_paste, pb.bracketed_paste);
+    try std.testing.expectEqual(pa.app_cursor_keys, pb.app_cursor_keys);
+    try std.testing.expectEqual(pa.mouse_tracking, pb.mouse_tracking);
+    try std.testing.expectEqual(pa.mouse_sgr, pb.mouse_sgr);
+}
+
+test "dumpReplaySnapshot: alt-screen pane replays into the alt buffer" {
+    const allocator = std.testing.allocator;
+    var grid_a = try Grid.init(allocator, 5, 16);
+    defer grid_a.deinit(allocator);
+    var pa = VtParser.init(allocator, &grid_a);
+    pa.feed("main content");
+    pa.feed("\x1b[?1049h\x1b[2J\x1b[HALT SCREEN UI\x1b[?1000h");
+
+    var sbuf: [16384]u8 = undefined;
+    const n = pa.dumpReplaySnapshot(&sbuf);
+
+    var grid_b = try Grid.init(allocator, 5, 16);
+    defer grid_b.deinit(allocator);
+    var pb = VtParser.init(allocator, &grid_b);
+    pb.feed(sbuf[0..n]);
+
+    try std.testing.expect(pb.alt_screen);
+    try std.testing.expectEqual(pa.mouse_tracking, pb.mouse_tracking);
+    // The visible (alt) content survives the roundtrip…
+    try std.testing.expectEqual(@as(u21, 'A'), grid_b.cellAtConst(0, 0).char);
+    // …and leaving the alt screen falls back to a clean (empty) main screen,
+    // not a corrupt one.
+    pb.feed("\x1b[?1049l");
+    try std.testing.expect(!pb.alt_screen);
+    try std.testing.expectEqual(@as(u21, ' '), grid_b.cellAtConst(0, 0).char);
+}
+
+test "dumpReplaySnapshot: scroll region + DECSC saved cursor survive" {
+    const allocator = std.testing.allocator;
+    var grid_a = try Grid.init(allocator, 8, 24);
+    defer grid_a.deinit(allocator);
+    var pa = VtParser.init(allocator, &grid_a);
+    pa.feed("\x1b[2;7r"); // DECSTBM rows 2..7
+    pa.feed("\x1b[4;3H\x1b7"); // park + DECSC
+    pa.feed("\x1b[5;9H"); // live cursor elsewhere
+
+    var sbuf: [16384]u8 = undefined;
+    const n = pa.dumpReplaySnapshot(&sbuf);
+
+    var grid_b = try Grid.init(allocator, 8, 24);
+    defer grid_b.deinit(allocator);
+    var pb = VtParser.init(allocator, &grid_b);
+    pb.feed(sbuf[0..n]);
+
+    try std.testing.expectEqual(grid_a.scroll_top, grid_b.scroll_top);
+    try std.testing.expectEqual(grid_a.scroll_bottom, grid_b.scroll_bottom);
+    try std.testing.expectEqual(grid_a.saved_cursor_row, grid_b.saved_cursor_row);
+    try std.testing.expectEqual(grid_a.saved_cursor_col, grid_b.saved_cursor_col);
+    try std.testing.expectEqual(grid_a.cursor_row, grid_b.cursor_row);
+    try std.testing.expectEqual(grid_a.cursor_col, grid_b.cursor_col);
 }

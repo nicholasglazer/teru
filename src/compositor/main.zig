@@ -85,12 +85,17 @@ pub fn main(init: std.process.Init) !void {
     //      a "hang" only a reboot cleared. MUST precede wl_display_destroy
     //      (backend teardown needs the live event loop) and MUST precede
     //      deinit (which no longer touches the now-freed backend signals).
-    //   5. wl_display_destroy — tears down globals + the event loop.
-    //   6. server.deinit — frees Server-owned heap memory last.
+    //   5. cancelClipboardPaste — remove the in-flight paste pipe watcher
+    //      (if any) while the event loop is STILL ALIVE. It cannot live in
+    //      server.deinit: that runs after wl_display_destroy has freed the
+    //      loop, and wl_event_source_remove on a freed loop is a UAF.
+    //   6. wl_display_destroy — tears down globals + the event loop.
+    //   7. server.deinit — frees Server-owned heap memory last.
     // Registered LAST runs FIRST, so we register in reverse of the
     // desired run order.
     defer server.deinit();
     defer wlr.wl_display_destroy(display);
+    defer server.cancelClipboardPaste();
     defer server.releaseSeat();
     defer wlr.wl_display_destroy_clients(display);
     defer server.destroyXwayland();

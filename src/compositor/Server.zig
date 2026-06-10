@@ -16,6 +16,7 @@ const NodeRegistry = @import("Node.zig");
 const Listeners = @import("ServerListeners.zig");
 const Input = @import("ServerInput.zig");
 const Cursor = @import("ServerCursor.zig");
+const ServerClipboard = @import("ServerClipboard.zig");
 const Focus = @import("ServerFocus.zig");
 const Layout = @import("ServerLayout.zig");
 const Scratchpad = @import("ServerScratchpad.zig");
@@ -261,9 +262,30 @@ area_rect: ?*wlr.wlr_scene_rect = null,
 // Created/destroyed alongside area_rect.
 area_border: [4]?*wlr.wlr_scene_rect = .{ null, null, null, null },
 
-// Internal clipboard buffer (Ctrl+Shift+C/V between terminal panes)
-clipboard_buf: [8192]u8 = undefined,
-clipboard_len: u16 = 0,
+// Internal clipboard buffer (Ctrl+Shift+C/V between terminal panes).
+// Sized to match the seat-published selection (Selection.getText's 64 KiB
+// cap) so a native-pane self-paste delivers the SAME bytes a foreign app
+// pasting the same selection would get — the old 8 KiB mirror silently
+// truncated self-pastes, possibly mid-UTF-8.
+clipboard_buf: [65536]u8 = undefined,
+clipboard_len: usize = 0,
+
+// In-flight async paste from a foreign data source (ServerClipboard):
+// pipe read end watched on the event loop, accumulated until EOF, then
+// delivered to the pane identified by paste_target_node. Drained in
+// deinit via ServerClipboard.cancelInflight.
+paste_event_source: ?*wlr.wl_event_source = null,
+paste_fd: c_int = -1,
+paste_target_node: u64 = 0,
+paste_len: usize = 0,
+paste_buf: [65536]u8 = undefined,
+
+// Phase-2 timer of the restore-repaint jiggle (ServerRestart): fires once
+// ~60 ms after restore to re-assert true PTY winsizes. Self-removing in
+// its callback; deliberately NOT touched in deinit (it lives only in the
+// first 60 ms after process start, and deinit runs after the event loop
+// is freed — removing it there would be the UAF this codebase avoids).
+jiggle_timer_src: ?*wlr.wl_event_source = null,
 
 // Built-in launcher
 launcher: Launcher = .{},
@@ -941,6 +963,10 @@ pub fn deinit(self: *Server) void {
     // Drain in-flight bar exec widgets — removes their pipe event
     // sources so execReadable can't fire against a torn-down loop.
     if (self.bar) |b| b.deinitExecs();
+    // NOTE: the clipboard paste watcher is NOT drained here — deinit runs
+    // after wl_display_destroy (main.zig defer order), so removing event
+    // sources at this point would be a UAF on the freed event loop. Its
+    // cancel runs from main.zig's own defer, before display destroy.
 
     // Free every InhibitorTracker before wl_display_destroy fires
     // inhibitor destroy signals on what would then be stale state.
@@ -1365,26 +1391,15 @@ pub fn clipboardCopyCursorLine(self: *Server, tp: *TerminalPane) void {
         pos -= 1;
     }
 
-    self.clipboard_len = @intCast(@min(pos, std.math.maxInt(u16)));
+    self.clipboard_len = pos;
     std.log.scoped(.compositor).debug("clipboard copy ({d} bytes)", .{self.clipboard_len});
 }
 
-/// Paste internal clipboard buffer to a terminal pane's PTY.
-/// Wraps with bracketed paste escape sequences if the terminal has it enabled.
-pub fn clipboardPaste(self: *Server, tp: *TerminalPane) void {
-    if (self.clipboard_len == 0) return;
-
-    const data = self.clipboard_buf[0..self.clipboard_len];
-
-    if (tp.pane.vt.bracketed_paste) {
-        tp.writeInput("\x1b[200~");
-    }
-    tp.writeInput(data);
-    if (tp.pane.vt.bracketed_paste) {
-        tp.writeInput("\x1b[201~");
-    }
-
-    std.log.scoped(.compositor).debug("clipboard paste ({d} bytes)", .{self.clipboard_len});
+/// Drop any in-flight clipboard paste pipe watcher. Thin forwarder for
+/// main.zig's shutdown defer — must run BEFORE wl_display_destroy (see
+/// ServerClipboard.cancelInflight for the UAF rationale).
+pub fn cancelClipboardPaste(self: *Server) void {
+    ServerClipboard.cancelInflight(self);
 }
 
 /// Poll all terminal panes for PTY output. Called from the event loop.

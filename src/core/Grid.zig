@@ -109,7 +109,9 @@ fn encodeSgrColor(buf: []u8, pos: usize, color: Color, is_bg: bool) usize {
     return p;
 }
 
-/// Encode attribute SGR codes (bold, italic, inverse, dim) into buf.
+/// Encode attribute SGR codes into buf. Covers all eight Attrs bits so a
+/// re-fed stream reproduces the cell exactly (underline/blink/hidden/strike
+/// were missing before the hot-restart replay snapshot relied on this).
 fn encodeAttrs(buf: []u8, pos: usize, attrs: Attrs) usize {
     var p = pos;
     if (attrs.bold) {
@@ -121,8 +123,20 @@ fn encodeAttrs(buf: []u8, pos: usize, attrs: Attrs) usize {
     if (attrs.italic) {
         if (p + 4 <= buf.len) { @memcpy(buf[p..][0..4], "\x1b[3m"); p += 4; }
     }
+    if (attrs.underline) {
+        if (p + 4 <= buf.len) { @memcpy(buf[p..][0..4], "\x1b[4m"); p += 4; }
+    }
+    if (attrs.blink) {
+        if (p + 4 <= buf.len) { @memcpy(buf[p..][0..4], "\x1b[5m"); p += 4; }
+    }
     if (attrs.inverse) {
         if (p + 4 <= buf.len) { @memcpy(buf[p..][0..4], "\x1b[7m"); p += 4; }
+    }
+    if (attrs.hidden) {
+        if (p + 4 <= buf.len) { @memcpy(buf[p..][0..4], "\x1b[8m"); p += 4; }
+    }
+    if (attrs.strikethrough) {
+        if (p + 4 <= buf.len) { @memcpy(buf[p..][0..4], "\x1b[9m"); p += 4; }
     }
     return p;
 }
@@ -153,6 +167,100 @@ fn encodeUtf8(buf: []u8, pos: usize, cp: u21) usize {
             return pos + 4;
         }
     }
+    return pos;
+}
+
+/// Encode one visible row as a self-contained ANSI fragment: CUP to the row
+/// start, then SGR-delta cells (colors/attrs emitted only on change), with
+/// trailing fully-default blank cells trimmed (the snapshot's ED2 clear
+/// already gives those). Feeding the fragment through a fresh parser
+/// reproduces the row — this is the per-row piece of the hot-restart replay
+/// snapshot (VtParser.dumpReplaySnapshot). Bounds-checked: truncates at
+/// buf.len rather than overflowing. Returns bytes written.
+pub fn dumpRowAnsi(self: *const Grid, row: u16, buf: []u8) usize {
+    if (row >= self.rows) return 0;
+    // Find the last cell worth emitting; a fully-blank row needs nothing.
+    var last: i32 = -1;
+    var scan: u16 = 0;
+    while (scan < self.cols) : (scan += 1) {
+        const cell = self.cellAtConst(row, scan);
+        const blank = (cell.char == ' ' or cell.char == 0) and
+            colorEql(cell.fg, .default) and colorEql(cell.bg, .default) and
+            @as(u8, @bitCast(cell.attrs)) == 0;
+        if (!blank) last = scan;
+    }
+    if (last < 0) return 0;
+
+    var pos: usize = 0;
+    var cup: [20]u8 = undefined;
+    // Reset the pen after the CUP: the fragment's SGR-delta tracking starts
+    // from default, but on replay the parser's pen still holds whatever the
+    // PREVIOUS row's last cell set — without this a default-colored cell at
+    // the start of this row would inherit the prior row's colors.
+    const cup_s = std.fmt.bufPrint(&cup, "\x1b[{d};1H\x1b[0m", .{@as(u32, row) + 1}) catch return 0;
+    if (cup_s.len <= buf.len) {
+        @memcpy(buf[0..cup_s.len], cup_s);
+        pos = cup_s.len;
+    } else return 0;
+
+    var prev_fg: Color = .default;
+    var prev_bg: Color = .default;
+    var prev_attrs: Attrs = .{};
+    var col: u16 = 0;
+    while (col <= @as(u16, @intCast(last))) : (col += 1) {
+        const cell = self.cellAtConst(row, col);
+        // Attrs change → reset + reapply (same shape as the scrollback
+        // line encoder above; attrs have no individual "off" codes we
+        // can rely on across all terminals).
+        const attrs_changed = @as(u8, @bitCast(cell.attrs)) != @as(u8, @bitCast(prev_attrs));
+        if (attrs_changed) {
+            if (pos + 4 <= buf.len) { @memcpy(buf[pos..][0..4], "\x1b[0m"); pos += 4; }
+            pos = encodeAttrs(buf, pos, cell.attrs);
+            if (!colorEql(cell.fg, .default)) pos = encodeSgrColor(buf, pos, cell.fg, false);
+            if (!colorEql(cell.bg, .default)) pos = encodeSgrColor(buf, pos, cell.bg, true);
+            prev_fg = cell.fg;
+            prev_bg = cell.bg;
+            prev_attrs = cell.attrs;
+        } else {
+            if (!colorEql(cell.fg, prev_fg)) {
+                pos = encodeSgrColor(buf, pos, cell.fg, false);
+                prev_fg = cell.fg;
+            }
+            if (!colorEql(cell.bg, prev_bg)) {
+                pos = encodeSgrColor(buf, pos, cell.bg, true);
+                prev_bg = cell.bg;
+            }
+        }
+        // Wide-glyph trailer (char == 0): the wide char before it re-creates
+        // the trailer when the stream is re-fed — emit nothing. An ORPHAN
+        // trailer (left neighbor isn't width-2 — residue this codebase has
+        // seen in live corruption) gets a space instead, otherwise every
+        // cell to its right would replay one column left of where it was.
+        if (cell.char == 0) {
+            const has_wide_lead = col > 0 and
+                displayWidth(self.cellAtConst(row, col - 1).char) == 2;
+            if (!has_wide_lead) {
+                if (pos < buf.len) { buf[pos] = ' '; pos += 1; }
+            }
+            continue;
+        }
+        if (cell.char < 32) {
+            if (pos < buf.len) { buf[pos] = ' '; pos += 1; }
+            continue;
+        }
+        pos = encodeUtf8(buf, pos, cell.char);
+    }
+    return pos;
+}
+
+/// Encode the current pen (SGR reset + attrs + colors) so an app's next
+/// unstyled output continues with the colors it had before a hot-restart.
+pub fn dumpPenAnsi(self: *const Grid, buf: []u8) usize {
+    var pos: usize = 0;
+    if (pos + 4 <= buf.len) { @memcpy(buf[pos..][0..4], "\x1b[0m"); pos += 4; }
+    pos = encodeAttrs(buf, pos, self.pen_attrs);
+    if (!colorEql(self.pen_fg, .default)) pos = encodeSgrColor(buf, pos, self.pen_fg, false);
+    if (!colorEql(self.pen_bg, .default)) pos = encodeSgrColor(buf, pos, self.pen_bg, true);
     return pos;
 }
 

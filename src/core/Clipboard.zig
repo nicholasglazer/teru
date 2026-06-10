@@ -60,6 +60,20 @@ pub fn paste(pane: *const Pane) void {
     writeSanitised(pane, raw_buf[0..captured]);
 }
 
+/// Paste caller-supplied text (already fetched from some clipboard) into
+/// `pane`'s PTY with the same guards as `paste`: binary-content check,
+/// NUL/ESC/envelope-marker sanitising, bracketed-paste wrapping, and the
+/// short-write retry loop that guarantees the closing `\x1b[201~` lands.
+/// Used by teruwm, which IS the Wayland clipboard and reads the seat
+/// selection itself instead of shelling out to wl-paste. Truncates at
+/// max_paste_bytes (matching `paste`).
+pub fn pasteText(pane: *const Pane, text: []const u8) void {
+    if (text.len == 0) return;
+    const clamped = text[0..@min(text.len, max_paste_bytes)];
+    if (!looksLikeText(clamped)) return;
+    writeSanitised(pane, clamped);
+}
+
 /// Return true if the bytes look like UTF-8 text we can safely shove into
 /// a PTY. Returns false for image/binary clipboards.
 ///
