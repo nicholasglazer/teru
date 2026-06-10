@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.10.0 — 2026-06-10
+
+A daily-driver hardening release. teruwm gains a native-pane clipboard,
+copy-on-select, scrollback that survives hot-restart, an extended font atlas
+with per-glyph fallback, and a scroll-feel overhaul — plus a batch of
+ReleaseSafe crash/leak fixes surfaced by a pre-production audit.
+
+### Added
+
+- **Native-pane clipboard.** `Ctrl+Shift+C` copies the selection to the Wayland
+  selection (Wayland + Xwayland apps can paste it) with a "Copied" toast;
+  `Ctrl+Shift+V` pastes into the PTY, bracketed-paste aware.
+- **Copy-on-select** (`copy_on_select`, default on) — releasing a drag-select
+  auto-copies, matching standalone teru.
+- **Scrollback survives hot-restart.** `$mod+'` serializes each pane's visible
+  grid AND scrollback into the restart blob, so history is intact afterward
+  (you can scroll up into pre-restart output). Restored panes repaint without
+  waiting for the app (display-memory replay; Node/Ink TUIs no longer come back
+  blank).
+- **Extended font atlas + per-glyph fallback font.** Punctuation/arrows/misc-
+  technical/dingbats/braille ranges so modern TUI glyphs (spinners ✳✻⠋, marks
+  ✓⏺, – — … →) render; a fallback font supplies glyphs the primary face lacks.
+- **Drag-select auto-scroll** past the pane edge; `natural_scroll` config key.
+
+### Changed
+
+- **Faster scroll defaults** (wheel 5 lines/notch, touchpad 1.5×) and
+  **snap-to-bottom on type/paste** (`scroll_to_bottom_on_input`, default on).
+- Session save captures the pane's **foreground process** (not just the shell),
+  on both teruwm and the multiplexer `.tsess` paths.
+- GPU bar widget refresh 5s→30s; render device pinned to the iGPU in `startt`.
+
+### Fixed
+
+- **Scroll jitter eliminated** — scrollback renders on line boundaries and
+  touchpad scroll uses fractional accumulation (no ±1px floor).
+- **ReleaseSafe crash/leak fixes (pre-production audit):** MCP int-cast panics
+  that aborted the whole compositor, a drag-select use-after-free, a
+  ~1 MB/pane framebuffer leak, multi-workspace restore composite-over.
+- Nested xdg_popups (submenus) render; transient dialogs centered + hidden on
+  workspace switch; `$mod+'` no longer freezes the TTY with a scratchpad open;
+  VT/seat released on quit; XWayland reclaims `:0` across restart.
+- Documentation factual truth-pass (Zig 0.17 requirement, ~1.2 MB binary sizes,
+  60-tool count).
+
 ## 0.9.1 — 2026-06-04
 
 Native teruwm terminal panes are now fed by `teru.conf`, the same as the
