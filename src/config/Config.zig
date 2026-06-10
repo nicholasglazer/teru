@@ -494,7 +494,9 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
 
     if (std.mem.eql(u8, key, "font_size")) {
         self.font_size = std.fmt.parseInt(u16, value, 10) catch return;
-    } else if (std.mem.eql(u8, key, "font_path")) {
+    } else if (std.mem.eql(u8, key, "font_path") or std.mem.eql(u8, key, "font")) {
+        // Accepts a full path OR a bare font name/filename (resolved against
+        // the system font dirs by FontAtlas). `font` is the friendlier alias.
         self.setString(allocator, &self.font_path, value);
     } else if (std.mem.eql(u8, key, "font_bold")) {
         self.setString(allocator, &self.font_bold, value);

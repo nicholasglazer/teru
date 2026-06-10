@@ -114,16 +114,29 @@ hook_on_session_save = notify-send "session saved"
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `font_path` | string | (system default) | Path to a `.ttf` font file |
-| `font_bold` | string | (none) | Path to bold variant `.ttf` |
-| `font_italic` | string | (none) | Path to italic variant `.ttf` |
-| `font_bold_italic` | string | (none) | Path to bold+italic variant `.ttf` |
+| `font` / `font_path` | string | (system default) | Your font, as a **full path** *or* a **bare name/filename** (resolved against the system font directories). `font` is the friendlier alias. |
+| `font_bold` | string | (none) | Bold variant — full path or name. If unset, bold is synthesized. |
+| `font_italic` | string | (none) | Italic variant — full path or name. If unset, italic is slanted. |
+| `font_bold_italic` | string | (none) | Bold+italic variant — full path or name. |
 | `font_size` | integer | `16` | Font size in pixels |
 | `padding` | integer | `8` | Content padding around the terminal area in pixels |
 | `opacity` | float | `1.0` | Window opacity, `0.0` (transparent) to `1.0` (opaque). X11: sets `_NET_WM_WINDOW_OPACITY`. macOS: sets `NSWindow.alphaValue` |
 
+teru ships **no bundled font** — it uses the fonts already installed on your
+system. Set `font` to pick which one. You can give a full path, or just a
+name and teru will look for it in the standard font directories (so
+`font = JetBrainsMono-Regular` and `font = JetBrainsMono-Regular.ttf` both
+work, trying `.ttf`/`.otf`/`.ttc` for you). If the named font isn't found,
+teru logs a warning and falls back to the best system monospace it can find,
+so a typo never leaves you with a blank screen. With no `font` set, teru
+auto-selects a good monospace per OS (Hack/JetBrains Mono on Linux, SF
+Mono/Menlo on macOS, Consolas/Cascadia on Windows).
+
 ```conf
-font_path = /usr/share/fonts/TTF/IosevkaTerm-Regular.ttf
+# By name — resolved from your system font dirs:
+font = IosevkaTerm-Regular
+# …or by full path:
+# font_path = /usr/share/fonts/TTF/IosevkaTerm-Regular.ttf
 font_size = 14
 padding = 4
 opacity = 0.95

@@ -213,10 +213,20 @@ font_data: []u8, // kept alive for stbtt
 fallback_font_data: ?[]u8 = null,
 
 pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16, io: Io) !FontAtlas {
-    // Load font file
-    const path = font_path orelse try findMonospaceFont(allocator, io);
-    const free_path = font_path == null;
-    defer if (free_path) allocator.free(path);
+    // Resolve the font file. The configured `font_path` may be a full path OR
+    // a bare font name/filename (resolved against the system font dirs), so a
+    // user can write `font = JetBrainsMono-Regular.ttf` instead of a full
+    // path. A configured-but-unfound font falls back to the system default
+    // (with a warning) rather than failing to a blank screen. `path` is always
+    // an owned allocation now, so always freed.
+    const path = blk: {
+        if (font_path) |spec| {
+            if (try resolveFontPath(allocator, spec)) |resolved| break :blk resolved;
+            std.log.scoped(.render).warn("configured font '{s}' not found; using system default", .{spec});
+        }
+        break :blk try findMonospaceFont(allocator, io);
+    };
+    defer allocator.free(path);
 
     const font_data = try loadFile(allocator, path, io);
     errdefer allocator.free(font_data);
@@ -984,6 +994,52 @@ const preferred_fonts = switch (@import("builtin").os.tag) {
     },
 };
 
+/// Resolve a user-configured font spec to a usable file path. Accepts:
+///   - an existing path (absolute or cwd-relative) → used verbatim
+///   - a bare font name/filename (no path separator) → searched across the
+///     system font dirs + the user font dir, trying the name as given then
+///     with .ttf/.otf/.ttc appended (so `JetBrainsMono-Regular` or
+///     `JetBrainsMono-Regular.ttf` both resolve).
+/// Returns an owned path (caller frees) or null if nothing matched — the
+/// caller then falls back to the system default.
+fn resolveFontPath(allocator: std.mem.Allocator, spec: []const u8) !?[]const u8 {
+    if (spec.len == 0) return null;
+
+    // An existing path (absolute or relative) is taken verbatim.
+    if (accessFast(spec)) return try allocator.dupe(u8, spec);
+
+    // Looks like a path (has a separator) but doesn't exist: don't guess —
+    // let the caller warn + fall back.
+    if (std.mem.indexOfAny(u8, spec, "/\\") != null) return null;
+
+    // Bare name: probe the system font dirs, then the user font dir.
+    const exts = [_][]const u8{ "", ".ttf", ".otf", ".ttc", ".TTF", ".OTF" };
+    for (font_search_paths) |dir| {
+        for (exts) |ext| {
+            const cand = try std.fmt.allocPrint(allocator, "{s}/{s}{s}", .{ dir, spec, ext });
+            if (accessFast(cand)) return cand;
+            allocator.free(cand);
+        }
+    }
+    const home_env: [*:0]const u8 = switch (@import("builtin").os.tag) {
+        .windows => "LOCALAPPDATA",
+        else => "HOME",
+    };
+    const suffix: []const u8 = switch (@import("builtin").os.tag) {
+        .macos => "/Library/Fonts",
+        .windows => "\\Microsoft\\Windows\\Fonts",
+        else => "/.local/share/fonts",
+    };
+    if (compat.getenv(home_env)) |base| {
+        for (exts) |ext| {
+            const cand = try std.fmt.allocPrint(allocator, "{s}{s}/{s}{s}", .{ base, suffix, spec, ext });
+            if (accessFast(cand)) return cand;
+            allocator.free(cand);
+        }
+    }
+    return null;
+}
+
 fn findMonospaceFont(allocator: std.mem.Allocator, io: Io) ![]const u8 {
     _ = io; // Font discovery uses fast libc access() — no Io overhead
 
@@ -1064,6 +1120,18 @@ test "GlyphInfo has expected fields" {
 test "preferred font list is not empty" {
     try std.testing.expect(preferred_fonts.len > 0);
     try std.testing.expect(font_search_paths.len > 0);
+}
+
+test "resolveFontPath: empty + missing specs return null (no guessing, no leak)" {
+    const a = std.testing.allocator;
+    // Empty → null.
+    try std.testing.expectEqual(@as(?[]const u8, null), try resolveFontPath(a, ""));
+    // Path-shaped specs that don't exist → null (we don't invent a path).
+    try std.testing.expectEqual(@as(?[]const u8, null), try resolveFontPath(a, "/no/such/Font.ttf"));
+    try std.testing.expectEqual(@as(?[]const u8, null), try resolveFontPath(a, "also\\missing.ttf"));
+    // A bare name that exists nowhere also resolves to null (every probed
+    // candidate is freed — the testing allocator asserts no leak).
+    try std.testing.expectEqual(@as(?[]const u8, null), try resolveFontPath(a, "ZzNoSuchFontFamily-Regular"));
 }
 
 test "glyphSlot: ASCII range" {
