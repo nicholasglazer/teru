@@ -282,13 +282,21 @@ fn pathUnderDir(path: []const u8, dir: []const u8) bool {
 
 /// Validate a screenshot output path. Deliberately NARROW: an MCP agent with
 /// screenshot permission must not be able to clobber arbitrary files (the
-/// writer uses O_CREAT|O_TRUNC). Allowed: `/tmp` and the dedicated
-/// `~/.config/teru/screenshots` dir — both cover teru's default paths.
+/// writer uses O_CREAT|O_TRUNC). Allowed roots:
+///   - `/tmp`                          (pane-screenshot defaults)
+///   - `$HOME/Pictures`                (the default capture dir is
+///                                      `~/Pictures/screenshots`; this also
+///                                      covers a custom dir under Pictures)
+///   - `$HOME/.config/teru/screenshots`
+/// Everything else — `~/.ssh`, `~/.aws`, `~/.bashrc`, `~/.config/teru/teru.conf`,
+/// `/etc/...` — is rejected.
 ///
-/// The old check allowed ANY path under $HOME (so `~/.ssh/authorized_keys`,
-/// `~/.aws/credentials`, `~/.bashrc` were clobberable) AND used a raw
-/// startsWith on $HOME (so `/home/ngEVIL/…` slipped past the `/home/ng`
-/// boundary). Both are fixed here; symlink races are blocked by O_NOFOLLOW.
+/// The pre-#49 check allowed ANY path under $HOME (credentials clobberable)
+/// AND used a raw startsWith on $HOME (so `/home/ngEVIL/…` slipped the
+/// boundary). #49 over-corrected and dropped `~/Pictures`, breaking the
+/// DEFAULT screenshot location — restored here. Symlink races still blocked
+/// by O_NOFOLLOW. (A `screenshot_dir` set OUTSIDE these roots still needs the
+/// config threaded into the check — tracked separately.)
 pub fn isSafeScreenshotPath(path: []const u8) bool {
     if (path.len == 0) return false;
     // Reject null bytes and any `..` traversal segment.
@@ -299,8 +307,12 @@ pub fn isSafeScreenshotPath(path: []const u8) bool {
     if (getenv("HOME")) |home| {
         if (home.len > 0) {
             var buf: [512]u8 = undefined;
-            const dir = std.fmt.bufPrint(&buf, "{s}/.config/teru/screenshots", .{home}) catch return false;
-            if (pathUnderDir(path, dir)) return true;
+            if (std.fmt.bufPrint(&buf, "{s}/Pictures", .{home})) |dir| {
+                if (pathUnderDir(path, dir)) return true;
+            } else |_| {}
+            if (std.fmt.bufPrint(&buf, "{s}/.config/teru/screenshots", .{home})) |dir| {
+                if (pathUnderDir(path, dir)) return true;
+            } else |_| {}
         }
     }
     return false;
@@ -315,15 +327,24 @@ test "isSafeScreenshotPath: narrow allowlist, boundary-correct" {
     try std.testing.expect(!isSafeScreenshotPath("/etc/passwd"));
     try std.testing.expect(!isSafeScreenshotPath(""));
     try std.testing.expect(!isSafeScreenshotPath("/tmpEVIL/x.png")); // boundary: not under /tmp
-    // HOME-relative: only the dedicated screenshots dir; NOT arbitrary $HOME.
+    // HOME-relative: the default capture dir (~/Pictures/screenshots) and the
+    // dedicated ~/.config/teru/screenshots are allowed; credentials are NOT.
     if (getenv("HOME")) |home| {
         if (home.len > 0) {
-            var buf: [512]u8 = undefined;
-            const ok = std.fmt.bufPrint(&buf, "{s}/.config/teru/screenshots/a.png", .{home}) catch unreachable;
-            try std.testing.expect(isSafeScreenshotPath(ok));
-            var buf2: [512]u8 = undefined;
-            const ssh = std.fmt.bufPrint(&buf2, "{s}/.ssh/authorized_keys", .{home}) catch unreachable;
-            try std.testing.expect(!isSafeScreenshotPath(ssh)); // the headline: NOT clobberable
+            var b: [512]u8 = undefined;
+            // The DEFAULT screenshot location must work (regression from #49).
+            const pics = std.fmt.bufPrint(&b, "{s}/Pictures/screenshots/area-1.png", .{home}) catch unreachable;
+            try std.testing.expect(isSafeScreenshotPath(pics));
+            var b2: [512]u8 = undefined;
+            const cfg = std.fmt.bufPrint(&b2, "{s}/.config/teru/screenshots/a.png", .{home}) catch unreachable;
+            try std.testing.expect(isSafeScreenshotPath(cfg));
+            // Credentials + the config file itself stay un-clobberable.
+            var b3: [512]u8 = undefined;
+            const ssh = std.fmt.bufPrint(&b3, "{s}/.ssh/authorized_keys", .{home}) catch unreachable;
+            try std.testing.expect(!isSafeScreenshotPath(ssh));
+            var b4: [512]u8 = undefined;
+            const conf = std.fmt.bufPrint(&b4, "{s}/.config/teru/teru.conf", .{home}) catch unreachable;
+            try std.testing.expect(!isSafeScreenshotPath(conf));
         }
     }
 }
