@@ -12,7 +12,7 @@ Designed around an MCP control plane so AI agents and shell scripts can drive bo
  · <a href="docs/ARCHITECTURE.md">architecture</a>
  · <a href="docs/MCP-API.md">mcp api</a>
 
-<sub>Zig 0.16 · Linux · macOS · Windows · MIT · <a href="docs/AI-INTEGRATION.md">AI integration</a></sub>
+<sub>Zig 0.17 (master) · Linux · macOS · Windows · MIT · <a href="docs/AI-INTEGRATION.md">AI integration</a></sub>
 
 </div>
 
@@ -20,14 +20,14 @@ Designed around an MCP control plane so AI agents and shell scripts can drive bo
 
 ## What's in the box
 
-| Binary | What it is | Size (ReleaseFast) |
+| Binary | What it is | Size (stripped release) |
 |---|---|---:|
-| `teru` | Terminal emulator, multiplexer, tiling manager, session daemon | **6.6 MB** |
-| `teruwm` | Wayland compositor (wlroots) built on libteru | **5.6 MB** |
-| `teruwmctl` | Shell CLI + MCP stdio adapter for the compositor | **11.9 MB** |
+| `teru` | Terminal emulator, multiplexer, tiling manager, session daemon | **1.4 MB** |
+| `teruwm` | Wayland compositor (wlroots) built on libteru | **1.2 MB** |
+| `teruwmctl` | Shell CLI + MCP stdio adapter for the compositor | **0.37 MB** |
 
 One source tree (`src/`), three artifacts. All share the libteru library: VT parser, grid, SIMD software renderer,
-layout engine, 59-tool MCP control plane.
+layout engine, 60-tool MCP control plane. A full Wayland compositor in 1.2 MB — no GPU driver, no FreeType, no fontconfig.
 
 ## Why
 
@@ -40,7 +40,7 @@ human with a keyboard for.
 
 **Concrete differentiators** (things no other terminal or compositor has):
 
-- **MCP control plane.** 22 tools for the terminal, 37 tools for the compositor. Every feature
+- **MCP control plane.** 22 tools for the terminal, 38 tools for the compositor. Every feature
   that has a keybind also has a tool. [docs/MCP-API.md](docs/MCP-API.md).
 - **Push widgets.** External daemons register `{widget:name}` entries in the bar and push updates
   via MCP — event-driven, no polling. [docs/AI-INTEGRATION.md](docs/AI-INTEGRATION.md#push-widgets).
@@ -119,8 +119,8 @@ Numbers measured on a Core Ultra 9 185H with ReleaseFast. Full methodology, dist
 
 | Metric | Value |
 |---|---:|
-| `teru` binary size | 6.6 MB |
-| `teruwm` binary size | 5.6 MB |
+| `teru` binary size | 1.4 MB |
+| `teruwm` binary size | 1.2 MB |
 | `teru --help` startup (p50) | 0.73 ms |
 | VtParser throughput, `dense_cells` | 401 MB/s |
 | Full pipeline (parse + render), `dense_cells` | 391 MB/s |
@@ -136,7 +136,7 @@ Everything user-facing lives in `docs/`. Concept-by-concept:
 - [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md) — every default keybind for teru and teruwm, prefix/scroll/vi modes, mouse
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — `teru.conf`, `teruwm/config`, bar widgets, thresholds, window rules
 - [docs/AI-INTEGRATION.md](docs/AI-INTEGRATION.md) — MCP protocol, CustomPaneBackend, OSC 9999, push widgets, session templates
-- [docs/MCP-API.md](docs/MCP-API.md) — 59-tool reference: both servers, every tool's schema and example
+- [docs/MCP-API.md](docs/MCP-API.md) — 60-tool reference: both servers, every tool's schema and example
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — source tree, wlroots integration, scene graph, hot restart
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — methodology, results, planned follow-ups
 
@@ -144,12 +144,12 @@ Everything user-facing lives in `docs/`. Concept-by-concept:
 
 | Area | Status |
 |---|---|
-| teru terminal, Linux (X11 + Wayland) | production; 531 inline tests |
+| teru terminal, Linux (X11 + Wayland) | production; 570+ inline tests |
 | teru terminal, macOS (AppKit) | feature-complete, needs hardware testing; US ANSI keyboard only |
 | teru terminal, Windows (Win32 + ConPTY) | all subsystems wired; needs hardware testing |
 | teruwm compositor, Linux (wlroots) | usable; XDG + XWayland verified with Chromium / Emacs / Figma |
 | Session persistence (`-n NAME`) | production |
-| MCP (59 tools) | production; E2E suite covers every tool |
+| MCP (60 tools) | production; E2E + audit suites exercise most tools |
 | Hot restart | production; shells survive exec |
 | Push widgets | production |
 | Keypress-to-photon latency numbers | waiting on phototransistor rig — deliberately not published until measured in hardware |
