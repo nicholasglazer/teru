@@ -23,6 +23,17 @@ const proto = @import("protocol.zig");
 
 const Daemon = @This();
 
+// `std.posix.pollfd` resolves to `ws2_32.pollfd` on Windows, which does not
+// exist in this Zig std. The daemon's poll loop is POSIX-only (init returns
+// Unsupported on Windows, run() returns immediately), so alias the type to a
+// trivial stand-in on Windows purely so the field/alloc lines compile. No
+// behavior change on POSIX — it's exactly `posix.pollfd` there.
+const PollFd = if (builtin.os.tag == .windows) extern struct {
+    fd: i32,
+    events: i16,
+    revents: i16,
+} else posix.pollfd;
+
 const socket_path_max: usize = 108;
 const POLLIN: i16 = 0x001;
 const POLLHUP: i16 = 0x010;
@@ -50,7 +61,7 @@ last_pane_check_ns: i128 = 0,
 /// 34-pane claude-power layout — never silently drops panes from the poll set
 /// (an un-polled PTY's output is never drained; its buffer fills and the agent
 /// blocks). Grows on demand, never shrinks; freed in deinit.
-poll_fds: []posix.pollfd = &.{},
+poll_fds: []PollFd = &.{},
 
 // ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -69,7 +80,7 @@ pub fn init(
 
     // Seed the poll fd set (grown on demand in run()). 16 covers the common
     // small-session case with no in-loop allocation.
-    const pollbuf = try allocator.alloc(posix.pollfd, 16);
+    const pollbuf = try allocator.alloc(PollFd, 16);
     errdefer allocator.free(pollbuf);
 
     const ipc_server = ipc.listen(path) catch return error.SocketFailed;
@@ -97,7 +108,7 @@ pub fn init(
 /// Grow the reusable poll fd buffer to at least `n` entries (never shrinks).
 /// On allocation failure returns the existing buffer — callers must tolerate a
 /// slightly-short slice (the run loop's `fds.len < 4` guard does).
-fn ensurePollCapacity(self: *Daemon, n: usize) []posix.pollfd {
+fn ensurePollCapacity(self: *Daemon, n: usize) []PollFd {
     if (self.poll_fds.len >= n) return self.poll_fds;
     if (self.allocator.realloc(self.poll_fds, n)) |grown| {
         self.poll_fds = grown;
@@ -181,7 +192,10 @@ pub fn run(self: *Daemon) void {
             }
         }
 
-        const ready = posix.poll(fds[0..nfds], timeout_ms) catch 0;
+        // POSIX-only: the loop already returned above on Windows (no posix.poll
+        // / pollfd there). Guard the call so it isn't semantically analyzed for
+        // the Windows target, where `posix.poll` takes an absent `pollfd`.
+        const ready = if (builtin.os.tag == .windows) 0 else posix.poll(fds[0..nfds], timeout_ms) catch 0;
         _ = ready;
 
         // Accept new client

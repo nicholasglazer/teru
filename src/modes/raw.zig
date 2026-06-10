@@ -44,7 +44,10 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     };
     terminal.exitRawMode();
 
-    if (pty_inst.child_pid != null) {
+    // POSIX-only: child reaping + wait-status decode. On Windows child_pid is
+    // always null (ConPTY owns process lifetime), so this never runs there;
+    // std.posix.W is `void` on Windows, so it must also be comptime-excluded.
+    if (builtin.os.tag != .windows and pty_inst.child_pid != null) {
         const status = pty_inst.waitForExit() catch 0;
         graph.markFinished(node_id, std.posix.W.EXITSTATUS(status));
     }

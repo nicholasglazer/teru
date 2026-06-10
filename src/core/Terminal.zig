@@ -15,6 +15,7 @@ const State = if (builtin.os.tag == .windows) struct {
     stdin_handle: HANDLE = undefined,
     stdout_handle: HANDLE = undefined,
     original_mode: u32 = 0,
+    original_output_cp: u32 = 0, // console output code page, restored on exit
 } else struct {
     original_termios: ?posix.termios = null,
     host_fd: posix.fd_t,
@@ -214,8 +215,51 @@ extern "kernel32" fn SetConsoleMode(hConsoleHandle: HANDLE, dwMode: DWORD) callc
 extern "kernel32" fn GetConsoleScreenBufferInfo(hConsoleOutput: HANDLE, lpConsoleScreenBufferInfo: *CONSOLE_SCREEN_BUFFER_INFO) callconv(.c) c_int;
 extern "kernel32" fn ReadConsoleInputW(hConsoleInput: HANDLE, lpBuffer: [*]INPUT_RECORD, nLength: DWORD, lpNumberOfEventsRead: *DWORD) callconv(.c) c_int;
 extern "kernel32" fn WaitForMultipleObjects(nCount: DWORD, lpHandles: [*]const HANDLE, bWaitAll: c_int, dwMilliseconds: DWORD) callconv(.c) DWORD;
-extern "kernel32" fn WriteConsoleW(hConsoleOutput: HANDLE, lpBuffer: [*]const u8, nNumberOfCharsToWrite: DWORD, lpNumberOfCharsWritten: ?*DWORD, lpReserved: ?*anyopaque) callconv(.c) c_int;
+// Write the ConPTY's UTF-8 VT byte stream verbatim. NOT WriteConsoleW: that's
+// the UTF-16 API — feeding it UTF-8 bytes + a byte count makes it read each
+// byte pair as one wide char (e.g. "ls" → 獬), which is the "English shows as
+// CJK symbols" corruption seen on early Windows builds. WriteFile writes raw
+// bytes; with the output code page set to UTF-8 (65001) + VT processing on,
+// the console renders the stream correctly.
+extern "kernel32" fn WriteFile(hFile: HANDLE, lpBuffer: [*]const u8, nNumberOfBytesToWrite: DWORD, lpNumberOfBytesWritten: ?*DWORD, lpOverlapped: ?*anyopaque) callconv(.c) c_int;
+extern "kernel32" fn GetConsoleOutputCP() callconv(.c) DWORD;
+extern "kernel32" fn SetConsoleOutputCP(wCodePageID: DWORD) callconv(.c) c_int;
 extern "kernel32" fn PeekNamedPipe(hNamedPipe: HANDLE, lpBuffer: ?[*]u8, nBufferSize: DWORD, lpBytesRead: ?*DWORD, lpTotalBytesAvail: ?*DWORD, lpBytesLeftThisMessage: ?*DWORD) callconv(.c) c_int;
+
+const CP_UTF8: DWORD = 65001;
+
+/// Map a Win32 virtual-key code (for keys that carry no UnicodeChar — arrows,
+/// Home/End, PageUp/Down, Insert/Delete, F1-F12) to the VT escape sequence a
+/// PTY child expects. ReadConsoleInputW gives raw key records, so teru must do
+/// this translation itself. Returns null for keys that have no sequence
+/// (modifiers, etc.) — those are correctly ignored.
+fn vkToSeq(vk: u16) ?[]const u8 {
+    return switch (vk) {
+        0x25 => "\x1b[D", // LEFT
+        0x26 => "\x1b[A", // UP
+        0x27 => "\x1b[C", // RIGHT
+        0x28 => "\x1b[B", // DOWN
+        0x24 => "\x1b[H", // HOME
+        0x23 => "\x1b[F", // END
+        0x21 => "\x1b[5~", // PRIOR / PageUp
+        0x22 => "\x1b[6~", // NEXT / PageDown
+        0x2D => "\x1b[2~", // INSERT
+        0x2E => "\x1b[3~", // DELETE
+        0x70 => "\x1bOP", // F1
+        0x71 => "\x1bOQ", // F2
+        0x72 => "\x1bOR", // F3
+        0x73 => "\x1bOS", // F4
+        0x74 => "\x1b[15~", // F5
+        0x75 => "\x1b[17~", // F6
+        0x76 => "\x1b[18~", // F7
+        0x77 => "\x1b[19~", // F8
+        0x78 => "\x1b[20~", // F9
+        0x79 => "\x1b[21~", // F10
+        0x7A => "\x1b[23~", // F11
+        0x7B => "\x1b[24~", // F12
+        else => null,
+    };
+}
 
 fn enterRawModeWin32(self: *Terminal) !void {
     if (GetConsoleMode(self.state.stdin_handle, &self.state.original_mode) == 0)
@@ -232,12 +276,22 @@ fn enterRawModeWin32(self: *Terminal) !void {
     if (GetConsoleMode(self.state.stdout_handle, &out_mode) != 0) {
         _ = SetConsoleMode(self.state.stdout_handle, out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
     }
+
+    // Switch the console to UTF-8 so the raw bytes we WriteFile (the ConPTY's
+    // UTF-8 VT stream) render as the right characters instead of CP-437/1252
+    // mojibake. Saved and restored on exit.
+    self.state.original_output_cp = GetConsoleOutputCP();
+    _ = SetConsoleOutputCP(CP_UTF8);
 }
 
 fn exitRawModeWin32(self: *Terminal) void {
     if (self.state.original_mode != 0) {
         _ = SetConsoleMode(self.state.stdin_handle, self.state.original_mode);
         self.state.original_mode = 0;
+    }
+    if (self.state.original_output_cp != 0) {
+        _ = SetConsoleOutputCP(self.state.original_output_cp);
+        self.state.original_output_cp = 0;
     }
 }
 
@@ -278,6 +332,10 @@ fn runLoopWin32(self: *Terminal, pty: *const Pty) !void {
                             var utf8: [4]u8 = undefined;
                             const len = std.unicode.utf8Encode(codepoint, &utf8) catch continue;
                             _ = pty.write(utf8[0..len]) catch break;
+                        } else if (vkToSeq(key.wVirtualKeyCode)) |seq| {
+                            // No UnicodeChar (arrow/Home/End/PageUp-Dn/F-keys):
+                            // emit the VT escape sequence the child expects.
+                            _ = pty.write(seq) catch break;
                         }
                     }
                 }
@@ -289,7 +347,14 @@ fn runLoopWin32(self: *Terminal, pty: *const Pty) !void {
                 else => break,
             };
             if (n == 0) break;
-            _ = WriteConsoleW(self.state.stdout_handle, &buf, @intCast(n), null, null);
+            // Write the UTF-8 VT bytes verbatim (see WriteFile note above).
+            var off: usize = 0;
+            while (off < n) {
+                var written: DWORD = 0;
+                if (WriteFile(self.state.stdout_handle, buf[off..].ptr, @intCast(n - off), &written, null) == 0) break;
+                if (written == 0) break;
+                off += written;
+            }
         } else {
             // WAIT_TIMEOUT or WAIT_FAILED
             break;
@@ -306,6 +371,23 @@ test "Terminal: init returns valid state" {
     } else {
         try std.testing.expectEqual(@as(posix.fd_t, 0), t.state.host_fd);
     }
+}
+
+test "Terminal: vkToSeq maps navigation + function keys to VT sequences" {
+    // Arrows / nav
+    try std.testing.expectEqualStrings("\x1b[A", vkToSeq(0x26).?); // UP
+    try std.testing.expectEqualStrings("\x1b[B", vkToSeq(0x28).?); // DOWN
+    try std.testing.expectEqualStrings("\x1b[C", vkToSeq(0x27).?); // RIGHT
+    try std.testing.expectEqualStrings("\x1b[D", vkToSeq(0x25).?); // LEFT
+    try std.testing.expectEqualStrings("\x1b[5~", vkToSeq(0x21).?); // PageUp
+    try std.testing.expectEqualStrings("\x1b[3~", vkToSeq(0x2E).?); // DELETE
+    // Function keys
+    try std.testing.expectEqualStrings("\x1bOP", vkToSeq(0x70).?); // F1
+    try std.testing.expectEqualStrings("\x1b[15~", vkToSeq(0x74).?); // F5
+    try std.testing.expectEqualStrings("\x1b[24~", vkToSeq(0x7B).?); // F12
+    // Keys that carry a UnicodeChar (or modifiers) get no sequence here.
+    try std.testing.expectEqual(@as(?[]const u8, null), vkToSeq(0x10)); // SHIFT
+    try std.testing.expectEqual(@as(?[]const u8, null), vkToSeq(0x41)); // 'A'
 }
 
 test "Terminal: TermSize fields" {

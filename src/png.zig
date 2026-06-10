@@ -31,7 +31,11 @@ pub fn write(
     const fd = compat.openFileNoFollow(path);
     if (fd < 0) return error.FileOpenFailed;
     const file = fdopen(fd, "wb") orelse {
-        _ = std.posix.system.close(fd);
+        // libc close on the c_int fd from openFileNoFollow. Not
+        // std.posix.system.close — its fd_t is a HANDLE on Windows, which
+        // wouldn't accept this c_int. (On Windows openFileNoFollow returns -1,
+        // so this branch is never reached at runtime there.)
+        _ = c_close(fd);
         return error.FileOpenFailed;
     };
     defer _ = fclose(file);
@@ -157,6 +161,8 @@ extern "c" fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
 extern "c" fn fdopen(fd: c_int, mode: [*:0]const u8) ?*anyopaque;
 extern "c" fn fwrite(ptr: [*]const u8, size: usize, count: usize, stream: *anyopaque) usize;
 extern "c" fn fclose(stream: *anyopaque) c_int;
+extern "c" fn close(fd: c_int) c_int;
+const c_close = close;
 
 // ── Tests ─────────────────────────────────────────────────────────
 

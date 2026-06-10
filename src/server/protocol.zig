@@ -5,6 +5,7 @@
 //! All I/O uses raw C read/write — no std.Io (daemon may not have a window).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 
 /// Message types for daemon <-> client communication.
@@ -180,6 +181,10 @@ pub fn recvMessage(fd: posix.fd_t, header_out: *Header, payload_buf: []u8) ?[]co
                 // Body not fully here yet — block until the fd is readable
                 // again rather than abandoning a half-read frame. The 2s cap
                 // is a dead-peer guard (a stalled local socket is broken).
+                // POSIX-only readability wait. posix.pollfd is `ws2_32.pollfd`
+                // (absent) on Windows and the AF_UNIX daemon wire protocol is
+                // POSIX-only, so comptime-exclude the poll there.
+                if (builtin.os.tag == .windows) return null;
                 var pfd = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
                 const pr = posix.poll(&pfd, 2000) catch return null;
                 if (pr == 0) return null; // timed out — peer stalled mid-frame
@@ -236,6 +241,8 @@ fn writeAll(fd: posix.fd_t, data: []const u8) bool {
         switch (posix.errno(rc)) {
             .INTR => continue,
             .AGAIN => {
+                // POSIX-only writability wait (see recvMessage note above).
+                if (builtin.os.tag == .windows) return false;
                 var pfd = [1]posix.pollfd{.{ .fd = fd, .events = POLLOUT, .revents = 0 }};
                 const pr = posix.poll(&pfd, 5000) catch return false;
                 if (pr == 0) return false; // 5s with no drain → peer is gone

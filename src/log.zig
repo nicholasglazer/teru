@@ -19,7 +19,21 @@
 //! `run-teruwm.sh debug` mode does this). Format: `[level] (scope) message`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const compat = @import("compat.zig");
+
+// Windows stderr write: std.c.write's fd-arg is a HANDLE (`*anyopaque`) on the
+// Windows libc binding, so the POSIX `std.c.write(2, …)` path won't compile.
+// Hand-declare WriteFile (the rule allows hand-declared Win32 externs) and
+// route through the process stderr HANDLE from the PEB.
+const win = std.os.windows;
+extern "kernel32" fn WriteFile(
+    hFile: win.HANDLE,
+    lpBuffer: [*]const u8,
+    nNumberOfBytesToWrite: win.DWORD,
+    lpNumberOfBytesWritten: ?*win.DWORD,
+    lpOverlapped: ?*anyopaque,
+) callconv(.winapi) win.BOOL;
 
 /// Drop-in for the root file's `std_options`. `log_level = .debug` compiles
 /// every level in; `logFn` applies the runtime `TERU_LOG` filter.
@@ -59,8 +73,14 @@ fn logFn(
     var buf: [4096]u8 = undefined;
     const line: []const u8 = std.fmt.bufPrint(&buf, prefix ++ format ++ "\n", args) catch
         prefix ++ "<log line too long; truncated>\n";
-    // stderr write. NOTE: std.c.write's fd-arg type differs on the Windows
-    // libc binding (0.17 std) — the Windows port (task) must route this through
-    // the Win32 stderr HANDLE. Fine on Linux/macOS, which is what ships today.
-    _ = std.c.write(2, line.ptr, line.len);
+    // stderr write. On Windows the libc fd-arg is a HANDLE, so route through
+    // the Win32 stderr HANDLE (from the PEB) via WriteFile. POSIX keeps the
+    // direct fd-2 write — unchanged behavior on Linux/macOS.
+    if (builtin.os.tag == .windows) {
+        const h = win.peb().ProcessParameters.hStdError;
+        var written: win.DWORD = 0;
+        _ = WriteFile(h, line.ptr, @intCast(line.len), &written, null);
+    } else {
+        _ = std.c.write(2, line.ptr, line.len);
+    }
 }

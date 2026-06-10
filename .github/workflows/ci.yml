@@ -39,8 +39,19 @@ jobs:
           name: teru-${{ matrix.name }}
           path: zig-out/bin/teru
 
-  # build-windows: DEFERRED — Zig 0.17 std broke the Windows build (POSIX
-  #   assumptions in daemon/raw/png/log). Re-enable after the Windows port.
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0-dev.813+2153f8143
+      - name: Build (cross-compile, Win32 + ConPTY; no X11/Wayland)
+        run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu -Dx11=false -Dwayland=false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teru-windows-x86_64
+          path: zig-out/bin/teru.exe
 
   build-macos:
     strategy:
