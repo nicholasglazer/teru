@@ -792,7 +792,12 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
                 path_buf[path.len] = 0;
                 const png = teru.png;
                 png.write(server.zig_allocator, @ptrCast(path_buf[0..path.len :0]), tp.renderer.framebuffer, tp.renderer.width, tp.renderer.height) catch return true;
-                std.log.scoped(.compositor).info("pane screenshot → {s}", .{path});
+                // Also copy to the Wayland clipboard, like .screenshot and
+                // .screenshot_area do — the pane variant used to only write the
+                // file, so "screenshot hotkey not saving to clipboard". teruwm
+                // owns the seat, so this is a native data source (no wl-copy).
+                const copied = wlr.miozu_set_clipboard_png_from_file(server.seat, server.display, path_buf[0..path.len :0].ptr) == 0;
+                std.log.scoped(.compositor).info("pane screenshot → {s} (clipboard={})", .{ path, copied });
             }
             return true;
         },

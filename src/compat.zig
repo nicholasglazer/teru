@@ -272,21 +272,60 @@ pub fn isSafeFilename(name: []const u8) bool {
 
 /// Reject `../` traversal in screenshot paths. Allows absolute paths
 /// under /tmp or relative paths under HOME, but blocks `..` segments.
+/// True iff `path` is exactly `dir` or a path UNDER `dir` (boundary-correct:
+/// "/tmp" must NOT match "/tmpEVIL"). The byte after the prefix has to be a
+/// path separator, not just any character.
+fn pathUnderDir(path: []const u8, dir: []const u8) bool {
+    if (!std.mem.startsWith(u8, path, dir)) return false;
+    return path.len == dir.len or path[dir.len] == '/';
+}
+
+/// Validate a screenshot output path. Deliberately NARROW: an MCP agent with
+/// screenshot permission must not be able to clobber arbitrary files (the
+/// writer uses O_CREAT|O_TRUNC). Allowed: `/tmp` and the dedicated
+/// `~/.config/teru/screenshots` dir — both cover teru's default paths.
+///
+/// The old check allowed ANY path under $HOME (so `~/.ssh/authorized_keys`,
+/// `~/.aws/credentials`, `~/.bashrc` were clobberable) AND used a raw
+/// startsWith on $HOME (so `/home/ngEVIL/…` slipped past the `/home/ng`
+/// boundary). Both are fixed here; symlink races are blocked by O_NOFOLLOW.
 pub fn isSafeScreenshotPath(path: []const u8) bool {
     if (path.len == 0) return false;
-    // Reject null bytes
+    // Reject null bytes and any `..` traversal segment.
     if (std.mem.findScalar(u8, path, 0) != null) return false;
-    // Reject `..` segments
-    if (std.mem.find(u8, path, "..")) |_| return false;
-    // Must be under /tmp or start with HOME
-    const home = getenv("HOME") orelse return false;
-    if (std.mem.eql(u8, path, "/tmp") or std.mem.startsWith(u8, path, "/tmp/")) {
-        return true;
-    }
-    if (std.mem.startsWith(u8, path, home)) {
-        return true;
+    if (std.mem.find(u8, path, "..") != null) return false;
+
+    if (pathUnderDir(path, "/tmp")) return true;
+    if (getenv("HOME")) |home| {
+        if (home.len > 0) {
+            var buf: [512]u8 = undefined;
+            const dir = std.fmt.bufPrint(&buf, "{s}/.config/teru/screenshots", .{home}) catch return false;
+            if (pathUnderDir(path, dir)) return true;
+        }
     }
     return false;
+}
+
+test "isSafeScreenshotPath: narrow allowlist, boundary-correct" {
+    // /tmp defaults (what teru actually writes) are allowed.
+    try std.testing.expect(isSafeScreenshotPath("/tmp/teruwm-screenshot.png"));
+    try std.testing.expect(isSafeScreenshotPath("/tmp"));
+    // Traversal + null + arbitrary paths rejected.
+    try std.testing.expect(!isSafeScreenshotPath("/tmp/../etc/passwd"));
+    try std.testing.expect(!isSafeScreenshotPath("/etc/passwd"));
+    try std.testing.expect(!isSafeScreenshotPath(""));
+    try std.testing.expect(!isSafeScreenshotPath("/tmpEVIL/x.png")); // boundary: not under /tmp
+    // HOME-relative: only the dedicated screenshots dir; NOT arbitrary $HOME.
+    if (getenv("HOME")) |home| {
+        if (home.len > 0) {
+            var buf: [512]u8 = undefined;
+            const ok = std.fmt.bufPrint(&buf, "{s}/.config/teru/screenshots/a.png", .{home}) catch unreachable;
+            try std.testing.expect(isSafeScreenshotPath(ok));
+            var buf2: [512]u8 = undefined;
+            const ssh = std.fmt.bufPrint(&buf2, "{s}/.ssh/authorized_keys", .{home}) catch unreachable;
+            try std.testing.expect(!isSafeScreenshotPath(ssh)); // the headline: NOT clobberable
+        }
+    }
 }
 
 /// Open a file for writing, refusing to follow symlinks at the final
