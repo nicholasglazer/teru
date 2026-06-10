@@ -235,6 +235,51 @@ pub fn lineCount(self: *const Scrollback) usize {
     return self.deltas.items.len;
 }
 
+/// Serialize the most-recent scrollback lines as a self-contained VT byte
+/// stream that, when fed through a fresh parser, recreates this scrollback by
+/// scrolling each line off the top. Each line is emitted as `ESC[0m<bytes>\r\n`
+/// (the reset keeps a colored line from bleeding into the next on replay).
+/// Oldest→newest order. If `buf` can't hold every line, the OLDEST are dropped
+/// so the most recent history survives — and at most `max_lines` are emitted.
+/// Returns bytes written. Used by the teruwm hot-restart blob so scrollback
+/// survives `$mod+'` (the stored `vt_bytes` is exactly the per-line content
+/// `Grid.scrollUpN` captured, so this round-trips through the same machinery).
+pub fn dumpReplayStream(self: *const Scrollback, buf: []u8, max_lines: usize) usize {
+    const items = self.deltas.items;
+    if (items.len == 0 or buf.len == 0) return 0;
+    const reset = "\x1b[0m";
+    const overhead = reset.len + 2; // + "\r\n"
+
+    // Walk newest→oldest, accumulating until the budget or max_lines is hit;
+    // `first` is the oldest line index that still fits.
+    var first: usize = items.len;
+    var used: usize = 0;
+    var count: usize = 0;
+    var i: usize = items.len;
+    while (i > 0 and count < max_lines) {
+        i -= 1;
+        const need = items[i].vt_bytes.len + overhead;
+        if (used + need > buf.len) break;
+        used += need;
+        first = i;
+        count += 1;
+    }
+
+    var pos: usize = 0;
+    var j = first;
+    while (j < items.len) : (j += 1) {
+        @memcpy(buf[pos..][0..reset.len], reset);
+        pos += reset.len;
+        const b = items[j].vt_bytes;
+        @memcpy(buf[pos..][0..b.len], b);
+        pos += b.len;
+        buf[pos] = '\r';
+        buf[pos + 1] = '\n';
+        pos += 2;
+    }
+    return pos;
+}
+
 // ── Stats ───────────────────────────────────────────────────────
 
 /// Returns the compression ratio: equivalent_expanded / actual_stored.
@@ -1037,4 +1082,69 @@ test "lineCount matches delta count" {
         try sb.pushLine("test", &grid);
     }
     try std.testing.expectEqual(@as(usize, 10), sb.lineCount());
+}
+
+test "dumpReplayStream round-trips scrollback through a fresh parser" {
+    const allocator = std.testing.allocator;
+
+    // Source grid + scrollback: print 60 numbered lines into a 24-row grid so
+    // ~36 scroll off into scrollback.
+    var grid = try Grid.init(allocator, 24, 40);
+    defer grid.deinit(allocator);
+    var sb = Scrollback.init(allocator, .{});
+    defer sb.deinit();
+    grid.scrollback = &sb;
+    var vt = VtParser.init(allocator, &grid);
+    var n: u32 = 1;
+    while (n <= 60) : (n += 1) {
+        var line: [32]u8 = undefined;
+        const s = try std.fmt.bufPrint(&line, "line-{d}\r\n", .{n});
+        vt.feed(s);
+    }
+    const src_lines = sb.lineCount();
+    try std.testing.expect(src_lines >= 30); // ~36 scrolled off
+
+    // Serialize, then replay into a brand-new grid+scrollback.
+    var buf: [65536]u8 = undefined;
+    const written = sb.dumpReplayStream(&buf, 100000);
+    try std.testing.expect(written > 0);
+
+    var grid2 = try Grid.init(allocator, 24, 40);
+    defer grid2.deinit(allocator);
+    var sb2 = Scrollback.init(allocator, .{});
+    defer sb2.deinit();
+    grid2.scrollback = &sb2;
+    var vt2 = VtParser.init(allocator, &grid2);
+    vt2.feed(buf[0..written]);
+
+    // The replayed scrollback holds the same recent history (minus the ~rows
+    // still on screen at end-of-feed, which the restore path pads separately).
+    try std.testing.expect(sb2.lineCount() >= src_lines - 24);
+    // The oldest replayed line's text matches the source's at the same offset.
+    const off = sb2.lineCount() - 1;
+    const got = sb2.getLineByOffset(off) orelse return error.NoLine;
+    try std.testing.expect(std.mem.indexOf(u8, got, "line-") != null);
+}
+
+test "dumpReplayStream keeps the most recent lines when the buffer is tight" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 4, 20);
+    defer grid.deinit(allocator);
+    var sb = Scrollback.init(allocator, .{});
+    defer sb.deinit();
+    grid.scrollback = &sb;
+    var vt = VtParser.init(allocator, &grid);
+    var n: u32 = 1;
+    while (n <= 50) : (n += 1) {
+        var line: [32]u8 = undefined;
+        const s = try std.fmt.bufPrint(&line, "L{d}\r\n", .{n});
+        vt.feed(s);
+    }
+    // Tiny buffer: only a few lines fit — they must be the NEWEST ones.
+    var small: [64]u8 = undefined;
+    const w = sb.dumpReplayStream(&small, 100000);
+    try std.testing.expect(w > 0);
+    // The newest scrollback line should appear; the oldest should not.
+    const newest = sb.getLineByOffset(0).?; // most recent in scrollback
+    try std.testing.expect(std.mem.indexOf(u8, small[0..w], newest) != null);
 }

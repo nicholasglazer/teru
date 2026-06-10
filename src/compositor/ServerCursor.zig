@@ -114,13 +114,28 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
                 server.wm_config.touchpad_scroll_factor,
             );
 
-            // Coalesce to the frame callback instead of rendering inline.
-            // A touchpad fires dozens of axis events per gesture; a synchronous
-            // full-pane `tp.render()` per event (each one a complete repaint +
-            // scrollback overlay) cannot keep up and the gesture lags. Mark
-            // dirty + schedule a frame so many events collapse to one paint per
-            // vsync (the same coalescing the PTY-read path relies on).
-            if (pixel_delta != 0 and tp.pane.scrollBy(pixel_delta, cell_h, max_offset)) {
+            if (pixel_delta == 0) return;
+
+            if (server.wm_config.smooth_scroll) {
+                // Smooth path: accumulate into a pixel TARGET and let the frame
+                // callback ease the actual position toward it (tickScrollAnim).
+                // This decouples scroll motion from the (chunky, sub-60fps)
+                // axis-event cadence — a wheel notch glides instead of jumping,
+                // and a touchpad gesture stays continuous between events.
+                const max_px: i64 = @as(i64, max_offset) * @as(i64, cell_h);
+                const cur_px: i64 = @as(i64, tp.pane.scroll_offset) * @as(i64, cell_h) + tp.pane.scroll_pixel;
+                const base: i64 = if (tp.scroll_anim_active) tp.scroll_anim_target_px else cur_px;
+                tp.scroll_anim_target_px = std.math.clamp(base + pixel_delta, 0, max_px);
+                tp.scroll_anim_active = true;
+                server.scheduleRender();
+                return;
+            }
+
+            // Instant path (smooth_scroll = false): coalesce to the frame
+            // callback. A touchpad fires dozens of axis events per gesture; a
+            // synchronous full-pane render per event can't keep up. Mark dirty +
+            // schedule so many events collapse to one paint per vsync.
+            if (tp.pane.scrollBy(pixel_delta, cell_h, max_offset)) {
                 tp.pane.grid.markAllDirty();
                 server.scheduleRender();
             }
@@ -524,6 +539,46 @@ fn terminalMouseMotion(server: *Server, tp: anytype, cx: f64, cy: f64) void {
 fn terminalMouseRelease(server: *Server, tp: anytype) void {
     tp.mouse.mouse_down = false;
     server.drag_terminal = null;
+}
+
+/// Frame-callback hook: ease every pane with an active scroll animation one
+/// step toward its pixel target (set by handleCursorAxis when smooth_scroll is
+/// on). Re-schedules a frame until it arrives, so a chunky/low-fps axis-event
+/// stream still reads as continuous motion. Stops when it reaches the target or
+/// scrollBy clamps at an end (no infinite spin). No-op when nothing is
+/// animating — cheap to call every frame.
+pub fn tickScrollAnim(server: *Server) void {
+    const cell_h: u32 = if (server.font_atlas) |fa| fa.cell_height else 16;
+    const ch: i64 = @intCast(@max(@as(u32, 1), cell_h));
+    for (server.terminal_panes) |maybe_tp| {
+        const tp = maybe_tp orelse continue;
+        if (!tp.scroll_anim_active) continue;
+
+        const max_offset: u32 = @intCast(tp.pane.scrollback.total_lines);
+        const max_px: i64 = @as(i64, max_offset) * ch;
+        tp.scroll_anim_target_px = std.math.clamp(tp.scroll_anim_target_px, 0, max_px);
+
+        const cur: i64 = @as(i64, tp.pane.scroll_offset) * ch + tp.pane.scroll_pixel;
+        const diff: i64 = tp.scroll_anim_target_px - cur;
+        if (diff >= -1 and diff <= 1) {
+            // Snap the last pixel exactly, then stop.
+            if (diff != 0) _ = tp.pane.scrollBy(@intCast(diff), cell_h, max_offset);
+            tp.scroll_anim_active = false;
+            tp.pane.grid.markAllDirty();
+            server.scheduleRender();
+            continue;
+        }
+        // Ease ~35% of the remaining gap per frame (min 1px) → ~0.15s glide.
+        var step: i64 = @divTrunc(diff * 35, 100);
+        if (step == 0) step = if (diff > 0) 1 else -1;
+        if (!tp.pane.scrollBy(@intCast(step), cell_h, max_offset)) {
+            // Clamped at an end — target unreachable; stop to avoid spinning.
+            tp.scroll_anim_active = false;
+            continue;
+        }
+        tp.pane.grid.markAllDirty();
+        server.scheduleRender();
+    }
 }
 
 /// Continue a held drag-select that has run past the pane's top/bottom
