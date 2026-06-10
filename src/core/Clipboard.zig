@@ -176,7 +176,10 @@ fn writeAllToPty(pane: *const Pane, data: []const u8) void {
     const deadline_ms: i64 = 1000;
     const start_ns = compat.monotonicNow();
     const POLLOUT: i16 = 0x004;
-    var fd_array = [_]posix.pollfd{.{
+    // POSIX-only drain wait: posix.pollfd/posix.poll are absent on Windows
+    // (ws2_32.pollfd). Build the poll fd set only on POSIX; the Windows
+    // ConPTY write path doesn't use it.
+    var fd_array = if (builtin.os.tag == .windows) {} else [_]posix.pollfd{.{
         .fd = pane.ptyMasterFd(),
         .events = POLLOUT,
         .revents = 0,
@@ -187,7 +190,8 @@ fn writeAllToPty(pane: *const Pane, data: []const u8) void {
         const remaining_ms: i32 = @intCast(@max(0, deadline_ms - @divFloor(elapsed_ns, 1_000_000)));
         if (remaining_ms == 0) break;
         const n = pane.ptyWrite(data[written..]) catch {
-            // EAGAIN-ish: wait for the master fd to drain.
+            // EAGAIN-ish: wait for the master fd to drain (POSIX only).
+            if (builtin.os.tag == .windows) return;
             fd_array[0].revents = 0;
             _ = posix.poll(&fd_array, remaining_ms) catch return;
             continue;

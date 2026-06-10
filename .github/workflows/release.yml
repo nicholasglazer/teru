@@ -37,10 +37,25 @@ jobs:
           name: teru-${{ matrix.name }}
           path: teru-${{ matrix.name }}.tar.gz
 
-  # build-windows: DEFERRED for 0.10.0 — the Zig 0.17 std broke the Windows
-  #   build at several POSIX sites (daemon poll, raw termios, png/log fds).
-  #   Re-enable once the Windows port lands (tracked task). teru is Linux+macOS
-  #   for this release; teruwm is Linux-only by design.
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0-dev.813+2153f8143
+      - name: Build (cross-compile, Win32 + ConPTY; no X11/Wayland)
+        run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu -Dx11=false -Dwayland=false
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp zig-out/bin/teru.exe dist/
+          cp LICENSE README.md CHANGELOG.md dist/
+          (cd dist && zip -r ../teru-windows-x86_64.zip .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teru-windows-x86_64
+          path: teru-windows-x86_64.zip
 
   build-macos:
     strategy:
@@ -68,7 +83,7 @@ jobs:
           path: teru-${{ matrix.name }}.tar.gz
 
   release:
-    needs: [build-linux, build-macos]
+    needs: [build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -81,5 +96,6 @@ jobs:
             teru-linux-x86_64/teru-linux-x86_64.tar.gz
             teru-linux-x86_64-x11/teru-linux-x86_64-x11.tar.gz
             teru-linux-x86_64-wayland/teru-linux-x86_64-wayland.tar.gz
+            teru-windows-x86_64/teru-windows-x86_64.zip
             teru-macos-aarch64/teru-macos-aarch64.tar.gz
           generate_release_notes: true

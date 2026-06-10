@@ -37,6 +37,7 @@
 //! layering. The framework only owns the request/response path.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 const tools = @import("McpTools.zig");
 
@@ -182,6 +183,10 @@ pub fn Framework(comptime Impl: type) type {
                     // the event loop.
                     stalls += 1;
                     if (stalls > 8) break;
+                    // POSIX-only readability wait. posix.pollfd is absent on
+                    // Windows (ws2_32.pollfd) and the MCP Unix-socket servers
+                    // are POSIX-only, so comptime-exclude the poll there.
+                    if (builtin.os.tag == .windows) break;
                     var pfd = [_]posix.pollfd{.{ .fd = conn_fd, .events = poll_in, .revents = 0 }};
                     const ready = posix.poll(&pfd, 250) catch 0;
                     if (ready == 0 or (pfd[0].revents & poll_in) == 0) break;
