@@ -143,7 +143,10 @@ fn createBarInstance(server: *Server, allocator: std.mem.Allocator, width: u32, 
     var renderer = SoftwareRenderer.init(allocator, width, height, cell_w, cell_h) catch return null;
     if (wlr.miozu_pixel_buffer_data(pixel_buffer)) |data| {
         const needed = @as(usize, width) * @as(usize, height);
-        if (needed > 0) renderer.framebuffer = data[0..needed];
+        if (needed > 0) {
+            allocator.free(renderer.framebuffer); // adopt wlr memory; free the init alloc
+            renderer.framebuffer = data[0..needed];
+        }
     }
     if (server.font_atlas) |fa| {
         renderer.glyph_atlas = fa.atlas_data;

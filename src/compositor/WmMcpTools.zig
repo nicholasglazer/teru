@@ -44,6 +44,27 @@ const max_request: usize = 65536;
 const max_response: usize = 65536;
 const socket_path_max: usize = 108;
 
+// ── Saturating narrowers for untrusted JSON ints ───────────────
+// The shipped binary is ReleaseSafe, where an out-of-range @intCast is a
+// checked panic that ABORTS the whole compositor (killing every Wayland
+// client). Since the product thesis is "an LLM drives the WM", a model
+// picking workspace: 99 or x: 9e18 must NOT crash the desktop. These
+// saturate instead of narrowing-cast; out-of-domain values then fail the
+// tool's own range guard and return a -32602, never a panic. Mirrors the
+// teru-side clampU32 (McpServerTools.zig). extractNestedJsonInt → i64.
+fn satNode(v: i64) u64 {
+    return if (v < 0) 0 else @intCast(v); // node ids are positive; 0 = no-match sentinel
+}
+fn satU8(v: i64) u8 {
+    return @intCast(@max(0, @min(v, 255)));
+}
+fn satI32(v: i64) i32 {
+    return @intCast(@max(@min(v, std.math.maxInt(i32)), std.math.minInt(i32)));
+}
+fn satU32(v: i64) u32 {
+    return @intCast(@max(0, @min(v, std.math.maxInt(u32))));
+}
+
 // ── Thunks (arg unpacking; uniform signature) ──────────────────
 
 pub fn thunkListWindows(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -67,13 +88,13 @@ pub fn thunkSpawnTerminal(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]c
 pub fn thunkCloseWindow(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const nid = extractNestedJsonInt(p, "node_id") orelse
         return jsonRpcError(buf, id, -32602, "Missing node_id");
-    return toolCloseWindow(self, @intCast(nid), buf, id);
+    return toolCloseWindow(self, satNode(nid), buf, id);
 }
 
 pub fn thunkFocusWindow(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const nid = extractNestedJsonInt(p, "node_id") orelse
         return jsonRpcError(buf, id, -32602, "Missing node_id");
-    return toolFocusWindow(self, @intCast(nid), buf, id);
+    return toolFocusWindow(self, satNode(nid), buf, id);
 }
 
 pub fn thunkMoveToWorkspace(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -81,7 +102,7 @@ pub fn thunkMoveToWorkspace(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[
         return jsonRpcError(buf, id, -32602, "Missing node_id");
     const ws = extractNestedJsonInt(p, "workspace") orelse
         return jsonRpcError(buf, id, -32602, "Missing workspace");
-    return toolMoveToWorkspace(self, @intCast(nid), @intCast(ws), buf, id);
+    return toolMoveToWorkspace(self, satNode(nid), satU8(ws), buf, id);
 }
 
 pub fn thunkListWorkspaces(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -92,14 +113,14 @@ pub fn thunkListWorkspaces(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]
 pub fn thunkSwitchWorkspace(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const ws = extractNestedJsonInt(p, "workspace") orelse
         return jsonRpcError(buf, id, -32602, "Missing workspace");
-    return toolSwitchWorkspace(self, @intCast(ws), buf, id);
+    return toolSwitchWorkspace(self, satU8(ws), buf, id);
 }
 
 pub fn thunkSetLayout(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const layout_str = extractNestedJsonString(p, "layout") orelse
         return jsonRpcError(buf, id, -32602, "Missing layout");
     const ws = extractNestedJsonInt(p, "workspace") orelse 0;
-    return toolSetLayout(self, @intCast(ws), layout_str, buf, id);
+    return toolSetLayout(self, satU8(ws), layout_str, buf, id);
 }
 
 pub fn thunkZoom(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -235,9 +256,9 @@ pub fn thunkTestDrag(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const 
     const super_held = extractNestedJsonBool(args, "super");
     const button: u32 = blk: {
         const b = extractNestedJsonInt(p, "button") orelse break :blk 272;
-        break :blk @intCast(b);
+        break :blk satU32(b);
     };
-    return toolTestDrag(self, @intCast(fx), @intCast(fy), @intCast(tx), @intCast(ty), super_held, button, buf, id);
+    return toolTestDrag(self, satI32(fx), satI32(fy), satI32(tx), satI32(ty), super_held, button, buf, id);
 }
 
 pub fn thunkTestKey(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -251,7 +272,7 @@ pub fn thunkTestMove(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const 
         return jsonRpcError(buf, id, -32602, "Missing x");
     const y = extractNestedJsonInt(p, "y") orelse
         return jsonRpcError(buf, id, -32602, "Missing y");
-    return toolTestMove(self, @intCast(x), @intCast(y), buf, id);
+    return toolTestMove(self, satI32(x), satI32(y), buf, id);
 }
 
 pub fn thunkMousePath(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -264,14 +285,14 @@ pub fn thunkMousePath(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const
     const ty = extractNestedJsonInt(p, "to_y") orelse
         return jsonRpcError(buf, id, -32602, "Missing to_y");
     const dur_raw = extractNestedJsonInt(p, "duration_ms");
-    const dur: u32 = if (dur_raw) |d| @intCast(@max(0, d)) else self.server.wm_config.mouse_path_default_ms;
+    const dur: u32 = if (dur_raw) |d| satU32(d) else self.server.wm_config.mouse_path_default_ms;
     const humanize_true = extractNestedJsonBool(p, "humanize");
     const humanize_false = std.mem.find(u8, p, "\"humanize\":false") != null;
     const humanize: bool = if (humanize_true) true else if (humanize_false) false else self.server.wm_config.mouse_humanize;
     const btn_raw = extractNestedJsonInt(p, "button");
-    const btn: ?u32 = if (btn_raw) |b| @intCast(@max(0, b)) else null;
+    const btn: ?u32 = if (btn_raw) |b| satU32(b) else null;
     const super_held = extractNestedJsonBool(p, "super");
-    return toolMousePath(self, @intCast(fx), @intCast(fy), @intCast(tx), @intCast(ty), dur, humanize, btn, super_held, buf, id);
+    return toolMousePath(self, satI32(fx), satI32(fy), satI32(tx), satI32(ty), dur, humanize, btn, super_held, buf, id);
 }
 
 pub fn thunkClick(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -282,7 +303,7 @@ pub fn thunkClick(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8)
     const args_obj = extractJsonObject(p, "arguments") orelse p;
     const button_str = extractJsonString(args_obj, "button") orelse "left";
     const button: u32 = if (std.mem.eql(u8, button_str, "right")) 273 else if (std.mem.eql(u8, button_str, "middle")) 274 else 272;
-    return toolClick(self, @intCast(x), @intCast(y), button, buf, id);
+    return toolClick(self, satI32(x), satI32(y), button, buf, id);
 }
 
 pub fn thunkType(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -308,7 +329,7 @@ pub fn thunkScroll(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8
     const y = extractNestedJsonInt(p, "y") orelse
         return jsonRpcError(buf, id, -32602, "Missing y");
     const dy = extractNestedJsonInt(p, "dy") orelse 15;
-    return toolScroll(self, @intCast(x), @intCast(y), @intCast(dy), buf, id);
+    return toolScroll(self, satI32(x), satI32(y), satI32(dy), buf, id);
 }
 
 pub fn thunkToggleScratchpad(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -1289,4 +1310,20 @@ fn monotonicMs() u32 {
     const ns_per_ms: i128 = 1_000_000;
     const t_ns: i128 = teru.compat.monotonicNow();
     return @intCast(@mod(@divTrunc(t_ns, ns_per_ms), 0xFFFFFFFF));
+}
+
+test "saturating narrowers never panic on hostile JSON ints (ReleaseSafe abort guard)" {
+    // These exact values aborted the whole compositor before the clamps:
+    // an out-of-range @intCast is checked illegal behavior in the shipped
+    // ReleaseSafe build, so a model picking workspace 999 killed the desktop.
+    try std.testing.expectEqual(@as(u8, 255), satU8(999)); // → fails ws<10 guard → -32602, not panic
+    try std.testing.expectEqual(@as(u8, 0), satU8(-5));
+    try std.testing.expectEqual(@as(u8, 9), satU8(9));
+    try std.testing.expectEqual(@as(u64, 0), satNode(-1));
+    try std.testing.expectEqual(@as(u64, 42), satNode(42));
+    try std.testing.expectEqual(std.math.maxInt(i32), satI32(9_999_999_999));
+    try std.testing.expectEqual(std.math.minInt(i32), satI32(-9_999_999_999));
+    try std.testing.expectEqual(@as(i32, 0), satI32(0));
+    try std.testing.expectEqual(std.math.maxInt(u32), satU32(99_999_999_999));
+    try std.testing.expectEqual(@as(u32, 0), satU32(-7));
 }

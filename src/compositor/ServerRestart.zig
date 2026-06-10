@@ -340,6 +340,12 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
     server.layout_engine.switchWorkspace(active_ws);
     server.setWorkspaceVisibility(active_ws, true);
     server.arrangeworkspace(active_ws);
+    // Panes restored onto OTHER workspaces get scene nodes enabled-by-default
+    // (createRestored never disables them) and are never positioned, so without
+    // this they composite at (0,0) ON TOP of the active workspace until the
+    // first workspace switch — a visibly broken hot-restart. recomputeVisibility
+    // disables every node whose workspace no output is showing.
+    server.recomputeVisibility();
     server.updateFocusedTerminal();
 
     // ── v2 display-memory section ──────────────────────────────
