@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.11.0 — 2026-06-10
+
+Smooth scrolling, the first **Windows** binary, and a configurable font.
+
+### Added
+
+- **True sub-pixel smooth scrolling** in teruwm. Scrollback now moves a pixel
+  at a time instead of snapping line-by-line — the topmost partial line is
+  clipped to the sub-pixel offset. Verified monotonic (no "text jumps up then
+  down" jitter) and seamless across cell boundaries. Tunable via the existing
+  `smooth_scroll` / `touchpad_scroll_factor` / `wheel_scroll_lines` knobs.
+- **Windows binary** (`teru-windows-x86_64.zip`). teru now cross-compiles for
+  Windows (Win32 + ConPTY) and ships a prebuilt `teru.exe`. A terminal-mode
+  (VT-passthrough) build; the windowed/compositor paths remain Linux/macOS.
+- **Configurable font by name or path.** The new `font` config key (alias of
+  `font_path`) accepts a full path *or* a bare font name/filename, resolved
+  against your system font directories (`font = JetBrainsMono-Regular` works).
+  teru still bundles no font; an unfound font now warns and falls back to the
+  system default instead of failing to a blank screen.
+- Test-only `teruwm_test_scroll` MCP tool (drives pixel-accurate scroll for
+  the headless suite).
+
+### Fixed
+
+- **Windows "English shows as CJK symbols."** `runLoopWin32` wrote the ConPTY's
+  UTF-8 byte stream through `WriteConsoleW` (the UTF-16 API), so each ASCII
+  pair was rendered as one wide char (e.g. `ls` → 獬). Now writes the bytes
+  verbatim via `WriteFile` with the console output code page set to UTF-8.
+- **Windows special keys.** Arrows, Home/End, PageUp/Down, Insert/Delete and
+  F1-F12 (which carry no UnicodeChar) were dropped; they now emit the correct
+  VT escape sequences.
+- Zig 0.17 Windows build: gated the POSIX-only daemon/clipboard/protocol poll
+  loops, raw-mode wait-status decode, PNG fd close, and stderr write so they
+  compile (and no-op) on the Windows target without affecting Linux/macOS.
+
 ## 0.10.0 — 2026-06-10
 
 A daily-driver hardening release. teruwm gains a native-pane clipboard,
