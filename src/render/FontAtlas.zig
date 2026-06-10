@@ -14,10 +14,19 @@ const FontAtlas = @This();
 
 // Glyph-range gates resolved at compile time from `-Dglyphs=...`.
 // Ascii + Latin-1 + Box + Block are always included (terminal essentials).
-// Geometric Shapes added at extended/full. Cyrillic + Braille only at full.
+// extended (the default) adds everything a modern TUI emits: Geometric
+// Shapes, General Punctuation (– — … ' '), Arrows (→), Misc Technical
+// (⏺ ⌘ ⏎), Dingbats (✓ ✳ ✶ ✻ — claude-code's task marks + spinner frames
+// live here; without them the spinner literally blinks in and out of
+// existence), and Braille (⠋⠙… — every ora/rich-style CLI spinner).
+// Cyrillic only at full.
 const include_geometric: bool = build_options.glyph_budget != .ascii;
+const include_punct: bool = build_options.glyph_budget != .ascii;
+const include_arrows: bool = build_options.glyph_budget != .ascii;
+const include_misc_tech: bool = build_options.glyph_budget != .ascii;
+const include_dingbats: bool = build_options.glyph_budget != .ascii;
+const include_braille: bool = build_options.glyph_budget != .ascii;
 const include_cyrillic: bool = build_options.glyph_budget == .full;
-const include_braille: bool = build_options.glyph_budget == .full;
 
 /// One codepoint's flat slot in the atlas grid.
 const Codepoint = struct { cp: u21, slot: u32 };
@@ -39,13 +48,37 @@ fn symbolIndex(cp: u21) ?u32 {
     return null;
 }
 
+/// Slots occupied by the always-on ranges (ASCII, Latin-1, Box, Block,
+/// Symbols) — the budget-gated ranges start here. Used to disambiguate the
+/// symbol/dingbats overlap when storing GlyphInfo (✓✔✗✘ appear in both).
+const always_on_slots: u32 = 95 + 96 + 128 + 32 + symbol_codepoints.len;
+
+/// Symbol-fallback font candidates, best coverage first. Probed only for
+/// glyphs the MAIN font lacks, so a fully-covered main font never reads
+/// these. No fontconfig — fixed well-known paths, same philosophy as
+/// font_search_paths below.
+const fallback_font_paths = [_][]const u8{
+    "/usr/share/fonts/Adwaita/AdwaitaMono-Regular.ttf",
+    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf",
+    "/usr/share/fonts/gnu-free/FreeMono.otf",
+    "/System/Library/Fonts/Apple Symbols.ttf",
+};
+
 /// Total glyph slots for the active `-Dglyphs` budget. SINGLE SOURCE OF TRUTH:
 /// atlas dimensions, glyphSlot() offsets, and every rasterizer derive from it.
-/// ascii=360, extended=456, full=968.
+/// ascii=360, extended=1384, full=1640.
 const atlas_total_glyphs: u32 = 95 + 96 + 128 + 32 + 9 +
     (if (include_geometric) 96 else 0) +
     (if (include_cyrillic) 256 else 0) +
-    (if (include_braille) 256 else 0);
+    (if (include_braille) 256 else 0) +
+    (if (include_punct) 112 else 0) +
+    (if (include_arrows) 112 else 0) +
+    (if (include_misc_tech) 256 else 0) +
+    (if (include_dingbats) 192 else 0);
 
 /// Fill `buf` with the budget-gated codepoint→slot list in the canonical order
 /// glyphSlot() resolves: ASCII, Latin-1, Box, Block, Symbols, [Geometric],
@@ -88,6 +121,22 @@ fn buildAtlasCodepoints(buf: []Codepoint) u32 {
         buf[slot] = .{ .cp = @intCast(cp), .slot = slot };
         slot += 1;
     };
+    if (include_punct) for (0x2000..0x2070) |cp| {
+        buf[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    };
+    if (include_arrows) for (0x2190..0x2200) |cp| {
+        buf[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    };
+    if (include_misc_tech) for (0x2300..0x2400) |cp| {
+        buf[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    };
+    if (include_dingbats) for (0x2700..0x27C0) |cp| {
+        buf[slot] = .{ .cp = @intCast(cp), .slot = slot };
+        slot += 1;
+    };
     return slot;
 }
 
@@ -106,6 +155,7 @@ const stbtt = struct {
     };
 
     pub extern fn stbtt_InitFont(info: *stbtt_fontinfo, data: [*]const u8, offset: c_int) callconv(.c) c_int;
+    pub extern fn stbtt_FindGlyphIndex(info: *const stbtt_fontinfo, codepoint: c_int) callconv(.c) c_int;
     pub extern fn stbtt_ScaleForPixelHeight(info: *const stbtt_fontinfo, pixel_height: f32) callconv(.c) f32;
     pub extern fn stbtt_GetFontVMetrics(info: *const stbtt_fontinfo, ascent: *c_int, descent: *c_int, line_gap: *c_int) callconv(.c) void;
     pub extern fn stbtt_GetCodepointHMetrics(info: *const stbtt_fontinfo, cp: c_int, advance_width: *c_int, left_side_bearing: *c_int) callconv(.c) void;
@@ -144,10 +194,23 @@ cyrillic_glyphs: [256]?GlyphInfo,
 geometric_glyphs: [96]?GlyphInfo,
 /// Braille Patterns (U+2800-U+28FF)
 braille_glyphs: [256]?GlyphInfo,
+/// General Punctuation (U+2000-U+206F): – — … ' ' " "
+punct_glyphs: [112]?GlyphInfo,
+/// Arrows (U+2190-U+21FF)
+arrows_glyphs: [112]?GlyphInfo,
+/// Miscellaneous Technical (U+2300-U+23FF): ⏺ ⌘ ⏎ ⌫
+misc_tech_glyphs: [256]?GlyphInfo,
+/// Dingbats (U+2700-U+27BF): ✓ ✳ ✶ ✻ — TUI marks + spinner frames
+dingbats_glyphs: [192]?GlyphInfo,
 cell_width: u32,
 cell_height: u32,
 allocator: std.mem.Allocator,
 font_data: []u8, // kept alive for stbtt
+/// Symbol-fallback font (AdwaitaMono / DejaVu probe — no fontconfig):
+/// rasterizes any codepoint the main font lacks. Null when no fallback
+/// was found; rendering then degrades to the synthesized glyphs / blank,
+/// exactly as before.
+fallback_font_data: ?[]u8 = null,
 
 pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16, io: Io) !FontAtlas {
     // Load font file
@@ -165,6 +228,28 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     }
 
     const scale = stbtt.stbtt_ScaleForPixelHeight(&font_info, @floatFromInt(font_size));
+
+    // Symbol fallback: first probe-able candidate wins. Loaded once here;
+    // per-glyph use below is gated on the MAIN font actually missing the
+    // codepoint, so a fully-covered main font never touches it. Without a
+    // fallback, coding fonts (JetBrains Mono, Hack, …) leave most of the
+    // TUI symbol ranges as .notdef lumps or blanks.
+    var fallback_font_data: ?[]u8 = null;
+    errdefer if (fallback_font_data) |fb| allocator.free(fb);
+    var fb_info: stbtt.stbtt_fontinfo = undefined;
+    for (fallback_font_paths) |fp| {
+        const data = loadFile(allocator, fp, io) catch continue;
+        if (stbtt.stbtt_InitFont(&fb_info, data.ptr, 0) == 0) {
+            allocator.free(data);
+            continue;
+        }
+        fallback_font_data = data;
+        break;
+    }
+    const fb_scale: f32 = if (fallback_font_data != null)
+        stbtt.stbtt_ScaleForPixelHeight(&fb_info, @floatFromInt(font_size))
+    else
+        0;
 
     // Get font metrics
     var ascent: c_int = 0;
@@ -212,6 +297,10 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     var cyrillic_glyphs: [256]?GlyphInfo = @splat(null);
     var geometric_glyphs: [96]?GlyphInfo = @splat(null);
     var braille_glyphs: [256]?GlyphInfo = @splat(null);
+    var punct_glyphs: [112]?GlyphInfo = @splat(null);
+    var arrows_glyphs: [112]?GlyphInfo = @splat(null);
+    var misc_tech_glyphs: [256]?GlyphInfo = @splat(null);
+    var dingbats_glyphs: [192]?GlyphInfo = @splat(null);
     const baseline: i32 = @intFromFloat(f_ascent);
 
     // Build the flat codepoint→slot list (budget-gated, canonical order).
@@ -226,16 +315,25 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
         const atlas_x: u32 = @intCast(col * cell_w);
         const atlas_y: u32 = @intCast(row * cell_h);
 
+        // Per-glyph font pick: use the fallback when the main font lacks
+        // the codepoint — stb would otherwise rasterize glyph 0 (.notdef),
+        // the "lump" that used to stand in for ✔ on coding fonts.
+        const use_fb = fallback_font_data != null and
+            stbtt.stbtt_FindGlyphIndex(&font_info, @intCast(entry.cp)) == 0 and
+            stbtt.stbtt_FindGlyphIndex(&fb_info, @intCast(entry.cp)) != 0;
+        const fi: *const stbtt.stbtt_fontinfo = if (use_fb) &fb_info else &font_info;
+        const fsc: f32 = if (use_fb) fb_scale else scale;
+
         // Get glyph metrics
         var advance_c: c_int = 0;
         var lsb: c_int = 0;
-        stbtt.stbtt_GetCodepointHMetrics(&font_info, @intCast(entry.cp), &advance_c, &lsb);
+        stbtt.stbtt_GetCodepointHMetrics(fi, @intCast(entry.cp), &advance_c, &lsb);
 
         var ix0: c_int = 0;
         var iy0: c_int = 0;
         var ix1: c_int = 0;
         var iy1: c_int = 0;
-        stbtt.stbtt_GetCodepointBitmapBox(&font_info, @intCast(entry.cp), scale, scale, &ix0, &iy0, &ix1, &iy1);
+        stbtt.stbtt_GetCodepointBitmapBox(fi, @intCast(entry.cp), fsc, fsc, &ix0, &iy0, &ix1, &iy1);
 
         const glyph_w: u32 = @intCast(@max(0, ix1 - ix0));
         const glyph_h: u32 = @intCast(@max(0, iy1 - iy0));
@@ -255,13 +353,13 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
 
             if (render_w > 0 and render_h > 0) {
                 stbtt.stbtt_MakeCodepointBitmap(
-                    &font_info,
+                    fi,
                     atlas_data.ptr + dst_y * atlas_w + dst_x,
                     @intCast(@min(render_w, atlas_w - dst_x)),
                     @intCast(@min(render_h, atlas_h - dst_y)),
                     @intCast(atlas_w),
-                    scale,
-                    scale,
+                    fsc,
+                    fsc,
                     @intCast(entry.cp),
                 );
             }
@@ -274,24 +372,36 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
             .height = @intCast(@min(glyph_h, cell_h)),
             .bearing_x = @intCast(ix0),
             .bearing_y = @intCast(iy0),
-            .advance = @intCast(@as(u32, @intFromFloat(@ceil(@as(f32, @floatFromInt(advance_c)) * scale)))),
+            .advance = @intCast(@as(u32, @intFromFloat(@ceil(@as(f32, @floatFromInt(advance_c)) * fsc)))),
         };
 
-        // Store in the correct lookup table
+        // Store in the correct lookup table. The slot < always_on_slots
+        // guard matters for the symbol/dingbats OVERLAP (✓✔✗✘ are in both
+        // the always-on symbol list AND the Dingbats range): each entry
+        // must store into the table its SLOT belongs to, or the dingbats
+        // duplicate would repoint symbols_glyphs at the dingbats slot.
         if (entry.cp < 256) {
             glyphs[entry.cp] = info;
         } else if (entry.cp >= 0x2500 and entry.cp < 0x2580) {
             box_glyphs[entry.cp - 0x2500] = info;
         } else if (entry.cp >= 0x2580 and entry.cp < 0x25A0) {
             block_glyphs[entry.cp - 0x2580] = info;
-        } else if (symbolIndex(entry.cp)) |i| {
-            symbols_glyphs[i] = info;
+        } else if (symbolIndex(entry.cp) != null and entry.slot < always_on_slots) {
+            symbols_glyphs[symbolIndex(entry.cp).?] = info;
         } else if (entry.cp >= 0x0400 and entry.cp < 0x0500) {
             cyrillic_glyphs[entry.cp - 0x0400] = info;
         } else if (entry.cp >= 0x25A0 and entry.cp < 0x2600) {
             geometric_glyphs[entry.cp - 0x25A0] = info;
         } else if (entry.cp >= 0x2800 and entry.cp < 0x2900) {
             braille_glyphs[entry.cp - 0x2800] = info;
+        } else if (entry.cp >= 0x2000 and entry.cp < 0x2070) {
+            punct_glyphs[entry.cp - 0x2000] = info;
+        } else if (entry.cp >= 0x2190 and entry.cp < 0x2200) {
+            arrows_glyphs[entry.cp - 0x2190] = info;
+        } else if (entry.cp >= 0x2300 and entry.cp < 0x2400) {
+            misc_tech_glyphs[entry.cp - 0x2300] = info;
+        } else if (entry.cp >= 0x2700 and entry.cp < 0x27C0) {
+            dingbats_glyphs[entry.cp - 0x2700] = info;
         }
     }
 
@@ -299,7 +409,16 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     // This ensures seamless edge-to-edge connections regardless of font metrics.
     FontSynth.drawBoxDrawing(atlas_data, atlas_w, cell_w, cell_h, glyphs_per_row);
     FontSynth.drawBlocks(atlas_data, atlas_w, cell_w, cell_h, glyphs_per_row);
-    FontSynth.drawSymbols(atlas_data, atlas_w, cell_w, cell_h, glyphs_per_row);
+    // Symbols: synthesize ONLY where neither font has a real glyph — a
+    // font-drawn ✓ beats the procedural approximation every time.
+    var synth_mask: [symbol_codepoints.len]bool = undefined;
+    for (symbol_codepoints, 0..) |cp, i| {
+        const in_main = stbtt.stbtt_FindGlyphIndex(&font_info, @intCast(cp)) != 0;
+        const in_fb = fallback_font_data != null and
+            stbtt.stbtt_FindGlyphIndex(&fb_info, @intCast(cp)) != 0;
+        synth_mask[i] = !in_main and !in_fb;
+    }
+    FontSynth.drawSymbols(atlas_data, atlas_w, cell_w, cell_h, glyphs_per_row, &synth_mask);
 
     return FontAtlas{
         .atlas_data = atlas_data,
@@ -312,10 +431,15 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
         .cyrillic_glyphs = cyrillic_glyphs,
         .geometric_glyphs = geometric_glyphs,
         .braille_glyphs = braille_glyphs,
+        .punct_glyphs = punct_glyphs,
+        .arrows_glyphs = arrows_glyphs,
+        .misc_tech_glyphs = misc_tech_glyphs,
+        .dingbats_glyphs = dingbats_glyphs,
         .cell_width = cell_w,
         .cell_height = cell_h,
         .allocator = allocator,
         .font_data = font_data,
+        .fallback_font_data = fallback_font_data,
     };
 }
 
@@ -349,6 +473,17 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
 
     const scale = stbtt.stbtt_ScaleForPixelHeight(&font_info, @floatFromInt(new_size));
 
+    // Re-init the symbol fallback from the bytes init() already loaded.
+    var fb_info: stbtt.stbtt_fontinfo = undefined;
+    var have_fb = false;
+    if (self.fallback_font_data) |fbd| {
+        if (stbtt.stbtt_InitFont(&fb_info, fbd.ptr, 0) != 0) have_fb = true;
+    }
+    const fb_scale: f32 = if (have_fb)
+        stbtt.stbtt_ScaleForPixelHeight(&fb_info, @floatFromInt(new_size))
+    else
+        0;
+
     var ascent: c_int = 0;
     var descent: c_int = 0;
     var line_gap: c_int = 0;
@@ -381,6 +516,10 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
     var cyrillic_glyphs: [256]?GlyphInfo = @splat(null);
     var geometric_glyphs: [96]?GlyphInfo = @splat(null);
     var braille_glyphs: [256]?GlyphInfo = @splat(null);
+    var punct_glyphs: [112]?GlyphInfo = @splat(null);
+    var arrows_glyphs: [112]?GlyphInfo = @splat(null);
+    var misc_tech_glyphs: [256]?GlyphInfo = @splat(null);
+    var dingbats_glyphs: [192]?GlyphInfo = @splat(null);
     const baseline: i32 = @intFromFloat(f_ascent);
 
     var codepoints: [atlas_total_glyphs]Codepoint = undefined;
@@ -392,15 +531,21 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
         const atlas_x: u32 = @intCast(col * cell_w);
         const atlas_y: u32 = @intCast(row * cell_h);
 
+        const use_fb = have_fb and
+            stbtt.stbtt_FindGlyphIndex(&font_info, @intCast(entry.cp)) == 0 and
+            stbtt.stbtt_FindGlyphIndex(&fb_info, @intCast(entry.cp)) != 0;
+        const fi: *const stbtt.stbtt_fontinfo = if (use_fb) &fb_info else &font_info;
+        const fsc: f32 = if (use_fb) fb_scale else scale;
+
         var advance_c: c_int = 0;
         var lsb: c_int = 0;
-        stbtt.stbtt_GetCodepointHMetrics(&font_info, @intCast(entry.cp), &advance_c, &lsb);
+        stbtt.stbtt_GetCodepointHMetrics(fi, @intCast(entry.cp), &advance_c, &lsb);
 
         var ix0: c_int = 0;
         var iy0: c_int = 0;
         var ix1: c_int = 0;
         var iy1: c_int = 0;
-        stbtt.stbtt_GetCodepointBitmapBox(&font_info, @intCast(entry.cp), scale, scale, &ix0, &iy0, &ix1, &iy1);
+        stbtt.stbtt_GetCodepointBitmapBox(fi, @intCast(entry.cp), fsc, fsc, &ix0, &iy0, &ix1, &iy1);
 
         const glyph_w: u32 = @intCast(@max(0, ix1 - ix0));
         const glyph_h: u32 = @intCast(@max(0, iy1 - iy0));
@@ -415,13 +560,13 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
 
             if (render_w > 0 and render_h > 0) {
                 stbtt.stbtt_MakeCodepointBitmap(
-                    &font_info,
+                    fi,
                     atlas_data.ptr + dst_y * atlas_w + dst_x,
                     @intCast(@min(render_w, atlas_w - dst_x)),
                     @intCast(@min(render_h, atlas_h - dst_y)),
                     @intCast(atlas_w),
-                    scale,
-                    scale,
+                    fsc,
+                    fsc,
                     @intCast(entry.cp),
                 );
             }
@@ -434,25 +579,44 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
             .height = @intCast(@min(glyph_h, cell_h)),
             .bearing_x = @intCast(ix0),
             .bearing_y = @intCast(iy0),
-            .advance = @intCast(@as(u32, @intFromFloat(@ceil(@as(f32, @floatFromInt(advance_c)) * scale)))),
+            .advance = @intCast(@as(u32, @intFromFloat(@ceil(@as(f32, @floatFromInt(advance_c)) * fsc)))),
         };
 
         if (entry.cp < 256) { glyphs[entry.cp] = info; }
         else if (entry.cp >= 0x2500 and entry.cp < 0x2580) { box_glyphs[entry.cp - 0x2500] = info; }
         else if (entry.cp >= 0x2580 and entry.cp < 0x25A0) { block_glyphs[entry.cp - 0x2580] = info; }
-        else if (symbolIndex(entry.cp)) |i| { symbols_glyphs[i] = info; }
+        else if (symbolIndex(entry.cp) != null and entry.slot < always_on_slots) { symbols_glyphs[symbolIndex(entry.cp).?] = info; }
         else if (entry.cp >= 0x0400 and entry.cp < 0x0500) { cyrillic_glyphs[entry.cp - 0x0400] = info; }
         else if (entry.cp >= 0x25A0 and entry.cp < 0x2600) { geometric_glyphs[entry.cp - 0x25A0] = info; }
         else if (entry.cp >= 0x2800 and entry.cp < 0x2900) { braille_glyphs[entry.cp - 0x2800] = info; }
+        else if (entry.cp >= 0x2000 and entry.cp < 0x2070) { punct_glyphs[entry.cp - 0x2000] = info; }
+        else if (entry.cp >= 0x2190 and entry.cp < 0x2200) { arrows_glyphs[entry.cp - 0x2190] = info; }
+        else if (entry.cp >= 0x2300 and entry.cp < 0x2400) { misc_tech_glyphs[entry.cp - 0x2300] = info; }
+        else if (entry.cp >= 0x2700 and entry.cp < 0x27C0) { dingbats_glyphs[entry.cp - 0x2700] = info; }
     }
 
     FontSynth.drawBoxDrawing(atlas_data, atlas_w, cell_w, cell_h, glyphs_per_row);
     FontSynth.drawBlocks(atlas_data, atlas_w, cell_w, cell_h, glyphs_per_row);
-    FontSynth.drawSymbols(atlas_data, atlas_w, cell_w, cell_h, glyphs_per_row);
+    var synth_mask: [symbol_codepoints.len]bool = undefined;
+    for (symbol_codepoints, 0..) |cp, i| {
+        const in_main = stbtt.stbtt_FindGlyphIndex(&font_info, @intCast(cp)) != 0;
+        const in_fb = have_fb and stbtt.stbtt_FindGlyphIndex(&fb_info, @intCast(cp)) != 0;
+        synth_mask[i] = !in_main and !in_fb;
+    }
+    FontSynth.drawSymbols(atlas_data, atlas_w, cell_w, cell_h, glyphs_per_row, &synth_mask);
 
     // Reuse existing font_data (don't free it — the old atlas still owns it until caller deinits)
     const font_data_copy = try self.allocator.alloc(u8, self.font_data.len);
+    errdefer self.allocator.free(font_data_copy);
     @memcpy(font_data_copy, self.font_data);
+
+    // The new atlas owns its own copy of the fallback bytes too.
+    var fallback_copy: ?[]u8 = null;
+    if (self.fallback_font_data) |fbd| {
+        const c = try self.allocator.alloc(u8, fbd.len);
+        @memcpy(c, fbd);
+        fallback_copy = c;
+    }
 
     return FontAtlas{
         .atlas_data = atlas_data,
@@ -465,10 +629,15 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
         .cyrillic_glyphs = cyrillic_glyphs,
         .geometric_glyphs = geometric_glyphs,
         .braille_glyphs = braille_glyphs,
+        .punct_glyphs = punct_glyphs,
+        .arrows_glyphs = arrows_glyphs,
+        .misc_tech_glyphs = misc_tech_glyphs,
+        .dingbats_glyphs = dingbats_glyphs,
         .cell_width = cell_w,
         .cell_height = cell_h,
         .allocator = self.allocator,
         .font_data = font_data_copy,
+        .fallback_font_data = fallback_copy,
     };
 }
 
@@ -513,17 +682,36 @@ pub fn loadVariant(self: *const FontAtlas, allocator: std.mem.Allocator, font_pa
     var codepoints: [atlas_total_glyphs]Codepoint = undefined;
     const slot = buildAtlasCodepoints(&codepoints);
 
+    // Symbol fallback (borrowed from the primary atlas) — same rationale
+    // as rasterizeVariant: a variant font missing a codepoint must not
+    // leave an empty slot where the regular weight renders a glyph.
+    var fb_info: stbtt.stbtt_fontinfo = undefined;
+    var have_fb = false;
+    if (self.fallback_font_data) |fbd| {
+        if (stbtt.stbtt_InitFont(&fb_info, fbd.ptr, 0) != 0) have_fb = true;
+    }
+    const fb_scale: f32 = if (have_fb)
+        stbtt.stbtt_ScaleForPixelHeight(&fb_info, target_h)
+    else
+        0;
+
     for (codepoints[0..slot]) |entry| {
         const col = entry.slot % glyphs_per_row;
         const row = entry.slot / glyphs_per_row;
         const atlas_x: u32 = @intCast(col * cw);
         const atlas_y: u32 = @intCast(row * ch);
 
+        const use_fb = have_fb and
+            stbtt.stbtt_FindGlyphIndex(&font_info, @intCast(entry.cp)) == 0 and
+            stbtt.stbtt_FindGlyphIndex(&fb_info, @intCast(entry.cp)) != 0;
+        const fi: *const stbtt.stbtt_fontinfo = if (use_fb) &fb_info else &font_info;
+        const fsc: f32 = if (use_fb) fb_scale else scale;
+
         var ix0: c_int = 0;
         var iy0: c_int = 0;
         var ix1: c_int = 0;
         var iy1: c_int = 0;
-        stbtt.stbtt_GetCodepointBitmapBox(&font_info, @intCast(entry.cp), scale, scale, &ix0, &iy0, &ix1, &iy1);
+        stbtt.stbtt_GetCodepointBitmapBox(fi, @intCast(entry.cp), fsc, fsc, &ix0, &iy0, &ix1, &iy1);
 
         const glyph_w: u32 = @intCast(@max(0, ix1 - ix0));
         const glyph_h: u32 = @intCast(@max(0, iy1 - iy0));
@@ -538,13 +726,13 @@ pub fn loadVariant(self: *const FontAtlas, allocator: std.mem.Allocator, font_pa
 
             if (render_w > 0 and render_h > 0) {
                 stbtt.stbtt_MakeCodepointBitmap(
-                    &font_info,
+                    fi,
                     atlas.ptr + dst_y * aw + dst_x,
                     @intCast(@min(render_w, aw - dst_x)),
                     @intCast(@min(render_h, ah - dst_y)),
                     @intCast(aw),
-                    scale,
-                    scale,
+                    fsc,
+                    fsc,
                     @intCast(entry.cp),
                 );
             }
@@ -572,6 +760,20 @@ pub fn rasterizeVariant(self: *const FontAtlas, allocator: std.mem.Allocator, va
     const target_h: f32 = @floatFromInt(self.cell_height);
     const scale = target_h / (@as(f32, @floatFromInt(ascent)) - @as(f32, @floatFromInt(descent)));
 
+    // Symbol fallback (borrowed from the primary atlas — read-only here):
+    // a bold/italic variant font missing a codepoint would otherwise leave
+    // an empty variant slot, making e.g. a BOLD ✓ vanish while the regular
+    // one renders.
+    var fb_info: stbtt.stbtt_fontinfo = undefined;
+    var have_fb = false;
+    if (self.fallback_font_data) |fbd| {
+        if (stbtt.stbtt_InitFont(&fb_info, fbd.ptr, 0) != 0) have_fb = true;
+    }
+    const fb_scale: f32 = if (have_fb)
+        stbtt.stbtt_ScaleForPixelHeight(&fb_info, target_h)
+    else
+        0;
+
     const atlas_buf = try allocator.alloc(u8, self.atlas_width * self.atlas_height);
     errdefer allocator.free(atlas_buf);
     @memset(atlas_buf, 0);
@@ -591,11 +793,18 @@ pub fn rasterizeVariant(self: *const FontAtlas, allocator: std.mem.Allocator, va
         const row = entry.slot / glyphs_per_row;
         const atlas_x: u32 = @intCast(col * cw);
         const atlas_y: u32 = @intCast(row * ch);
+
+        const use_fb = have_fb and
+            stbtt.stbtt_FindGlyphIndex(&font_info, @intCast(entry.cp)) == 0 and
+            stbtt.stbtt_FindGlyphIndex(&fb_info, @intCast(entry.cp)) != 0;
+        const fi: *const stbtt.stbtt_fontinfo = if (use_fb) &fb_info else &font_info;
+        const fsc: f32 = if (use_fb) fb_scale else scale;
+
         var ix0: c_int = 0;
         var iy0: c_int = 0;
         var ix1: c_int = 0;
         var iy1: c_int = 0;
-        stbtt.stbtt_GetCodepointBitmapBox(&font_info, @intCast(entry.cp), scale, scale, &ix0, &iy0, &ix1, &iy1);
+        stbtt.stbtt_GetCodepointBitmapBox(fi, @intCast(entry.cp), fsc, fsc, &ix0, &iy0, &ix1, &iy1);
         const glyph_w: u32 = @intCast(@max(0, ix1 - ix0));
         const glyph_h: u32 = @intCast(@max(0, iy1 - iy0));
         if (glyph_w > 0 and glyph_h > 0) {
@@ -607,13 +816,13 @@ pub fn rasterizeVariant(self: *const FontAtlas, allocator: std.mem.Allocator, va
             const render_h = @min(glyph_h, ch -| @min(offset_y, ch - 1));
             if (render_w > 0 and render_h > 0) {
                 stbtt.stbtt_MakeCodepointBitmap(
-                    &font_info,
+                    fi,
                     atlas_buf.ptr + dst_y * aw + dst_x,
                     @intCast(@min(render_w, aw - dst_x)),
                     @intCast(@min(render_h, ah - dst_y)),
                     @intCast(aw),
-                    scale,
-                    scale,
+                    fsc,
+                    fsc,
                     @intCast(entry.cp),
                 );
             }
@@ -644,6 +853,7 @@ pub const VariantAtlas = struct {
 pub fn deinit(self: *FontAtlas) void {
     self.allocator.free(self.atlas_data);
     self.allocator.free(self.font_data);
+    if (self.fallback_font_data) |fb| self.allocator.free(fb);
 }
 
 pub fn getGlyph(self: *const FontAtlas, codepoint: u21) ?GlyphInfo {
@@ -659,6 +869,14 @@ pub fn getGlyph(self: *const FontAtlas, codepoint: u21) ?GlyphInfo {
         return self.cyrillic_glyphs[codepoint - 0x0400];
     if (include_braille and codepoint >= 0x2800 and codepoint < 0x2900)
         return self.braille_glyphs[codepoint - 0x2800];
+    if (include_punct and codepoint >= 0x2000 and codepoint < 0x2070)
+        return self.punct_glyphs[codepoint - 0x2000];
+    if (include_arrows and codepoint >= 0x2190 and codepoint < 0x2200)
+        return self.arrows_glyphs[codepoint - 0x2190];
+    if (include_misc_tech and codepoint >= 0x2300 and codepoint < 0x2400)
+        return self.misc_tech_glyphs[codepoint - 0x2300];
+    if (include_dingbats and codepoint >= 0x2700 and codepoint < 0x27C0)
+        return self.dingbats_glyphs[codepoint - 0x2700];
     return null;
 }
 
@@ -689,6 +907,22 @@ pub fn glyphSlot(codepoint: u21) ?u32 {
     }
     if (include_braille) {
         if (codepoint >= 0x2800 and codepoint < 0x2900) return @as(u32, codepoint - 0x2800) + opt_offset;
+        opt_offset += 256;
+    }
+    if (include_punct) {
+        if (codepoint >= 0x2000 and codepoint < 0x2070) return @as(u32, codepoint - 0x2000) + opt_offset;
+        opt_offset += 112;
+    }
+    if (include_arrows) {
+        if (codepoint >= 0x2190 and codepoint < 0x2200) return @as(u32, codepoint - 0x2190) + opt_offset;
+        opt_offset += 112;
+    }
+    if (include_misc_tech) {
+        if (codepoint >= 0x2300 and codepoint < 0x2400) return @as(u32, codepoint - 0x2300) + opt_offset;
+        opt_offset += 256;
+    }
+    if (include_dingbats) {
+        if (codepoint >= 0x2700 and codepoint < 0x27C0) return @as(u32, codepoint - 0x2700) + opt_offset;
     }
     return null;
 }
@@ -891,8 +1125,15 @@ test "glyphSlot: synthesized symbols (always-on, after Block)" {
     try std.testing.expectEqual(@as(?u32, base + 1), glyphSlot(0x2610)); // ☐ index 1 → 352
     try std.testing.expectEqual(@as(?u32, base + 4), glyphSlot(0x2713)); // ✓ index 4 → 355
     try std.testing.expectEqual(@as(?u32, base + 8), glyphSlot(0xFFFD)); // � index 8 → 359
-    // A codepoint between two of the symbols but not in the set is absent.
-    try std.testing.expectEqual(@as(?u32, null), glyphSlot(0x2715));
+    // 0x2715 ✕ is not in the symbol LIST but now lives in the Dingbats
+    // range (extended budget) — present there, absent at ascii budget.
+    if (include_dingbats) {
+        try std.testing.expect(glyphSlot(0x2715) != null);
+    } else {
+        try std.testing.expectEqual(@as(?u32, null), glyphSlot(0x2715));
+    }
+    // A codepoint outside every atlas range is absent (Glagolitic).
+    try std.testing.expectEqual(@as(?u32, null), glyphSlot(0x2C00));
     // symbolIndex maps codepoint → array index.
     try std.testing.expectEqual(@as(?u32, 0), symbolIndex(0x2022));
     try std.testing.expectEqual(@as(?u32, 8), symbolIndex(0xFFFD));
@@ -936,8 +1177,39 @@ test "atlas builder and glyphSlot agree (no count/order drift)" {
     for (buf[0..n]) |entry| {
         // Every rasterized slot is addressable within the budget-sized atlas.
         try std.testing.expect(entry.slot < atlas_total_glyphs);
+        // ✓✔✗✘ are deliberately rasterized TWICE (always-on symbol list AND
+        // the Dingbats range); lookup prefers the always-on symbol slot.
+        if (symbolIndex(entry.cp) != null and entry.slot >= always_on_slots) {
+            try std.testing.expectEqual(
+                @as(?u32, 95 + 96 + 128 + 32 + symbolIndex(entry.cp).?),
+                glyphSlot(entry.cp),
+            );
+            continue;
+        }
         // glyphSlot() resolves the same codepoint to the same slot the
         // rasterizer wrote it to — otherwise the renderer reads a wrong glyph.
         try std.testing.expectEqual(@as(?u32, entry.slot), glyphSlot(entry.cp));
     }
+}
+
+test "glyphSlot: TUI symbol ranges (punct/arrows/misc-tech/dingbats/braille at extended)" {
+    if (!include_dingbats) {
+        try std.testing.expectEqual(@as(?u32, null), glyphSlot(0x2733)); // ✳
+        return;
+    }
+    // The spinner sparkles + marks every modern TUI emits must resolve —
+    // these rendered as BLANK cells before the extended budget grew, which
+    // made claude-code's sparkle spinner blink in and out of existence.
+    try std.testing.expect(glyphSlot(0x2014) != null); // — em dash
+    try std.testing.expect(glyphSlot(0x2026) != null); // … ellipsis
+    try std.testing.expect(glyphSlot(0x2192) != null); // → arrow
+    try std.testing.expect(glyphSlot(0x23FA) != null); // ⏺ record
+    try std.testing.expect(glyphSlot(0x2722) != null); // ✢
+    try std.testing.expect(glyphSlot(0x2733) != null); // ✳
+    try std.testing.expect(glyphSlot(0x2736) != null); // ✶
+    try std.testing.expect(glyphSlot(0x273B) != null); // ✻
+    try std.testing.expect(glyphSlot(0x2800) != null); // ⠀ braille (extended now)
+    try std.testing.expect(glyphSlot(0x28FF) != null);
+    // Lookup order: ✔ prefers its always-on symbol slot over the dingbats one.
+    try std.testing.expectEqual(@as(?u32, 95 + 96 + 128 + 32 + 5), glyphSlot(0x2714));
 }

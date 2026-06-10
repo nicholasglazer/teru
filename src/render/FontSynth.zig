@@ -305,7 +305,11 @@ pub fn drawBlocks(atlas: []u8, aw: u32, cw: u32, ch: u32, glyphs_per_row: u32) v
 /// slots. These codepoints live in Misc-Symbols / Dingbats and are absent
 /// from every -Dglyphs budget, so without this they render as a blank cell.
 /// Font-independent, like drawBoxDrawing / drawBlocks.
-pub fn drawSymbols(atlas: []u8, aw: u32, cw: u32, ch: u32, glyphs_per_row: u32) void {
+/// `synth` selects which of the symbol slots to draw — true means "no
+/// real font glyph exists for this codepoint, synthesize one". A
+/// font-rasterized ✓ (main or fallback font) always beats the procedural
+/// approximation, so FontAtlas masks those slots off.
+pub fn drawSymbols(atlas: []u8, aw: u32, cw: u32, ch: u32, glyphs_per_row: u32, synth: *const [symbol_codepoints.len]bool) void {
     // Inset the drawable box a touch from the cell edges so adjacent glyphs
     // don't visually merge; thickness scales with cell width.
     const inset_x: u32 = @max(1, cw / 8);
@@ -318,6 +322,7 @@ pub fn drawSymbols(atlas: []u8, aw: u32, cw: u32, ch: u32, glyphs_per_row: u32) 
     const by1: i32 = @intCast(ch -| inset_y);
 
     for (symbol_codepoints, 0..) |cp, idx| {
+        if (!synth[idx]) continue;
         const slot = symbols_slot_base + @as(u32, @intCast(idx));
         const glyph_col = slot % glyphs_per_row;
         const glyph_row = slot / glyphs_per_row;
@@ -575,7 +580,8 @@ test "drawSymbols paints non-blank cells for box and check slots" {
     defer std.testing.allocator.free(atlas);
     @memset(atlas, 0);
 
-    drawSymbols(atlas, aw, cw, ch, glyphs_per_row);
+    const synth_all: [symbol_codepoints.len]bool = @splat(true);
+    drawSymbols(atlas, aw, cw, ch, glyphs_per_row, &synth_all);
 
     // ☐ U+2610 is index 1 → slot 352; ✓ U+2713 is index 4 → slot 355.
     const box_slot = symbols_slot_base + 1;

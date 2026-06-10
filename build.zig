@@ -62,11 +62,13 @@ pub fn build(b: *std.Build) void {
     const enable_compositor = b.option(bool, "compositor", "Build miozu Wayland compositor (links wlroots)") orelse false;
 
     // ── Font atlas glyph budget ───────────────────────────────────
-    // -Dglyphs=ascii    → 351 glyphs (ASCII + Latin-1 + Box + Block)
-    // -Dglyphs=extended → 447 glyphs (above + Geometric Shapes) [default]
-    // -Dglyphs=full     → 959 glyphs (above + Cyrillic + Braille)
-    // Smaller budgets lower startup time + memory; typical users never
-    // see Cyrillic or Braille in their terminal output.
+    // -Dglyphs=ascii    → 360 glyphs (ASCII + Latin-1 + Box + Block + Symbols)
+    // -Dglyphs=extended → 1384 glyphs (above + Geometric, General Punctuation,
+    //                     Arrows, Misc Technical, Dingbats, Braille — the
+    //                     ranges modern TUIs actually emit: spinners ✳✻⠋,
+    //                     marks ✓⏺, – — … →) [default]
+    // -Dglyphs=full     → 1640 glyphs (above + Cyrillic)
+    // Smaller budgets lower startup time + memory.
     const GlyphBudget = enum { ascii, extended, full };
     const glyph_budget = b.option(GlyphBudget, "glyphs", "Font atlas glyph budget (default: extended)") orelse .extended;
 
