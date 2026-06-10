@@ -81,6 +81,14 @@ pub fn Framework(comptime Impl: type) type {
             prefix: []const u8,
             fn_: *const fn (body: []const u8, buf: []u8) ?[]const u8,
             unavailable_msg: []const u8,
+            /// Tools (full names) that are SAFE to forward while read-only is
+            /// active — i.e. the read-only subset of the forwarded surface.
+            /// teru's own `write_tool_names` can't enumerate another binary's
+            /// tools, so under read-only we block every forwarded tool NOT in
+            /// this allowlist. Fail-safe: a newly-added forwarded tool is
+            /// blocked until it's explicitly listed here. Empty = block ALL
+            /// forwarded tools under read-only.
+            read_only_allow: []const []const u8 = &.{},
         };
 
         /// Server-side read-only enforcement. Mirror of the bridge-level
@@ -93,7 +101,15 @@ pub fn Framework(comptime Impl: type) type {
         /// reject + filter from `tools/list`. Empty = no-op.
         pub const ReadOnly = struct {
             is_active_fn: *const fn (impl: *Impl) bool,
-            write_tool_names: []const []const u8,
+            /// Blocklist: tools rejected + filtered when read-only is active.
+            /// Use for a server whose tools are MOSTLY reads (teru).
+            write_tool_names: []const []const u8 = &.{},
+            /// Allowlist: when set, ONLY these tools are permitted under
+            /// read-only; everything else is rejected + filtered. Use for a
+            /// server whose tools are MOSTLY writes (teruwm). Fail-safe — a
+            /// newly-added tool is blocked until listed. Takes precedence over
+            /// write_tool_names when non-null.
+            read_allowlist: ?[]const []const u8 = null,
         };
 
         pub const Config = struct {
@@ -267,7 +283,9 @@ pub fn Framework(comptime Impl: type) type {
             if (config.read_only) |ro| {
                 if (ro.is_active_fn(impl)) {
                     var filter_buf: [max_response]u8 = undefined;
-                    if (filterToolsList(config.tools_list_body, &filter_buf, ro.write_tool_names)) |body| {
+                    const names = ro.read_allowlist orelse ro.write_tool_names;
+                    const invert = ro.read_allowlist != null;
+                    if (filterToolsList(config.tools_list_body, &filter_buf, names, invert)) |body| {
                         return std.fmt.bufPrint(resp,
                             \\{{"jsonrpc":"2.0","result":{{"tools":{s}}},"id":{s}}}
                         , .{ body, id_str }) catch
@@ -299,11 +317,21 @@ pub fn Framework(comptime Impl: type) type {
             // directly to the socket.
             if (config.read_only) |ro| {
                 if (ro.is_active_fn(impl)) {
-                    for (ro.write_tool_names) |w| {
-                        if (std.mem.eql(u8, tool_name, w)) {
-                            return tools.jsonRpcError(resp, id, -32601, "Read-only mode: write tools are disabled");
+                    const blocked = if (ro.read_allowlist) |allow| blk: {
+                        // allowlist mode: blocked unless explicitly allowed
+                        for (allow) |a| {
+                            if (std.mem.eql(u8, tool_name, a)) break :blk false;
                         }
-                    }
+                        break :blk true;
+                    } else blk: {
+                        // blocklist mode: blocked only if a named write tool
+                        for (ro.write_tool_names) |w| {
+                            if (std.mem.eql(u8, tool_name, w)) break :blk true;
+                        }
+                        break :blk false;
+                    };
+                    if (blocked)
+                        return tools.jsonRpcError(resp, id, -32601, "Read-only mode: write tools are disabled");
                 }
             }
 
@@ -311,6 +339,25 @@ pub fn Framework(comptime Impl: type) type {
 
             if (config.forward) |fwd| {
                 if (std.mem.startsWith(u8, tool_name, fwd.prefix)) {
+                    // Read-only enforcement for FORWARDED tools (teruwm_*).
+                    // The gate above only checks this server's own
+                    // write_tool_names, which can't list another binary's
+                    // tools — so a read-only teru would otherwise relay
+                    // teruwm_quit/restart/spawn unchecked. Block any forwarded
+                    // tool not in the explicit read-only allowlist.
+                    if (config.read_only) |ro| {
+                        if (ro.is_active_fn(impl)) {
+                            var allowed = false;
+                            for (fwd.read_only_allow) |a| {
+                                if (std.mem.eql(u8, tool_name, a)) {
+                                    allowed = true;
+                                    break;
+                                }
+                            }
+                            if (!allowed)
+                                return tools.jsonRpcError(resp, id, -32601, "Read-only mode: write tools are disabled");
+                        }
+                    }
                     if (fwd.fn_(body, resp)) |r| return r;
                     return tools.jsonRpcError(resp, id, -32002, fwd.unavailable_msg);
                 }
@@ -322,7 +369,12 @@ pub fn Framework(comptime Impl: type) type {
         /// in `write_names` from a pre-serialized tools/list array body.
         /// Returns null on any parse error so the caller can fall back
         /// to the unfiltered body.
-        fn filterToolsList(src: []const u8, out: []u8, write_names: []const []const u8) ?[]const u8 {
+        /// Filter a pre-serialized tools array. `invert=false` DROPS tools whose
+        /// name is in `names` (blocklist — teru's write tools). `invert=true`
+        /// KEEPS only tools whose name is in `names` (allowlist — teruwm's
+        /// read-only set). Either way the disabled tools never appear in the
+        /// advertised `tools/list` under read-only.
+        fn filterToolsList(src: []const u8, out: []u8, names: []const []const u8, invert: bool) ?[]const u8 {
             if (src.len < 2 or src[0] != '[' or src[src.len - 1] != ']') return null;
             var pos: usize = 0;
             if (pos >= out.len) return null;
@@ -333,7 +385,10 @@ pub fn Framework(comptime Impl: type) type {
             var i: usize = 0;
             var first = true;
             while (i < body.len) {
-                while (i < body.len and (body[i] == ',' or body[i] == ' ')) i += 1;
+                // Skip separators AND whitespace. tools_list_body is built from
+                // Zig multiline-string segments, which are joined with '\n', so
+                // objects are separated by `,\n` — not just `,` or space.
+                while (i < body.len and (body[i] == ',' or body[i] == ' ' or body[i] == '\n' or body[i] == '\r' or body[i] == '\t')) i += 1;
                 if (i >= body.len) break;
                 if (body[i] != '{') return null;
 
@@ -348,17 +403,20 @@ pub fn Framework(comptime Impl: type) type {
                 if (j >= body.len) return null;
                 const obj = body[i .. j + 1];
 
-                var is_write = false;
-                for (write_names) |w| {
+                var in_list = false;
+                for (names) |w| {
                     var name_buf: [128]u8 = undefined;
                     const needle = std.fmt.bufPrint(&name_buf, "\"name\":\"{s}\"", .{w}) catch continue;
                     if (std.mem.find(u8, obj, needle) != null) {
-                        is_write = true;
+                        in_list = true;
                         break;
                     }
                 }
 
-                if (!is_write) {
+                // blocklist (invert=false): keep tools NOT in `names`.
+                // allowlist (invert=true): keep tools IN `names`.
+                const keep = if (invert) in_list else !in_list;
+                if (keep) {
                     if (!first) {
                         if (pos >= out.len) return null;
                         out[pos] = ',';
@@ -441,4 +499,91 @@ test "read-only mode rejects write tools" {
     try std.testing.expect(std.mem.find(u8, r4, "\"result\"") != null);
     const r5 = FW.dispatch(&impl, list_call, &resp_buf, &config);
     try std.testing.expect(std.mem.find(u8, r5, "test_write") != null);
+}
+
+test "read-only allowlist mode (teruwm): blocks all but the read allowlist" {
+    const Dummy = struct {
+        active: bool,
+        fn isActive(self: *@This()) bool {
+            return self.active;
+        }
+        fn echo(_: *@This(), _: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+            const id_str = id orelse "null";
+            return std.fmt.bufPrint(buf, "{{\"jsonrpc\":\"2.0\",\"result\":\"ok\",\"id\":{s}}}", .{id_str}) catch "{}";
+        }
+    };
+    const FW = Framework(Dummy);
+    const dispatch_table = std.StaticStringMap(FW.Thunk).initComptime(.{
+        .{ "wm_list", Dummy.echo },
+        .{ "wm_quit", Dummy.echo },
+    });
+    const config: FW.Config = .{
+        .server_name = "t",
+        .server_version = "0",
+        .framing = .http,
+        .capabilities_json = "\"tools\":{}",
+        .tool_table = &dispatch_table,
+        // Newline between objects (as real multiline-string bodies have) —
+        // guards the filter's whitespace-skip between tool objects.
+        .tools_list_body = "[{\"name\":\"wm_list\",\"description\":\"r\",\"inputSchema\":{}},\n{\"name\":\"wm_quit\",\"description\":\"w\",\"inputSchema\":{}}]",
+        .read_only = .{
+            .is_active_fn = Dummy.isActive,
+            .read_allowlist = &[_][]const u8{"wm_list"},
+        },
+    };
+    var impl = Dummy{ .active = true };
+    var resp_buf: [2048]u8 = undefined;
+
+    // Allowlisted read tool passes; everything else blocked (fail-safe).
+    const r1 = FW.dispatch(&impl, "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"wm_list\"},\"id\":1}", &resp_buf, &config);
+    try std.testing.expect(std.mem.find(u8, r1, "\"result\"") != null);
+    const r2 = FW.dispatch(&impl, "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"wm_quit\"},\"id\":2}", &resp_buf, &config);
+    try std.testing.expect(std.mem.find(u8, r2, "Read-only") != null);
+
+    // tools/list keeps ONLY the allowlisted tool.
+    const r3 = FW.dispatch(&impl, "{\"jsonrpc\":\"2.0\",\"method\":\"tools/list\",\"id\":3}", &resp_buf, &config);
+    try std.testing.expect(std.mem.find(u8, r3, "wm_list") != null);
+    try std.testing.expect(std.mem.find(u8, r3, "wm_quit") == null);
+}
+
+test "read-only forward gate: only allowlisted forwarded tools relay" {
+    const Dummy = struct {
+        active: bool,
+        fn isActive(self: *@This()) bool {
+            return self.active;
+        }
+        fn fwd(_: []const u8, buf: []u8) ?[]const u8 {
+            return std.fmt.bufPrint(buf, "{{\"jsonrpc\":\"2.0\",\"result\":\"forwarded\",\"id\":1}}", .{}) catch null;
+        }
+    };
+    const FW = Framework(Dummy);
+    const empty = std.StaticStringMap(FW.Thunk).initComptime(.{});
+    const config: FW.Config = .{
+        .server_name = "t",
+        .server_version = "0",
+        .framing = .line_json,
+        .capabilities_json = "\"tools\":{}",
+        .tool_table = &empty,
+        .tools_list_body = "[]",
+        .forward = .{
+            .prefix = "wm_",
+            .fn_ = Dummy.fwd,
+            .unavailable_msg = "down",
+            .read_only_allow = &[_][]const u8{"wm_list"},
+        },
+        .read_only = .{ .is_active_fn = Dummy.isActive },
+    };
+    var impl = Dummy{ .active = true };
+    var resp_buf: [2048]u8 = undefined;
+
+    // Read-only ACTIVE: allowlisted forward relays, non-allowlisted blocked.
+    const a = FW.dispatch(&impl, "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"wm_list\"},\"id\":1}", &resp_buf, &config);
+    try std.testing.expect(std.mem.find(u8, a, "forwarded") != null);
+    const b = FW.dispatch(&impl, "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"wm_quit\"},\"id\":2}", &resp_buf, &config);
+    try std.testing.expect(std.mem.find(u8, b, "Read-only") != null);
+
+    // Read-only OFF: every forwarded tool relays.
+    impl.active = false;
+    const c = FW.dispatch(&impl, "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"wm_quit\"},\"id\":3}", &resp_buf, &config);
+    try std.testing.expect(std.mem.find(u8, c, "forwarded") != null);
 }

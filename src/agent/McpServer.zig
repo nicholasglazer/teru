@@ -295,6 +295,17 @@ pub const framework_config: F.Config = .{
         .prefix = "teruwm_",
         .fn_ = forward.forwardRequest,
         .unavailable_msg = "teruwm not running or socket unreachable",
+        // Under TERU_MCP_READONLY, only these pure-read teruwm tools may be
+        // forwarded; every other teruwm_* (spawn/quit/restart/type/click/
+        // screenshot/set_config/…) is blocked. Mirrors teruwm's own read
+        // allowlist so the promise holds whether the agent hits teru's
+        // socket (this gate) or teruwm's socket directly (teruwm's gate).
+        .read_only_allow = &[_][]const u8{
+            "teruwm_list_windows",
+            "teruwm_list_widgets",
+            "teruwm_perf",
+            "teruwm_subscribe_events",
+        },
     },
     .read_only = .{
         .is_active_fn = isReadOnly,
