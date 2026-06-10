@@ -172,6 +172,48 @@ pub fn thunkScreenshot(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]cons
     return toolScreenshot(self, path, buf, id);
 }
 
+/// TEST ONLY: set a pane's scrollback position in PIXELS, bypassing the real
+/// wlr_pointer_axis handler (which MCP cannot synthesize). Lets the headless
+/// suite drive sub-pixel scroll (scroll_offset + scroll_pixel) deterministically
+/// and assert the rendered shift via teruwm_screenshot_pane. `pixel_delta` is
+/// relative to the current position unless `absolute` is true (then it's the
+/// target offset measured from the bottom, 0 = live screen).
+pub fn thunkTestScroll(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const srv = self.server;
+    const slot = resolveNode(self, p) orelse
+        return jsonRpcError(buf, id, -32602, "Pane not found (provide name or node_id)");
+    if (srv.nodes.kind[slot] != .terminal)
+        return jsonRpcError(buf, id, -32602, "Not a terminal pane");
+    const nid = srv.nodes.node_id[slot];
+    const delta_raw = extractNestedJsonInt(p, "pixel_delta") orelse
+        return jsonRpcError(buf, id, -32602, "Missing pixel_delta");
+    const pixel_delta = satI32(delta_raw);
+    const absolute = extractNestedJsonBool(p, "absolute");
+
+    for (srv.terminal_panes) |maybe_tp| {
+        const tp = maybe_tp orelse continue;
+        if (tp.node_id != nid) continue;
+        const cell_h: u32 = if (srv.font_atlas) |fa| fa.cell_height else 16;
+        const max_offset: u32 = @intCast(tp.pane.scrollback.total_lines);
+        // Kill any in-flight glide so the position is exactly what we set.
+        tp.scroll_anim_active = false;
+        tp.scroll_frac_px = 0;
+        if (absolute) {
+            tp.pane.scroll_offset = 0;
+            tp.pane.scroll_pixel = 0;
+        }
+        _ = tp.pane.scrollBy(pixel_delta, cell_h, max_offset);
+        tp.pane.grid.markAllDirty();
+        tp.render();
+        const id_str = id orelse "null";
+        return std.fmt.bufPrint(buf,
+            \\{{"jsonrpc":"2.0","result":{{"content":[{{"type":"text","text":"scroll_offset={d} scroll_pixel={d} cell_h={d} max_offset={d}"}}]}},"id":{s}}}
+        , .{ tp.pane.scroll_offset, tp.pane.scroll_pixel, cell_h, max_offset, id_str }) catch
+            jsonRpcError(buf, id, -32603, "Internal error");
+    }
+    return jsonRpcError(buf, id, -32603, "pane vanished");
+}
+
 pub fn thunkNotify(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const message = extractNestedJsonString(p, "message") orelse
         return jsonRpcError(buf, id, -32602, "Missing message");

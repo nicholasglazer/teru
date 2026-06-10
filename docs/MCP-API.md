@@ -6,7 +6,7 @@ Both speak JSON-RPC 2.0 over a Unix socket (or Windows named pipe).
 | Server | Socket | Tools | Purpose |
 |---|---|---:|---|
 | **teru agent** | `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock` | 22 | Control any running teru instance — panes, workspaces, scrollback, sessions, broadcast, config live-edit |
-| **teruwm compositor** | `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock` | 37 | Control the Wayland compositor — windows (terminal + XDG), workspaces, layouts, bars, push widgets, named scratchpads (v0.4.18), event push stream, hot-restart, E2E test hooks |
+| **teruwm compositor** | `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock` | 39 | Control the Wayland compositor — windows (terminal + XDG), workspaces, layouts, bars, push widgets, named scratchpads (v0.4.18), event push stream, hot-restart, E2E test hooks |
 
 If you write a daemon that needs to push data to the bar, you want the
 compositor server. If you want an AI agent to read another pane's output
@@ -190,7 +190,7 @@ best-effort (O_NONBLOCK on the server side); slow consumers drop.
 
 Since v0.4.19, **teru's MCP transparently forwards `teruwm_*` tools**
 to the running teruwm compositor's socket. Agents see one unified
-59-tool surface regardless of which binary they're connected to:
+61-tool surface regardless of which binary they're connected to:
 
 ```
 agent ──→ teru-mcp-$PID.sock
@@ -301,7 +301,7 @@ Layouts: `master-stack`, `grid`, `monocle`, `dishes`, `spiral`, `three-col`,
 |---|---|---|
 | `teru_screenshot` | `path` (string, default `/tmp/teru-screenshot.png`) | Capture current framebuffer as PNG. X11/Wayland only. |
 
-## teruwm (compositor) MCP — 38 tools
+## teruwm (compositor) MCP — 39 tools
 
 Socket: `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock`. Implementation: `src/compositor/WmMcpServer.zig`.
 
@@ -409,6 +409,7 @@ for line in f:
 |---|---|---|
 | `teruwm_test_drag` | `from_x`, `from_y`, `to_x`, `to_y`, `super` (bool, default false), `button` (int, default 272=BTN_LEFT) | Synthesize a pointer drag. Used by the E2E test suite to verify Mod+drag-to-float, resize handles, etc. |
 | `teruwm_test_key` | `action` (string, e.g. `layout_cycle`) | Dispatch a `Keybinds.Action` by name through the compositor's action handler, bypassing xkb. For testing keybind actions from scripts. |
+| `teruwm_test_scroll` | `name`/`node_id`, `pixel_delta` (int, +ve scrolls up into history), `absolute` (bool, default false) | Set a pane's scrollback position in **pixels**, bypassing the `wlr_pointer_axis` handler (which MCP can't synthesize). Drives sub-pixel smooth scroll deterministically; pair with `teruwm_screenshot_pane` to assert the 1px-per-unit render shift. Returns `scroll_offset`/`scroll_pixel`/`cell_h`/`max_offset`. |
 
 ## Writing a push-widget daemon
 

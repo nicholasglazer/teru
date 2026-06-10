@@ -110,7 +110,7 @@ pub fn renderPaneIntoRect(
             if (renderer.atlas_width > 0 and renderer.glyph_atlas.len > 0) {
                 if (FontAtlas.glyphSlot(@intCast(cp))) |slot| {
                     const atlas = renderer.getAtlasForAttrs(cell.attrs.bold, cell.attrs.italic);
-                    blitGlyphInRect(renderer, @intCast(slot), screen_x, screen_y, max_x, max_y, fg, bg, atlas);
+                    blitGlyphInRect(renderer, @intCast(slot), screen_x, screen_y, max_x, max_y, fg, bg, atlas, 0);
                 }
             }
         }
@@ -151,6 +151,7 @@ pub fn blitGlyphInRect(
     fg: u32,
     bg: u32,
     atlas: []const u8,
+    top_skip: usize, // glyph rows to clip off the TOP (for a partial line at the pane edge)
 ) void {
     const cw: usize = renderer.cell_width;
     const ch: usize = renderer.cell_height;
@@ -165,13 +166,18 @@ pub fn blitGlyphInRect(
 
     const render_h = if (max_y > screen_y) max_y - screen_y else return;
     const render_w = if (max_x > screen_x) max_x - screen_x else return;
+    if (top_skip >= ch) return;
 
-    for (0..@min(render_h, ch)) |dy| {
+    // Skip the first `top_skip` glyph rows: read atlas row (atlas_y+top_skip+dy)
+    // while writing at screen_y+dy (caller has already clamped screen_y to the
+    // pane top), so a sub-pixel-scrolled top line shows only its bottom rows
+    // and never writes above the pane.
+    for (0..@min(render_h, ch - top_skip)) |dy| {
         const py = screen_y + dy;
         if (py >= renderer.height) break;
 
-        const atlas_row_offset = (atlas_y + dy) * aw + atlas_x;
-        if (atlas_y + dy >= renderer.atlas_height) break;
+        const atlas_row_offset = (atlas_y + top_skip + dy) * aw + atlas_x;
+        if (atlas_y + top_skip + dy >= renderer.atlas_height) break;
         if (atlas_row_offset + cw > atlas.len) break;
 
         const alpha_row = atlas[atlas_row_offset..][0..cw];
