@@ -49,6 +49,11 @@ socket_path_len: usize,
 socket_fd: posix.fd_t,
 server: *Server,
 event_source: ?*wlr.wl_event_source = null,
+/// Snapshotted from `$TERU_MCP_READONLY=1` at init. When set, this socket
+/// rejects every teruwm_* tool except the pure-read allowlist — so an agent
+/// can't mutate the compositor via a direct connection (the teru forward
+/// path enforces the same allowlist on its side). Defense-in-depth.
+read_only: bool = false,
 
 // ── Event subscriber channel (v0.4.18) ────────────────────────
 // Separate socket for pushed JSON events (`urgent`, `focus_changed`,
@@ -82,12 +87,21 @@ pub fn init(server: *Server) ?*WmMcpServer {
     const ipc_server = ipc.listen(path) catch return null;
     const sock = ipc_server.rawFd();
 
+    // Honor $TERU_MCP_READONLY=1 on teruwm's OWN socket too (matches teru's
+    // McpServer convention), so a direct connection can't mutate the
+    // compositor even when teruwm itself is launched read-only.
+    const read_only = if (compat.getenv("TERU_MCP_READONLY")) |v|
+        v.len > 0 and v[0] == '1'
+    else
+        false;
+
     const self = server.zig_allocator.create(WmMcpServer) catch return null;
     self.* = .{
         .socket_path = undefined,
         .socket_path_len = path.len,
         .socket_fd = sock,
         .server = server,
+        .read_only = read_only,
     };
     @memcpy(self.socket_path[0..path.len], path);
 
@@ -295,6 +309,21 @@ const tools_list_body: []const u8 =
     \\]
 ;
 
+fn isReadOnly(self: *WmMcpServer) bool {
+    return self.read_only;
+}
+
+/// Pure-read teruwm tools permitted under $TERU_MCP_READONLY. Allowlist (not
+/// blocklist) because nearly every teruwm tool mutates — fail-safe means a
+/// newly-added tool is blocked until it's vetted as read-only and listed here.
+/// Mirrors `McpServer.framework_config.forward.read_only_allow` (teru side).
+const read_only_allow = [_][]const u8{
+    "teruwm_list_windows",
+    "teruwm_list_widgets",
+    "teruwm_perf",
+    "teruwm_subscribe_events",
+};
+
 const framework_config: F.Config = .{
     .server_name = "teruwm",
     .server_version = version,
@@ -302,6 +331,10 @@ const framework_config: F.Config = .{
     .capabilities_json = "\"tools\":{}",
     .tool_table = &tool_table,
     .tools_list_body = tools_list_body,
+    .read_only = .{
+        .is_active_fn = isReadOnly,
+        .read_allowlist = &read_only_allow,
+    },
 };
 
 fn handleRequest(self: *WmMcpServer, conn_fd: posix.fd_t) void {
