@@ -333,6 +333,12 @@ saved_cursor_col: u16 = 0,
 /// Alt screen buffer. When non-null, this holds the INACTIVE screen's cells.
 /// On alt-screen switch, `cells` and `alt_cells` are swapped.
 alt_cells: ?[]Cell = null,
+/// True while the ALT screen is the active buffer. Distinct from
+/// `alt_cells != null` (which stays non-null after switching back, since the
+/// buffers are just swapped). Used to suppress scrollback capture on the alt
+/// screen — full-screen apps (vim, htop, less, tmux) must not leak their UI
+/// into the user's scrollback history.
+on_alt_screen: bool = false,
 /// Cursor position saved for the alt screen's paired main screen.
 alt_saved_cursor_row: u16 = 0,
 alt_saved_cursor_col: u16 = 0,
@@ -602,11 +608,14 @@ pub fn scrollUpN(self: *Grid, n: u16) void {
     var i: u16 = 0;
     while (i < n) : (i += 1) {
         // Push the top line to scrollback before it's overwritten.
-        // Only for full-width scrolls at screen top (not margin-bounded).
+        // Only for full-width scrolls at screen top (not margin-bounded), and
+        // NEVER on the alt screen — vim/htop/less/tmux scroll their full-screen
+        // UI constantly, and that transient content must not leak into the
+        // user's real scrollback history.
         const lm_check = self.getLeftMargin();
         const rm_check = self.getRightMargin();
         const is_margin_scroll = self.margins_enabled and (lm_check > 0 or rm_check < w);
-        if (self.scrollback != null and !is_margin_scroll) {
+        if (self.scrollback != null and !is_margin_scroll and !self.on_alt_screen) {
             if (self.scrollback) |sb| {
             var line_buf: [4096]u8 = undefined;
             var len: usize = 0;
@@ -980,6 +989,7 @@ pub fn switchToAltScreen(self: *Grid, allocator: std.mem.Allocator) !void {
     self.left_margin = 0;
     self.right_margin = 0;
     self.margins_enabled = false;
+    self.on_alt_screen = true;
     self.markAllDirty();
 }
 
@@ -1001,6 +1011,7 @@ pub fn switchToMainScreen(self: *Grid) void {
     self.left_margin = self.alt_saved_left_margin;
     self.right_margin = self.alt_saved_right_margin;
     self.margins_enabled = self.alt_saved_margins_enabled;
+    self.on_alt_screen = false;
     self.markAllDirty();
 }
 
@@ -1470,6 +1481,30 @@ test "scrollUp pushes line to scrollback" {
     // The delta should contain "Hello" (5 bytes, trailing spaces trimmed)
     try std.testing.expectEqual(@as(usize, 1), sb.deltas.items.len);
     try std.testing.expectEqualStrings("Hello", sb.deltas.items[0].vt_bytes);
+}
+
+test "alt screen scroll does NOT pollute scrollback" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 3, 10);
+    defer grid.deinit(allocator);
+
+    var sb = Scrollback.init(allocator, .{ .keyframe_interval = 100 });
+    defer sb.deinit();
+    grid.scrollback = &sb;
+
+    // On the alt screen (vim/htop), scrolling the full-screen UI must NOT
+    // capture lines into the user's history.
+    try grid.switchToAltScreen(allocator);
+    grid.cellAt(0, 0).char = 'V'; // pretend a full-screen app drew here
+    grid.scrollUp();
+    grid.scrollUp();
+    try std.testing.expectEqual(@as(u64, 0), sb.total_lines);
+
+    // Back on the main screen, capture resumes normally.
+    grid.switchToMainScreen();
+    grid.cellAt(0, 0).char = 'H';
+    grid.scrollUp();
+    try std.testing.expectEqual(@as(u64, 1), sb.total_lines);
 }
 
 test "scrollUp with no scrollback is safe" {
