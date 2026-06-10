@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.12.0 — 2026-06-10
+
+First-public-release hardening: an audit fleet re-checked every open issue
+against current code, then fixed the confirmed security, VT-correctness, and
+demo-blocking bugs.
+
+### Security
+
+- **`TERU_MCP_READONLY` now actually gates `teruwm_*` tools.** A read-only
+  agent could mutate the compositor (quit / restart / spawn / set_config):
+  teru forwarded `teruwm_*` calls unchecked and teruwm's socket had no
+  read-only config at all. Both sockets now enforce a read-only allowlist
+  (defense-in-depth, fail-safe — a new tool is blocked until vetted). Also
+  fixed a `tools/list` filter that silently advertised disabled tools.
+- **Screenshot path allowlist narrowed.** It allowed any `$HOME` path (so an
+  agent could `O_TRUNC`-clobber `~/.ssh/authorized_keys`) and a raw prefix
+  match let `/home/userEVIL/…` past the `/home/user` boundary. Now: `/tmp` +
+  `~/.config/teru/screenshots` only, boundary-correct.
+
+### Fixed
+
+- **nvim/modern colorschemes garbled** — a `:` in CSI params aborted the
+  sequence (undercurl `ESC[4:3m`, underline-color `ESC[58:…`). Colons are now
+  parsed as ECMA-48 sub-parameters; `4:x` underlines (styled forms degrade to
+  a plain underline), colon-form truecolor works, `58/59` is consumed.
+- **vim/htop/less polluted scrollback** — full-screen apps' alt-screen scrolls
+  were captured into history. Alt-screen scrolls no longer reach scrollback.
+- **Unkillable windows** — `Mod+X` / `teruwm_close_window` no-op'd on any
+  unfocused XDG window; now closes any XDG toplevel by id. Hidden/parked panes
+  no longer create invisible "dead-click strips" that hijack clicks into a
+  resize drag.
+- **CPU DoS from pane content** — `ESC[65535b` (REP) and `ESC[65535S/T` (scroll)
+  looped unbounded; now clamped to the grid's natural size.
+- **Pane screenshot now copies to the clipboard** like the full/area shots did
+  ("screenshot hotkey not saving to clipboard").
+- **Alt+scroll font zoom** was wildly over-sensitive on a touchpad (one font
+  step per axis event); now accumulates per `zoom_units_per_step` for smooth,
+  proportional zoom. Mouse wheel stays one step per notch.
+
+### Performance
+
+- **Panes on hidden workspaces no longer repaint every frame.** An agent fleet
+  on background workspaces burned a full SIMD render + buffer upload per pane
+  per vsync; the paint is now skipped for off-screen panes (PTY draining
+  continues, so agents never block).
+
 ## 0.11.0 — 2026-06-10
 
 Smooth scrolling, the first **Windows** binary, and a configurable font.

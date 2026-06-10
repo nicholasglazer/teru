@@ -2,7 +2,7 @@
 
 Two binaries, one source tree. `teru` is a terminal emulator + multiplexer;
 `teruwm` is a wlroots Wayland compositor built on the same libteru library.
-Written in Zig 0.16+. Links libc via `src/compat.zig`.
+Written in Zig 0.17+. Links libc via `src/compat.zig`.
 
 ## CRT Fix (GCC 15+ .sframe)
 
@@ -32,7 +32,7 @@ zig build -Doptimize=ReleaseFast      # release teru   → zig-out/bin/teru
 make compositor                           # debug teruwm (auto CRT fix)
 zig build -Dcompositor                    # debug teruwm (no CRT fix)
 zig build -Doptimize=ReleaseFast -Dcompositor   # release teruwm → zig-out/bin/teruwm
-zig build test                        # 535 inline tests (library-level)
+zig build test                        # 584 inline tests (library-level)
 zig build bench -- tools/bench-payloads   # throughput benchmarks
 zig build run                         # run debug teru (windowed)
 zig build run -- --raw                # run debug teru (TTY mode)
@@ -68,7 +68,7 @@ Reference: [docs/MCP-API.md](docs/MCP-API.md).
 ## Key rules
 
 - Thread `io: std.Io` through every function that does file / network / timer I/O.
-- Prefer `.claude/skills/zig16.md` and `.claude/rules/zig-terminal.md` over guessing at Zig 0.16 API shapes.
+- Prefer `.claude/skills/zig16.md` and `.claude/rules/zig-terminal.md` over guessing at Zig 0.17 API shapes.
 - Zero allocations in the render hot path. `renderDirty` uses `grid.dirty_row_min..=max` — don't break dirty tracking.
 - VtParser is pure: no I/O, no allocation. CSI params capped at 16, OSC at 256 — overflow truncates.
 - teruwm MCP calls always schedule a frame so state changes paint next vsync.
@@ -77,7 +77,7 @@ Reference: [docs/MCP-API.md](docs/MCP-API.md).
 ## Testing
 
 ```sh
-zig build test                        # 535 inline tests
+zig build test                        # 584 inline tests
 python3 tests/session_survival_e2e.py # daemon survives SSH disconnect + reattach-resume
 python3 tests/daemon_resize_stress.py # daemon is uncrashable by client resize(0,0)
 python3 tests/many_pane_e2e.py        # every pane drained at 40 panes (no poll-set cap)
@@ -89,7 +89,7 @@ bash tools/run-bench.sh               # reproduce benchmarks from docs/BENCHMARK
 
 ## Version
 
-Current: **0.8.3** — see `build.zig` line 10 (`const version`).
+Current: **0.12.0** — see `build.zig` line 10 (`const version`).
 Propagated via `build_options.version` to `main.zig`, `McpServer.zig`,
 `WmMcpServer.zig`. Bump with `make bump-version V=x.y.z`.
 
