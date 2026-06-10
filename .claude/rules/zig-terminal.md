@@ -1,6 +1,6 @@
 # Zig Terminal Development Rules (CRITICAL)
 
-Rules for developing teru, the AI-first terminal emulator in Zig 0.17.0-dev.135+.
+Rules for developing teru, the AI-first terminal emulator in Zig 0.17.0-dev.813+.
 
 ## Zig 0.17 API (MUST KNOW)
 
