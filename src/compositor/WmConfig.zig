@@ -227,6 +227,12 @@ touchpad_scroll_factor: f32 = 1.5,
 /// type "blindly" while reading history.
 scroll_to_bottom_on_input: bool = true,
 
+/// Auto-copy the selection to the clipboard the instant you finish a
+/// drag-select (mouse release) — no Ctrl+Shift+C needed, matching standalone
+/// teru's copy_on_select. True by default; set false for explicit-copy-only.
+/// A bare click (empty selection) never copies.
+copy_on_select: bool = true,
+
 /// Alt+scroll wheel over a focused terminal pane resizes that pane's font
 /// (per-pane zoom) instead of scrolling scrollback. True by default; set
 /// false to free the Alt+wheel gesture for the focused application.
@@ -596,6 +602,8 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.smooth_scroll = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "scroll_to_bottom_on_input")) {
         self.scroll_to_bottom_on_input = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+    } else if (std.mem.eql(u8, key, "copy_on_select")) {
+        self.copy_on_select = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "wheel_scroll_lines")) {
         self.wheel_scroll_lines = std.fmt.parseInt(u32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "touchpad_scroll_factor")) {
@@ -1019,13 +1027,15 @@ test "scroll sensitivity knobs default and parse" {
     try std.testing.expectEqual(@as(f32, 1.5), def.touchpad_scroll_factor);
     try std.testing.expect(def.smooth_scroll);
     try std.testing.expect(def.scroll_to_bottom_on_input);
+    try std.testing.expect(def.copy_on_select);
 
     var cfg = WmConfig{};
-    cfg.parse("wheel_scroll_lines = 3\ntouchpad_scroll_factor = 0.4\nsmooth_scroll = false\nscroll_to_bottom_on_input = false\n");
+    cfg.parse("wheel_scroll_lines = 3\ntouchpad_scroll_factor = 0.4\nsmooth_scroll = false\nscroll_to_bottom_on_input = false\ncopy_on_select = false\n");
     try std.testing.expectEqual(@as(u32, 3), cfg.wheel_scroll_lines);
     try std.testing.expectEqual(@as(f32, 0.4), cfg.touchpad_scroll_factor);
     try std.testing.expect(!cfg.smooth_scroll);
     try std.testing.expect(!cfg.scroll_to_bottom_on_input);
+    try std.testing.expect(!cfg.copy_on_select);
 }
 
 test "alt_scroll_zoom defaults on and parses false" {

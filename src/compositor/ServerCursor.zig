@@ -33,6 +33,7 @@ const Server = @import("Server.zig");
 const XdgView = @import("XdgView.zig");
 const NodeRegistry = @import("Node.zig");
 const Focus = @import("ServerFocus.zig");
+const ServerClipboard = @import("ServerClipboard.zig");
 
 // ── Signal handlers ──────────────────────────────────────────
 
@@ -544,6 +545,16 @@ fn terminalMouseMotion(server: *Server, tp: anytype, cx: f64, cy: f64) void {
 fn terminalMouseRelease(server: *Server, tp: anytype) void {
     tp.mouse.mouse_down = false;
     server.drag_terminal = null;
+    // Copy-on-select: finishing a real drag (not a bare click) auto-copies the
+    // selection to the clipboard, no Ctrl+Shift+C needed — matches standalone
+    // teru's copy_on_select. copySelection publishes to the seat + mirrors
+    // internally + toasts. Guard on a non-empty RANGE so a plain click (which
+    // leaves start==end) doesn't clobber the clipboard or pop a toast.
+    if (server.wm_config.copy_on_select and tp.selection.active) {
+        const sel = &tp.selection;
+        const is_range = sel.start_row != sel.end_row or sel.start_col != sel.end_col;
+        if (is_range) ServerClipboard.copySelection(server, tp);
+    }
 }
 
 /// Frame-callback hook: ease every pane with an active scroll animation one
