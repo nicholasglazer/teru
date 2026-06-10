@@ -413,16 +413,19 @@ pub fn renderScrollOverlay(
     const rh: usize = pane_rect.height;
     if (rh < ch or rw < cw) return;
 
-    // How many scrollback lines to render at the top of this pane.
-    // Add 1 extra line when there's a pixel offset (partial line visible at boundary)
+    // WHOLE-LINE scrollback render. The sub-pixel (`scroll_pixel`) path used to
+    // shift content by `lines_to_show*ch - sub_px`, which DECREASES as you
+    // scroll deeper into a line (it should increase) — so within a line the
+    // content crept the WRONG way, then snapped at the boundary: the "text
+    // jumps 1-2px up then down" jitter on slow scrolls. Rendering on line
+    // boundaries (like kitty/alacritty) is monotonic and correct. True
+    // sub-pixel smooth scroll needs a top-clipped partial-line blit
+    // (blitGlyphInRect can't clip its top edge yet) — tracked as a follow-up.
+    _ = scroll_pixel;
     const pane_rows: u32 = @intCast(rh / ch);
-    const pixel_extra: u32 = if (scroll_pixel > 0) 1 else 0;
-    // When scroll_offset >= pane_rows, entire viewport is scrollback (no grid visible)
-    const lines_to_show = @min(scroll_offset + pixel_extra, @min(sb_lines, pane_rows));
-
-    // Total pixel shift: full lines + sub-cell pixel offset
-    const sub_px: usize = if (scroll_pixel > 0) @intCast(scroll_pixel) else 0;
-    const shift_px = lines_to_show * @as(u32, @intCast(ch)) -| @as(u32, @intCast(sub_px));
+    const lines_to_show = @min(scroll_offset, @min(sb_lines, pane_rows));
+    const sub_px: usize = 0;
+    const shift_px = lines_to_show * @as(u32, @intCast(ch));
     if (shift_px > 0 and shift_px < rh) {
         // Shift grid content down to make room for scrollback lines at top
         var y: usize = ry + rh - 1;
