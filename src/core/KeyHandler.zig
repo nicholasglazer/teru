@@ -212,6 +212,13 @@ pub fn executeAction(action: KB.Action, mux: *Multiplexer) MuxAction {
         .pane_set_master => { mux.setMaster(); return .panes_changed; },
         .pane_swap_next => { mux.swapPaneNext(); return .panes_changed; },
         .pane_swap_prev => { mux.swapPanePrev(); return .panes_changed; },
+        // These three were bound by default (loadDefaults) but fell through the
+        // `else => .none` below — dead keybinds in the multiplexer even though
+        // the Multiplexer methods existed. Wire them up.
+        .pane_swap_master => { mux.swapMaster(); return .panes_changed; },
+        .pane_rotate_slaves_up => { mux.rotateSlaves(true); return .panes_changed; },
+        .pane_rotate_slaves_down => { mux.rotateSlaves(false); return .panes_changed; },
+        .layout_reset => { mux.resetLayout(); return .panes_changed; },
         .pane_close => .close_pane,
         .split_vertical => .split_vertical,
         .split_horizontal => .split_horizontal,
