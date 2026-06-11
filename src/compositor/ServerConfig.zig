@@ -94,6 +94,10 @@ pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem
     // ── User-defined scratchpad chords from [keybind] section ──
     applyWmScratchpadChords(self);
 
+    // ── User-defined action chords from [keybind] section ──────
+    // (`super+j = pane:focus_next`) — rebind ANY compositor action.
+    applyWmActionChords(self);
+
     // ── Default scratchpad geometry rules (xmonad parity) ──
     // Runs AFTER wm_config.load so user's `[scratchpad.NAME]` rules
     // are already in wm_config.scratchpad_rules — the default seeder
@@ -169,6 +173,28 @@ fn applyWmScratchpadChords(self: *Server) void {
     if (slot > 0) {
         std.log.scoped(.config).info("loaded {d} scratchpad chords", .{slot});
     }
+}
+
+/// Resolve each `[keybind] chord = <action>` entry into a normal-mode
+/// binding. The chord is parsed against the compositor's mod (Super), so
+/// `mod+j` and `super+j` both bind under Super — no cross-binary mod
+/// remapping. Lets a user rebind (or add a chord for) any compositor action,
+/// not just spawn/scratchpad. Re-run on reload, so edits hot-apply.
+fn applyWmActionChords(self: *Server) void {
+    var n: u8 = 0;
+    for (self.wm_config.action_chords[0..self.wm_config.action_chord_count]) |*entry| {
+        const trig = Keybinds.parseTriggerWithMod(entry.getChord(), self.keybinds.mod_key) orelse {
+            std.log.scoped(.config).warn("skipping bad action chord '{s}'", .{entry.getChord()});
+            continue;
+        };
+        if (trig.is_keycode) {
+            _ = self.keybinds.addKeycode(.normal, trig.key, entry.action);
+        } else {
+            _ = self.keybinds.add(.normal, trig.mods, trig.key, entry.action);
+        }
+        n += 1;
+    }
+    if (n > 0) std.log.scoped(.config).info("loaded {d} action chords", .{n});
 }
 
 /// Pre-seed scratchpad_table[0..3] with the names the default
@@ -294,6 +320,7 @@ pub fn reloadWmConfig(self: *Server) void {
     // [keybinds.*] overrides.
     applyWmSpawnChords(self);
     applyWmScratchpadChords(self);
+    applyWmActionChords(self);
 
     // Rebuild the leader tree so `[leader]` edits hot-reload. (Changing the
     // `activate` chord still needs a restart to drop the OLD binding — reload
