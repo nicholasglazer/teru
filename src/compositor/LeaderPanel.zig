@@ -20,7 +20,8 @@ const std = @import("std");
 const teru = @import("teru");
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
-const LeaderKey = @import("LeaderKey.zig");
+const LeaderKey = teru.LeaderKey; // shared engine
+const CompositorLeader = @import("CompositorLeader.zig"); // teruwm tree (tests)
 const Ui = teru.Ui;
 const SoftwareRenderer = teru.render.SoftwareRenderer;
 
@@ -223,6 +224,7 @@ fn blit(cpu: *SoftwareRenderer, str: []const u8, x0: usize, y: usize, color: u32
 
 test "LeaderPanel: height tracks child count (small group ≤ root)" {
     var lk = LeaderKey{};
+    lk.root = &CompositorLeader.root_group;
     lk.activate(); // root: the most entries → tallest
 
     const width: u32 = 1280;
@@ -240,6 +242,7 @@ test "LeaderPanel: height tracks child count (small group ≤ root)" {
 
 test "LeaderPanel: a single row is exactly bar height (cell_h + 4)" {
     var lk = LeaderKey{};
+    lk.root = &CompositorLeader.root_group;
     lk.activate();
     _ = lk.feedKey('b', false); // +bar: 2 short entries → one row at any sane width
     const lay = computeLayout(&lk, 1280, 9);

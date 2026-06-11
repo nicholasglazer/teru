@@ -48,6 +48,7 @@ pub const Ui = @import("render/Ui.zig");
 pub const Config = @import("config/Config.zig");
 pub const Hooks = @import("config/Hooks.zig");
 pub const Keybinds = @import("config/Keybinds.zig");
+pub const LeaderKey = @import("config/LeaderKey.zig");
 pub const SessionDef = @import("config/SessionDef.zig");
 pub const WinPty = @import("pty/WinPty.zig");
 pub const ipc = @import("server/ipc.zig");
