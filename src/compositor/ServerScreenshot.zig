@@ -162,6 +162,16 @@ fn compositeOutput(server: *Server, pixels: []u32, out_w: u32, out_h: u32) void 
             blitRect(pixels, out_w, out_h, b.bottom.renderer.framebuffer, b.output_width, b.bar_height, 0, @intCast(out_h - b.bar_height));
         }
     }
+
+    // Leader which-key panel — a bottom-anchored overlay scene buffer above the
+    // bars. The scene scans it out on a real output; this manual composite must
+    // include it so a screenshot during leader mode matches what's on screen.
+    if (server.leader.active) {
+        if (server.leader_panel) |*p| {
+            const py: usize = if (out_h > p.height) out_h - p.height else 0;
+            blitRect(pixels, out_w, out_h, p.renderer.framebuffer, p.width, p.height, 0, @intCast(py));
+        }
+    }
 }
 
 /// Crop a rectangular region of the composited output to a PNG. Used by the
