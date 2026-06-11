@@ -257,22 +257,11 @@ pub fn render(self: *Bar, server: *Server) bool {
         self.last_top_sig = sig;
         painted = true;
     }
-    if (self.bottom.enabled) {
-        if (server.leader.active) {
-            // Leader mode owns the BOTTOM bar while active — it reads more
-            // naturally there. Always repaint the hint (its content changes as
-            // you descend groups, which the bar signature doesn't track) and
-            // deliberately leave last_bottom_sig stale so the normal stats
-            // repaint the moment the leader dismisses.
-            server.leader.render(&self.bottom.renderer);
-            wlr.wlr_scene_buffer_set_buffer_with_damage(self.bottom.scene_buffer, self.bottom.pixel_buffer, null);
-            painted = true;
-        } else if (force or sig != self.last_bottom_sig) {
-            self.renderBar(&self.bottom, server);
-            wlr.wlr_scene_buffer_set_buffer_with_damage(self.bottom.scene_buffer, self.bottom.pixel_buffer, null);
-            self.last_bottom_sig = sig;
-            painted = true;
-        }
+    if (self.bottom.enabled and (force or sig != self.last_bottom_sig)) {
+        self.renderBar(&self.bottom, server);
+        wlr.wlr_scene_buffer_set_buffer_with_damage(self.bottom.scene_buffer, self.bottom.pixel_buffer, null);
+        self.last_bottom_sig = sig;
+        painted = true;
     }
     return painted;
 }

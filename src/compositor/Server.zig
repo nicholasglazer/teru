@@ -10,6 +10,7 @@ const Session = @import("Session.zig");
 const XwaylandView = @import("XwaylandView.zig");
 const Launcher = @import("Launcher.zig");
 const LeaderKey = @import("LeaderKey.zig");
+const LeaderPanel = @import("LeaderPanel.zig");
 const Bar = @import("Bar.zig");
 const WmConfig = @import("WmConfig.zig");
 const WmMcpServer = @import("WmMcpServer.zig");
@@ -296,6 +297,7 @@ jiggle_timer_src: ?*wlr.wl_event_source = null,
 // Built-in launcher
 launcher: Launcher = .{},
 leader: LeaderKey = .{},
+leader_panel: ?LeaderPanel = null,
 
 // teruwm-specific config (~/.config/teruwm/config)
 wm_config: WmConfig = .{},
@@ -1441,14 +1443,26 @@ pub fn renderLauncherBar(self: *Server) void {
     }
 }
 
-/// Repaint the bar after a leader-mode change. Bar.render owns the branch
-/// (renders the which-key hint into the BOTTOM bar while leader.active, else
-/// the normal stats). Force a repaint so both entering (show hint) and exiting
-/// (restore stats — the bar signature may be unchanged) take effect now.
+/// Show/refresh/hide the leader which-key PANEL after a leader-mode change.
+/// The panel is a bottom-anchored full-width overlay (independent of the bars,
+/// so it works even with bars hidden and never reflows the tiling). Created
+/// lazily; re-created if the output resized.
 pub fn renderLeaderHint(self: *Server) void {
-    if (self.bar) |b| {
-        b.dirty = true;
-        _ = b.render(self);
+    if (self.leader.active) {
+        // (Re)create the surface if missing or the output width changed.
+        if (self.leader_panel) |*p| {
+            if (p.width != self.activeOutputDims().w) {
+                p.destroy();
+                self.leader_panel = null;
+            }
+        }
+        if (self.leader_panel == null) self.leader_panel = LeaderPanel.create(self);
+        if (self.leader_panel) |*p| {
+            p.render(&self.leader);
+            p.setVisible(true);
+        }
+    } else if (self.leader_panel) |*p| {
+        p.setVisible(false);
     }
 }
 

@@ -17,8 +17,6 @@
 
 const std = @import("std");
 const teru = @import("teru");
-const Ui = teru.Ui;
-const SoftwareRenderer = teru.render.SoftwareRenderer;
 const Action = teru.Keybinds.Action;
 
 const LeaderKey = @This();
@@ -146,58 +144,10 @@ pub fn feedKey(self: *LeaderKey, key: u32) Result {
     return .dismiss; // unbound key → dismiss (Doom behaviour)
 }
 
-// ── Which-key hint render (single line, into the top bar) ─────────────────
-
-/// Render the current node as a one-line `crumb  key label  key label …` hint
-/// into the bar's framebuffer. Mirrors Launcher.render: clear bg, orange
-/// separator, blit chars; keys in the accent colour, labels in fg.
-pub fn render(self: *const LeaderKey, cpu: *SoftwareRenderer) void {
-    const s = &cpu.scheme;
-    const cw: usize = cpu.cell_width;
-    const fb_w: usize = cpu.width;
-    const bar_h: usize = cpu.height;
-    const y: usize = 2;
-
-    const bg = s.ansi[0];
-    const total = @min(fb_w * bar_h, cpu.framebuffer.len);
-    teru.compat.memsetU32(cpu.framebuffer[0..total], bg);
-    if (fb_w > 0 and total >= fb_w) teru.compat.memsetU32(cpu.framebuffer[0..fb_w], s.cursor);
-
-    var x: usize = 4;
-    const put = struct {
-        fn s_(c: *SoftwareRenderer, str: []const u8, px: *usize, color: u32, cwid: usize, w: usize) void {
-            for (str) |ch| {
-                if (px.* + cwid >= w) return;
-                if (ch >= 32 and ch <= 126) Ui.blitCharAt(c, ch, px.*, 2, color);
-                px.* += cwid;
-            }
-        }
-    }.s_;
-
-    // Breadcrumb (e.g. "LEADER" / "+window") in the accent colour, then a gap.
-    put(cpu, self.crumb, &x, s.cursor, cw, fb_w);
-    x += cw * 2;
-
-    for (self.node) |e| {
-        if (x + cw * 4 >= fb_w) break;
-        // key
-        var kb: [1]u8 = .{if (e.key == ' ') 0 else e.key};
-        if (e.key == ' ') {
-            put(cpu, "SPC", &x, s.cursor, cw, fb_w);
-        } else {
-            put(cpu, kb[0..1], &x, s.cursor, cw, fb_w);
-        }
-        x += cw; // gap between key and label
-        put(cpu, e.label, &x, s.fg, cw, fb_w);
-        x += cw * 2; // gap between entries
-    }
-    // Trailing universal hints.
-    if (self.node.ptr == (&root_group).ptr and x + cw * 12 < fb_w) {
-        put(cpu, "1-9 ws", &x, s.ansi[8], cw, fb_w);
-        x += cw * 2;
-    }
-    if (x + cw * 4 < fb_w) put(cpu, "ESC", &x, s.ansi[8], cw, fb_w);
-    _ = y;
+/// True when the current node is the root (digits switch workspaces there).
+/// Rendering lives in LeaderPanel, which reads `node`/`crumb`/this helper.
+pub fn atRoot(self: *const LeaderKey) bool {
+    return self.node.ptr == (&root_group).ptr;
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
