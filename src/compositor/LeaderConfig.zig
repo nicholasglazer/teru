@@ -29,75 +29,21 @@ group_count: u8 = 0,
 /// back to LeaderKey's comptime default tree when the user hasn't configured
 /// `[leader]` (or configured an empty root).
 pub fn build(server: *Server) void {
-    const wc = &server.wm_config;
-    if (!wc.leader_configured or wc.leader_group_count == 0) {
-        useDefault(server);
-        return;
-    }
-
-    var t = &server.leader_tree;
-    t.group_count = wc.leader_group_count;
-
-    // Pass 1: copy entries. Group targets get a placeholder until pass 2 (all
-    // group lengths must be known before the child slices can be taken).
-    var gi: u8 = 0;
-    while (gi < wc.leader_group_count) : (gi += 1) {
-        const gdef = &wc.leader_groups[gi];
-        var n: u8 = 0;
-        var ei: u8 = 0;
-        while (ei < gdef.entry_count and n < WmConfig.max_leader_entries) : (ei += 1) {
-            const edef = &gdef.entries[ei];
-            if (edef.is_group and edef.group_idx >= wc.leader_group_count) continue; // bad ref
-            t.groups[gi][n] = .{
-                .key = edef.key,
-                .label = edef.label(),
-                .target = if (edef.is_group) .{ .action = .none } else .{ .action = edef.action },
-            };
-            n += 1;
-        }
-        t.group_lens[gi] = n;
-    }
-
-    // Pass 2: wire group links (mirror pass 1's skip logic so slot indices align).
-    gi = 0;
-    while (gi < wc.leader_group_count) : (gi += 1) {
-        const gdef = &wc.leader_groups[gi];
-        var n: u8 = 0;
-        var ei: u8 = 0;
-        while (ei < gdef.entry_count and n < t.group_lens[gi]) : (ei += 1) {
-            const edef = &gdef.entries[ei];
-            if (edef.is_group and edef.group_idx >= wc.leader_group_count) continue;
-            if (edef.is_group) {
-                const tg = edef.group_idx;
-                t.groups[gi][n].target = .{ .group = t.groups[tg][0..t.group_lens[tg]] };
-            }
-            n += 1;
-        }
-    }
-
-    // An empty root means the config is unusable — keep the curated default.
-    if (t.group_lens[0] == 0) {
-        useDefault(server);
-        return;
-    }
-
-    server.leader.root = t.groups[0][0..t.group_lens[0]];
-    server.leader.node = server.leader.root;
+    // Materialize the user's [leader] config via the shared builder; on null
+    // (unconfigured / empty root) fall back to teruwm's curated comptime tree.
+    const root = server.leader_tree.build(&server.wm_config.leader) orelse &CompositorLeader.root_group;
+    server.leader.root = root;
+    server.leader.node = root;
     server.leader.crumb = "LEADER";
-    std.log.scoped(.config).info("loaded leader menu ({d} groups)", .{wc.leader_group_count});
-}
-
-fn useDefault(server: *Server) void {
-    server.leader.root = &CompositorLeader.root_group;
-    server.leader.node = server.leader.root;
-    server.leader.crumb = "LEADER";
+    if (server.wm_config.leader.configured)
+        std.log.scoped(.config).info("loaded leader menu ({d} groups)", .{server.wm_config.leader.group_count});
 }
 
 /// Install the configured `[leader] activate = <chord>` over the hardcoded
 /// Super+Space default. No-op when unset. Call AFTER loadMediaDefaults so it
 /// overrides, not the other way round.
 pub fn applyActivate(server: *Server) void {
-    const chord = server.wm_config.leaderActivate();
+    const chord = server.wm_config.leader.activateChord();
     if (chord.len == 0) return;
     const trig = Keybinds.parseTriggerWithMod(chord, server.keybinds.mod_key) orelse {
         std.log.scoped(.config).warn("bad [leader] activate chord '{s}'", .{chord});

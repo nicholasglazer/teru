@@ -20,6 +20,7 @@ const Grid = @import("../core/Grid.zig");
 const LayoutEngine = @import("../tiling/LayoutEngine.zig");
 const themes = @import("themes.zig");
 pub const Keybinds = @import("Keybinds.zig");
+pub const LeaderDefs = @import("LeaderDefs.zig");
 const Config = @This();
 
 pub const Bell = enum { visual, none };
@@ -208,6 +209,10 @@ workspace_layout_counts: [10]u8 = @splat(0),
 // Keybindings (loaded from [keybinds.*] sections or keybinds.conf)
 keybinds: Keybinds.Keybinds = .{},
 keybinds_loaded: bool = false, // true once any [keybinds.*] section is parsed
+
+// Leader / which-key menu (`[leader]` / `[leader.NAME]`). Shared parser; the
+// TUI client materializes it into the live tree (or falls back to MuxLeader).
+leader: LeaderDefs.Defs = .{},
 
 allocator: Allocator,
 
@@ -401,6 +406,7 @@ fn parseWithDepth(self: *Config, allocator: Allocator, content: []const u8, io: 
 
     var current_section: ?[]const u8 = null;
     var keybind_mode: ?Keybinds.Mode = null; // non-null when inside [keybinds.*]
+    var leader_idx: ?u8 = null; // non-null when inside [leader] / [leader.NAME]
     var line_iter = std.mem.splitScalar(u8, content, '\n');
     while (line_iter.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, &std.ascii.whitespace);
@@ -433,8 +439,20 @@ fn parseWithDepth(self: *Config, allocator: Allocator, content: []const u8, io: 
                         self.keybinds.loadTerminalZoomDefaults();
                         self.keybinds_loaded = true;
                     }
+                    leader_idx = null;
+                } else if (std.mem.eql(u8, current_section.?, "leader") or
+                    std.mem.startsWith(u8, current_section.?, "leader."))
+                {
+                    // `[leader]` = root group; `[leader.NAME]` = sub-group.
+                    const gname = if (std.mem.eql(u8, current_section.?, "leader"))
+                        ""
+                    else
+                        current_section.?["leader.".len..];
+                    leader_idx = self.leader.resolveGroup(gname);
+                    keybind_mode = null;
                 } else {
                     keybind_mode = null;
+                    leader_idx = null;
                 }
             }
             continue;
@@ -452,6 +470,12 @@ fn parseWithDepth(self: *Config, allocator: Allocator, content: []const u8, io: 
         const value = std.mem.trim(u8, line[eq_pos + 1 ..], &std.ascii.whitespace);
 
         if (key.len == 0 or value.len == 0) continue;
+
+        // Inside a [leader] section, route to the shared leader parser.
+        if (leader_idx) |idx| {
+            self.leader.applyLine(idx, key, value);
+            continue;
+        }
 
         self.applyField(allocator, current_section, key, value);
     }

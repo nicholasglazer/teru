@@ -301,7 +301,7 @@ leader: LeaderKey = .{},
 leader_panel: ?LeaderPanel = null,
 /// Stable backing for a config-driven leader tree (`[leader]` sections).
 /// Empty until ServerConfig builds it; LeaderKey.root points into it.
-leader_tree: LeaderConfig = .{},
+leader_tree: teru.LeaderDefs.Tree = .{},
 
 // teruwm-specific config (~/.config/teruwm/config)
 wm_config: WmConfig = .{},
