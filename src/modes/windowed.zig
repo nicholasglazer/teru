@@ -34,6 +34,9 @@ const ProcessGraph = @import("../graph/ProcessGraph.zig");
 const platform = @import("../platform/platform.zig");
 const render = @import("../render/render.zig");
 const Ui = @import("../render/Ui.zig");
+const LeaderKey = @import("../config/LeaderKey.zig");
+const LeaderDefs = @import("../config/LeaderDefs.zig");
+const MuxLeader = @import("../input/MuxLeader.zig");
 const protocol = @import("../agent/protocol.zig");
 const in_band = @import("../agent/in_band.zig");
 const McpServer = @import("../agent/McpServer.zig");
@@ -209,6 +212,83 @@ fn applyFontZoom(
     zoom_pending_resize.* = true;
     zoom_timestamp.* = compat.monotonicNow();
     return true;
+}
+
+/// Blit an ASCII string into the framebuffer at pixel (x0,y), advancing one
+/// cell per char; stops at the right edge.
+fn lbBlit(cpu: anytype, str: []const u8, x0: usize, y: usize, color: u32, cw: usize, sw: usize) void {
+    var x = x0;
+    for (str) |chr| {
+        if (x + cw > sw) return;
+        Ui.blitCharAt(cpu, chr, x, y, color);
+        x += cw;
+    }
+}
+
+/// Draw the leader / which-key HUD as a pixel band along the bottom of the
+/// windowed framebuffer (above the status bar). Pixel sibling of teruwm's
+/// LeaderPanel and teru's TUI band, off the SAME shared LeaderKey tree. Overlay
+/// only — renderAllWithSelection repaints panes each frame, so it's erased once
+/// the leader dismisses.
+fn drawLeaderBand(cpu: anytype, leader: *const LeaderKey, sw: u32, sh: u32, cw_px: u32, ch_px: u32, status_bar_h: u32) void {
+    if (cw_px == 0 or ch_px == 0 or sw == 0 or sh == 0) return;
+    const fbw: usize = cpu.width;
+    const s = &cpu.scheme;
+    const cw: usize = cw_px;
+    const ch: usize = ch_px;
+    const pad_x: usize = 6;
+
+    var slot_cells: usize = 8;
+    for (leader.node) |e| {
+        const kw: usize = if (e.key == ' ') 3 else 1;
+        const w = kw + 1 + e.label.len + 2;
+        if (w > slot_cells) slot_cells = w;
+    }
+    const col_w = slot_cells * cw;
+    const usable: usize = if (sw > pad_x * 2) @as(usize, sw) - pad_x * 2 else sw;
+    const cols: usize = @max(@as(usize, 1), usable / @max(@as(usize, 1), col_w));
+    const hint = if (leader.atRoot()) "(1-9 ws - Esc cancel)" else "(Esc back)";
+    const bc_cells = leader.crumb.len + 1 + hint.len + 2;
+    const bc_cols: usize = @max(@as(usize, 1), (bc_cells + slot_cells - 1) / slot_cells);
+    const total = bc_cols + leader.node.len;
+    const rows: usize = @max(@as(usize, 1), (total + cols - 1) / cols);
+
+    const band_h: usize = rows * ch + 4;
+    const avail: usize = if (sh > status_bar_h) @as(usize, sh) - status_bar_h else sh;
+    if (band_h >= avail) return;
+    const y0: usize = avail - band_h;
+
+    // Background fill + a 1px accent rule on top.
+    var y: usize = y0;
+    while (y < y0 + band_h and y < sh) : (y += 1) {
+        const start = y * fbw;
+        const end = @min(start + @as(usize, sw), cpu.framebuffer.len);
+        if (start < end) compat.memsetU32(cpu.framebuffer[start..end], if (y == y0) s.cursor else s.bg);
+    }
+
+    // Breadcrumb (accent) + hint (dim) on the first row.
+    const y_base = y0 + 2;
+    lbBlit(cpu, leader.crumb, pad_x, y_base, s.cursor, cw, sw);
+    lbBlit(cpu, hint, pad_x + (leader.crumb.len + 1) * cw, y_base, s.ansi[8], cw, sw);
+
+    // Entries flow after the breadcrumb's column span.
+    for (leader.node, 0..) |e, i| {
+        const slot = bc_cols + i;
+        const col = slot % cols;
+        const row = slot / cols;
+        if (row >= rows) break;
+        const ex = pad_x + col * col_w;
+        const ey = y_base + row * ch;
+        if (ey + ch > sh) break;
+        if (e.key == ' ') {
+            lbBlit(cpu, "SPC", ex, ey, s.cursor, cw, sw);
+        } else {
+            const kc = [1]u8{e.key};
+            lbBlit(cpu, &kc, ex, ey, s.cursor, cw, sw);
+        }
+        const lx = ex + (if (e.key == ' ') @as(usize, 4) else @as(usize, 2)) * cw;
+        lbBlit(cpu, e.label, lx, ey, s.fg, cw, sw);
+    }
 }
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, wm_class: ?[]const u8) !void {
@@ -444,6 +524,12 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
     };
 
     var prefix = KeyHandler.PrefixState{ .timeout_ns = @as(i128, config.prefix_timeout_ms) * 1_000_000 };
+    // Doom-style leader (Alt+Space → which-key), shared engine. Config-driven
+    // tree from teru.conf [leader] (kept alive via `config`), else MuxLeader's
+    // default. Same Keybinds.Action vocabulary → KeyHandler.executeAction.
+    var leader_tree = LeaderDefs.Tree{};
+    var leader = LeaderKey{};
+    leader.root = leader_tree.build(&config.leader) orelse &MuxLeader.root_group;
     var selection = Selection{};
     _ = &selection;
     var vi_mode = ViMode{};
@@ -795,11 +881,46 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                 }
                             }
 
+                            // Leader / which-key (Alt+Space). When active, swallow
+                            // every key and walk the tree client-side; a `.run`
+                            // feeds the SAME dispatch block below as a keypress
+                            // (same Keybinds.Action). Alt+Space opens it (supersedes
+                            // the old Alt+Space=cycle_layout, now leader SPC).
+                            var leader_kb: ?@import("../config/Keybinds.zig").Action = null;
+                            {
+                                const lead_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else if (keysym == ks.Escape) 0x1b else 0;
+                                const alt_down = (key.modifiers & 8) != 0 and !ralt_held;
+                                if (leader.active) {
+                                    if (lead_char == 0) continue; // non-char key → swallow
+                                    const shifted = (key.modifiers & ks.SHIFT_MASK) != 0;
+                                    switch (leader.feedKey(lead_char, shifted)) {
+                                        .redraw => {
+                                            force_redraw = true;
+                                            continue;
+                                        },
+                                        .dismiss => {
+                                            leader.deactivate();
+                                            force_redraw = true;
+                                            continue;
+                                        },
+                                        .run => |a| {
+                                            leader.deactivate();
+                                            force_redraw = true;
+                                            leader_kb = a;
+                                        },
+                                    }
+                                } else if (!prefix.awaiting and alt_down and lead_char == ' ') {
+                                    leader.activate();
+                                    force_redraw = true;
+                                    continue;
+                                }
+                            }
+
                             // Global shortcuts: Alt+key (workspace, focus, zoom, split)
                             {
                                 const ks_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else if (keysym == ks.Return) '\r' else 0;
                                 const kb_mode: @import("../config/Keybinds.zig").Mode = if (prefix.awaiting) .prefix else .normal;
-                                if (KeyHandler.lookupConfigAction(&config.keybinds, kb_mode, key.modifiers, ks_char, ralt_held)) |kb_action| {
+                                if (leader_kb orelse KeyHandler.lookupConfigAction(&config.keybinds, kb_mode, key.modifiers, ks_char, ralt_held)) |kb_action| {
                                     if (prefix.awaiting) prefix.reset();
                                     const action = KeyHandler.executeAction(kb_action, &mux);
                                     if (kb_action == .mode_prefix) {
@@ -1432,6 +1553,13 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                     var vi_sel = if (vi_mode.active) vi_mode.toSelection(mux.getScrollOffset(), vi_sb) else null;
                     const sel_ptr: ?*const Selection = if (vi_sel != null) &vi_sel.? else if (selection.active) &selection else null;
                     mux.renderAllWithSelection(cpu, sz.width, sz.height, atlas.cell_width, atlas.cell_height, sel_ptr, status_bar_h);
+
+                    // Leader / which-key HUD band — overlay along the bottom (above
+                    // the status bar) while active. renderAllWithSelection repaints
+                    // panes each frame, so it's erased once the leader dismisses.
+                    if (leader.active) {
+                        drawLeaderBand(cpu, &leader, sz.width, sz.height, atlas.cell_width, atlas.cell_height, status_bar_h);
+                    }
 
                     if (search_mode or search_len > 0) {
                         if (mux.getActivePane()) |pane| {
