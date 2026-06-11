@@ -13,7 +13,8 @@ const std = @import("std");
 const teru = @import("teru");
 const Server = @import("Server.zig");
 const WmConfig = @import("WmConfig.zig");
-const LeaderKey = @import("LeaderKey.zig");
+const LeaderKey = teru.LeaderKey; // shared engine
+const CompositorLeader = @import("CompositorLeader.zig"); // teruwm's default tree
 const Keybinds = teru.Keybinds;
 const Entry = LeaderKey.Entry;
 
@@ -87,7 +88,7 @@ pub fn build(server: *Server) void {
 }
 
 fn useDefault(server: *Server) void {
-    server.leader.root = &LeaderKey.root_group;
+    server.leader.root = &CompositorLeader.root_group;
     server.leader.node = server.leader.root;
     server.leader.crumb = "LEADER";
 }
