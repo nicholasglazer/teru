@@ -201,7 +201,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
     }
 
     // Initial render
-    renderer.renderWithOpts(&mux, 1, .{ .nested = tui_input.isNested(), .nested_bar = tui_input.isNestedBar(), .prefix_active = tui_input.isPrefixActive() });
+    renderer.renderWithOpts(&mux, 1, .{ .nested = tui_input.isNested(), .nested_bar = tui_input.isNestedBar(), .prefix_active = tui_input.isPrefixActive(), .leader = &tui_input.leader });
 
     // Main poll loop
     var in_buf: [4096]u8 = undefined;
@@ -237,6 +237,10 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
                 common.out("[teru] Detached\r\n");
                 return;
             }
+            // Leader/which-key state changed (opened, descended, dismissed) →
+            // repaint locally even without daemon output. screen.clear() each
+            // frame erases the band cleanly on dismiss.
+            if (tui_input.consumeRenderDirty()) needs_render = true;
             // Mouse events from TuiInput
             if (tui_input.last_mouse) |mouse| {
                 tui_input.last_mouse = null;
@@ -354,7 +358,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
         }
 
         if (needs_render) {
-            renderer.renderWithOpts(&mux, 1, .{ .nested = tui_input.isNested(), .nested_bar = tui_input.isNestedBar(), .prefix_active = tui_input.isPrefixActive() });
+            renderer.renderWithOpts(&mux, 1, .{ .nested = tui_input.isNested(), .nested_bar = tui_input.isNestedBar(), .prefix_active = tui_input.isPrefixActive(), .leader = &tui_input.leader });
         }
     }
 }
