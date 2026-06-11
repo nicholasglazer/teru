@@ -1449,9 +1449,11 @@ pub fn renderLauncherBar(self: *Server) void {
 /// lazily; re-created if the output resized.
 pub fn renderLeaderHint(self: *Server) void {
     if (self.leader.active) {
-        // (Re)create the surface if missing or the output width changed.
+        // (Re)create the surface if missing, the output width changed, or the
+        // current node needs a different height (group descend/ascend grows or
+        // shrinks the panel by whole text rows).
         if (self.leader_panel) |*p| {
-            if (p.width != self.activeOutputDims().w) {
+            if (p.width != self.activeOutputDims().w or p.height != LeaderPanel.wantedHeight(self)) {
                 p.destroy();
                 self.leader_panel = null;
             }
