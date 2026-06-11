@@ -9,6 +9,7 @@ const TerminalPane = @import("TerminalPane.zig");
 const Session = @import("Session.zig");
 const XwaylandView = @import("XwaylandView.zig");
 const Launcher = @import("Launcher.zig");
+const LeaderKey = @import("LeaderKey.zig");
 const Bar = @import("Bar.zig");
 const WmConfig = @import("WmConfig.zig");
 const WmMcpServer = @import("WmMcpServer.zig");
@@ -294,6 +295,7 @@ jiggle_timer_src: ?*wlr.wl_event_source = null,
 
 // Built-in launcher
 launcher: Launcher = .{},
+leader: LeaderKey = .{},
 
 // teruwm-specific config (~/.config/teruwm/config)
 wm_config: WmConfig = .{},
@@ -1432,6 +1434,19 @@ pub fn renderLauncherBar(self: *Server) void {
         if (self.launcher.active) {
             // Render launcher UI into the top bar's buffer
             self.launcher.render(&b.top.renderer);
+            wlr.wlr_scene_buffer_set_buffer_with_damage(b.top.scene_buffer, b.top.pixel_buffer, null);
+        } else {
+            _ = b.render(self); // restore normal bar
+        }
+    }
+}
+
+/// Render the leader which-key hint into the top bar (or restore the normal bar
+/// when leader mode ends). Mirrors renderLauncherBar.
+pub fn renderLeaderHint(self: *Server) void {
+    if (self.bar) |b| {
+        if (self.leader.active) {
+            self.leader.render(&b.top.renderer);
             wlr.wlr_scene_buffer_set_buffer_with_damage(b.top.scene_buffer, b.top.pixel_buffer, null);
         } else {
             _ = b.render(self); // restore normal bar

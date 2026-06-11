@@ -417,6 +417,26 @@ pub fn handleKey(server: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) b
         return true;
     }
 
+    // Leader mode (Super+Space): route every key through the which-key keymap.
+    // A key either descends into a group (re-render the hint), fires an action
+    // (run + leave), or dismisses. The normalized `key` (lowercased ASCII,
+    // space, Esc=0x1b) is what the keymap matches on.
+    if (server.leader.active) {
+        switch (server.leader.feedKey(key)) {
+            .redraw => server.renderLeaderHint(),
+            .dismiss => {
+                server.leader.deactivate();
+                server.renderLeaderHint(); // restore the normal bar
+            },
+            .run => |act| {
+                server.leader.deactivate();
+                server.renderLeaderHint(); // restore the normal bar before acting
+                _ = executeAction(server, act);
+            },
+        }
+        return true; // leader swallows every key while active
+    }
+
     // Scratchpad: Alt+RAlt+1..9 picks scratchpad N.
     if (mods.alt and mods.ralt and key >= '1' and key <= '9') {
         server.toggleScratchpad(@intCast(key - '1'));
@@ -746,6 +766,13 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
         },
         .fullscreen_toggle => {
             server.toggleFullscreen();
+            return true;
+        },
+        .leader_activate => {
+            // Super+Space → open the Doom-style leader. The bar turns into the
+            // which-key hint; subsequent keys are routed in handleKey above.
+            server.leader.activate();
+            server.renderLeaderHint();
             return true;
         },
         .launcher_toggle => {
