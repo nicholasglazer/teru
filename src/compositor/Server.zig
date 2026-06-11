@@ -1441,16 +1441,14 @@ pub fn renderLauncherBar(self: *Server) void {
     }
 }
 
-/// Render the leader which-key hint into the top bar (or restore the normal bar
-/// when leader mode ends). Mirrors renderLauncherBar.
+/// Repaint the bar after a leader-mode change. Bar.render owns the branch
+/// (renders the which-key hint into the BOTTOM bar while leader.active, else
+/// the normal stats). Force a repaint so both entering (show hint) and exiting
+/// (restore stats — the bar signature may be unchanged) take effect now.
 pub fn renderLeaderHint(self: *Server) void {
     if (self.bar) |b| {
-        if (self.leader.active) {
-            self.leader.render(&b.top.renderer);
-            wlr.wlr_scene_buffer_set_buffer_with_damage(b.top.scene_buffer, b.top.pixel_buffer, null);
-        } else {
-            _ = b.render(self); // restore normal bar
-        }
+        b.dirty = true;
+        _ = b.render(self);
     }
 }
 
