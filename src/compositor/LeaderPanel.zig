@@ -230,9 +230,9 @@ test "LeaderPanel: height tracks child count (small group ≤ root)" {
     const root = computeLayout(&lk, width, cw);
     try std.testing.expect(root.rows >= 1);
 
-    // Descend into +session (2 entries) — must need no MORE rows than root, and
-    // for a typical wide output it collapses to a single bar-height row.
-    try std.testing.expect(lk.feedKey('s') == .redraw);
+    // Descend into +scratchpad (2 entries) — must need no MORE rows than root,
+    // and for a typical wide output it collapses to a single bar-height row.
+    try std.testing.expect(lk.feedKey('s', false) == .redraw);
     const sess = computeLayout(&lk, width, cw);
     try std.testing.expect(sess.rows <= root.rows);
     try std.testing.expectEqual(@as(usize, 1), sess.rows);
@@ -241,7 +241,7 @@ test "LeaderPanel: height tracks child count (small group ≤ root)" {
 test "LeaderPanel: a single row is exactly bar height (cell_h + 4)" {
     var lk = LeaderKey{};
     lk.activate();
-    _ = lk.feedKey('b'); // +bar: 3 short entries → one row at any sane width
+    _ = lk.feedKey('b', false); // +bar: 2 short entries → one row at any sane width
     const lay = computeLayout(&lk, 1280, 9);
     try std.testing.expectEqual(@as(usize, 1), lay.rows);
     const cell_h: u32 = 16;

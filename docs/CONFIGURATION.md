@@ -710,6 +710,52 @@ Xwayland), same as `[autostart]`.
 > `shift` modifier is what disambiguates. `mod` resolves to the compositor's
 > `$mod` (Super); `super+q` is equivalent and explicit.
 
+### `[leader]` — Which-Key Menu
+
+Customise the `$mod+Space` leader menu (see
+[KEYBINDINGS.md → Leader](KEYBINDINGS.md#leader--which-key-teruwm)). Compositor-only.
+With **no** `[leader]` section, teruwm uses its curated default tree, so this is
+entirely opt-in.
+
+`[leader]` is the **root** group; `[leader.NAME]` is a sub-group (crumb
+`+NAME`). Three line forms:
+
+```conf
+[leader]
+activate = super+space          # the activation chord (optional; default super+space)
+SPC      = layout : layout:cycle   # <key> = <label> : <action>   → run an action
+w        = +window                 # <key> = +group               → descend into [leader.window]
+
+[leader.window]
+x = close      : window:close
+j = focus-next : pane:focus_next
+J = swap-next  : pane:swap_next     # uppercase key = Shift+that letter
+m = focus-master : pane:focus_master
+
+[leader.move]
+1 = ws-1 : pane:move_to:1            # digits are ordinary keys off the root
+0 = ws-10: pane:move_to:0
+```
+
+Rules:
+
+- **Keys** are a single printable character, or `SPC` for space. A letter
+  written uppercase (`J`) means **Shift + that letter** at runtime. Digits at
+  the **root** always switch workspaces (you can't rebind them there); inside a
+  sub-group they're ordinary keys.
+- **Actions** use the same canonical names as `teru.conf`'s `[keybinds.*]`
+  (`pane:focus_next`, `master:count_inc`, `resize:shrink_w`, `workspace:N`,
+  `pane:move_to:N`, `screenshot`, `config:reload`, `compositor:quit`, …). An
+  unknown action name is skipped (logged), so a typo never breaks the menu.
+- **`activate`** accepts the same chord grammar as `[keybind]`
+  (`super+space`, `ctrl+space`, …). It's *added* on top of the default
+  `Super+Space`; changing it takes full effect on the next restart (a live
+  reload adds the new chord but the menu structure updates immediately).
+- Limits: up to 12 groups (incl. root), 16 entries each. A `+group` may be
+  referenced before its `[leader.NAME]` section appears (forward refs are fine).
+  If the root ends up empty, teruwm falls back to the curated default.
+- Hot-reloads with `$mod+Shift+R` / `teruwm_reload_config` / config-watch.
+
 ### `[names]` — Human-Readable Window Names
 
 Map a window class or `app_id` to a short display name used by the bar's `{title}` widget and any compositor MCP output. Max 32 name rules. Class max 64 bytes, name max 32 bytes.
@@ -780,4 +826,15 @@ Slack      = 8
 org.mozilla.firefox = ff
 Chromium            = web
 code-url-handler    = code
+
+# ── Leader / which-key menu (optional; omit for the curated default) ──
+# [leader]
+# activate = super+space
+# w        = +window
+# l        = +layout
+#
+# [leader.window]
+# x = close      : window:close
+# j = focus-next : pane:focus_next
+# J = swap-next  : pane:swap_next
 ```
