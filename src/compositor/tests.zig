@@ -16,4 +16,5 @@ test {
     _ = @import("WmConfig.zig");
     _ = @import("wlr.zig");
     _ = @import("WmMcpTools.zig");
+    _ = @import("LeaderKey.zig");
 }

@@ -204,6 +204,7 @@ pub const Action = enum(u8) {
     compositor_restart,
     config_reload,
     launcher_toggle,
+    leader_activate, // Super+Space → Doom-style leader + which-key (teruwm)
     float_toggle,
     fullscreen_toggle,
     screenshot,
@@ -302,6 +303,7 @@ pub const Action = enum(u8) {
             .{ "compositor:restart", Action.compositor_restart },
             .{ "config:reload", Action.config_reload },
             .{ "launcher:toggle", Action.launcher_toggle },
+            .{ "leader:activate", Action.leader_activate },
             .{ "float:toggle", Action.float_toggle },
             .{ "fullscreen:toggle", Action.fullscreen_toggle },
             .{ "screenshot", Action.screenshot },
@@ -853,6 +855,9 @@ pub const Keybinds = struct {
     pub fn loadMediaDefaults(self: *Keybinds) void {
         const n = Mode.normal;
         const NONE = Mods{};
+        // Doom-style leader: Super+Space opens the which-key hint. Compositor-only
+        // (standalone teru's KeyHandler doesn't handle leader_activate yet — Phase 3).
+        _ = self.add(n, Mods{ .super_ = true }, ' ', .leader_activate);
         _ = self.add(n, NONE, 0x1008FF13, .volume_up);
         _ = self.add(n, NONE, 0x1008FF11, .volume_down);
         _ = self.add(n, NONE, 0x1008FF12, .volume_mute);
