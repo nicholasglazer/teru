@@ -178,6 +178,52 @@ teruwmctl scratchpad term       # show 'term' again
 > spawned terminal. This is the in-compositor equivalent of `$mod+'` after a
 > manual `make dev-install`. See [INSTALLING.md](INSTALLING.md#inner-loop-refresh-while-developing-teruwm).
 
+## Leader / which-key (teruwm)
+
+`$mod+Space` opens a **Doom-Emacs-style leader**: a bottom HUD lists the keys
+for the current group. A key either descends into a mnemonic group (`w` →
++window, `l` → +layout, …) or fires an action and exits. `Esc` (or any unbound
+key) dismisses. The HUD is sized to the current group — one bar-height row when
+it fits, growing a row at a time — and it draws over the bottom edge regardless
+of whether the bars are hidden.
+
+At the **root**, digits `1`–`9`,`0` switch to that workspace. Inside a group,
+digits are ordinary keys (so `+move` uses them to move a pane, `+layout 0`
+resets). Capitalised keys (`J`, `K`, `M`, `O`, `T`, `R`) mean **Shift +** that
+letter.
+
+| Root key | Goes to |
+|-----|--------|
+| `Space` | Cycle layout |
+| `z` | Zoom (swap focused ↔ master) |
+| `f` | Fullscreen toggle |
+| `n` | New terminal |
+| `p` | Launcher |
+| `1`–`9`,`0` | Switch to workspace N |
+| `w` | **+window** |
+| `l` | **+layout** |
+| `m` | **+move** (pane → workspace) |
+| `s` | **+scratchpad** |
+| `c` | **+capture** |
+| `b` | **+bar** |
+| `x` | **+system** |
+
+| Group | Keys |
+|-------|------|
+| **+window** | `n` new · `x` close · `j`/`k` focus next/prev · `J`/`K` swap next/prev · `m` focus-master · `M` promote-to-master · `f` float · `o` focus-output · `O` move-to-output |
+| **+layout** | `Space` cycle · `0` reset · `i`/`d` master-count ±1 · `h`/`l` master-ratio ∓ · `s` swap-master · `z` zoom |
+| **+move** | `1`–`9`,`0` move focused pane to workspace N |
+| **+scratchpad** | `t` term-BR · `T` term-SR |
+| **+capture** | `s` full screenshot · `a` area · `p` pane · `r` record |
+| **+bar** | `t` top · `b` bottom |
+| **+system** | `r` reload-config · `R` restart · `q` quit · `s` save-session · `l` load-session |
+
+> The menu is **configurable** — change the activation chord, add/remove groups
+> and entries, relabel anything — via `[leader]` sections in
+> `~/.config/teruwm/config`. See
+> [CONFIGURATION.md → `[leader]`](CONFIGURATION.md#leader--which-key-menu).
+> With no `[leader]` section the curated default above is used.
+
 ## Font zoom
 
 ### Keyboard (teru standalone)

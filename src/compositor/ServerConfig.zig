@@ -9,6 +9,7 @@ const std = @import("std");
 const wlr = @import("wlr.zig");
 const WmConfig = @import("WmConfig.zig");
 const Server = @import("Server.zig");
+const LeaderConfig = @import("LeaderConfig.zig");
 const teru = @import("teru");
 const Keybinds = teru.Keybinds;
 const Mods = Keybinds.Mods;
@@ -98,6 +99,14 @@ pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem
     // are already in wm_config.scratchpad_rules — the default seeder
     // only fills in names the user hasn't customised.
     applyDefaultScratchpadRules(self);
+
+    // ── Leader / which-key menu (`[leader]` sections) ──────────
+    // Build the runtime tree (falls back to the comptime default when
+    // unconfigured) and apply the optional `activate` chord override.
+    // applyActivate runs after loadMediaDefaults so it overrides the
+    // hardcoded Super+Space rather than being overridden by it.
+    LeaderConfig.build(self);
+    LeaderConfig.applyActivate(self);
 }
 
 /// Resolve each `[keybind] chord = spawn:cmd` entry into a spawn_table
@@ -285,6 +294,13 @@ pub fn reloadWmConfig(self: *Server) void {
     // [keybinds.*] overrides.
     applyWmSpawnChords(self);
     applyWmScratchpadChords(self);
+
+    // Rebuild the leader tree so `[leader]` edits hot-reload. (Changing the
+    // `activate` chord still needs a restart to drop the OLD binding — reload
+    // deliberately doesn't reset the keybind table — but the new chord is
+    // added and the menu structure updates live.)
+    LeaderConfig.build(self);
+    LeaderConfig.applyActivate(self);
 
     // Re-apply bar configuration — widget layout or thresholds may
     // have changed in ways the signature hash doesn't detect

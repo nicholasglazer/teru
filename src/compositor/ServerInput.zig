@@ -420,9 +420,10 @@ pub fn handleKey(server: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) b
     // Leader mode (Super+Space): route every key through the which-key keymap.
     // A key either descends into a group (re-render the hint), fires an action
     // (run + leave), or dismisses. The normalized `key` (lowercased ASCII,
-    // space, Esc=0x1b) is what the keymap matches on.
+    // space, Esc=0x1b) is what the keymap matches on; `mods.shift` lets the
+    // keymap distinguish e.g. Shift+j (swap-next) from j (focus-next).
     if (server.leader.active) {
-        switch (server.leader.feedKey(key)) {
+        switch (server.leader.feedKey(key, mods.shift)) {
             .redraw => server.renderLeaderHint(),
             .dismiss => {
                 server.leader.deactivate();

@@ -18,4 +18,5 @@ test {
     _ = @import("WmMcpTools.zig");
     _ = @import("LeaderKey.zig");
     _ = @import("LeaderPanel.zig");
+    _ = @import("LeaderConfig.zig");
 }

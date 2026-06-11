@@ -11,6 +11,7 @@ const XwaylandView = @import("XwaylandView.zig");
 const Launcher = @import("Launcher.zig");
 const LeaderKey = @import("LeaderKey.zig");
 const LeaderPanel = @import("LeaderPanel.zig");
+const LeaderConfig = @import("LeaderConfig.zig");
 const Bar = @import("Bar.zig");
 const WmConfig = @import("WmConfig.zig");
 const WmMcpServer = @import("WmMcpServer.zig");
@@ -298,6 +299,9 @@ jiggle_timer_src: ?*wlr.wl_event_source = null,
 launcher: Launcher = .{},
 leader: LeaderKey = .{},
 leader_panel: ?LeaderPanel = null,
+/// Stable backing for a config-driven leader tree (`[leader]` sections).
+/// Empty until ServerConfig builds it; LeaderKey.root points into it.
+leader_tree: LeaderConfig = .{},
 
 // teruwm-specific config (~/.config/teruwm/config)
 wm_config: WmConfig = .{},
