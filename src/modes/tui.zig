@@ -19,6 +19,7 @@ const TuiScreen = @import("../render/TuiScreen.zig");
 const TuiRenderer = @import("../render/TuiRenderer.zig");
 const TuiInput = @import("../input/TuiInput.zig");
 const Config = @import("../config/Config.zig");
+const LeaderDefs = @import("../config/LeaderDefs.zig");
 const Compositor = @import("../render/Compositor.zig");
 const daemon_proto = @import("../server/protocol.zig");
 
@@ -149,14 +150,20 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
 
     // Load teru.conf so the nested multiplexer is configurable (previously the
     // TUI client ignored config entirely — gap/bar were hardcoded). Failure to
-    // load is non-fatal: keep the built-in defaults.
-    if (Config.load(allocator, io)) |loaded| {
-        var config = loaded;
-        defer config.deinit();
+    // load is non-fatal: keep the built-in defaults. Kept alive for the whole
+    // session: the leader tree's entry labels point into config.leader's fixed
+    // buffers, so config must outlive the leader.
+    var config_opt: ?Config = if (Config.load(allocator, io)) |c| c else |_| null;
+    defer if (config_opt) |*c| c.deinit();
+    var leader_tree: LeaderDefs.Tree = .{};
+    if (config_opt) |*config| {
         renderer.pane_gap = config.tui_pane_gap;
         // nested_bar: config OR the TERU_NESTED_BAR env (env still works).
         if (config.tui_nested_bar) tui_input.nested_bar = true;
-    } else |_| {}
+        // Config-driven leader tree ([leader] sections) — overrides MuxLeader's
+        // default; null (unconfigured / empty root) keeps the default.
+        if (leader_tree.build(&config.leader)) |root| tui_input.leader.root = root;
+    }
 
     // Enter alt screen, hide cursor, enable SGR mouse
     const enter_tui = "\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h";

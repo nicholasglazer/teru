@@ -165,52 +165,8 @@ pub const NameRule = struct {
     }
 };
 
-// ── Leader / which-key menu (`[leader]` + `[leader.NAME]`) ──────────
-//
-// The leader menu is normally the comptime tree in LeaderKey.zig. When the
-// user defines `[leader]` sections, the parser fills these index-based defs
-// (copy-safe — no pointers, so WmConfig stays a plain value), and
-// LeaderConfig.zig materializes them into a pointer-linked `[]const Entry`
-// tree the LeaderKey dispatcher walks. Group references are by INDEX into
-// `leader_groups` (resolved find-or-append, so forward refs are fine).
-
-pub const max_leader_groups = 12; // root + 11 sub-groups
-pub const max_leader_entries = 16; // rows per group
-const leader_label_max = 24;
-const leader_name_max = 24;
-
-/// One configured menu row: a key, a display label, and either an Action
-/// (`is_group=false`) or a child-group index (`is_group=true`).
-pub const LeaderEntryDef = struct {
-    key: u8 = 0,
-    label_buf: [leader_label_max]u8 = undefined,
-    label_len: u8 = 0,
-    is_group: bool = false,
-    action: teru.Keybinds.Action = .none,
-    group_idx: u8 = 0,
-
-    pub fn label(self: *const LeaderEntryDef) []const u8 {
-        return self.label_buf[0..self.label_len];
-    }
-};
-
-/// One configured group. Index 0 is always the root (`[leader]`, crumb
-/// "LEADER"); named groups (`[leader.NAME]`) get crumb "+NAME".
-pub const LeaderGroupDef = struct {
-    name_buf: [leader_name_max]u8 = undefined,
-    name_len: u8 = 0,
-    crumb_buf: [leader_label_max]u8 = undefined,
-    crumb_len: u8 = 0,
-    entries: [max_leader_entries]LeaderEntryDef = undefined,
-    entry_count: u8 = 0,
-
-    pub fn name(self: *const LeaderGroupDef) []const u8 {
-        return self.name_buf[0..self.name_len];
-    }
-    pub fn crumb(self: *const LeaderGroupDef) []const u8 {
-        return self.crumb_buf[0..self.crumb_len];
-    }
-};
+// Leader / which-key config lives in the shared `teru.LeaderDefs` (parsed
+// below into `self.leader`); the comptime default tree is CompositorLeader.zig.
 
 // ── Window layout ────────────────────────────────────────────────
 
@@ -419,18 +375,9 @@ action_chords: [max_action_chords]ActionChord = undefined,
 action_chord_count: u8 = 0,
 
 // ── User-defined leader menu (`[leader]` / `[leader.NAME]`) ─────
-//
-// `leader_group_count == 0` (the default) means "use LeaderKey's comptime
-// tree". When the user opens any `[leader]` section, `leader_configured`
-// flips and group 0 is seeded as the root. LeaderConfig.build() turns these
-// into the live tree.
-leader_groups: [max_leader_groups]LeaderGroupDef = undefined,
-leader_group_count: u8 = 0,
-leader_configured: bool = false,
-/// Optional activation chord (`[leader] activate = super+space`). Empty =
-/// keep the default Super+Space from loadMediaDefaults.
-leader_activate_buf: [64]u8 = undefined,
-leader_activate_len: u8 = 0,
+// Shared parser/storage; LeaderConfig.build() materializes it into the live
+// tree (or falls back to CompositorLeader when `.configured` is false).
+leader: teru.LeaderDefs.Defs = .{},
 
 // Per-name scratchpad geometry / spawn rules. Populated from
 // `[scratchpad.NAME]` config sections AND from Server's default
@@ -610,7 +557,7 @@ fn parse(self: *WmConfig, content: []const u8) void {
                     current_section = .leader;
                     current_ws_idx = null;
                     current_sp_idx = null;
-                    current_leader_idx = self.resolveLeaderGroup(gname);
+                    current_leader_idx = self.leader.resolveGroup(gname);
                     continue;
                 }
                 current_section = parseSection(sec_name);
@@ -640,7 +587,7 @@ fn parse(self: *WmConfig, content: []const u8) void {
             .keyboard => self.applyKeyboard(key, value),
             .workspace => if (current_ws_idx) |idx| self.applyWorkspace(idx, key, value),
             .scratchpad => if (current_sp_idx) |idx| self.applyScratchpadRule(idx, key, value),
-            .leader => if (current_leader_idx) |idx| self.applyLeader(idx, key, value),
+            .leader => if (current_leader_idx) |idx| self.leader.applyLine(idx, key, value),
         }
     }
 }
@@ -966,108 +913,6 @@ fn applyScratchpadRule(self: *WmConfig, idx: u8, key: []const u8, value: []const
     }
 }
 
-// ── Leader menu parsing ─────────────────────────────────────────
-
-fn setLeaderCrumb(self: *WmConfig, idx: u8, s: []const u8) void {
-    const n = @min(s.len, leader_label_max);
-    @memcpy(self.leader_groups[idx].crumb_buf[0..n], s[0..n]);
-    self.leader_groups[idx].crumb_len = @intCast(n);
-}
-
-/// Find or append a leader group by name. Index 0 is reserved for the root
-/// (`[leader]`, name "", crumb "LEADER"); named groups get crumb "+NAME".
-/// Forward references are fine (a `+foo` entry seen before `[leader.foo]`
-/// just creates the empty group, which the section later fills).
-pub fn resolveLeaderGroup(self: *WmConfig, name: []const u8) ?u8 {
-    self.leader_configured = true;
-    if (self.leader_group_count == 0) {
-        self.leader_groups[0] = .{};
-        self.setLeaderCrumb(0, "LEADER");
-        self.leader_group_count = 1;
-    }
-    if (name.len == 0) return 0; // root
-    if (name.len >= leader_name_max) return null;
-    var i: u8 = 1;
-    while (i < self.leader_group_count) : (i += 1) {
-        if (std.mem.eql(u8, self.leader_groups[i].name(), name)) return i;
-    }
-    if (self.leader_group_count >= max_leader_groups) return null;
-    const idx = self.leader_group_count;
-    self.leader_groups[idx] = .{};
-    @memcpy(self.leader_groups[idx].name_buf[0..name.len], name);
-    self.leader_groups[idx].name_len = @intCast(name.len);
-    var cbuf: [leader_label_max]u8 = undefined;
-    cbuf[0] = '+';
-    const clen = @min(name.len, leader_label_max - 1);
-    @memcpy(cbuf[1 .. 1 + clen], name[0..clen]);
-    self.setLeaderCrumb(idx, cbuf[0 .. 1 + clen]);
-    self.leader_group_count += 1;
-    return idx;
-}
-
-/// Map a key token to a single byte. "SPC"/"Space" → space; otherwise a single
-/// printable non-space char (letters may be uppercase to mean Shift+letter).
-fn parseLeaderKey(tok: []const u8) ?u8 {
-    if (std.mem.eql(u8, tok, "SPC") or std.mem.eql(u8, tok, "Space") or std.mem.eql(u8, tok, "space")) return ' ';
-    if (tok.len == 1 and tok[0] >= 0x21 and tok[0] <= 0x7e) return tok[0];
-    return null;
-}
-
-/// Parse one line under a `[leader]` / `[leader.NAME]` section.
-///   activate = super+space          (root only — the activation chord)
-///   <key> = +group                  (descend into [leader.group])
-///   <key> = label : action          (run an Action; action is the
-///                                     Action.fromString name, e.g.
-///                                     "pane:focus_next")
-fn applyLeader(self: *WmConfig, gidx: u8, key: []const u8, value: []const u8) void {
-    if (gidx >= self.leader_group_count) return;
-
-    if (gidx == 0 and std.mem.eql(u8, key, "activate")) {
-        const n = @min(value.len, self.leader_activate_buf.len);
-        @memcpy(self.leader_activate_buf[0..n], value[0..n]);
-        self.leader_activate_len = @intCast(n);
-        return;
-    }
-
-    const k = parseLeaderKey(key) orelse return;
-    if (self.leader_groups[gidx].entry_count >= max_leader_entries) return;
-
-    // Group reference: "<key> = +groupname"
-    if (value.len > 1 and value[0] == '+') {
-        const gname = std.mem.trim(u8, value[1..], &std.ascii.whitespace);
-        if (gname.len == 0) return;
-        const tidx = self.resolveLeaderGroup(gname) orelse return;
-        const g = &self.leader_groups[gidx]; // stable; resolve only appends elsewhere
-        var e = LeaderEntryDef{ .key = k, .is_group = true, .group_idx = tidx };
-        const llen = @min(value.len, leader_label_max);
-        @memcpy(e.label_buf[0..llen], value[0..llen]);
-        e.label_len = @intCast(llen);
-        g.entries[g.entry_count] = e;
-        g.entry_count += 1;
-        return;
-    }
-
-    // Action entry: "<key> = label : action"
-    const colon = std.mem.findScalar(u8, value, ':') orelse return;
-    const lbl = std.mem.trim(u8, value[0..colon], &std.ascii.whitespace);
-    const act_str = std.mem.trim(u8, value[colon + 1 ..], &std.ascii.whitespace);
-    if (lbl.len == 0) return;
-    const action = teru.Keybinds.Action.fromString(act_str) orelse return;
-    const g = &self.leader_groups[gidx];
-    var e = LeaderEntryDef{ .key = k, .is_group = false, .action = action };
-    const llen = @min(lbl.len, leader_label_max);
-    @memcpy(e.label_buf[0..llen], lbl[0..llen]);
-    e.label_len = @intCast(llen);
-    g.entries[g.entry_count] = e;
-    g.entry_count += 1;
-}
-
-/// The configured activation chord (`[leader] activate = …`), or "" for the
-/// hardcoded default (Super+Space).
-pub fn leaderActivate(self: *const WmConfig) []const u8 {
-    return self.leader_activate_buf[0..self.leader_activate_len];
-}
-
 /// Parse a fractional / percent value. Returns the value as a fraction
 /// (0.0..1.0); values > 1 are clamped. Accepted:
 ///   0.42   → 0.42     (fraction, direct)
@@ -1310,13 +1155,13 @@ test "[leader] sections parse into index-based group defs" {
         \\J = swap-next : pane:swap_next
         \\
     );
-    try std.testing.expect(c.leader_configured);
+    try std.testing.expect(c.leader.configured);
     // root (idx 0) + window (idx 1)
-    try std.testing.expectEqual(@as(u8, 2), c.leader_group_count);
-    try std.testing.expectEqualStrings("ctrl+space", c.leaderActivate());
+    try std.testing.expectEqual(@as(u8, 2), c.leader.group_count);
+    try std.testing.expectEqualStrings("ctrl+space", c.leader.activateChord());
 
     // Root has: SPC→action, w→+group(window).
-    const root = &c.leader_groups[0];
+    const root = &c.leader.groups[0];
     try std.testing.expectEqualStrings("LEADER", root.crumb());
     try std.testing.expectEqual(@as(u8, 2), root.entry_count);
     try std.testing.expectEqual(@as(u8, ' '), root.entries[0].key);
@@ -1327,7 +1172,7 @@ test "[leader] sections parse into index-based group defs" {
     try std.testing.expectEqual(@as(u8, 1), root.entries[1].group_idx);
 
     // window group: crumb "+window", x→window_close, J (Shift+j)→pane_swap_next.
-    const win = &c.leader_groups[1];
+    const win = &c.leader.groups[1];
     try std.testing.expectEqualStrings("+window", win.crumb());
     try std.testing.expectEqual(@as(u8, 2), win.entry_count);
     try std.testing.expectEqual(@as(u8, 'x'), win.entries[0].key);
@@ -1339,7 +1184,7 @@ test "[leader] sections parse into index-based group defs" {
 test "[leader] forward group reference + unconfigured default" {
     var def = WmConfig{};
     def.parse("gap = 8\n");
-    try std.testing.expect(!def.leader_configured); // no [leader] → comptime default
+    try std.testing.expect(!def.leader.configured); // no [leader] → comptime default
 
     // Reference a group BEFORE its section is defined.
     var c = WmConfig{};
@@ -1350,11 +1195,11 @@ test "[leader] forward group reference + unconfigured default" {
         \\t = term : ui:toggle_status_bar
         \\
     );
-    try std.testing.expectEqual(@as(u8, 2), c.leader_group_count);
+    try std.testing.expectEqual(@as(u8, 2), c.leader.group_count);
     // root entry s points at the scratch group (idx 1), filled later.
-    try std.testing.expect(c.leader_groups[0].entries[0].is_group);
-    try std.testing.expectEqual(@as(u8, 1), c.leader_groups[0].entries[0].group_idx);
-    try std.testing.expectEqual(@as(u8, 1), c.leader_groups[1].entry_count);
+    try std.testing.expect(c.leader.groups[0].entries[0].is_group);
+    try std.testing.expectEqual(@as(u8, 1), c.leader.groups[0].entries[0].group_idx);
+    try std.testing.expectEqual(@as(u8, 1), c.leader.groups[1].entry_count);
 }
 
 test "[keybind] binds actions (not just spawn/scratchpad)" {
