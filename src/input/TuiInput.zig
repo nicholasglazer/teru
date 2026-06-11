@@ -12,6 +12,9 @@ const std = @import("std");
 const daemon_proto = @import("../server/protocol.zig");
 const compat = @import("../compat.zig");
 const log = @import("../log.zig");
+const LeaderKey = @import("../config/LeaderKey.zig");
+const Keybinds = @import("../config/Keybinds.zig");
+const MuxLeader = @import("MuxLeader.zig");
 
 pub const Action = union(enum) {
     /// Raw bytes to forward to daemon as active_input
@@ -65,6 +68,13 @@ prefix_timeout_ms: i64 = 500,
 /// owns Ctrl+B and Alt. The outer doesn't grab Ctrl+A, so it passes through to
 /// the inner — making the inner's prefix reachable.
 prefix_byte: u8 = 0x02,
+/// Doom-style leader (Alt+Space → which-key). Pure engine; the tree is
+/// MuxLeader.root_group (set in init). State is client-side — over SSH the
+/// daemon only ever sees the FINAL command, never the navigation keys.
+leader: LeaderKey = .{},
+/// Set whenever leader state changes, so the caller re-renders the HUD. The
+/// caller consumes it via consumeRenderDirty().
+render_dirty: bool = false,
 
 /// Per-byte input trace — writes raw to stderr (redirect with 2>tui-debug.log).
 /// GATED behind `TERU_LOG=debug`: the attaching client's stderr is the user's
@@ -79,8 +89,14 @@ fn debugLog(comptime fmt: []const u8, args: anytype) void {
     _ = std.c.write(2, msg.ptr, msg.len);
 }
 
+fn freshLeader() LeaderKey {
+    var lk = LeaderKey{};
+    lk.root = &MuxLeader.root_group;
+    return lk;
+}
+
 pub fn init() Self {
-    return .{};
+    return .{ .leader = freshLeader() };
 }
 
 /// Create a TuiInput that detects nesting automatically.
@@ -106,7 +122,7 @@ pub fn initAutoDetect() Self {
     const nested_bar = compat.getenv("TERU_NESTED_BAR") != null;
     // Nested: use Ctrl+A as the prefix (the outer teru owns Ctrl+B + Alt and
     // grabs them first; it does NOT grab Ctrl+A, so it forwards it to the inner).
-    return .{ .nested = nested, .nested_bar = nested_bar, .prefix_byte = if (nested) 0x01 else 0x02 };
+    return .{ .nested = nested, .nested_bar = nested_bar, .prefix_byte = if (nested) 0x01 else 0x02, .leader = freshLeader() };
 }
 
 /// Process a chunk of raw input bytes.
@@ -121,6 +137,34 @@ pub fn feed(self: *Self, bytes: []const u8, daemon_fd: std.posix.fd_t) bool {
 
     while (i < bytes.len) {
         const b = bytes[i];
+
+        // Leader mode swallows every byte: navigate the which-key tree
+        // client-side (no daemon round-trips), dispatching only the final
+        // action. Esc / any unbound key dismisses. Runs before the state
+        // machine so it captures everything while active.
+        if (self.leader.active) {
+            if (i > raw_start) {
+                _ = daemon_proto.sendMessage(daemon_fd, .active_input, bytes[raw_start..i]);
+            }
+            const res = self.leader.feedKey(b, false);
+            self.render_dirty = true;
+            i += 1;
+            raw_start = i;
+            switch (res) {
+                .redraw => {},
+                .dismiss => self.leader.deactivate(),
+                .run => |a| {
+                    self.leader.deactivate();
+                    const la = actionToTui(a);
+                    if (la == .detach) {
+                        _ = daemon_proto.sendMessage(daemon_fd, .detach, &.{});
+                        return true;
+                    }
+                    if (la != .none) self.dispatchAction(la, daemon_fd);
+                },
+            }
+            continue;
+        }
 
         switch (self.state) {
             .ground => {
@@ -185,6 +229,18 @@ pub fn feed(self: *Self, bytes: []const u8, daemon_fd: std.posix.fd_t) bool {
                     self.state = .csi;
                     self.csi_len = 0;
                     i += 1;
+                    continue;
+                }
+
+                // Alt+Space opens the leader / which-key (unless a prefix is
+                // mid-flight). Supersedes the old Alt+Space=cycle_layout, which
+                // is now reachable as leader SPC.
+                if (b == ' ' and !self.prefix_active) {
+                    self.leader.activate();
+                    self.render_dirty = true;
+                    self.state = .ground;
+                    i += 1;
+                    raw_start = i;
                     continue;
                 }
 
@@ -516,6 +572,69 @@ fn dispatchAction(_: *Self, action: Action, daemon_fd: std.posix.fd_t) void {
         },
         .none => {},
     }
+}
+
+/// Map a canonical `Keybinds.Action` (what the shared leader tree targets) to a
+/// TUI client Action (a daemon command / workspace / detach). This is the
+/// per-binary execution layer: the leader speaks the shared vocabulary, the TUI
+/// client translates to `daemon_proto.Command`. Actions the TUI can't dispatch
+/// map to `.none` (no-op).
+fn actionToTui(a: Keybinds.Action) Action {
+    if (a.workspaceIndex()) |idx| return .{ .workspace = idx };
+    if (a.moveToIndex()) |idx| return .{ .move_to_workspace = idx };
+    return switch (a) {
+        .session_detach => .detach,
+        .pane_focus_next => .{ .command = .focus_next },
+        .pane_focus_prev => .{ .command = .focus_prev },
+        .pane_focus_master => .{ .command = .focus_master },
+        .pane_set_master => .{ .command = .set_master },
+        .pane_swap_next => .{ .command = .swap_next },
+        .pane_swap_prev => .{ .command = .swap_prev },
+        .pane_swap_master => .{ .command = .swap_master },
+        .pane_rotate_slaves_up => .{ .command = .rotate_slaves_up },
+        .pane_rotate_slaves_down => .{ .command = .rotate_slaves_down },
+        .master_count_inc => .{ .command = .master_count_inc },
+        .master_count_dec => .{ .command = .master_count_dec },
+        .layout_cycle => .{ .command = .cycle_layout },
+        .layout_reset => .{ .command = .reset_layout },
+        .zoom_toggle => .{ .command = .zoom_toggle },
+        .resize_shrink_w => .{ .command = .resize_shrink },
+        .resize_grow_w => .{ .command = .resize_grow },
+        .pane_close, .window_close => .{ .command = .close_pane },
+        .split_vertical => .{ .command = .split_vertical },
+        .split_horizontal => .{ .command = .split_horizontal },
+        else => .none,
+    };
+}
+
+/// Whether the leader/which-key overlay is open (caller draws the HUD band).
+pub fn leaderActive(self: *const Self) bool {
+    return self.leader.active;
+}
+
+/// Consume the "leader state changed, please re-render" flag.
+pub fn consumeRenderDirty(self: *Self) bool {
+    const d = self.render_dirty;
+    self.render_dirty = false;
+    return d;
+}
+
+test "TuiInput: Alt+Space opens leader; root 'd' detaches; descend dispatches" {
+    var fds: [2]std.posix.fd_t = undefined;
+    _ = std.c.pipe(@ptrCast(&fds));
+    defer _ = std.posix.system.close(fds[0]);
+    defer _ = std.posix.system.close(fds[1]);
+
+    var input = init();
+    try std.testing.expect(!input.leaderActive());
+    // Alt+Space = ESC + ' '
+    _ = input.feed("\x1b ", fds[1]);
+    try std.testing.expect(input.leaderActive());
+    try std.testing.expect(input.consumeRenderDirty());
+    // 'd' at root = detach → feed returns true
+    const detached = input.feed("d", fds[1]);
+    try std.testing.expect(detached);
+    try std.testing.expect(!input.leaderActive());
 }
 
 // ── Tests ────────────────────────────────────────────────────────

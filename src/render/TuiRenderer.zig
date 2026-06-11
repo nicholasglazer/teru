@@ -17,6 +17,7 @@ const LayoutEngine = @import("../tiling/LayoutEngine.zig");
 const Rect = LayoutEngine.Rect;
 const Compositor = @import("Compositor.zig");
 const daemon_proto = @import("../server/protocol.zig");
+const LeaderKey = @import("../config/LeaderKey.zig");
 
 const Self = @This();
 
@@ -66,6 +67,9 @@ pub const RenderOpts = struct {
     /// nested mode drops the bar entirely — fine under an outer teru, but it
     /// leaves no panel at all under teruwm / a plain terminal.
     nested_bar: bool = false,
+    /// When non-null AND active, draw the leader/which-key HUD band along the
+    /// bottom (above the status row). Client-side overlay — works over SSH.
+    leader: ?*const LeaderKey = null,
 };
 
 /// Whether to draw the status bar (and reserve its row): always when not
@@ -201,6 +205,11 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
     // Status bar — skipped when nested (the outer teru owns the bar).
     if (showBar(opts)) self.drawStatusBar(mux, opts);
 
+    // Leader / which-key HUD band — overlays the bottom rows while active.
+    if (opts.leader) |lk| {
+        if (lk.active) self.drawLeaderBand(lk);
+    }
+
     // Flush
     _ = self.screen.flush(stdout_fd);
 
@@ -254,6 +263,90 @@ fn drawPaneBorder(self: *Self, rect: Rect, color: Color) void {
 }
 
 /// Draw the status bar on the last row.
+/// Draw the leader / which-key HUD as a cell band along the bottom, just above
+/// the status row. A cell-based sibling of teruwm's pixel LeaderPanel: breadcrumb
+/// inline on row 0, entries flowing after it; sized to the current group (one
+/// row when it fits, growing a row at a time). Overlay only — the next frame's
+/// screen.clear()+recompose erases it, so dismiss needs no special handling.
+fn drawLeaderBand(self: *Self, leader: *const LeaderKey) void {
+    const w = self.screen.width;
+    const h = self.screen.height;
+    if (w == 0 or h <= 1) return;
+
+    // Tightest column width (cells) that fits every entry.
+    var slot: u16 = 10;
+    for (leader.node) |e| {
+        const kw: u16 = if (e.key == ' ') 3 else 1; // "SPC" vs single char
+        const ew: u16 = kw + 1 + @as(u16, @intCast(@min(e.label.len, 200))) + 2;
+        if (ew > slot) slot = ew;
+    }
+    const pad_x: u16 = 1;
+    const usable: u16 = if (w > pad_x * 2) w - pad_x * 2 else w;
+    const cols: u16 = @max(1, usable / slot);
+
+    const hint = if (leader.atRoot()) "(1-9 ws \xc2\xb7 Esc cancel)" else "(Esc back)";
+    const crumb = leader.crumb;
+    const bc_cells: u16 = @intCast(@min(crumb.len + 1 + hint.len + 2, 80));
+    const bc_cols: u16 = @max(1, (bc_cells + slot - 1) / slot);
+    const total: u16 = bc_cols + @as(u16, @intCast(@min(leader.node.len, 200)));
+    const want_rows: u16 = @max(1, (total + cols - 1) / cols);
+
+    const status_row: u16 = h - 1; // reserve the status row
+    const band_h: u16 = @min(want_rows, status_row);
+    if (band_h == 0) return;
+    const band_top: u16 = status_row - band_h;
+
+    // Background fill.
+    var ry: u16 = band_top;
+    while (ry < status_row) : (ry += 1) {
+        var cx: u16 = 0;
+        while (cx < w) : (cx += 1) self.screen.setCell(ry, cx, ' ', status_fg, status_bg, .{});
+    }
+
+    // Breadcrumb (accent) + hint (dim) on the first band row.
+    var col: u16 = pad_x;
+    for (crumb) |ch| {
+        if (col >= w) break;
+        self.screen.setCell(band_top, col, ch, status_accent, status_bg, .{ .bold = true });
+        col += 1;
+    }
+    col += 1;
+    for (hint) |ch| {
+        if (col >= w) break;
+        self.screen.setCell(band_top, col, ch, status_dim, status_bg, .{});
+        col += 1;
+    }
+
+    // Entries flow after the breadcrumb's column span.
+    for (leader.node, 0..) |e, idx| {
+        const slot_idx: u16 = bc_cols + @as(u16, @intCast(idx));
+        const c: u16 = slot_idx % cols;
+        const r: u16 = slot_idx / cols;
+        if (r >= band_h) break;
+        var x: u16 = pad_x + c * slot;
+        const ey: u16 = band_top + r;
+        if (e.key == ' ') {
+            for ("SPC") |ch| {
+                if (x >= w) break;
+                self.screen.setCell(ey, x, ch, status_accent, status_bg, .{ .bold = true });
+                x += 1;
+            }
+            x += 1;
+        } else {
+            if (x < w) {
+                self.screen.setCell(ey, x, e.key, status_accent, status_bg, .{ .bold = true });
+                x += 1;
+            }
+            x += 1;
+        }
+        for (e.label) |ch| {
+            if (x >= w) break;
+            self.screen.setCell(ey, x, ch, status_fg, status_bg, .{});
+            x += 1;
+        }
+    }
+}
+
 fn drawStatusBar(self: *Self, mux: *Multiplexer, opts: RenderOpts) void {
     const row = self.screen.height -| 1;
     const w = self.screen.width;
