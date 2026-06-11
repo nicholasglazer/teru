@@ -234,17 +234,6 @@ pub fn render(self: *Bar, server: *Server) bool {
         return self.top.enabled;
     }
 
-    // Same ownership rule for the leader which-key hint: while leader mode is
-    // active it owns the top bar, so every repaint must paint the hint (not the
-    // normal bar) — otherwise the 1 Hz clock tick repaints over it.
-    if (server.leader.active) {
-        if (self.top.enabled) {
-            server.leader.render(&self.top.renderer);
-            wlr.wlr_scene_buffer_set_buffer_with_damage(self.top.scene_buffer, self.top.pixel_buffer, null);
-        }
-        return self.top.enabled;
-    }
-
     // Refresh cached sysfs/proc data (TTL-gated, non-blocking reads).
     // Must happen before barSignature so value changes trigger re-render.
     const now = teru.compat.monotonicNow();
@@ -268,11 +257,22 @@ pub fn render(self: *Bar, server: *Server) bool {
         self.last_top_sig = sig;
         painted = true;
     }
-    if (self.bottom.enabled and (force or sig != self.last_bottom_sig)) {
-        self.renderBar(&self.bottom, server);
-        wlr.wlr_scene_buffer_set_buffer_with_damage(self.bottom.scene_buffer, self.bottom.pixel_buffer, null);
-        self.last_bottom_sig = sig;
-        painted = true;
+    if (self.bottom.enabled) {
+        if (server.leader.active) {
+            // Leader mode owns the BOTTOM bar while active — it reads more
+            // naturally there. Always repaint the hint (its content changes as
+            // you descend groups, which the bar signature doesn't track) and
+            // deliberately leave last_bottom_sig stale so the normal stats
+            // repaint the moment the leader dismisses.
+            server.leader.render(&self.bottom.renderer);
+            wlr.wlr_scene_buffer_set_buffer_with_damage(self.bottom.scene_buffer, self.bottom.pixel_buffer, null);
+            painted = true;
+        } else if (force or sig != self.last_bottom_sig) {
+            self.renderBar(&self.bottom, server);
+            wlr.wlr_scene_buffer_set_buffer_with_damage(self.bottom.scene_buffer, self.bottom.pixel_buffer, null);
+            self.last_bottom_sig = sig;
+            painted = true;
+        }
     }
     return painted;
 }
