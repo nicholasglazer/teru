@@ -128,6 +128,23 @@ pub const ScratchpadChord = struct {
     }
 };
 
+pub const max_action_chords = 32;
+
+/// User-defined action keybind. Chord → compositor `Action` from a
+/// `[keybind] super+j = pane:focus_next` line (any payload that isn't
+/// `spawn:`/`scratchpad:` and resolves via `Action.fromString`). The chord is
+/// stored verbatim and parsed against the compositor's mod (Super) at apply
+/// time, so `mod` and `super` both resolve correctly — no remapping needed.
+pub const ActionChord = struct {
+    chord: [64]u8 = undefined,
+    chord_len: u8 = 0,
+    action: teru.Keybinds.Action = .none,
+
+    pub fn getChord(self: *const ActionChord) []const u8 {
+        return self.chord[0..self.chord_len];
+    }
+};
+
 pub const max_name_rules = 32;
 
 /// Compile-time default that Server.init references before WmConfig is
@@ -392,6 +409,14 @@ spawn_chord_count: u8 = 0,
 /// actions. Applied at init/reload alongside spawn chords.
 scratchpad_chords: [max_scratchpad_chords]ScratchpadChord = undefined,
 scratchpad_chord_count: u8 = 0,
+
+// ── User-defined action chords ─────────────────────────────────
+
+/// Keybinds from the `[keybind]` section binding a chord directly to a
+/// compositor `Action` (e.g. `super+j = pane:focus_next`). Applied at
+/// init/reload alongside spawn/scratchpad chords.
+action_chords: [max_action_chords]ActionChord = undefined,
+action_chord_count: u8 = 0,
 
 // ── User-defined leader menu (`[leader]` / `[leader.NAME]`) ─────
 //
@@ -872,6 +897,19 @@ fn applyKeybind(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.scratchpad_chord_count += 1;
         return;
     }
+
+    // Anything else: treat the payload as a compositor Action name
+    // (e.g. "pane:focus_next", "screenshot", "leader:activate",
+    // "workspace:3", "pane:move_to:2"). Unknown names are ignored.
+    if (teru.Keybinds.Action.fromString(value)) |action| {
+        if (self.action_chord_count >= max_action_chords) return;
+        var ch = ActionChord{ .action = action };
+        const n = @min(key.len, ch.chord.len);
+        @memcpy(ch.chord[0..n], key[0..n]);
+        ch.chord_len = @intCast(n);
+        self.action_chords[self.action_chord_count] = ch;
+        self.action_chord_count += 1;
+    }
 }
 
 /// Look up or append a ScratchpadRule by name. Called when the parser
@@ -1317,4 +1355,26 @@ test "[leader] forward group reference + unconfigured default" {
     try std.testing.expect(c.leader_groups[0].entries[0].is_group);
     try std.testing.expectEqual(@as(u8, 1), c.leader_groups[0].entries[0].group_idx);
     try std.testing.expectEqual(@as(u8, 1), c.leader_groups[1].entry_count);
+}
+
+test "[keybind] binds actions (not just spawn/scratchpad)" {
+    var c = WmConfig{};
+    c.parse(
+        \\[keybind]
+        \\super+return = spawn:teru
+        \\super+t      = scratchpad:terminalBR
+        \\super+j      = pane:focus_next
+        \\mod+shift+3  = pane:move_to:3
+        \\ctrl+space   = leader:activate
+        \\super+x      = bogus:nope
+        \\
+    );
+    try std.testing.expectEqual(@as(u8, 1), c.spawn_chord_count);
+    try std.testing.expectEqual(@as(u8, 1), c.scratchpad_chord_count);
+    // 3 valid action chords; the bogus one is dropped.
+    try std.testing.expectEqual(@as(u8, 3), c.action_chord_count);
+    try std.testing.expectEqualStrings("super+j", c.action_chords[0].getChord());
+    try std.testing.expectEqual(teru.Keybinds.Action.pane_focus_next, c.action_chords[0].action);
+    try std.testing.expectEqual(teru.Keybinds.Action.pane_move_to_3, c.action_chords[1].action);
+    try std.testing.expectEqual(teru.Keybinds.Action.leader_activate, c.action_chords[2].action);
 }

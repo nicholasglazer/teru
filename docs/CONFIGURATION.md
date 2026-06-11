@@ -678,27 +678,45 @@ Presets: **product** (30 fps MP4), **area** (slurp + 30 fps), **gif**
 `~/Videos/teruwm`). Depends on `wf-recorder`, `slurp`, `grim` being
 installed.
 
-### `[keybind]` — User-Defined Spawn Chords
+### `[keybind]` — User-Defined Chords
 
-*(Since v0.4.15.)* Bind any key chord to a shell command. Compositor-only
-(the terminal binary uses `[keybinds.normal]` etc. in `teru.conf` for
-shared action bindings — only commands that don't fit the pure `Action`
-enum belong here).
+*(Since v0.4.15; action payloads since v0.13.)* Bind any key chord to one of
+three payloads. This is the compositor's single place to rebind keys — programs,
+scratchpads, and **any core action** — and it hot-reloads.
 
 ```conf
 [keybind]
+# spawn:<cmd>        — launch a program (passed to /bin/sh -c)
 mod+return        = spawn:teru
-mod+shift+return  = spawn:teru --class Scratchpad
 mod+e             = spawn:emacsclient -c -a emacs
 mod+shift+d       = spawn:dunstctl close-all
-mod+x             = spawn:chromium
+
+# scratchpad:<name> — toggle a named scratchpad
+mod+t             = scratchpad:terminalBR
+
+# <action>          — bind/rebind any compositor action (Action.fromString name)
+super+j           = pane:focus_next
+super+shift+3     = pane:move_to:3
+mod+escape        = workspace:toggle_last
+ctrl+space        = leader:activate        # rebind the leader trigger
+mod+w             = screenshot
 ```
 
-Syntax: `<chord> = spawn:<cmd>`. The LHS follows the same `mod+ctrl+x`
-grammar as other keybind sections. The RHS is passed to `/bin/sh -c`,
-so pipes, args, and quoting work. Up to 32 entries. Commands inherit
-the compositor's environment (`WAYLAND_DISPLAY`, `DISPLAY` for
-Xwayland), same as `[autostart]`.
+Syntax: `<chord> = <payload>`. The LHS follows the `mod+ctrl+x` grammar. Payload
+is `spawn:<cmd>` (RHS passed to `/bin/sh -c` — pipes/args/quoting work; inherits
+the compositor's env like `[autostart]`), `scratchpad:<name>`, or any **action
+name** (the same `Action.fromString` names used in `teru.conf`'s `[keybinds.*]`:
+`pane:focus_next`, `master:count_inc`, `resize:shrink_w`, `workspace:N`,
+`pane:move_to:N`, `screenshot`, `config:reload`, `compositor:quit`,
+`leader:activate`, …). Unknown action names are ignored (logged). Up to 32 of
+each. An action chord **overrides** a default binding on the same chord, so this
+is how you rebind a built-in.
+
+> **Mod handling:** chords here are parsed against the compositor's mod, so both
+> `mod+j` and `super+j` bind under **Super** — there's no cross-binary
+> remapping. (The terminal binary's own action rebinds live in `teru.conf`'s
+> `[keybinds.*]`; the compositor reads its bindings only from this section, so
+> the two never fight over the mod.)
 
 > **Chord matching is case-insensitive.** `mod+q`, `Mod+Q`, and `MOD+Q` are
 > equivalent — modifier tokens (`mod`, `super`, `alt`, `ctrl`, `shift`) and
@@ -807,12 +825,14 @@ battery_critical = 15
 3 = dunst
 4 = nm-applet
 
-# ── User-defined spawn chords (v0.4.15) ────────
+# ── User-defined chords: spawn / scratchpad / action ───────────
 [keybind]
 mod+return       = spawn:teru
 mod+e            = spawn:emacsclient -c -a emacs
 mod+shift+d      = spawn:dunstctl close-all
 mod+q            = spawn:foot -e ~/code/workbench/foss/teru/tools/recompile-restart.sh
+mod+escape       = workspace:toggle_last        # rebind any core action
+ctrl+space       = leader:activate              # move the leader trigger
 
 # ── Workspace assignments ──────────────────────
 [rules]
