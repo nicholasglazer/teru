@@ -409,15 +409,28 @@ fn forwardAndFocus(server: *Server, button: u32, state: u32, time: u32, super_he
                     .wayland_surface => {
                         if (server.nodes.xdg_view[slot]) |opaque_view| {
                             const view: *XdgView = @ptrCast(@alignCast(opaque_view));
-                            server.focusView(view);
-                            syncWsActiveIndex(&server.layout_engine.workspaces[server.layout_engine.active_workspace], nid);
+                            // Only (re)focus when the click lands on a DIFFERENT
+                            // toplevel. Clicking a context menu / popup over the
+                            // already-focused window otherwise re-activates the
+                            // parent and cancels the popup's grab — the menu
+                            // dismisses instead of selecting (keyboard worked
+                            // because that path is separate). The seat already
+                            // routes this button to the popup surface (latched by
+                            // the motion hit-test), so skipping the re-focus lets
+                            // the click reach the menu item.
+                            if (server.focused_view != view) {
+                                server.focusView(view);
+                                syncWsActiveIndex(&server.layout_engine.workspaces[server.layout_engine.active_workspace], nid);
+                            }
                         } else if (server.nodes.xwayland_surface[slot]) |xw| {
-                            // X11 clients (Emacs, Steam, ...) don't have
-                            // an xdg_view. Route focus through the
-                            // xwayland-specific path so key events
-                            // actually reach the client.
-                            server.focusXwaylandSurface(xw);
-                            syncWsActiveIndex(&server.layout_engine.workspaces[server.layout_engine.active_workspace], nid);
+                            // X11 clients (Emacs, Steam, Vivaldi-via-Xwayland …)
+                            // don't have an xdg_view. Same guard: re-activating
+                            // the parent would steal X focus from an
+                            // override-redirect context menu and dismiss it.
+                            if (server.focused_xwayland != xw) {
+                                server.focusXwaylandSurface(xw);
+                                syncWsActiveIndex(&server.layout_engine.workspaces[server.layout_engine.active_workspace], nid);
+                            }
                         }
                     },
                     else => {},
