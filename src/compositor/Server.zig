@@ -1438,9 +1438,11 @@ pub fn pollTerminals(self: *Server) bool {
 pub fn renderLauncherBar(self: *Server) void {
     if (self.bar) |b| {
         if (self.launcher.active) {
-            // Render launcher UI into the top bar's buffer
-            self.launcher.render(&b.top.renderer);
-            wlr.wlr_scene_buffer_set_buffer_with_damage(b.top.scene_buffer, b.top.pixel_buffer, null);
+            // Render the command palette into the BOTTOM bar (consistent with the
+            // leader's bottom HUD); fall back to the top bar if the bottom is off.
+            const inst = if (b.bottom.enabled) &b.bottom else &b.top;
+            self.launcher.render(&inst.renderer);
+            wlr.wlr_scene_buffer_set_buffer_with_damage(inst.scene_buffer, inst.pixel_buffer, null);
         } else {
             _ = b.render(self); // restore normal bar
         }

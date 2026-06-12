@@ -411,9 +411,12 @@ pub fn handleKey(server: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) b
     // launcher was open could fire a WM action or leak bytes into the shell
     // underneath. VT-switch (handled above) is the only intentional exception.
     if (server.launcher.active) {
-        if (server.launcher.handleKey(sym, server)) {
-            server.renderLauncherBar();
-        }
+        const consumed = server.launcher.handleKey(sym, server);
+        // Enter on a COMMAND defers to us (the launcher can't see executeAction).
+        const pending = server.launcher.pending_action;
+        server.launcher.pending_action = null;
+        if (consumed) server.renderLauncherBar();
+        if (pending) |act| _ = executeAction(server, act);
         return true;
     }
 
@@ -423,6 +426,17 @@ pub fn handleKey(server: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) b
     // space, Esc=0x1b) is what the keymap matches on; `mods.shift` lets the
     // keymap distinguish e.g. Shift+j (swap-next) from j (focus-next).
     if (server.leader.active) {
+        // Double-tap the leader (Super+Space again) → fuzzy command palette
+        // (the "LEADER LEADER" idiom): commands first, then $PATH apps, in the
+        // bottom bar. Plain Space (no Super) stays the root `layout` action.
+        if (key == ' ' and mods.super_) {
+            server.leader.deactivate();
+            server.renderLeaderHint(); // hide the which-key band
+            server.launcher.seedCommands(server.leader.root);
+            server.launcher.activate();
+            server.renderLauncherBar();
+            return true;
+        }
         switch (server.leader.feedKey(key, mods.shift)) {
             .redraw => server.renderLeaderHint(),
             .dismiss => {
@@ -787,6 +801,8 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
                     _ = b.render(server);
                 }
             } else {
+                // Unified palette: leader commands (first) + $PATH apps.
+                server.launcher.seedCommands(server.leader.root);
                 server.launcher.activate();
                 server.renderLauncherBar();
             }
