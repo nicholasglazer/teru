@@ -1,15 +1,17 @@
 //! Full-output PNG screenshot pipeline for teruwm.
 //!
-//! Composites every visible terminal pane's framebuffer + bars into a
-//! single allocated ARGB buffer, then pushes through teru's png writer.
-//! The two-pass walk (tiled then floating) mirrors wlroots' scene-
-//! graph z-order — without it, E2E screenshot diffs disagree with
-//! what the user sees on-screen.
+//! Composites every visible terminal pane's framebuffer, external
+//! client windows, and bars into a single allocated ARGB buffer, then
+//! pushes through teru's png writer. The two-pass walk (tiled then
+//! floating) mirrors wlroots' scene-graph z-order — without it, E2E
+//! screenshot diffs disagree with what the user sees on-screen.
 //!
-//! Does NOT capture external xdg clients (chromium, firefox) — their
-//! pixels live in client-owned buffers that wlr_screencopy_v1 captures
-//! via a separate path. For those, callers use grim + zxdg-output-
-//! manager, exposed since v0.5.0.
+//! External clients (chromium, firefox, xwayland) are captured by
+//! reading their committed buffers back from the renderer
+//! (wlr_texture_read_pixels via miozu_capture_*_tree) — subsurfaces
+//! and xdg popups included. Not captured: override-redirect X11
+//! windows (never in the node registry) and the hardware cursor
+//! plane. grim via wlr_screencopy_v1 remains available as before.
 //!
 //! Split out of Server.zig as part of the 2026-04-16 modularization pass.
 
@@ -152,6 +154,26 @@ fn compositeOutput(server: *Server, pixels: []u32, out_w: u32, out_h: u32) void 
                 );
             }
         }
+        // External clients in the same z-pass: read their committed
+        // buffers back from the renderer and blit at the node rect.
+        // Subsurfaces + xdg popups ride along inside the glue's
+        // surface-tree walk. Tiled xwayland windows go through the
+        // plain-surface variant; floating/override-redirect X11
+        // windows never enter the node registry and are skipped.
+        for (0..server.nodes.kind.len) |slot| {
+            if (server.nodes.kind[slot] != .wayland_surface) continue;
+            if (server.nodes.workspace[slot] != ws) continue;
+            if (server.nodes.floating[slot] != want_floating) continue;
+            const px = server.nodes.pos_x[slot];
+            const py = server.nodes.pos_y[slot];
+            if (server.nodes.xdg_toplevel[slot]) |tl| {
+                const xdg = wlr.miozu_xdg_toplevel_base(tl) orelse continue;
+                _ = wlr.miozu_capture_xdg_surface_tree(xdg, pixels.ptr, @intCast(out_w), @intCast(out_h), px, py);
+            } else if (server.nodes.xwayland_surface[slot]) |xs| {
+                const surface = wlr.miozu_xwayland_surface_surface(xs) orelse continue;
+                _ = wlr.miozu_capture_surface_tree(surface, pixels.ptr, @intCast(out_w), @intCast(out_h), px, py);
+            }
+        }
     }
 
     if (server.bar) |b| {
@@ -175,11 +197,10 @@ fn compositeOutput(server: *Server, pixels: []u32, out_w: u32, out_h: u32) void 
 }
 
 /// Crop a rectangular region of the composited output to a PNG. Used by the
-/// native area-select (mod+shift+w): teruwm composites its own output, so it
+/// native area-select (mod+ctrl+w): teruwm composites its own output, so it
 /// crops directly — no grim/slurp/layer-shell. Saves to the configured shot
 /// dir as `area-<ts>.png` and pops a toast. Returns true on write success.
-/// (Does NOT capture external GUI clients — their pixels aren't in our
-/// pane framebuffers; that needs wlr-screencopy.)
+/// Captures panes, bars, AND external clients (see compositeOutput).
 pub fn takeAreaScreenshot(server: *Server, rx: i32, ry: i32, rw: u32, rh: u32) bool {
     const dims = server.activeOutputDims();
     const out_w: u32 = dims.w;

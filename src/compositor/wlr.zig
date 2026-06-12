@@ -799,6 +799,17 @@ pub extern "c" fn miozu_scene_buffer_commit_dirty(
     border_thickness: c_int,
 ) callconv(.c) void;
 
+// ── Client surface-tree readback (screenshots) ─────────────────
+
+/// Composite every mapped surface in an xdg-surface tree (root +
+/// subsurfaces + popups, rendering order) into a 0xAARRGGBB output
+/// buffer at the node-rect origin; the CSD window-geometry offset is
+/// subtracted inside the glue. Opaque copy, clipped to dst bounds.
+/// Returns the number of surfaces blitted (0 = nothing readable).
+pub extern "c" fn miozu_capture_xdg_surface_tree(xdg: *wlr_xdg_surface, dst: [*]u32, dst_w: c_int, dst_h: c_int, dst_x: c_int, dst_y: c_int) callconv(.c) c_int;
+/// Plain wl_surface variant (xwayland roots: root + subsurfaces only).
+pub extern "c" fn miozu_capture_surface_tree(root: *wlr_surface, dst: [*]u32, dst_w: c_int, dst_h: c_int, dst_x: c_int, dst_y: c_int) callconv(.c) c_int;
+
 // ── Utility: container-of pattern ──────────────────────────────
 
 /// Helper to get the container struct from a wl_listener pointer.

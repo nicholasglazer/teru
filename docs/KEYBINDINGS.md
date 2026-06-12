@@ -151,9 +151,11 @@ teruwmctl scratchpad term       # show 'term' again
 | `$mod+Ctrl+Shift+W` | Screenshot focused pane |
 
 > All three screenshot paths are **native** — teruwm composites its own panes +
-> bars (and crops for area-select), so no `grim`/`slurp`/layer-shell. They do NOT
-> capture external GUI clients (vivaldi/firefox) — those pixels live in client
-> buffers and need `wlr-screencopy` (`grim`). Each pops a toast naming the file.
+> bars (and crops for area-select), so no `grim`/`slurp`/layer-shell. External
+> GUI clients (vivaldi/firefox, xwayland) are captured too: their committed
+> buffers are read back from the renderer, popups and subsurfaces included.
+> Not captured: override-redirect X11 windows and the cursor plane (`grim`
+> via `wlr-screencopy` covers those). Each pops a toast naming the file.
 > `$mod+W` and `$mod+Ctrl+W` also copy the PNG to the Wayland clipboard as
 > `image/png` (a native `wlr_data_source` — teruwm needs no `wl-copy` to *write*
 > it). To **paste** it elsewhere the consuming app reads the clipboard, which on

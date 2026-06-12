@@ -1218,3 +1218,143 @@ void miozu_scene_buffer_commit_dirty(
     wlr_scene_buffer_set_buffer_with_damage(sb, buf, &region);
     pixman_region32_fini(&region);
 }
+
+/* ── Client surface-tree pixel readback (screenshots) ─────────── */
+
+#include <wlr/render/wlr_texture.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* DRM fourcc codes we can map onto teru's 0xAARRGGBB u32 composite
+ * buffer either directly (AR24/XR24) or with an R<->B swizzle
+ * (AB24/XB24). Hardcoded like MIOZU_FORMAT_ARGB8888 above to avoid
+ * a libdrm include. */
+#define MIOZU_FMT_AR24 0x34325241 /* DRM_FORMAT_ARGB8888 */
+#define MIOZU_FMT_XR24 0x34325258 /* DRM_FORMAT_XRGB8888 */
+#define MIOZU_FMT_AB24 0x34324241 /* DRM_FORMAT_ABGR8888 */
+#define MIOZU_FMT_XB24 0x34324258 /* DRM_FORMAT_XBGR8888 */
+
+struct miozu_capture_ctx {
+    uint32_t *dst;
+    int dst_w, dst_h;
+    /* Output-space position of the root surface's (0,0). For xdg trees
+     * this is node origin minus the window-geometry offset, mirroring
+     * the translation wlr_scene_xdg_surface_create applies on screen. */
+    int origin_x, origin_y;
+    int count;
+};
+
+/* wlr_surface_iterator_func_t: read one mapped surface's texture back
+ * to CPU memory and blit it into the capture buffer, clipped. sx/sy are
+ * surface-local offsets relative to the tree root (can be negative for
+ * popups opening left of/above their parent). */
+static void miozu_capture_iter(struct wlr_surface *surface, int sx, int sy, void *data) {
+    struct miozu_capture_ctx *ctx = data;
+    if (!surface || !surface->resource) return;
+    struct wlr_texture *tex = wlr_surface_get_texture(surface);
+    if (!tex) return; /* no buffer attached (or upload failed) — skip */
+
+    int tw = (int)tex->width, th = (int)tex->height;
+    if (tw <= 0 || th <= 0) return;
+
+    /* Read the FULL texture into scratch (src_box zeroed = whole texture;
+     * the struct's src_box member is const, hence designated init). Try
+     * ARGB8888 first (pixman renderer path), fall back to the renderer's
+     * preferred read format — GLES2 typically reports an (A/X)BGR order —
+     * and swizzle during the blit. Unknown formats skip the surface
+     * rather than writing garbage. */
+    uint32_t *tmp = malloc((size_t)tw * (size_t)th * 4);
+    if (!tmp) return;
+    int swizzle = 0;
+    struct wlr_texture_read_pixels_options opts = {
+        .data = tmp,
+        .format = MIOZU_FMT_AR24,
+        .stride = (uint32_t)tw * 4,
+    };
+    if (!wlr_texture_read_pixels(tex, &opts)) {
+        uint32_t pref = wlr_texture_preferred_read_format(tex);
+        if (pref == MIOZU_FMT_AB24 || pref == MIOZU_FMT_XB24) {
+            swizzle = 1;
+        } else if (pref != MIOZU_FMT_AR24 && pref != MIOZU_FMT_XR24) {
+            free(tmp);
+            return;
+        }
+        struct wlr_texture_read_pixels_options opts_pref = {
+            .data = tmp,
+            .format = pref,
+            .stride = (uint32_t)tw * 4,
+        };
+        if (!wlr_texture_read_pixels(tex, &opts_pref)) {
+            free(tmp);
+            return;
+        }
+    }
+
+    /* Surface-local size: differs from texture (buffer) size under
+     * buffer_scale != 1 or a wp_viewporter dst (chromium uses viewporter)
+     * — nearest-sample in that case, 1:1 row memcpy otherwise. */
+    int sw = surface->current.width, sh = surface->current.height;
+    if (sw <= 0 || sh <= 0) { sw = tw; sh = th; }
+
+    int x0 = ctx->origin_x + sx, y0 = ctx->origin_y + sy;
+    int xs = x0 < 0 ? -x0 : 0, ys = y0 < 0 ? -y0 : 0;
+    int xe = sw, ye = sh;
+    if (x0 + xe > ctx->dst_w) xe = ctx->dst_w - x0;
+    if (y0 + ye > ctx->dst_h) ye = ctx->dst_h - y0;
+    if (xs >= xe || ys >= ye) { free(tmp); return; }
+
+    for (int y = ys; y < ye; y++) {
+        int ty = (sh == th) ? y : (int)((int64_t)y * th / sh);
+        const uint32_t *srow = tmp + (size_t)ty * (size_t)tw;
+        uint32_t *drow = ctx->dst + (size_t)(y0 + y) * (size_t)ctx->dst_w;
+        if (!swizzle && sw == tw) {
+            memcpy(drow + x0 + xs, srow + xs, (size_t)(xe - xs) * 4);
+        } else {
+            for (int x = xs; x < xe; x++) {
+                int tx = (sw == tw) ? x : (int)((int64_t)x * tw / sw);
+                uint32_t px = srow[tx];
+                if (swizzle)
+                    px = (px & 0xFF00FF00u) | ((px & 0x00FF0000u) >> 16) | ((px & 0x000000FFu) << 16);
+                drow[x0 + x] = px;
+            }
+        }
+    }
+    free(tmp);
+    ctx->count++;
+}
+
+/* Composite every mapped surface in an xdg-surface tree (root,
+ * subsurfaces, popups — root-to-leaf rendering order) into dst at
+ * (dst_x, dst_y), the output-space node-rect origin. The window-geometry
+ * offset (CSD shadow margins) is subtracted so the geometry origin lands
+ * exactly on the node origin, matching what the scene draws. Pixels are
+ * copied opaque (no alpha blending — same as the pane blit), clipped to
+ * dst bounds. Returns the number of surfaces blitted. */
+int miozu_capture_xdg_surface_tree(struct wlr_xdg_surface *xdg,
+        uint32_t *dst, int dst_w, int dst_h, int dst_x, int dst_y)
+{
+    if (!xdg || !dst || dst_w <= 0 || dst_h <= 0) return 0;
+    struct wlr_box geo;
+    wlr_xdg_surface_get_geometry(xdg, &geo);
+    struct miozu_capture_ctx ctx = {
+        .dst = dst, .dst_w = dst_w, .dst_h = dst_h,
+        .origin_x = dst_x - geo.x, .origin_y = dst_y - geo.y,
+    };
+    wlr_xdg_surface_for_each_surface(xdg, miozu_capture_iter, &ctx);
+    return ctx.count;
+}
+
+/* Plain wl_surface-tree variant (xwayland roots: root + subsurfaces;
+ * X11 has no popup concept — menus are separate override-redirect
+ * windows, which never enter the node registry). */
+int miozu_capture_surface_tree(struct wlr_surface *root,
+        uint32_t *dst, int dst_w, int dst_h, int dst_x, int dst_y)
+{
+    if (!root || !root->resource || !dst || dst_w <= 0 || dst_h <= 0) return 0;
+    struct miozu_capture_ctx ctx = {
+        .dst = dst, .dst_w = dst_w, .dst_h = dst_h,
+        .origin_x = dst_x, .origin_y = dst_y,
+    };
+    wlr_surface_for_each_surface(root, miozu_capture_iter, &ctx);
+    return ctx.count;
+}

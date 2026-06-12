@@ -362,7 +362,7 @@ Socket: `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock`. Implementation: `src/compositor
 
 | Tool | Params | Description |
 |---|---|---|
-| `teruwm_screenshot` | `path` (string, default `/tmp/teruwm-screenshot.png`) | Capture full compositor output as PNG. |
+| `teruwm_screenshot` | `path` (string, default `/tmp/teruwm-screenshot.png`) | Capture full compositor output as PNG — panes, external clients (xdg + xwayland, popups included), bars. |
 | `teruwm_screenshot_pane` | `name` (string) OR `node_id` (int); `path` (default `/tmp/teruwm-pane-<name>.png`) | Capture one pane's framebuffer as PNG. Terminal panes only. |
 
 ### Scratchpads (v0.4.18)
