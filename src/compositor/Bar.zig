@@ -226,12 +226,19 @@ pub fn render(self: *Bar, server: *Server) bool {
     // disappears on spaces sometimes" bug — async renders land during typing
     // pauses, which fall on word boundaries. Funnel all callers through the
     // overlay here so nothing can erase it mid-typing.
-    if (server.launcher.active) {
-        if (self.top.enabled) {
-            server.launcher.render(&self.top.renderer);
-            wlr.wlr_scene_buffer_set_buffer_with_damage(self.top.scene_buffer, self.top.pixel_buffer, null);
-        }
-        return self.top.enabled;
+    // The launcher / palette OWNS one bar while active — the BOTTOM bar (to sit
+    // with the leader's bottom HUD), or the top if there's no bottom. Paint it on
+    // EVERY repaint so async renders (clock tick, notification, map/unmap) can't
+    // clobber it mid-type; the OTHER bar still renders its normal content below.
+    // (Previously this painted the TOP and returned early — after
+    // renderLauncherBar moved to the bottom, that showed the launcher on BOTH.)
+    const launcher_inst: ?*BarInstance = if (server.launcher.active)
+        (if (self.bottom.enabled) &self.bottom else if (self.top.enabled) &self.top else null)
+    else
+        null;
+    if (launcher_inst) |li| {
+        server.launcher.render(&li.renderer);
+        wlr.wlr_scene_buffer_set_buffer_with_damage(li.scene_buffer, li.pixel_buffer, null);
     }
 
     // Refresh cached sysfs/proc data (TTL-gated, non-blocking reads).
@@ -250,14 +257,19 @@ pub fn render(self: *Bar, server: *Server) bool {
     self.dirty = false;
     self.cache_dirty = false;
 
-    var painted = false;
-    if (self.top.enabled and (force or sig != self.last_top_sig)) {
+    // Skip whichever bar the launcher owns — repainting it normally here would
+    // clobber the palette.
+    const launcher_top = if (launcher_inst) |li| li == &self.top else false;
+    const launcher_bottom = if (launcher_inst) |li| li == &self.bottom else false;
+
+    var painted = launcher_inst != null;
+    if (self.top.enabled and !launcher_top and (force or sig != self.last_top_sig)) {
         self.renderBar(&self.top, server);
         wlr.wlr_scene_buffer_set_buffer_with_damage(self.top.scene_buffer, self.top.pixel_buffer, null);
         self.last_top_sig = sig;
         painted = true;
     }
-    if (self.bottom.enabled and (force or sig != self.last_bottom_sig)) {
+    if (self.bottom.enabled and !launcher_bottom and (force or sig != self.last_bottom_sig)) {
         self.renderBar(&self.bottom, server);
         wlr.wlr_scene_buffer_set_buffer_with_damage(self.bottom.scene_buffer, self.bottom.pixel_buffer, null);
         self.last_bottom_sig = sig;
