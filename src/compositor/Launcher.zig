@@ -15,22 +15,39 @@ const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 
 const Launcher = @This();
+const Action = teru.Keybinds.Action;
+const Entry = teru.LeaderKey.Entry;
 
 const max_entries = 4096;
+const max_commands = 256;
 const max_query = 128;
 const max_visible = 8; // max results shown in bar
+
+/// A leader command in the palette: a label + the action to dispatch. `label`
+/// points into stable storage (comptime tree or config buffers, both
+/// Server-lived).
+const Command = struct { label: []const u8, action: Action };
 
 // Sorted executable names from $PATH
 entries: [max_entries][]const u8 = undefined,
 count: u32 = 0,
+
+// Leader commands (flattened from the leader tree) — ranked BEFORE apps so the
+// palette is "do something" first, "launch something" second.
+commands: [max_commands]Command = undefined,
+command_count: u32 = 0,
 
 // Filter state
 query: [max_query]u8 = undefined,
 query_len: u8 = 0,
 selected: u16 = 0, // index into filtered results
 active: bool = false,
+// Set when Enter selects a COMMAND — the caller (ServerInput) dispatches it
+// through executeAction. Apps are launched here directly (spawnProcess).
+pending_action: ?Action = null,
 
-// Filtered results (indices into entries[])
+// Filtered results, in a UNIFIED index space: 0..command_count are commands,
+// command_count.. are apps (offset by command_count into entries[]).
 filtered: [max_entries]u32 = undefined,
 filtered_count: u32 = 0,
 
@@ -113,12 +130,35 @@ pub fn activate(self: *Launcher) void {
     self.active = true;
     self.query_len = 0;
     self.selected = 0;
+    self.pending_action = null;
     self.updateFilter();
 }
 
 pub fn deactivate(self: *Launcher) void {
     self.active = false;
     self.query_len = 0;
+}
+
+/// Flatten a leader tree into the command list (depth-first) so the palette can
+/// fuzzy-search every action by its label. Call right before activate() so the
+/// commands reflect the live (possibly config-driven) tree.
+pub fn seedCommands(self: *Launcher, root: []const Entry) void {
+    self.command_count = 0;
+    self.addGroup(root, 0);
+}
+
+fn addGroup(self: *Launcher, node: []const Entry, depth: u8) void {
+    if (depth > 8) return; // guard against a self-referential config tree
+    for (node) |e| {
+        switch (e.target) {
+            .action => |a| {
+                if (self.command_count >= max_commands) return;
+                self.commands[self.command_count] = .{ .label = e.label, .action = a };
+                self.command_count += 1;
+            },
+            .group => |g| self.addGroup(g, depth + 1),
+        }
+    }
 }
 
 // ── Input handling ─────────────────────────────────────────────
@@ -140,11 +180,15 @@ pub fn handleKey(self: *Launcher, keysym: u32, server: *Server) bool {
             }
             return true;
         },
-        0xFF0D => { // Return — launch selected
+        0xFF0D => { // Return — run selected (command → action; app → spawn)
             if (self.filtered_count > 0 and self.selected < self.filtered_count) {
-                const idx = self.filtered[self.selected];
-                const name = self.entries[idx];
-                self.launchProgram(name, server);
+                const uidx = self.filtered[self.selected];
+                if (uidx < self.command_count) {
+                    // Command: defer dispatch to the caller (it owns executeAction).
+                    self.pending_action = self.commands[uidx].action;
+                } else {
+                    self.launchProgram(self.entries[uidx - self.command_count], server);
+                }
             }
             self.deactivate();
             if (server.bar) |b| {
@@ -183,35 +227,52 @@ pub fn handleKey(self: *Launcher, keysym: u32, server: *Server) bool {
 fn updateFilter(self: *Launcher) void {
     self.filtered_count = 0;
     const q = self.query[0..self.query_len];
-    if (q.len == 0) {
-        // Show all (up to max)
-        const show = @min(self.count, max_entries);
-        for (0..show) |i| {
-            self.filtered[self.filtered_count] = @intCast(i);
-            self.filtered_count += 1;
-        }
-        return;
-    }
 
-    // Prefix match (fast, intuitive)
-    for (0..self.count) |i| {
-        if (std.mem.startsWith(u8, self.entries[i], q)) {
+    // Commands FIRST (case-insensitive substring on the short labels).
+    for (0..self.command_count) |i| {
+        if (q.len == 0 or icontains(self.commands[i].label, q)) {
             self.filtered[self.filtered_count] = @intCast(i);
             self.filtered_count += 1;
-            if (self.filtered_count >= max_entries) break;
+            if (self.filtered_count >= max_entries) return;
         }
     }
 
-    // Also include substring matches after prefix matches
+    // Apps after — prefix matches, then substring matches (offset into the
+    // unified index space by command_count).
     for (0..self.count) |i| {
-        if (!std.mem.startsWith(u8, self.entries[i], q) and
-            std.mem.find(u8, self.entries[i], q) != null)
-        {
-            self.filtered[self.filtered_count] = @intCast(i);
+        if (q.len == 0 or std.mem.startsWith(u8, self.entries[i], q)) {
+            self.filtered[self.filtered_count] = @intCast(self.command_count + i);
             self.filtered_count += 1;
-            if (self.filtered_count >= max_entries) break;
+            if (self.filtered_count >= max_entries) return;
         }
     }
+    if (q.len > 0) {
+        for (0..self.count) |i| {
+            if (!std.mem.startsWith(u8, self.entries[i], q) and std.mem.find(u8, self.entries[i], q) != null) {
+                self.filtered[self.filtered_count] = @intCast(self.command_count + i);
+                self.filtered_count += 1;
+                if (self.filtered_count >= max_entries) return;
+            }
+        }
+    }
+}
+
+/// Case-insensitive substring test (labels are short; this is off the hot path).
+fn icontains(hay: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > hay.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= hay.len) : (i += 1) {
+        var match = true;
+        for (needle, 0..) |c, j| {
+            if (std.ascii.toLower(hay[i + j]) != std.ascii.toLower(c)) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
 }
 
 fn launchProgram(self: *Launcher, name: []const u8, server: *Server) void {
@@ -267,10 +328,12 @@ pub fn render(self: *Launcher, cpu: *SoftwareRenderer) void {
 
     const show = @min(self.filtered_count, max_visible);
     for (0..show) |ri| {
-        const idx = self.filtered[ri];
-        const name = self.entries[idx];
+        const uidx = self.filtered[ri];
+        const is_cmd = uidx < self.command_count;
+        const name = if (is_cmd) self.commands[uidx].label else self.entries[uidx - self.command_count];
         const is_selected = ri == self.selected;
-        const color = if (is_selected) s.cursor else s.ansi[8]; // orange selected, gray others
+        // orange selected · cyan commands · gray apps
+        const color = if (is_selected) s.cursor else if (is_cmd) s.ansi[6] else s.ansi[8];
 
         for (name) |ch| {
             if (ch < 32 or ch > 126) continue;
