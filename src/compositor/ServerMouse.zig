@@ -15,16 +15,25 @@
 //!     slow deceleration. Constant-velocity paths are bot-tell #1.
 //!   * Per-waypoint ±1–3 px tremor drawn from a normal-ish
 //!     distribution (three-sample average of uniform noise).
-//!   * Real wall-clock `nanosleep` between samples so velocity
-//!     matches the curve. Target ~60 samples/sec.
 //!   * Press + release timing within the path — press after ~20–35 %
 //!     of the journey (so browsers see motion → hover → press,
 //!     not warp → press), release at end.
 //!
-//! Caveats:
-//!   * Blocks the wl_event_loop for `duration_ms` — callers pick a
-//!     sensible value (default 250 ms). Keeps things simple vs
-//!     spreading the path across frame callbacks.
+//! Timing model: each waypoint is emitted from a wl_event_loop TIMER
+//! (`per_sample_ms` apart, ~60 Hz), NOT a busy `nanosleep`. teruwm is a
+//! single-threaded compositor — sleeping between waypoints would PARK
+//! the one event-loop thread for the whole gesture, so libinput (the
+//! user's real touchpad/keyboard) goes unread for `duration_ms` and the
+//! pointer visibly freezes then jumps. The timer keeps the loop
+//! dispatching real input between every waypoint. Per-path state lives
+//! in `Server.mouse_path`; the shared timer in `Server.mouse_path_timer_src`.
+//!
+//! Contract: humanized paths are ASYNCHRONOUS — `pathMove` returns once
+//! the path is *scheduled* (after emitting waypoint 0) and the remaining
+//! waypoints fire from the timer over ~`duration_ms`. Callers needing the
+//! gesture complete must wait ~`duration_ms` (same async shape as
+//! teruwm_restart). The teleport fallback (humanize=false, or sub-pixel
+//! moves) is still synchronous and complete on return.
 //!   * RNG seeds from monotonicNow, so successive paths vary.
 
 const std = @import("std");
@@ -32,10 +41,44 @@ const teru = @import("teru");
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 
+const MAX_SAMPLES: u32 = 240;
+
+/// In-flight humanized-path state, owned by `Server.mouse_path`. One path
+/// runs at a time; starting another cancels the old (releasing any held
+/// button first — see `cancelMousePath`) and reuses the timer source.
+pub const MousePathState = struct {
+    active: bool = false,
+    // Bezier endpoints + control points (output-global pixel coords).
+    fx: f64 = 0,
+    fy: f64 = 0,
+    tx: f64 = 0,
+    ty: f64 = 0,
+    c1x: f64 = 0,
+    c1y: f64 = 0,
+    c2x: f64 = 0,
+    c2y: f64 = 0,
+    dist: f64 = 0,
+    samples: u32 = 0,
+    idx: u32 = 0,
+    per_sample_ms: u32 = 1,
+    press_idx: u32 = std.math.maxInt(u32),
+    button: ?u32 = null,
+    super_held: bool = false,
+    pressed: bool = false,
+    // Snapshotted AFTER the setup draws (off1/off2/press jitter) so the
+    // per-waypoint tremor sequence matches the original inline loop.
+    prng: std.Random.DefaultPrng = undefined,
+};
+
 /// Move cursor from (from_x, from_y) to (to_x, to_y) along a humanised
 /// Bezier path. If `button` is non-null, press it partway through the
 /// path and release at the end. If `humanize` is false, fall back to
-/// the current teleport+warp path (two processCursorMotion calls).
+/// the teleport+warp path (two processCursorMotion calls).
+///
+/// Returns true when the move was SCHEDULED asynchronously (a humanized
+/// path now driving from the timer), false when it completed
+/// synchronously (teleport / sub-pixel fallback / degenerate sample
+/// count).
 pub fn pathMove(
     server: *Server,
     from_x: i32,
@@ -46,12 +89,12 @@ pub fn pathMove(
     humanize: bool,
     button: ?u32,
     super_held: bool,
-) void {
+) bool {
     if (!humanize) {
         teleport(server, from_x, from_y, to_x, to_y, button, super_held);
-        return;
+        return false;
     }
-    curvedPath(server, from_x, from_y, to_x, to_y, duration_ms, button, super_held);
+    return curvedPath(server, from_x, from_y, to_x, to_y, duration_ms, button, super_held);
 }
 
 // ── Private ──────────────────────────────────────────────────
@@ -71,13 +114,19 @@ fn teleport(server: *Server, fx: i32, fy: i32, tx: i32, ty: i32, button: ?u32, s
     }
 }
 
+/// Compute the curve, emit waypoint 0, and arm the timer for the rest.
+/// Returns true if a timer was armed (async path in flight), false if the
+/// move completed inline (degenerate / no event loop).
 fn curvedPath(
     server: *Server,
-    fx_i: i32, fy_i: i32, tx_i: i32, ty_i: i32,
+    fx_i: i32,
+    fy_i: i32,
+    tx_i: i32,
+    ty_i: i32,
     duration_ms: u32,
     button: ?u32,
     super_held: bool,
-) void {
+) bool {
     const fx: f64 = @floatFromInt(fx_i);
     const fy: f64 = @floatFromInt(fy_i);
     const tx: f64 = @floatFromInt(tx_i);
@@ -87,8 +136,12 @@ fn curvedPath(
     const dist = @sqrt(dx * dx + dy * dy);
     if (dist < 1.0) {
         teleport(server, fx_i, fy_i, tx_i, ty_i, button, super_held);
-        return;
+        return false;
     }
+
+    // A fresh path supersedes any in-flight one — release a held button
+    // first so we never leak a press, then reuse the (disarmed) timer.
+    cancelMousePath(server);
 
     // RNG seeded from monotonic clock — path varies between calls
     // without needing a persistent Server field.
@@ -111,9 +164,11 @@ fn curvedPath(
 
     // Sample count: target ~60 Hz. Clamp to [8, 240] so a tiny move
     // still has some curve and a huge one doesn't burst.
-    const raw_samples: u32 = @max(8, @min(240, duration_ms * 60 / 1000));
-    const samples: u32 = raw_samples;
+    const samples: u32 = @max(8, @min(MAX_SAMPLES, duration_ms * 60 / 1000));
     const per_sample_ns: u64 = (@as(u64, duration_ms) * 1_000_000) / @max(1, samples);
+    // wl_event_loop timers are millisecond-granularity; floor at 1ms
+    // (0 would disarm the timer). ~16ms at the default 250ms/15-sample.
+    const per_sample_ms: u32 = @intCast(@max(1, per_sample_ns / 1_000_000));
 
     // Button press roughly 25 % through the path (with jitter).
     const press_idx: u32 = if (button != null)
@@ -121,38 +176,131 @@ fn curvedPath(
     else
         std.math.maxInt(u32);
 
-    var i: u32 = 0;
-    while (i < samples) : (i += 1) {
-        const u = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(samples - 1));
-        const t = easeInOutCubic(u);
+    const st = &server.mouse_path;
+    st.* = .{
+        .active = true,
+        .fx = fx,
+        .fy = fy,
+        .tx = tx,
+        .ty = ty,
+        .c1x = c1x,
+        .c1y = c1y,
+        .c2x = c2x,
+        .c2y = c2y,
+        .dist = dist,
+        .samples = samples,
+        .idx = 0,
+        .per_sample_ms = per_sample_ms,
+        .press_idx = press_idx,
+        .button = button,
+        .super_held = super_held,
+        .pressed = false,
+        // `prng` is advanced past the off1/off2/press_idx draws above, so
+        // the per-waypoint tremor sequence is identical to the old loop.
+        .prng = prng,
+    };
 
-        // Cubic Bezier evaluation
-        const mt = 1.0 - t;
-        const b = mt * mt * mt;
-        const c = 3.0 * mt * mt * t;
-        const d = 3.0 * mt * t * t;
-        const e = t * t * t;
-        const bx = b * fx + c * c1x + d * c2x + e * tx;
-        const by = b * fy + c * c1y + d * c2y + e * ty;
+    // Emit waypoint 0 inline (matches the original "sample then sleep"
+    // cadence), then drive waypoints 1..samples-1 from the timer.
+    emitSample(server, st, 0);
+    st.idx = 1;
 
-        // Per-waypoint tremor. Three-sample average approximates
-        // a gaussian with σ≈0.4 px for tremor_amp=1. Scale up a bit
-        // on long moves (hand shakes more when reaching).
-        const tremor_amp = 1.5 + @min(2.0, dist / 500.0);
-        const jx = bx + tremor(rng, tremor_amp);
-        const jy = by + tremor(rng, tremor_amp);
-
-        wlr.wlr_cursor_warp_closest(server.cursor, null, jx, jy);
-        server.processCursorMotion(nowMs());
-
-        if (i == press_idx) {
-            if (button) |btn| server.processCursorButton(btn, 1, nowMs(), super_held);
-        }
-
-        if (i + 1 < samples) teru.compat.sleepNs(per_sample_ns);
+    if (samples <= 1) {
+        finishPath(server, st);
+        return false;
     }
 
-    if (button) |btn| server.processCursorButton(btn, 0, nowMs() +% 5, super_held);
+    if (server.mouse_path_timer_src == null) {
+        const loop = server.event_loop orelse {
+            finishPath(server, st); // no loop (pre-init) → don't strand a half-applied path
+            return false;
+        };
+        server.mouse_path_timer_src = wlr.wl_event_loop_add_timer(loop, mousePathTick, @ptrCast(server));
+        if (server.mouse_path_timer_src == null) {
+            finishPath(server, st);
+            return false;
+        }
+    }
+    if (server.mouse_path_timer_src) |src| {
+        _ = wlr.wl_event_source_timer_update(src, @intCast(per_sample_ms));
+    }
+    return true;
+}
+
+/// Compute + emit waypoint `i`: warp the cursor, notify motion, and fire
+/// the button press when `i == press_idx`. Advances `st.prng` by the two
+/// tremor draws exactly as the original inline loop did.
+fn emitSample(server: *Server, st: *MousePathState, i: u32) void {
+    const denom: f64 = @floatFromInt(@max(1, st.samples - 1));
+    const u = @as(f64, @floatFromInt(i)) / denom;
+    const t = easeInOutCubic(u);
+
+    // Cubic Bezier evaluation
+    const mt = 1.0 - t;
+    const b = mt * mt * mt;
+    const c = 3.0 * mt * mt * t;
+    const d = 3.0 * mt * t * t;
+    const e = t * t * t;
+    const bx = b * st.fx + c * st.c1x + d * st.c2x + e * st.tx;
+    const by = b * st.fy + c * st.c1y + d * st.c2y + e * st.ty;
+
+    // Per-waypoint tremor. Three-sample average approximates a gaussian
+    // with σ≈0.4 px for tremor_amp=1; scale up a bit on long moves.
+    const tremor_amp = 1.5 + @min(2.0, st.dist / 500.0);
+    // Re-derive the std.Random from st.prng each tick — do NOT cache it
+    // across ticks (it holds a pointer to st.prng). The draws advance
+    // st.prng in place, continuing the sequence from curvedPath's setup.
+    const rng = st.prng.random();
+    const jx = bx + tremor(rng, tremor_amp);
+    const jy = by + tremor(rng, tremor_amp);
+
+    wlr.wlr_cursor_warp_closest(server.cursor, null, jx, jy);
+    server.processCursorMotion(nowMs());
+
+    if (i == st.press_idx and !st.pressed) {
+        if (st.button) |btn| server.processCursorButton(btn, 1, nowMs(), st.super_held);
+        st.pressed = true;
+    }
+}
+
+/// Last waypoint reached (or path cancelled): release a held button and
+/// mark the path inactive. Does NOT touch the timer source.
+fn finishPath(server: *Server, st: *MousePathState) void {
+    if (st.button) |btn| {
+        if (st.pressed) server.processCursorButton(btn, 0, nowMs() +% 5, st.super_held);
+    }
+    st.active = false;
+}
+
+/// Timer tick: emit the next waypoint and re-arm until the path is done.
+/// Returns 0 per the wayland-server timer ABI; the source stays armed
+/// with whatever `timer_update` set last (disarmed via 0 when finished).
+fn mousePathTick(data: ?*anyopaque) callconv(.c) c_int {
+    const server: *Server = @ptrCast(@alignCast(data orelse return 0));
+    const st = &server.mouse_path;
+    if (!st.active) return 0;
+
+    emitSample(server, st, st.idx);
+    st.idx += 1;
+
+    if (st.idx >= st.samples) {
+        finishPath(server, st);
+        if (server.mouse_path_timer_src) |src| _ = wlr.wl_event_source_timer_update(src, 0);
+        return 0;
+    }
+    if (server.mouse_path_timer_src) |src| {
+        _ = wlr.wl_event_source_timer_update(src, @intCast(st.per_sample_ms));
+    }
+    return 0;
+}
+
+/// Cancel any in-flight path, releasing a held button so a superseding
+/// path never leaks a press. Leaves the timer source allocated but
+/// disarmed for reuse (Server.deinit removes it).
+fn cancelMousePath(server: *Server) void {
+    const st = &server.mouse_path;
+    if (st.active) finishPath(server, st);
+    if (server.mouse_path_timer_src) |src| _ = wlr.wl_event_source_timer_update(src, 0);
 }
 
 fn easeInOutCubic(t: f64) f64 {

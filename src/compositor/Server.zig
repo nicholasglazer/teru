@@ -295,6 +295,15 @@ paste_buf: [65536]u8 = undefined,
 // is freed — removing it there would be the UAF this codebase avoids).
 jiggle_timer_src: ?*wlr.wl_event_source = null,
 
+// Humanized synthetic mouse path (teruwm_mouse_path). State + the timer
+// that drives Bezier waypoints between real input dispatches, so a
+// scripted gesture never parks the single event-loop thread (which would
+// freeze the user's real touchpad for the gesture's duration). Created
+// lazily by ServerMouse, only disarmed (not removed) on path completion,
+// torn down in deinit. See src/compositor/ServerMouse.zig.
+mouse_path: @import("ServerMouse.zig").MousePathState = .{},
+mouse_path_timer_src: ?*wlr.wl_event_source = null,
+
 // Built-in launcher
 launcher: Launcher = .{},
 leader: LeaderKey = .{},
@@ -971,6 +980,16 @@ pub fn deinit(self: *Server) void {
     if (self.terminal_repeat_src) |src| {
         _ = wlr.wl_event_source_remove(src);
         self.terminal_repeat_src = null;
+    }
+    // mouse_path_timer_src: same lifecycle — lazily created by ServerMouse,
+    // only disarmed (not removed) when a path completes, so it can be live
+    // here. mousePathTick would deref cursor/seat state mid-teardown. A
+    // button still held by an in-flight path is intentionally NOT released —
+    // the seat + clients are being destroyed anyway (and execRestart drops
+    // seat state before exec), so there's nothing left to receive the up.
+    if (self.mouse_path_timer_src) |src| {
+        _ = wlr.wl_event_source_remove(src);
+        self.mouse_path_timer_src = null;
     }
 
     // Drain in-flight bar exec widgets — removes their pipe event

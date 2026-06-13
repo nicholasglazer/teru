@@ -146,7 +146,14 @@ fn compositeOutput(server: *Server, pixels: []u32, out_w: u32, out_h: u32) void 
                 const slot = server.nodes.findById(tp.node_id) orelse continue;
                 if (server.nodes.workspace[slot] != ws) continue;
                 if (server.nodes.floating[slot] != want_floating) continue;
-                tp.render();
+                // Only re-paint panes whose framebuffer is stale. A clean
+                // pane (grid.dirty == false) is already current from the
+                // last vsync render, so re-rendering it is pure wasted CPU
+                // on the loop thread during capture. Grid content, selection
+                // drags, and scroll all set grid.dirty (markRowDirty /
+                // markAllDirty in ServerCursor), so dirty fully captures
+                // "framebuffer needs repaint" — no stale-capture risk.
+                if (tp.pane.grid.dirty) tp.render();
                 blitRect(
                     pixels, out_w, out_h,
                     tp.renderer.framebuffer, tp.renderer.width, tp.renderer.height,

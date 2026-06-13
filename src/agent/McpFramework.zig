@@ -196,7 +196,12 @@ pub fn Framework(comptime Impl: type) type {
                     // EAGAIN; bailing here silently drops the request
                     // ~1-in-N under that connect/send race. Wait for the
                     // bytes instead, bounded so a wedged client can't pin
-                    // the event loop.
+                    // the event loop. 8 stalls × 5 ms = 40 ms hard cap on
+                    // loop-block time (was 8 × 250 ms = 2 s — a slow/partial
+                    // client could freeze real input for up to 2 s; a legit
+                    // connect-then-send client lands its bytes well inside
+                    // 40 ms, and a true straggler simply retries on a fresh
+                    // connection — this is a single-request socket protocol).
                     stalls += 1;
                     if (stalls > 8) break;
                     // POSIX-only readability wait. posix.pollfd is absent on
@@ -204,7 +209,7 @@ pub fn Framework(comptime Impl: type) type {
                     // are POSIX-only, so comptime-exclude the poll there.
                     if (builtin.os.tag == .windows) break;
                     var pfd = [_]posix.pollfd{.{ .fd = conn_fd, .events = poll_in, .revents = 0 }};
-                    const ready = posix.poll(&pfd, 250) catch 0;
+                    const ready = posix.poll(&pfd, 5) catch 0;
                     if (ready == 0 or (pfd[0].revents & poll_in) == 0) break;
                     continue;
                 }

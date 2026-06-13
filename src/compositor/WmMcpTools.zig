@@ -982,13 +982,20 @@ fn toolMousePath(
     duration_ms: u32, humanize: bool, button: ?u32, super_held: bool,
     buf: []u8, id: ?[]const u8,
 ) []const u8 {
-    @import("ServerMouse.zig").pathMove(
+    // Humanized paths are now driven by a wl_event_loop timer (so the
+    // gesture can't park the loop and freeze real input): pathMove returns
+    // true when the path was SCHEDULED and is still in flight on return.
+    // Callers needing it complete should wait ~duration_ms.
+    const scheduled = @import("ServerMouse.zig").pathMove(
         self.server,
         from_x, from_y, to_x, to_y,
         duration_ms, humanize, button, super_held,
     );
     const btn_val: i32 = if (button) |b| @intCast(b) else -1;
-    return okText(buf, id, "path ({d},{d})->({d},{d}) {d}ms humanize={any} button={d}", .{from_x, from_y, to_x, to_y, duration_ms, humanize, btn_val});
+    if (scheduled) {
+        return okText(buf, id, "path scheduled ({d},{d})->({d},{d}) {d}ms humanize={any} button={d} (async; completes in ~{d}ms)", .{ from_x, from_y, to_x, to_y, duration_ms, humanize, btn_val, duration_ms });
+    }
+    return okText(buf, id, "path done ({d},{d})->({d},{d}) {d}ms humanize={any} button={d}", .{ from_x, from_y, to_x, to_y, duration_ms, humanize, btn_val });
 }
 
 fn toolToggleScratchpad(self: *WmMcpServer, index: u8, buf: []u8, id: ?[]const u8) []const u8 {
