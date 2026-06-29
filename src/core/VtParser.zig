@@ -101,6 +101,10 @@ auto_wrap: bool = true,
 /// Mouse tracking modes (ESC[?1000h..1003h, ESC[?1006h)
 mouse_tracking: MouseMode = .none,
 mouse_sgr: bool = false, // SGR extended format (mode 1006)
+/// Alternate scroll mode (ESC[?1007h): while the alt screen is active, the
+/// terminal translates the wheel into cursor-key presses for apps that don't
+/// track the mouse (less, man). When mouse tracking is on it takes precedence.
+alt_scroll: bool = false,
 
 /// G0 charset: false = ASCII (B), true = DEC Special Graphics (0)
 g0_line_drawing: bool = false,
@@ -1117,6 +1121,7 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
                 1002 => self.mouse_tracking = .button_event,
                 1003 => self.mouse_tracking = .any_event,
                 1006 => self.mouse_sgr = true,
+                1007 => self.alt_scroll = true, // alternate scroll mode
                 2004 => self.bracketed_paste = true,
                 2026 => self.sync_output = true,
                 69 => self.grid.margins_enabled = true, // DECLRMM — enable left/right margins
@@ -1144,6 +1149,7 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
                 },
                 1000, 1002, 1003 => self.mouse_tracking = .none,
                 1006 => self.mouse_sgr = false,
+                1007 => self.alt_scroll = false, // alternate scroll mode off
                 2004 => self.bracketed_paste = false,
                 69 => { // DECLRMM — disable left/right margins
                     self.grid.margins_enabled = false;
@@ -1459,6 +1465,7 @@ pub fn dumpReplaySnapshot(self: *const VtParser, buf: []u8) usize {
         .any_event => putBytes(buf, &pos, "\x1b[?1003h"),
     }
     if (self.mouse_sgr) putBytes(buf, &pos, "\x1b[?1006h");
+    if (self.alt_scroll) putBytes(buf, &pos, "\x1b[?1007h");
     if (self.g0_line_drawing) putBytes(buf, &pos, "\x1b(0");
     putBytes(buf, &pos, switch (grid.cursor_shape) {
         .block => "\x1b[2 q",

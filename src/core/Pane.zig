@@ -42,6 +42,10 @@ id: u64,
 scrollback: Scrollback,
 scroll_offset: u32 = 0,
 scroll_pixel: i32 = 0, // sub-cell pixel offset for smooth scrolling (0..cell_height-1)
+/// Accumulates continuous (touchpad) wheel delta when forwarding the wheel to
+/// an app as mouse reports; each whole detent's worth emits one button-64/65
+/// report. Reset whenever a notched wheel arrives. (Compositor native panes.)
+wheel_report_accum: f64 = 0,
 
 /// Shared scroll math — single source of truth for both TUI and compositor paths.
 /// Positive pixel_delta moves toward older scrollback (increases offset).

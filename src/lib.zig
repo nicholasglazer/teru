@@ -34,6 +34,7 @@ pub const Pane = @import("core/Pane.zig");
 pub const Multiplexer = @import("core/Multiplexer.zig");
 pub const Selection = @import("core/Selection.zig");
 pub const mouse = @import("input/mouse.zig");
+pub const mouse_report = @import("input/mouse_report.zig");
 pub const Clipboard = @import("core/Clipboard.zig");
 pub const KeyHandler = @import("core/KeyHandler.zig");
 pub const SignalManager = @import("core/SignalManager.zig");
@@ -83,6 +84,7 @@ test {
     _ = Multiplexer;
     _ = Selection;
     _ = mouse;
+    _ = mouse_report;
     _ = Clipboard;
     _ = KeyHandler;
     _ = SignalManager;

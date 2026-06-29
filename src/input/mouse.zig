@@ -18,6 +18,7 @@ const LayoutEngine = @import("../tiling/LayoutEngine.zig");
 const Workspace = @import("../tiling/Workspace.zig");
 const tiling_types = @import("../tiling/types.zig");
 const platform_types = @import("../platform/types.zig");
+const mouse_report = @import("mouse_report.zig");
 
 const Rect = LayoutEngine.Rect;
 
@@ -120,27 +121,15 @@ fn reportMousePress(mux: *Multiplexer, mouse: platform_types.MouseEvent, lp: Lay
     const mcol: u16 = @intCast(@min((mouse.x -| lp.padding) / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
     const mrow: u16 = @intCast(@min((mouse.y -| lp.padding) / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
     const btn: u8 = switch (mouse.button) {
-        .left => 0,
-        .middle => 1,
-        .right => 2,
-        .scroll_up => 64,
-        .scroll_down => 65,
+        .left => mouse_report.BTN_LEFT,
+        .middle => mouse_report.BTN_MIDDLE,
+        .right => mouse_report.BTN_RIGHT,
+        .scroll_up => mouse_report.BTN_WHEEL_UP,
+        .scroll_down => mouse_report.BTN_WHEEL_DOWN,
     };
     var mbuf: [32]u8 = undefined;
-    if (pane.vt.mouse_sgr) {
-        const mlen = std.fmt.bufPrint(&mbuf, "\x1b[<{d};{d};{d}M", .{ btn, mcol + 1, mrow + 1 }) catch return true;
-        _ = pane.ptyWrite(mlen) catch {};
-    } else {
-        // X10 legacy encoding
-        if (mcol + 33 < 256 and mrow + 33 < 256) {
-            mbuf[0] = 0x1b;
-            mbuf[1] = '[';
-            mbuf[2] = 'M';
-            mbuf[3] = @intCast(btn + 32);
-            mbuf[4] = @intCast(mcol + 33);
-            mbuf[5] = @intCast(mrow + 33);
-            _ = pane.ptyWrite(mbuf[0..6]) catch {};
-        }
+    if (mouse_report.encodePress(pane.vt.mouse_sgr, btn, mcol, mrow, &mbuf)) |seq| {
+        _ = pane.ptyWrite(seq) catch {};
     }
     // Track button state for motion reporting (mode 1002)
     if (mouse.button == .left) ms.mouse_down = true;
@@ -155,26 +144,15 @@ fn reportMouseRelease(mux: *Multiplexer, mouse: platform_types.MouseEvent, lp: L
 
     const mcol: u16 = @intCast(@min((mouse.x -| lp.padding) / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
     const mrow: u16 = @intCast(@min((mouse.y -| lp.padding) / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
+    const btn: u8 = switch (mouse.button) {
+        .left => mouse_report.BTN_LEFT,
+        .middle => mouse_report.BTN_MIDDLE,
+        .right => mouse_report.BTN_RIGHT,
+        else => mouse_report.BTN_LEFT,
+    };
     var mbuf: [32]u8 = undefined;
-    if (pane.vt.mouse_sgr) {
-        const btn: u8 = switch (mouse.button) {
-            .left => 0,
-            .middle => 1,
-            .right => 2,
-            else => 0,
-        };
-        const mlen = std.fmt.bufPrint(&mbuf, "\x1b[<{d};{d};{d}m", .{ btn, mcol + 1, mrow + 1 }) catch return;
-        _ = pane.ptyWrite(mlen) catch {};
-    } else {
-        if (mcol + 33 < 256 and mrow + 33 < 256) {
-            mbuf[0] = 0x1b;
-            mbuf[1] = '[';
-            mbuf[2] = 'M';
-            mbuf[3] = 35; // release = button 3
-            mbuf[4] = @intCast(mcol + 33);
-            mbuf[5] = @intCast(mrow + 33);
-            _ = pane.ptyWrite(mbuf[0..6]) catch {};
-        }
+    if (mouse_report.encodeRelease(pane.vt.mouse_sgr, btn, mcol, mrow, &mbuf)) |seq| {
+        _ = pane.ptyWrite(seq) catch {};
     }
 }
 
@@ -191,20 +169,8 @@ fn reportMouseMotion(mux: *Multiplexer, motion_x: u32, motion_y: u32, lp: Layout
     const mcol: u16 = @intCast(@min((motion_x -| lp.padding) / lp.cell_width, @as(u32, lp.grid_cols -| 1)));
     const mrow: u16 = @intCast(@min((motion_y -| lp.padding) / lp.cell_height, @as(u32, lp.grid_rows -| 1)));
     var mbuf: [32]u8 = undefined;
-    if (pane.vt.mouse_sgr) {
-        const btn: u8 = if (mouse_down) 32 else 35; // 32 = motion + left button
-        const mlen = std.fmt.bufPrint(&mbuf, "\x1b[<{d};{d};{d}M", .{ btn, mcol + 1, mrow + 1 }) catch return;
-        _ = pane.ptyWrite(mlen) catch {};
-    } else {
-        if (mcol + 33 < 256 and mrow + 33 < 256) {
-            mbuf[0] = 0x1b;
-            mbuf[1] = '[';
-            mbuf[2] = 'M';
-            mbuf[3] = if (mouse_down) 64 else 67; // motion flag + button
-            mbuf[4] = @intCast(mcol + 33);
-            mbuf[5] = @intCast(mrow + 33);
-            _ = pane.ptyWrite(mbuf[0..6]) catch {};
-        }
+    if (mouse_report.encodeMotion(pane.vt.mouse_sgr, mouse_down, mcol, mrow, &mbuf)) |seq| {
+        _ = pane.ptyWrite(seq) catch {};
     }
 }
 

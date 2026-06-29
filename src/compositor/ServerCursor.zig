@@ -28,6 +28,7 @@
 const std = @import("std");
 const teru = @import("teru");
 const Selection = teru.Selection;
+const mouse_report = teru.mouse_report;
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 const XdgView = @import("XdgView.zig");
@@ -216,14 +217,19 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
     // delta falls through to the seat notify below (axis-stop for clients).
     if (orientation == 0 and delta != 0 and server.focused_terminal != null) {
         const tp = server.focused_terminal.?;
-        // Alt-screen guard: a TUI app (vim, htop, less) runs on the alternate
-        // screen, which keeps no scrollback of its own — the scrollback buffer
-        // still holds the MAIN screen's now-stale history. Scrolling it here
-        // dragged that dead history OVER the live TUI. Don't scroll scrollback
-        // while on the alt screen. (Forwarding the wheel to the app as a mouse
-        // report would need native-pane mouse reporting, which the compositor
-        // doesn't implement yet — clicks don't forward either; separate feature.)
-        if (tp.pane.grid.on_alt_screen) return;
+        // App-owned wheel: a mouse-tracking program (Claude Code, vim, htop,
+        // less +mouse) or alternate-scroll on the alt screen wants the wheel
+        // itself, not teruwm's scrollback. Native panes have no wl_surface, so
+        // this PTY-write path is the only way the wheel reaches them — mirrors
+        // src/input/mouse.zig (windowed teru), which the compositor never
+        // ported. This also subsumes the old blanket alt-screen guard: an alt
+        // screen keeps no scrollback of its own, so the buffer still holds the
+        // MAIN screen's now-stale history and scrolling it dragged that dead
+        // history over the live TUI. classifyWheel returns .swallow for that
+        // case (alt screen, no tracking, no 1007) instead of returning early
+        // for every alt-screen pane — which silently ate the wheel in any app
+        // that WAS tracking the mouse.
+        if (forwardWheelToApp(server, tp, event, delta)) return;
         const max_offset: u32 = @intCast(tp.pane.scrollback.total_lines);
         if (max_offset > 0) {
             const cell_h: u32 = if (server.font_atlas) |fa| fa.cell_height else 16;
@@ -707,6 +713,52 @@ fn paneLocalCell(tp: anytype, cx: f64, cy: f64) struct { row: u16, col: u16 } {
     const col: u16 = @intCast(@max(0, @min(@divTrunc(@max(0, lx), @max(1, cw)), max_col)));
     const row: u16 = @intCast(@max(0, @min(@divTrunc(@max(0, ly), @max(1, ch)), max_row)));
     return .{ .row = row, .col = col };
+}
+
+/// Hand the wheel to the focused native pane's program when it owns the wheel
+/// rather than teruwm's scrollback:
+///   * mouse tracking on (1000/1002/1003) → button-64/65 reports (SGR or X10);
+///   * alt screen + alternate-scroll (1007), no tracking → cursor-key presses;
+///   * alt screen, neither → swallow (its lines never enter scrollback, so
+///     scrolling the main-screen ring would shift invisible history).
+/// Returns true when consumed — the caller must then NOT scroll scrollback.
+/// `delta` is the axis delta (wlroots convention: < 0 = scroll up); `event`
+/// supplies the high-res discrete notch count for a notched wheel.
+fn forwardWheelToApp(server: *Server, tp: anytype, event: *wlr.wlr_pointer_axis_event, delta: f64) bool {
+    const d = mouse_report.classifyWheel(
+        tp.pane.vt.mouse_tracking != .none,
+        tp.pane.vt.alt_screen,
+        tp.pane.vt.alt_scroll,
+        delta,
+        wlr.miozu_pointer_axis_delta_discrete(event),
+        &tp.pane.wheel_report_accum,
+    );
+    switch (d.action) {
+        .scrollback => return false, // not consumed: caller scrolls scrollback
+        .swallow => return true,
+        .report => {
+            if (d.count > 0) {
+                // Report at the cell under the cursor (apps care about position).
+                const rc = paneLocalCell(tp, wlr.miozu_cursor_x(server.cursor), wlr.miozu_cursor_y(server.cursor));
+                var i: u32 = 0;
+                while (i < d.count) : (i += 1) _ = mouse_report.forwardWheel(&tp.pane, d.up, rc.col, rc.row);
+            }
+            return true;
+        },
+        .arrows => {
+            if (d.count > 0) {
+                // Alternate-scroll: SS3 cursor keys in application-cursor mode, else CSI.
+                const seq = if (tp.pane.vt.app_cursor_keys)
+                    (if (d.up) "\x1bOA" else "\x1bOB")
+                else
+                    (if (d.up) "\x1b[A" else "\x1b[B");
+                const lines = @max(@as(u32, 1), server.wm_config.wheel_scroll_lines);
+                var i: u32 = 0;
+                while (i < d.count * lines) : (i += 1) _ = tp.pane.ptyWrite(seq) catch {};
+            }
+            return true;
+        },
+    }
 }
 
 /// Left-click press over a native terminal pane starts a drag-select.
