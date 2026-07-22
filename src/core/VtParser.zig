@@ -313,7 +313,11 @@ fn writeGroundBatch(self: *VtParser, run: []const u8) void {
         grid.dirty = true;
         grid.dirty_row_min = dirty_min;
         grid.dirty_row_max = dirty_max;
-    } else {
+    } else if (grid.dirty_row_min <= grid.dirty_row_max) {
+        // Only expand a valid tracked range. If the range is the inverted
+        // all-dirty sentinel (external `grid.dirty = true` requesting a full
+        // repaint), leave it — narrowing it to the written rows here would drop
+        // the pending full repaint of the untouched rows.
         if (dirty_min < grid.dirty_row_min) grid.dirty_row_min = dirty_min;
         if (dirty_max > grid.dirty_row_max) grid.dirty_row_max = dirty_max;
     }

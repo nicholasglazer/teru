@@ -881,7 +881,12 @@ pub inline fn markRowDirty(self: *Grid, row: u16) void {
         self.dirty = true;
         self.dirty_row_min = row;
         self.dirty_row_max = row;
-    } else {
+    } else if (self.dirty_row_min <= self.dirty_row_max) {
+        // Only expand a valid tracked range. When dirty is already set but the
+        // range is the inverted sentinel (min > max), external code requested a
+        // full repaint via `grid.dirty = true` — narrowing it to one row here
+        // would silently drop that request (renderDirty reads min > max as
+        // "all rows dirty"). Leave the sentinel intact.
         if (row < self.dirty_row_min) self.dirty_row_min = row;
         if (row > self.dirty_row_max) self.dirty_row_max = row;
     }
@@ -1813,4 +1818,32 @@ test "write: wide glyph wraps whole at the right margin, never split" {
     try std.testing.expectEqual(@as(u21, 0), grid.cellAtConst(1, 1).char); // trailer
     try std.testing.expectEqual(@as(u16, 1), grid.cursor_row);
     try std.testing.expectEqual(@as(u16, 2), grid.cursor_col);
+}
+
+test "markRowDirty preserves the external all-dirty sentinel" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 10, 20);
+    defer grid.deinit(allocator);
+
+    // Simulate a rendered frame, then an external full-repaint request
+    // (mouse selection / MCP): clearDirty sets the inverted sentinel, and the
+    // caller flips dirty = true WITHOUT calling markRowDirty.
+    grid.clearDirty();
+    try std.testing.expect(grid.dirty_row_min > grid.dirty_row_max); // inverted sentinel
+    grid.dirty = true;
+
+    // A single-row mark (e.g. PTY output landing in the same frame) must NOT
+    // collapse the all-dirty request down to that one row.
+    grid.markRowDirty(4);
+    try std.testing.expect(grid.dirty);
+    try std.testing.expect(grid.dirty_row_min > grid.dirty_row_max); // still all-dirty
+
+    // But from a clean state, markRowDirty tracks the single row as before.
+    grid.clearDirty();
+    grid.markRowDirty(4);
+    try std.testing.expectEqual(@as(u16, 4), grid.dirty_row_min);
+    try std.testing.expectEqual(@as(u16, 4), grid.dirty_row_max);
+    grid.markRowDirty(7);
+    try std.testing.expectEqual(@as(u16, 4), grid.dirty_row_min);
+    try std.testing.expectEqual(@as(u16, 7), grid.dirty_row_max);
 }
