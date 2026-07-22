@@ -17,7 +17,9 @@ const Pty = teru.Pty;
 const Pane = teru.Pane;
 const Server = @import("Server.zig");
 const TerminalPane = @import("TerminalPane.zig");
+const Node = @import("Node.zig");
 const wlr = @import("wlr.zig");
+const Reaper = @import("Reaper.zig");
 
 extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
@@ -137,6 +139,14 @@ pub fn execRestart(server: *Server) void {
         restoreCloexec(cleared_fds.items);
         return;
     }
+
+    // Persist named-scratchpad identities in a side file. The fixed 13-byte
+    // pane record has no room for the name, and the binary section parser must
+    // stay untouched (a malformed restart.bin freezes the TTY). Restore reads
+    // this to re-park + re-name scratchpads instead of dumping them onto the
+    // active workspace as tiled windows. Always rewritten (even empty) so a
+    // no-scratchpad restart can't resurrect stale names.
+    writeScratchpadNames(server);
 
     std.log.scoped(.session).info("restarting ({d} panes saved)", .{pane_count});
 
@@ -266,7 +276,12 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
 
     const pane_count = std.mem.readInt(u16, blob[pos..][0..2], .little);
     pos += 2;
-    const active_ws = blob[pos];
+    // Validate the active-workspace byte: a corrupt / version-mismatched restart
+    // blob can carry an out-of-range value, and it indexes workspaces[active_ws]
+    // below (switchWorkspace / setWorkspaceVisibility / arrangeworkspace /
+    // parkRestoredScratchpad) → OOB panic AFTER releaseSeat ran, which leaves the
+    // TTY frozen. Fall back to workspace 0.
+    const active_ws: u8 = if (blob[pos] < server.layout_engine.workspaces.len) blob[pos] else 0;
     pos += 1;
 
     for (0..10) |wi| {
@@ -298,19 +313,35 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
         } else |_| {}
     }
 
+    // Named-scratchpad identities saved alongside the binary blob (see
+    // writeScratchpadNames). Absent/short → scratchpads still restore parked,
+    // just unnamed. Read once; scanned per scratchpad pane below.
+    var scratch_buf: [4096]u8 = undefined;
+    var scratch_len: usize = 0;
+    {
+        var spath_buf: [256:0]u8 = undefined;
+        if (teru.compat.runtimeFilePath(&spath_buf, "teruwm-restart-scratch")) |sp| {
+            if (std.c.fopen(sp, "rb")) |sf| {
+                scratch_len = std.c.fread(&scratch_buf, 1, scratch_buf.len, sf);
+                _ = std.c.fclose(sf);
+            }
+        }
+    }
+    const scratch_names = scratch_buf[0..scratch_len];
+
     var restored: u16 = 0;
     for (0..pane_count) |i| {
         if (pos + 13 > blob.len) break;
 
         const raw_ws = blob[pos]; pos += 1;
         // A scratchpad pane is serialized with HIDDEN_WS (0xFF), but the tiling
-        // engine only has workspaces 0..<len. Restoring it as-is makes
-        // createRestored index workspaces[255] → "index out of bounds" PANIC,
-        // which aborts the re-exec'd binary BEFORE it can take/restore the
-        // display — a frozen TTY on $mod+' for anyone with a scratchpad open.
-        // Remap any out-of-range workspace to the active one: the shell comes
-        // back as a normal window instead of crashing the restart. (Scratchpad
-        // identity isn't in the save format, so it can't be fully restored yet.)
+        // engine only has workspaces 0..<len. Passing 255 to createRestored
+        // would index workspaces[255] → "index out of bounds" PANIC, aborting
+        // the re-exec'd binary BEFORE it can take/restore the display (a frozen
+        // TTY on $mod+' for anyone with a scratchpad open). So build it on the
+        // active workspace (a safe index), then immediately RE-PARK it into
+        // HIDDEN_WS below (parkRestoredScratchpad) so it comes back as a proper
+        // hidden, named scratchpad instead of a tiled window on the active ws.
         const ws: u8 = if (raw_ws < server.layout_engine.workspaces.len) raw_ws else active_ws;
         const pty_fd = std.mem.readInt(i32, blob[pos..][0..4], .little); pos += 4;
         // Clamp to ≥1: a corrupt blob with rows/cols 0 would build an empty
@@ -338,6 +369,13 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
             continue;
         };
         if (i < tps.len) tps[i] = tp;
+
+        // Re-park scratchpads (saved with HIDDEN_WS) instead of leaving them
+        // tiled on the active workspace. Runs before the post-loop
+        // arrangeworkspace(active_ws), so the un-tiled node is never laid out.
+        if (raw_ws == Node.HIDDEN_WS) {
+            parkRestoredScratchpad(server, tp, active_ws, scratchNameForIndex(scratch_names, i));
+        }
 
         server.next_node_id += 1;
         restored += 1;
@@ -583,4 +621,84 @@ fn restoreCloexec(fds: []const i32) void {
             _ = std.c.fcntl(fd, std.posix.F.SETFD, flags | @as(c_int, 1));
         }
     }
+}
+
+// ── Named-scratchpad persistence across hot-restart ────────────────
+//
+// The fixed 13-byte pane record can't carry the scratchpad name, and the
+// binary section parser is the one piece of restart code that must never be
+// destabilised (a parse error = frozen TTY). So names live in a tiny side
+// file, indexed by pane record order — the SAME order save writes and restore
+// reads — one "INDEX NAME" line per scratchpad. Missing/short file → panes
+// still restore parked, just unnamed.
+
+fn writeScratchpadNames(server: *Server) void {
+    var buf: [4096]u8 = undefined;
+    var pos: usize = 0;
+    var idx: usize = 0;
+    for (server.terminal_panes) |maybe_tp| {
+        if (maybe_tp) |tp| {
+            if (server.nodes.findById(tp.node_id)) |slot| {
+                if (server.nodes.workspace[slot] == Node.HIDDEN_WS) {
+                    const nm = server.nodes.getScratchpad(slot);
+                    if (nm.len > 0) {
+                        const line = std.fmt.bufPrint(buf[pos..], "{d} {s}\n", .{ idx, nm }) catch "";
+                        pos += line.len;
+                    }
+                }
+            }
+            idx += 1;
+        }
+    }
+    var spath_buf: [256:0]u8 = undefined;
+    const spath = teru.compat.runtimeFilePath(&spath_buf, "teruwm-restart-scratch") orelse return;
+    // Always truncate-write (even pos==0) so a previous restart's names can't
+    // leak into a now-scratchpad-free session.
+    if (std.c.fopen(spath, "wb")) |f| {
+        if (pos > 0) _ = std.c.fwrite(buf[0..pos].ptr, 1, pos, f);
+        _ = std.c.fclose(f);
+    }
+}
+
+/// Scan the side-file blob for the scratchpad name of pane record `idx`.
+fn scratchNameForIndex(blob: []const u8, idx: usize) ?[]const u8 {
+    var it = std.mem.splitScalar(u8, blob, '\n');
+    while (it.next()) |line| {
+        const sp = std.mem.indexOfScalar(u8, line, ' ') orelse continue;
+        const i = std.fmt.parseInt(usize, line[0..sp], 10) catch continue;
+        if (i == idx) return line[sp + 1 ..];
+    }
+    return null;
+}
+
+/// Turn a just-restored pane (built on the active workspace to dodge the
+/// workspaces[255] panic) back into a parked, hidden, optionally-named
+/// scratchpad: un-tile it, move it to HIDDEN_WS, reparent its scene buffer
+/// into the disabled hidden tree, and re-tag the name so the toggle finds it.
+fn parkRestoredScratchpad(server: *Server, tp: *TerminalPane, active_ws: u8, name: ?[]const u8) void {
+    const nid = tp.node_id;
+    const aws = &server.layout_engine.workspaces[active_ws];
+    aws.removeNode(nid);
+    // A parked scratchpad must never remain a workspace's active_node, or the
+    // post-restore updateFocusedTerminal would focus an invisible pane.
+    if (aws.active_node) |an| {
+        if (an == nid) aws.active_node = null;
+    }
+    if (server.nodes.findById(nid)) |slot| {
+        server.nodes.moveSlotToWorkspace(slot, Node.HIDDEN_WS);
+        if (name) |nm| {
+            if (nm.len > 0) {
+                server.nodes.setScratchpad(slot, nm);
+                // Mirror the create-path display name ("scratch-<name>") so the
+                // bar pill / list_windows show it as a scratchpad, not the
+                // generic "term-<ws>-<id>" auto-name createRestored applied.
+                var nbuf: [Node.max_scratchpad_name + 8]u8 = undefined;
+                if (std.fmt.bufPrint(&nbuf, "scratch-{s}", .{nm})) |disp| {
+                    server.nodes.setName(slot, disp);
+                } else |_| {}
+            }
+        }
+    }
+    if (server.getOrCreateHiddenTree()) |parked| tp.reparent(parked);
+    tp.setVisible(false);
 }
