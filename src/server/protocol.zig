@@ -149,9 +149,35 @@ pub fn sendMessage(fd: posix.fd_t, tag: Tag, payload: []const u8) bool {
 /// Returns the payload slice within `payload_buf`, or null on EAGAIN/EOF/error.
 pub fn recvMessage(fd: posix.fd_t, header_out: *Header, payload_buf: []u8) ?[]const u8 {
     var hdr_bytes: [header_size]u8 = undefined;
-    const hdr_n = readNonBlock(fd, &hdr_bytes);
-    if (hdr_n == null) return null; // EAGAIN
-    if (hdr_n.? != header_size) return null; // partial/EOF
+    // Complete the 5-byte header. A single read() can return a PARTIAL header
+    // when it spans AF_UNIX segments (the two writeAll calls in sendMessage, or
+    // the kernel, can split it). Abandoning those bytes desyncs the wire exactly
+    // like a partial body would — the next call reads mid-header bytes as a fresh
+    // header. EAGAIN with ZERO bytes = nothing pending yet → null; once the first
+    // byte is in we're committed and wait (bounded) for the rest.
+    {
+        var got: usize = 0;
+        while (got < header_size) {
+            const rc = std.c.read(fd, hdr_bytes[got..].ptr, header_size - got);
+            if (rc > 0) {
+                got += @intCast(rc);
+                continue;
+            }
+            if (rc == 0) return null; // EOF (nothing pending, or mid-header)
+            switch (posix.errno(rc)) {
+                .INTR => continue,
+                .AGAIN => {
+                    if (got == 0) return null; // idle non-blocking socket — no frame
+                    if (builtin.os.tag == .windows) return null;
+                    var pfd = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
+                    const pr = posix.poll(&pfd, 2000) catch return null;
+                    if (pr == 0) return null; // stalled mid-header → treat peer as dead
+                    continue;
+                },
+                else => return null,
+            }
+        }
+    }
 
     const hdr = Header.fromBytes(hdr_bytes) orelse return null;
     header_out.* = hdr;
@@ -252,14 +278,6 @@ fn writeAll(fd: posix.fd_t, data: []const u8) bool {
         }
     }
     return true;
-}
-
-/// Non-blocking read of exactly `buf.len` bytes. Returns null on EAGAIN, byte count otherwise.
-fn readNonBlock(fd: posix.fd_t, buf: []u8) ?usize {
-    const rc = std.c.read(fd, buf.ptr, buf.len);
-    if (rc < 0) return null; // EAGAIN or error
-    if (rc == 0) return null; // EOF
-    return @intCast(rc);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────
