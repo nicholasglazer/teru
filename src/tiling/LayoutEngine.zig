@@ -104,10 +104,15 @@ pub fn moveNodeToWorkspace(self: *LayoutEngine, node_id: u64, target: u8) !void 
     // removal is the bit the move path used to miss: a workspace in a split
     // layout kept rendering the moved pane as a ghost (renderAll draws from the
     // split tree when present), so Alt+Shift+N appeared to leave the pane
-    // behind. The close path already pairs these two — mirror it here.
+    // behind. removeNodeFromTree FIRST (matching closePane / checkPaneAlive):
+    // removeNode nulls active_node when it equals node_id, which would suppress
+    // removeNodeFromTree's active-node reselect (Workspace.zig:433 needs
+    // active_node == pane_id) — leaving the SOURCE workspace (still on screen,
+    // move doesn't follow) with split_root != null and active_node == null, so
+    // getActivePane() is null and keystrokes into the surviving pane are dropped.
     for (&self.workspaces) |*ws| {
-        ws.removeNode(node_id);
         ws.removeNodeFromTree(node_id);
+        ws.removeNode(node_id);
     }
     // Add to the target. If the target is itself in a split layout, join its
     // tree (addNodeSplit maintains BOTH the flat list and the tree); otherwise

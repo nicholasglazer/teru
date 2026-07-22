@@ -275,10 +275,16 @@ pub fn closePane(self: *Multiplexer, pane_id: u64) void {
         return;
     }
 
-    // Remove from all workspaces (flat list and tree)
+    // Remove from all workspaces (flat list and tree). removeNodeFromTree FIRST:
+    // when the closed pane is the tree's active_node it reselects active_node to
+    // a surviving leaf. removeNode nulls active_node whenever it still equals the
+    // closed id, so running it first wipes the value removeNodeFromTree needs to
+    // detect the reselect — leaving a split-tree workspace with NO active pane
+    // (keystrokes silently dropped). Order is a no-op for flat workspaces
+    // (removeNodeFromTree early-returns when split_root == null).
     for (&self.layout_engine.workspaces) |*ws| {
-        ws.removeNode(pane_id);
         ws.removeNodeFromTree(pane_id);
+        ws.removeNode(pane_id);
     }
 
     // Find and remove from panes list
