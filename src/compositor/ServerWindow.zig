@@ -347,6 +347,15 @@ pub fn closeNode(self: *Server, node_id: u64) bool {
                 wlr.wlr_xdg_toplevel_send_close(toplevel);
                 return true;
             }
+            if (self.nodes.xwayland_surface[slot]) |xw| {
+                // X11 node (tiled or managed-floating): request the close —
+                // WM_DELETE_WINDOW for cooperating clients, XKillClient
+                // otherwise. Registry cleanup happens in unmapView when the
+                // window actually goes away.
+                clearFocusRefs(self, node_id);
+                wlr.wlr_xwayland_surface_close(xw);
+                return true;
+            }
         }
     }
     return false;
