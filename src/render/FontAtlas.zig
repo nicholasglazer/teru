@@ -662,7 +662,8 @@ pub fn loadVariant(self: *const FontAtlas, allocator: std.mem.Allocator, font_pa
     // Init stbtt with the variant font
     var font_info: stbtt.stbtt_fontinfo = undefined;
     if (stbtt.stbtt_InitFont(&font_info, font_data.ptr, 0) == 0) {
-        allocator.free(font_data);
+        // font_data is freed by the errdefer above — do NOT free it here too
+        // (that was a double-free on the InitFont-failure path).
         return error.FontInitFailed;
     }
 
