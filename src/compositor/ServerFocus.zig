@@ -115,6 +115,18 @@ pub fn focusView(server: *Server, view: *XdgView) void {
 /// otherwise. `last_pointer_surface` is handled by View unmap /
 /// destroy handlers since it's keyed on wlr_surface, not node_id.
 pub fn clearFocusRefs(server: *Server, node_id: u64) void {
+    // If the node being removed is the fullscreen one, drop fullscreen first.
+    // Otherwise fullscreen_node dangles on a freed id: recomputeVisibility's
+    // override (`visible = node_id == fullscreen_node`) then matches NOTHING, so
+    // every surviving window is hidden and the bars stay disabled — a black
+    // screen after closing a fullscreen window (until something else happens to
+    // call exitFullscreen). exitFullscreen restores the bars + normal visibility;
+    // the close path's own re-arrange (after this node is removed) settles the
+    // survivors. Safe here: clearFocusRefs runs before the node/scene is torn
+    // down, so the one extra arrange/visibility pass touches a still-valid node.
+    if (server.fullscreen_node) |fs| {
+        if (fs == node_id) server.exitFullscreen();
+    }
     if (server.focused_terminal) |tp| {
         if (tp.node_id == node_id) server.focused_terminal = null;
     }
@@ -315,7 +327,23 @@ pub fn focusXwaylandSurface(server: *Server, xw: *wlr.wlr_xwayland_surface) void
 
 pub fn updateFocusedTerminal(server: *Server) void {
     const ws = server.layout_engine.getActiveWorkspace();
-    const active_id = ws.active_node orelse ws.getActiveNodeId() orelse return;
+    const active_id = ws.active_node orelse ws.getActiveNodeId() orelse {
+        // Empty workspace (no tiled/active node): clear focused_terminal so the
+        // status bar stops showing the PREVIOUS workspace's terminal title.
+        // focusWorkspace renders the bar right after this call, and both the bar
+        // signature and the title widget read server.focused_terminal — leaving
+        // it stale kept the old title (and its focus border) on screen until the
+        // next focus/title event (the reported "old title lingers on an empty
+        // workspace until I open a new app" bug). Only focused_terminal is
+        // touched on purpose: focused_view/focused_xwayland drive floating-window
+        // focus, which is managed elsewhere — clearing them here would unfocus a
+        // floating window when switching back to a floating-only workspace.
+        if (server.focused_terminal != null) {
+            server.focused_terminal = null;
+            refreshAllBorders(server);
+        }
+        return;
+    };
 
     var found = false;
     for (server.terminal_panes) |maybe_tp| {
@@ -387,6 +415,21 @@ pub fn updateFocusedTerminal(server: *Server) void {
 /// workspace_switched on the MCP event channel.
 pub fn focusWorkspace(server: *Server, target: u8) void {
     if (target >= 10) return;
+
+    // A workspace switch ends fullscreen. enterFullscreen disables BOTH bars
+    // (scene nodes off) and recomputeVisibility's fullscreen override hides
+    // every non-fullscreen node REGARDLESS of which workspace shows it — so
+    // without this, switching away from a fullscreen window (e.g. a browser
+    // that requested fullscreen to play a video) stranded the user: the bars
+    // stayed gone and the switch had no visible effect (the fullscreen window
+    // kept compositing over an otherwise-empty target workspace). The only
+    // escape was the fullscreen-toggle keybind. Dropping fullscreen first
+    // restores the bars + normal per-workspace visibility, then the switch
+    // proceeds. Matches dwm/xmonad: navigating workspaces leaves fullscreen.
+    // Placed before the target==current early-returns so re-pressing the
+    // current workspace also un-fullscreens (a second escape gesture).
+    if (server.fullscreen_node != null) server.exitFullscreen();
+
     const focused = server.focused_output orelse {
         // No outputs yet — fall back to pre-multi-output path.
         const old = server.layout_engine.active_workspace;

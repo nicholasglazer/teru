@@ -76,7 +76,7 @@ fn writeChunk(file: *anyopaque, chunk_type: *const [4]u8, data: []const u8) void
     fileWrite(file, &len_buf);
     fileWrite(file, chunk_type);
 
-    var crc = std.hash.crc.Crc32.init();
+    var crc = std.hash.Crc32.init();
     crc.update(chunk_type);
     if (data.len > 0) {
         fileWrite(file, data);
@@ -103,7 +103,7 @@ fn writeIdat(file: *anyopaque, pixels: []const u32, width: u32, height: u32, row
     const idat_tag = "IDAT";
     fileWrite(file, idat_tag);
 
-    var crc = std.hash.crc.Crc32.init();
+    var crc = std.hash.Crc32.init();
     crc.update(idat_tag);
 
     // Zlib header: CMF=0x78 (deflate, 32K window), FLG=0x01 (level 0, checksum ok)

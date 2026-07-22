@@ -140,7 +140,29 @@ pub fn init(server: *Server) ?*WmMcpServer {
     return self;
 }
 
+/// Remove the request/event socket fd sources from the wl_event_loop. MUST run
+/// while the loop is still alive — i.e. BEFORE wl_display_destroy. deinit runs
+/// AFTER wl_display_destroy (main.zig defer order), so calling
+/// wl_event_source_remove there is a UAF on the freed loop. Split out and
+/// invoked from Server.releaseEventSources (a pre-display-destroy defer),
+/// matching how releaseTimers handles the timer sources. Idempotent: the nulled
+/// fields make deinit's own removals no-ops.
+pub fn releaseEventSources(self: *WmMcpServer) void {
+    if (self.event_source) |es| {
+        _ = wlr.wl_event_source_remove(es);
+        self.event_source = null;
+    }
+    if (self.event_source_evt) |es| {
+        _ = wlr.wl_event_source_remove(es);
+        self.event_source_evt = null;
+    }
+}
+
 pub fn deinit(self: *WmMcpServer, allocator: Allocator) void {
+    // Event sources are normally already removed by releaseEventSources (before
+    // wl_display_destroy). These stay as an idempotent fallback — null after
+    // release, so they no-op; if deinit is ever reached without the pre-destroy
+    // release they still get removed (only safe while the loop is alive).
     if (self.event_source) |es| _ = wlr.wl_event_source_remove(es);
     if (self.event_source_evt) |es| _ = wlr.wl_event_source_remove(es);
     _ = posix.system.close(self.socket_fd);
@@ -273,6 +295,7 @@ const tools_list_body: []const u8 =
     \\{"name":"teruwm_focus_window","description":"Focus a window by node ID","inputSchema":{"type":"object","properties":{"node_id":{"type":"integer"}},"required":["node_id"]}},
     \\{"name":"teruwm_move_to_workspace","description":"Move a window to a different workspace","inputSchema":{"type":"object","properties":{"node_id":{"type":"integer"},"workspace":{"type":"integer"}},"required":["node_id","workspace"]}},
     \\{"name":"teruwm_list_workspaces","description":"List workspaces with layout, window count, active status","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"teruwm_get_focus","description":"Report keyboard focus state: kind (terminal/xdg/xwayland/none), focused node ids, and xor_ok (the invariant that at most one focus field is set). node ids are -1 when absent.","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"teruwm_switch_workspace","description":"Switch active workspace (0-9)","inputSchema":{"type":"object","properties":{"workspace":{"type":"integer"}},"required":["workspace"]}},
     \\{"name":"teruwm_set_layout","description":"Set layout for a workspace","inputSchema":{"type":"object","properties":{"workspace":{"type":"integer","default":0},"layout":{"type":"string","enum":["master-stack","grid","monocle","dishes","spiral","three-col","columns","accordion"]}},"required":["layout"]}},
     \\{"name":"teruwm_zoom","description":"Font zoom for the whole compositor — re-rasterizes the shared font atlas and re-fonts every terminal pane + bar. 'in'/'out' step the font size by one pixel; 'reset' restores the configured size.","inputSchema":{"type":"object","properties":{"direction":{"type":"string","enum":["in","out","reset"]}},"required":["direction"]}},
@@ -305,7 +328,9 @@ const tools_list_body: []const u8 =
     \\{"name":"teruwm_scratchpad","description":"Toggle a named scratchpad (xmonad NamedScratchpad model). First call spawns a floating terminal tagged with the given name; subsequent calls toggle its visibility on the focused workspace. Scratchpads live in the node registry with a hidden-workspace sentinel when parked — visible via teruwm_list_windows.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"scratchpad identifier (e.g. 'term', 'music'). Max 15 chars."},"cmd":{"type":"string","description":"Reserved for future per-scratchpad spawn commands; ignored today — scratchpads spawn the user shell."}},"required":["name"]}},
     \\{"name":"teruwm_subscribe_events","description":"Get the Unix-socket path for the event push channel. Connect a raw client to that path to read newline-delimited JSON events: urgent, focus_changed, workspace_switched, window_mapped. One subscriber at a time (last-connect wins); best-effort (slow subscribers drop events).","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"teruwm_session_save","description":"Snapshot the compositor's live state to ~/.config/teru/sessions/<name>.tsess. Captures workspace layouts, master ratios, pane roles, and per-pane cwd + running cmd (from /proc). Scope: tiled terminal panes only — no XDG clients, no floats, no scratchpads, no scrollback.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"session name (default: 'default')"}},"required":[]}},
-    \\{"name":"teruwm_session_restore","description":"Restore a .tsess file into the compositor. Idempotent by role: panes whose role matches an existing pane are not duplicated. Each spawned pane resumes in its saved cwd running its saved cmd. Layouts and master_ratio are restored.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"session name (default: 'default')"}},"required":[]}}
+    \\{"name":"teruwm_session_restore","description":"Restore a .tsess file into the compositor. Idempotent by role: panes whose role matches an existing pane are not duplicated. Each spawned pane resumes in its saved cwd running its saved cmd. Layouts and master_ratio are restored.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"session name (default: 'default')"}},"required":[]}},
+    \\{"name":"teruwm_keys_osd","description":"Control the keystroke OSD (streaming key-combo overlay, klava engine). 'on'/'off'/'toggle' switch it; 'status' reports {active, entries}. While on, every Ctrl/Alt/Super combo shows in a corner overlay and fades after keys_osd_linger_ms.","inputSchema":{"type":"object","properties":{"op":{"type":"string","enum":["on","off","toggle","status"]}},"required":["op"]}},
+    \\{"name":"teruwm_keys_osd_feed","description":"TEST ONLY: feed one synthetic key event into the keystroke OSD engine — same code path as the live keyboard tap minus the xkb decode (headless has no input devices). keysym is an X11 keysym number, or pass key as a single ASCII char. OSD must be on (teruwm_keys_osd op=on) or the event is dropped.","inputSchema":{"type":"object","properties":{"keysym":{"type":"integer","description":"X11 keysym (e.g. 0xff0d Enter); overrides key"},"key":{"type":"string","description":"single ASCII char alternative to keysym"},"super":{"type":"boolean"},"ctrl":{"type":"boolean"},"alt":{"type":"boolean"},"shift":{"type":"boolean"},"released":{"type":"boolean","description":"true = key-release event (default false = press)"}},"required":[]}}
     \\]
 ;
 
@@ -362,6 +387,7 @@ const tool_table = std.StaticStringMap(F.Thunk).initComptime(.{
     .{ "teruwm_focus_window", WmMcpTools.thunkFocusWindow },
     .{ "teruwm_move_to_workspace", WmMcpTools.thunkMoveToWorkspace },
     .{ "teruwm_list_workspaces", WmMcpTools.thunkListWorkspaces },
+    .{ "teruwm_get_focus", WmMcpTools.thunkGetFocus },
     .{ "teruwm_switch_workspace", WmMcpTools.thunkSwitchWorkspace },
     .{ "teruwm_set_layout", WmMcpTools.thunkSetLayout },
     .{ "teruwm_zoom", WmMcpTools.thunkZoom },
@@ -395,4 +421,6 @@ const tool_table = std.StaticStringMap(F.Thunk).initComptime(.{
     .{ "teruwm_subscribe_events", WmMcpTools.thunkSubscribeEvents },
     .{ "teruwm_session_save", WmMcpTools.thunkSessionSave },
     .{ "teruwm_session_restore", WmMcpTools.thunkSessionRestore },
+    .{ "teruwm_keys_osd", WmMcpTools.thunkKeysOsd },
+    .{ "teruwm_keys_osd_feed", WmMcpTools.thunkKeysOsdFeed },
 });

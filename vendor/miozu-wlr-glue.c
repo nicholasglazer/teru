@@ -134,6 +134,13 @@ struct wlr_xdg_toplevel *miozu_xdg_toplevel_parent(struct wlr_xdg_toplevel *t) {
     return t->parent;
 }
 
+/* The client's requested fullscreen state (set when it sends
+ * xdg_toplevel.set_fullscreen). Read in the request_fullscreen handler to
+ * decide enter vs exit. */
+bool miozu_xdg_toplevel_requested_fullscreen(struct wlr_xdg_toplevel *t) {
+    return t->requested.fullscreen;
+}
+
 /* ── XDG surface fields ──────────────────────────────────────── */
 
 struct wlr_surface *miozu_xdg_surface_surface(struct wlr_xdg_surface *s) {
@@ -266,6 +273,11 @@ bool miozu_output_enable_and_commit(struct wlr_output *output) {
 double miozu_pointer_motion_dx(struct wlr_pointer_motion_event *e) { return e->delta_x; }
 double miozu_pointer_motion_dy(struct wlr_pointer_motion_event *e) { return e->delta_y; }
 uint32_t miozu_pointer_motion_time(struct wlr_pointer_motion_event *e) { return e->time_msec; }
+
+/* Unaccelerated (raw) deltas — fed to relative-pointer-v1 so games doing
+ * their own mouse acceleration (most FPS) get untouched motion. */
+double miozu_pointer_motion_unaccel_dx(struct wlr_pointer_motion_event *e) { return e->unaccel_dx; }
+double miozu_pointer_motion_unaccel_dy(struct wlr_pointer_motion_event *e) { return e->unaccel_dy; }
 
 double miozu_pointer_motion_abs_x(struct wlr_pointer_motion_absolute_event *e) { return e->x; }
 double miozu_pointer_motion_abs_y(struct wlr_pointer_motion_absolute_event *e) { return e->y; }
@@ -649,6 +661,48 @@ bool miozu_xwayland_surface_has_parent(struct wlr_xwayland_surface *s) {
  * Backstop for modal dialogs that don't set transient_for. */
 bool miozu_xwayland_surface_is_modal(struct wlr_xwayland_surface *s) {
     return s != NULL && s->modal;
+}
+
+/* Fires after xwm has applied a geometry change (own ConfigureNotify
+ * round-trip or a client XMoveWindow on an override-redirect window).
+ * s->x/y/width/height hold the NEW geometry when this fires. */
+struct wl_signal *miozu_xwayland_surface_set_geometry(struct wlr_xwayland_surface *s) {
+    return &s->events.set_geometry;
+}
+
+struct wl_signal *miozu_xwayland_surface_request_fullscreen(struct wlr_xwayland_surface *s) {
+    return &s->events.request_fullscreen;
+}
+
+/* Fires when a client toggles the override-redirect attribute on an
+ * already-created window (Chromium/CEF does this for popups). */
+struct wl_signal *miozu_xwayland_surface_set_override_redirect(struct wlr_xwayland_surface *s) {
+    return &s->events.set_override_redirect;
+}
+
+/* Requested/current _NET_WM_STATE_FULLSCREEN. When request_fullscreen
+ * fires, this already holds the state the client asked for. */
+bool miozu_xwayland_surface_fullscreen(struct wlr_xwayland_surface *s) {
+    return s != NULL && s->fullscreen;
+}
+
+/* Requested geometry carried by request_configure's event data. The
+ * surface's own x/y/width/height still hold the OLD geometry at that
+ * point — the request must be granted (or overridden) explicitly via
+ * wlr_xwayland_surface_configure, else the client never receives a
+ * ConfigureNotify and stays stuck at its previous geometry. */
+int16_t miozu_xwayland_configure_event_x(struct wlr_xwayland_surface_configure_event *e) { return e->x; }
+int16_t miozu_xwayland_configure_event_y(struct wlr_xwayland_surface_configure_event *e) { return e->y; }
+uint16_t miozu_xwayland_configure_event_width(struct wlr_xwayland_surface_configure_event *e) { return e->width; }
+uint16_t miozu_xwayland_configure_event_height(struct wlr_xwayland_surface_configure_event *e) { return e->height; }
+
+/* A scene node's own destroy signal. A wlr_scene_subsurface_tree destroys
+ * ITSELF when its wl_surface dies — which can happen BEFORE dissociate
+ * fires (xwayland teardown, X client crash), leaving any cached tree
+ * pointer dangling. Compositor-side owners must watch this signal instead
+ * of assuming they are the only destroyer. */
+struct wl_signal *miozu_scene_node_destroy_signal(struct wlr_scene_node *n) {
+    return &n->events.destroy;
 }
 
 /* ── Seat keyboard accessor ──────────────────────────────────── */
@@ -1171,6 +1225,40 @@ struct wl_signal *miozu_ftl_request_close(struct wlr_foreign_toplevel_handle_v1 
  * _destroy on freed memory. */
 struct wl_signal *miozu_ftl_handle_destroy_signal(struct wlr_foreign_toplevel_handle_v1 *h) {
     return &h->events.destroy;
+}
+
+/* ── pointer_constraints_v1 + relative_pointer_v1 ─────────────────
+ *
+ * Lets games / nested gamescope lock the cursor for mouselook and read raw
+ * relative motion. teruwm activates a constraint while its surface holds
+ * pointer focus; ServerCursor freezes the hardware cursor while a LOCKED
+ * constraint is active AND its surface still holds keyboard focus (so the
+ * freeze can never outlive focus — Mod+J / alt-tab releases it). */
+
+#include <wlr/types/wlr_pointer_constraints_v1.h>
+
+struct wl_signal *miozu_pointer_constraints_new_constraint(struct wlr_pointer_constraints_v1 *m) {
+    return &m->events.new_constraint;
+}
+
+struct wlr_surface *miozu_pointer_constraint_surface(struct wlr_pointer_constraint_v1 *c) {
+    return c->surface;
+}
+
+/* 0 = WLR_POINTER_CONSTRAINT_V1_LOCKED, 1 = WLR_POINTER_CONSTRAINT_V1_CONFINED */
+int miozu_pointer_constraint_type(struct wlr_pointer_constraint_v1 *c) {
+    return (int)c->type;
+}
+
+struct wl_signal *miozu_pointer_constraint_destroy_signal(struct wlr_pointer_constraint_v1 *c) {
+    return &c->events.destroy;
+}
+
+/* The surface that currently holds keyboard focus on the seat. Gates the
+ * pointer-lock freeze: a frozen cursor is only ever held while the locking
+ * window is the focused window. */
+struct wlr_surface *miozu_seat_keyboard_focused_surface(struct wlr_seat *s) {
+    return s->keyboard_state.focused_surface;
 }
 
 /* ── pixman damage regions ───────────────────────────────────── */

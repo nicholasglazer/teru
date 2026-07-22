@@ -253,11 +253,17 @@ pub const SoftwareRenderer = struct {
             // Left and right strips for each row between top padding and grid bottom.
             // `has_right_strip` covers both padding and cell-size remainder.
             if (pad > 0 or has_right_strip) {
-                for (pad..@min(grid_bottom, fb_h)) |py| {
-                    const row_start = py * fb_w;
-                    if (pad > 0) compat.memsetU32(self.framebuffer[row_start..][0..@min(pad, fb_w)], bg_fill);
-                    if (has_right_strip) {
-                        compat.memsetU32(self.framebuffer[row_start + grid_right .. row_start + fb_w], bg_fill);
+                // Guard against a framebuffer shorter than the padding (a tiny /
+                // degenerate window mid-resize): pad > strip_end would make
+                // `pad..strip_end` a reversed range → panic (safe) / OOB (fast).
+                const strip_end = @min(grid_bottom, fb_h);
+                if (pad < strip_end) {
+                    for (pad..strip_end) |py| {
+                        const row_start = py * fb_w;
+                        if (pad > 0) compat.memsetU32(self.framebuffer[row_start..][0..@min(pad, fb_w)], bg_fill);
+                        if (has_right_strip) {
+                            compat.memsetU32(self.framebuffer[row_start + grid_right .. row_start + fb_w], bg_fill);
+                        }
                     }
                 }
             }

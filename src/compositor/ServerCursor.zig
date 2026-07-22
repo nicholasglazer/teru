@@ -40,16 +40,44 @@ const ServerClipboard = @import("ServerClipboard.zig");
 pub fn handleCursorMotion(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const server = wlr.listenerParent(Server, "cursor_motion", listener);
     const event: *wlr.wlr_pointer_motion_event = @ptrCast(@alignCast(data orelse return));
-    wlr.wlr_cursor_move(server.cursor, null, wlr.miozu_pointer_motion_dx(event), wlr.miozu_pointer_motion_dy(event));
+    const dx = wlr.miozu_pointer_motion_dx(event);
+    const dy = wlr.miozu_pointer_motion_dy(event);
+    const time = wlr.miozu_pointer_motion_time(event);
+
+    // relative-pointer-v1: deliver raw motion to the focused client (games
+    // reading mouselook). No-op when no client has bound a relative pointer.
+    if (server.relative_pointer_mgr) |m| {
+        wlr.wlr_relative_pointer_manager_v1_send_relative_motion(
+            m,
+            server.seat,
+            @as(u64, time) * 1000,
+            dx,
+            dy,
+            wlr.miozu_pointer_motion_unaccel_dx(event),
+            wlr.miozu_pointer_motion_unaccel_dy(event),
+        );
+    }
+
+    // pointer-constraints-v1 LOCK: freeze the hardware cursor — the client
+    // already got relative motion above; don't move it or re-dispatch focus.
+    if (server.pointerLocked()) {
+        server.notifyActivity();
+        return;
+    }
+
+    wlr.wlr_cursor_move(server.cursor, null, dx, dy);
     server.notifyActivity();
-    processCursorMotion(server, wlr.miozu_pointer_motion_time(event));
+    processCursorMotion(server, time);
 }
 
 pub fn handleCursorMotionAbsolute(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const server = wlr.listenerParent(Server, "cursor_motion_absolute", listener);
     const event: *wlr.wlr_pointer_motion_absolute_event = @ptrCast(@alignCast(data orelse return));
-    wlr.wlr_cursor_warp_absolute(server.cursor, null, wlr.miozu_pointer_motion_abs_x(event), wlr.miozu_pointer_motion_abs_y(event));
     server.notifyActivity();
+    // A locked pointer freezes absolute motion too (touchpad must not move
+    // the cursor while a game holds the lock).
+    if (server.pointerLocked()) return;
+    wlr.wlr_cursor_warp_absolute(server.cursor, null, wlr.miozu_pointer_motion_abs_x(event), wlr.miozu_pointer_motion_abs_y(event));
     processCursorMotion(server, wlr.miozu_pointer_motion_abs_time(event));
 }
 
@@ -64,6 +92,18 @@ pub fn handleCursorButton(listener: *wlr.wl_listener, data: ?*anyopaque) callcon
         wlr.miozu_pointer_button_time(event),
         null, // null = read live xkb state
     );
+}
+
+/// Number of font-zoom steps for a wheel `delta_discrete` value. wlroots 0.18
+/// reports discrete axis motion in v120 units (one notch = 120), so a raw
+/// `@abs(discrete)` meant 120 steps per notch. One notch = one step; a
+/// high-resolution sub-notch still counts as at least one so tiny wheels aren't
+/// dead. Pure so it's unit-testable without a pointer event.
+fn zoomStepsForDiscrete(discrete: i32) u32 {
+    if (discrete == 0) return 0;
+    const mag: u32 = @abs(discrete);
+    const step: u32 = @intCast(wlr.WLR_POINTER_AXIS_DISCRETE_STEP);
+    return @max(1, mag / step);
 }
 
 pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
@@ -89,8 +129,10 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
         const discrete = wlr.miozu_pointer_axis_delta_discrete(event);
         if (discrete != 0) {
             // Mouse wheel: exactly one font step per notch (crisp, expected).
+            // delta_discrete is in v120 units (one notch = 120), so the old
+            // `@abs(discrete)` loop ran 120 zoom steps per notch — runaway.
             const target: teru.render.FontAtlas.ZoomTarget = if (delta < 0) .in else .out;
-            var n = @abs(discrete);
+            var n = zoomStepsForDiscrete(discrete);
             while (n > 0) : (n -= 1) _ = tp.zoomFont(target);
             server.zoom_accum = 0; // reset the continuous accumulator
             return;
@@ -114,6 +156,14 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
     // delta falls through to the seat notify below (axis-stop for clients).
     if (orientation == 0 and delta != 0 and server.focused_terminal != null) {
         const tp = server.focused_terminal.?;
+        // Alt-screen guard: a TUI app (vim, htop, less) runs on the alternate
+        // screen, which keeps no scrollback of its own — the scrollback buffer
+        // still holds the MAIN screen's now-stale history. Scrolling it here
+        // dragged that dead history OVER the live TUI. Don't scroll scrollback
+        // while on the alt screen. (Forwarding the wheel to the app as a mouse
+        // report would need native-pane mouse reporting, which the compositor
+        // doesn't implement yet — clicks don't forward either; separate feature.)
+        if (tp.pane.grid.on_alt_screen) return;
         const max_offset: u32 = @intCast(tp.pane.scrollback.total_lines);
         if (max_offset > 0) {
             const cell_h: u32 = if (server.font_atlas) |fa| fa.cell_height else 16;
@@ -363,6 +413,11 @@ fn tryBeginBorderDrag(server: *Server, cx: f64) bool {
         // created an invisible "dead-click strip" that hijacked the click
         // into a master-ratio drag (#45).
         if (server.nodes.workspace[slot] != cur_ws) continue;
+        // Floating panes / scratchpads aren't part of the tiled master-stack, so
+        // their right edge is not a master-ratio handle. Skip them — otherwise a
+        // visible floating window's right border is a dead-click strip that
+        // hijacks a click (or the start of a text selection) into a border drag.
+        if (server.nodes.floating[slot]) continue;
         const px = server.nodes.pos_x[slot];
         const pw: i32 = @intCast(server.nodes.width[slot]);
         const right_edge = px + pw;
@@ -966,6 +1021,9 @@ pub fn processCursorMotion(server: *Server, time: u32) void {
                             // but synthetic MCP test_move bypasses
                             // that. Always flushing here is cheap.
                             wlr.wlr_seat_pointer_notify_frame(server.seat);
+                            // pointer-constraints-v1: activate any lock/confine
+                            // the now-focused surface registered (games/gamescope).
+                            updateConstraintForSurface(server, surface);
                             return;
                         }
                     }
@@ -982,10 +1040,14 @@ pub fn processCursorMotion(server: *Server, time: u32) void {
         // clicks register where the user expects.
         if (fallbackPointerToTiledView(server, cx, cy, time)) return;
         setXcursorIfChanged(server, "default");
+        // Pointer left every client surface — release any active constraint.
+        deactivateConstraint(server);
         wlr.wlr_seat_pointer_clear_focus(server.seat);
     } else {
         if (fallbackPointerToTiledView(server, cx, cy, time)) return;
         setXcursorIfChanged(server, "default");
+        // Pointer left every client surface — release any active constraint.
+        deactivateConstraint(server);
         wlr.wlr_seat_pointer_clear_focus(server.seat);
     }
 }
@@ -1040,7 +1102,102 @@ fn fallbackPointerToTiledView(server: *Server, cx: f64, cy: f64, time: u32) bool
         wlr.wlr_seat_pointer_notify_enter(server.seat, surface, sx_local, sy_local);
         wlr.wlr_seat_pointer_notify_motion(server.seat, time, sx_local, sy_local);
         wlr.wlr_seat_pointer_notify_frame(server.seat);
+        updateConstraintForSurface(server, surface);
         return true;
     }
     return false;
+}
+
+// ── pointer-constraints-v1 ─────────────────────────────────────
+//
+// A client (nested gamescope, a native-Wayland game) locks or confines the
+// pointer to one of its surfaces for mouselook. We activate the constraint
+// while that surface holds pointer focus and free the per-constraint tracker
+// when the constraint is destroyed. The actual cursor freeze lives in
+// handleCursorMotion via Server.pointerLocked (which also gates on keyboard
+// focus so the freeze can never outlive the focused window).
+
+/// Per-constraint tracker. Heap-allocated on new_constraint, freed on the
+/// constraint's destroy. Embeds its destroy listener for @fieldParentPtr
+/// recovery — same pattern as XdgView's Popup tracker.
+const PointerConstraint = struct {
+    server: *Server,
+    constraint: *wlr.wlr_pointer_constraint_v1,
+    destroy: wlr.wl_listener,
+};
+
+/// wlr_pointer_constraints_v1.new_constraint — a client just created a
+/// lock/confine. Track it and activate immediately if its surface already
+/// has pointer focus (the common case: a game grabs the pointer once focused).
+pub fn handleNewPointerConstraint(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const server = wlr.listenerParent(Server, "new_pointer_constraint", listener);
+    const constraint: *wlr.wlr_pointer_constraint_v1 = @ptrCast(@alignCast(data orelse return));
+
+    const pc = server.zig_allocator.create(PointerConstraint) catch return;
+    pc.* = .{
+        .server = server,
+        .constraint = constraint,
+        .destroy = makeListener(handlePointerConstraintDestroy),
+    };
+    wlr.wl_signal_add(wlr.miozu_pointer_constraint_destroy_signal(constraint), &pc.destroy);
+
+    const focused = wlr.miozu_seat_pointer_focused_surface(server.seat);
+    const cs = wlr.miozu_pointer_constraint_surface(constraint);
+    if (focused != null and cs != null and focused == cs) {
+        activateConstraint(server, constraint);
+    }
+}
+
+/// The constraint was destroyed (client released the lock, surface unmapped,
+/// or shutdown). Drop our reference + free the tracker.
+fn handlePointerConstraintDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const pc: *PointerConstraint = @fieldParentPtr("destroy", listener);
+    const server = pc.server;
+    if (server.active_constraint == pc.constraint) server.active_constraint = null;
+    wlr.wl_list_remove(&pc.destroy.link);
+    server.zig_allocator.destroy(pc);
+}
+
+/// Activate `constraint`, deactivating any previously-active one first.
+fn activateConstraint(server: *Server, constraint: *wlr.wlr_pointer_constraint_v1) void {
+    if (server.active_constraint == constraint) return;
+    deactivateConstraint(server);
+    server.active_constraint = constraint;
+    wlr.wlr_pointer_constraint_v1_send_activated(constraint);
+}
+
+/// Deactivate the active constraint, if any.
+fn deactivateConstraint(server: *Server) void {
+    if (server.active_constraint) |c| {
+        wlr.wlr_pointer_constraint_v1_send_deactivated(c);
+        server.active_constraint = null;
+    }
+}
+
+/// Re-evaluate which constraint (if any) applies to the surface the pointer
+/// just entered. Called from the motion dispatch right after a notify_enter.
+fn updateConstraintForSurface(server: *Server, surface: *wlr.wlr_surface) void {
+    const mgr = server.pointer_constraints_mgr orelse return;
+    if (wlr.wlr_pointer_constraints_v1_constraint_for_surface(mgr, surface, server.seat)) |c| {
+        activateConstraint(server, c);
+    } else {
+        deactivateConstraint(server);
+    }
+}
+
+fn makeListener(comptime func: *const fn (*wlr.wl_listener, ?*anyopaque) callconv(.c) void) wlr.wl_listener {
+    return .{ .link = .{ .prev = null, .next = null }, .notify = func };
+}
+
+// ── Tests: wheel zoom step calculation (pure, no pointer event) ──
+test "zoomStepsForDiscrete: v120 units → one step per notch" {
+    const t = std.testing;
+    try t.expectEqual(@as(u32, 0), zoomStepsForDiscrete(0)); // no motion
+    try t.expectEqual(@as(u32, 1), zoomStepsForDiscrete(120)); // one notch up
+    try t.expectEqual(@as(u32, 1), zoomStepsForDiscrete(-120)); // one notch down
+    try t.expectEqual(@as(u32, 2), zoomStepsForDiscrete(240)); // two notches
+    try t.expectEqual(@as(u32, 3), zoomStepsForDiscrete(-360));
+    try t.expectEqual(@as(u32, 1), zoomStepsForDiscrete(60)); // hi-res sub-notch → at least 1
+    // Regression: the old @abs(discrete) returned 120 here (runaway zoom).
+    try t.expect(zoomStepsForDiscrete(120) != 120);
 }

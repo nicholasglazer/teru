@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const posix = std.posix;
+const Reaper = @import("Reaper.zig");
 const teru = @import("teru");
 const SoftwareRenderer = teru.render.SoftwareRenderer;
 const BarWidget = teru.render.BarWidget;
@@ -343,8 +344,11 @@ fn refreshSectionExecs(self: *Bar, section: *Section, server: *Server, now_ns: i
             if (fdflags >= 0) _ = std.c.fcntl(pf, posix.F.SETFD, fdflags | FD_CLOEXEC);
         }
 
-        // Fork
-        const pid = std.os.linux.fork();
+        // Fork. std.os.linux.fork() returns usize (a -errno wrapped in usize on
+        // failure), so the raw value is NEVER < 0 — bitcast to isize first, or
+        // the failure check is dead and a failed fork falls through to the parent
+        // path where @intCast(pid) into Reaper.track panics on the huge value.
+        const pid: isize = @bitCast(std.os.linux.fork());
         if (pid < 0) {
             _ = posix.system.close(read_fd);
             _ = posix.system.close(write_fd);
@@ -367,6 +371,7 @@ fn refreshSectionExecs(self: *Bar, section: *Section, server: *Server, now_ns: i
             Process.closeInheritedFds();
 
             const cmd_slice: [:0]const u8 = cmd_z[0..w.arg.len :0];
+            teru.compat.resetSigpipeToDefault(); // parent ignores SIGPIPE; child must not inherit it
             const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", cmd_slice.ptr, null };
             const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
             _ = posix.system.execve("/bin/sh", &argv, @ptrCast(envp));
@@ -381,6 +386,12 @@ fn refreshSectionExecs(self: *Bar, section: *Section, server: *Server, now_ns: i
             _ = std.c.fcntl(read_fd, posix.F.SETFL, flags | teru.compat.O_NONBLOCK);
         }
 
+        // Hand the pid to the targeted reaper at fork time. The pipe
+        // usually yields its first line before the shell's pipeline
+        // exits, so the reap is inherently async — it happens on a later
+        // SIGCHLD, never here (and never via waitpid(-1); see Reaper.zig).
+        Reaper.track(@intCast(pid));
+
         // Register with event loop
         if (addPendingExec(self, read_fd, @intCast(pid), w)) |pe| {
             if (server.event_loop) |el| {
@@ -393,9 +404,9 @@ fn refreshSectionExecs(self: *Bar, section: *Section, server: *Server, now_ns: i
                 );
             }
         } else {
-            // No free slot — clean up immediately (widget keeps stale cache).
+            // No free slot — close the pipe (widget keeps stale cache);
+            // the reaper still owns the pid.
             _ = posix.system.close(read_fd);
-            _ = std.c.waitpid(@intCast(pid), null, std.c.W.NOHANG);
         }
     }
 }
@@ -465,7 +476,8 @@ fn cleanupExec(pe: *PendingExec) void {
     if (pe.event_source) |es| _ = wlr.wl_event_source_remove(es);
     pe.event_source = null;
     if (pe.fd != -1) _ = posix.system.close(pe.fd);
-    if (pe.pid != 0) _ = std.c.waitpid(pe.pid, null, std.c.W.NOHANG);
+    // No waitpid here: this runs when the pipe yields its first line,
+    // usually before the shell exits — Reaper owns the pid since fork.
     pe.fd = -1;
     pe.pid = 0;
 }

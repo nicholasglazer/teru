@@ -19,6 +19,7 @@ const MouseState = teru.mouse.MouseState;
 const compat = teru.compat;
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
+const Reaper = @import("Reaper.zig");
 
 const TerminalPane = @This();
 
@@ -27,6 +28,14 @@ const TerminalPane = @This();
 /// mid-paint), we fall through after this many milliseconds so the pane
 /// isn't frozen. Matches Alacritty's published default.
 const sync_output_timeout_ms: u64 = 150;
+
+/// Frames of grace after a keystroke during which `renderIfDirty` bypasses the
+/// `max_render_fps` cap, so interactive typing/echo paints at full vsync. ~100 ms
+/// at 60 Hz — long enough to cover shell echo latency, short enough that a
+/// background pane streaming output starts throttling promptly once you stop
+/// typing. `frames_since_pty_input` is reset to 0 on keyboard input and
+/// incremented once per frame callback (see Output.handleFrame / writeInput).
+const input_grace_frames: u32 = 6;
 
 server: *Server,
 pane: Pane,
@@ -58,6 +67,13 @@ zoom_atlas: ?*FontAtlas = null,
 // frozen-pane look.
 sync_started_ns: i128 = 0,
 
+/// Monotonic ns of the last full paint+commit (renderIfDirty / render). Drives
+/// the `max_render_fps` throttle: a pane streaming PTY output faster than the
+/// cap defers its (full-buffer) GPU re-upload to the next eligible vsync rather
+/// than re-uploading on every one. 0 = never painted, so the first paint is
+/// always immediate.
+last_render_ns: i128 = 0,
+
 /// Mirrors the scene node's enabled state (driven by setVisible). When false
 /// the pane is on a non-active workspace / parked, so the frame loop skips its
 /// paint — an agent fleet on a background workspace shouldn't burn a full SIMD
@@ -72,6 +88,14 @@ visible: bool = true,
 /// sync-hold timeout and render immediately.
 sync_flushed: bool = false,
 
+/// Chrome (cursor style + focus border) actually painted into the
+/// framebuffer (null before first paint). See `Chrome` below the fields.
+/// Focus churn calls repaintBorderOnly on EVERY pane (updateFocusedTerminal /
+/// refresh loops), and each call used to commit full-buffer damage — a whole
+/// texture re-upload per pane per focus flip / workspace switch, even for the
+/// N-2 panes whose chrome didn't change. Comparing against this skips those.
+applied_chrome: ?Chrome = null,
+
 // Mouse-driven text selection state. Populated by
 // ServerCursor.processCursorButton / processCursorMotion when the
 // cursor is over this pane's scene_buffer — teruwm-native panes
@@ -81,6 +105,13 @@ sync_flushed: bool = false,
 // highlight overlay via SoftwareRenderer.renderDirtyWithSelection.
 selection: Selection = .{},
 mouse: MouseState = .{},
+
+/// The pane's non-cell chrome: cursor style (solid/hollow) + focus border.
+/// Focus churn calls repaintBorderOnly on EVERY pane (updateFocusedTerminal /
+/// refresh loops), and each call used to commit full-buffer damage — a whole
+/// texture re-upload per pane per focus flip / workspace switch, even for the
+/// N-2 panes whose chrome didn't change. `applied_chrome` comparisons skip those.
+const Chrome = struct { focused: bool, has_border: bool, color: u32 };
 
 // ── Construction ───────────────────────────────────────────────
 
@@ -124,6 +155,9 @@ fn initWithSpawn(server: *Server, rows: u16, cols: u16, spawn_config: Pane.Spawn
     };
 
     var renderer = SoftwareRenderer.initWithScheme(allocator, pixel_w, pixel_h, cell_w, cell_h, server.color_scheme) catch {
+        // Pane.deinit only SIGHUPs the just-spawned shell; Reaper collects
+        // the corpse (there is no global waitpid(-1) — see Reaper.zig).
+        if (pane.childPid()) |shell_pid| Reaper.track(shell_pid);
         pane.deinit(allocator);
         if (wlr.miozu_scene_buffer_node(scene_buffer)) |node| wlr.wlr_scene_node_destroy(node);
         wlr.wlr_buffer_drop(pixel_buffer);
@@ -153,6 +187,7 @@ fn initWithSpawn(server: *Server, rows: u16, cols: u16, spawn_config: Pane.Spawn
     if (server.font_variant_bold_italic) |v| renderer.glyph_atlas_bold_italic = v.data;
 
     const tp = allocator.create(TerminalPane) catch {
+        if (pane.childPid()) |shell_pid| Reaper.track(shell_pid);
         pane.deinit(allocator);
         if (wlr.miozu_scene_buffer_node(scene_buffer)) |node| wlr.wlr_scene_node_destroy(node);
         wlr.wlr_buffer_drop(pixel_buffer);
@@ -343,6 +378,15 @@ pub fn createFloating(server: *Server, rows: u16, cols: u16, spawn_config: Pane.
 /// to prevent heavy output (e.g., Claude AI streaming) from starving mouse/keyboard.
 pub fn poll(self: *TerminalPane) bool {
     const max_reads_per_tick = 4; // 4 * 8KB = 32KB max per event loop tick
+    // Wall-clock safety valve: one dispatch must not park the event loop
+    // parsing a pathological burst (a huge run of escape sequences), which
+    // starves input/MCP/frame callbacks — the touchpad-freeze class of stall
+    // (commit 25333b3). 32KB of plain text parses in well under this budget;
+    // it only bites on adversarial input. Leftover bytes stay in the PTY (the
+    // master fd is level-triggered, so ptyReadable re-fires and handleFrame
+    // re-polls), so nothing is dropped and agents never block.
+    const parse_budget_ns: i128 = 8 * std.time.ns_per_ms;
+    const poll_start_ns = compat.monotonicNow();
     var any = false;
     for (0..max_reads_per_tick) |_| {
         const n = self.pane.readAndProcess(&self.read_buf) catch return any;
@@ -359,6 +403,7 @@ pub fn poll(self: *TerminalPane) bool {
         }
         self.server.perf.recordPtyRead(n);
         any = true;
+        if (compat.monotonicNow() - poll_start_ns >= parse_budget_ns) break;
     }
     // Recover an orphaned alt screen (SSH dropped / TUI killed without sending
     // ESC[?1049l) — otherwise the dead frame shows through under the shell.
@@ -403,6 +448,34 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     }
     self.sync_flushed = false;
 
+    // ── Render-rate cap (max_render_fps) ─────────────────────────
+    // A pane streaming PTY output (build log, `cat`, an AI agent) marks the
+    // grid dirty every few ms. Each paint presents FULL-buffer damage (see the
+    // dirty_y0 = -1 note below — the GLES path forces it unless partial_damage
+    // is enabled), so painting on every vsync means a whole-pane GPU re-upload
+    // at the monitor's refresh rate. Cap the paint rate for sustained output:
+    // if we painted more recently than the cap allows, DEFER — leave the grid
+    // dirty and return false so handleFrame reschedules a follow-up frame (the
+    // same path the DEC-2026 hold above uses). This cuts the upload COUNT
+    // without touching the damage shape, so it carries no GLES partial-upload
+    // risk. When output stops the grid goes clean and renderIfDirty returns at
+    // the top, so the throttle never sustains a wakeup loop on its own.
+    //
+    // Bypass the cap whenever responsiveness beats upload cost:
+    //   • recent keyboard input   → typing/echo must feel instant
+    //   • scrolled / scroll-anim  → smooth scroll needs every frame
+    //   • active selection drag   → the highlight must track the cursor
+    const now_ns = compat.monotonicNow();
+    if (self.server.wm_config.max_render_fps > 0 and self.last_render_ns != 0) {
+        const interactive = self.server.frames_since_pty_input < input_grace_frames or
+            self.pane.scroll_offset > 0 or self.pane.scroll_pixel > 0 or
+            self.scroll_anim_active or self.selection.active;
+        if (!interactive) {
+            const min_interval_ns: i128 = @divTrunc(@as(i128, std.time.ns_per_s), @as(i128, self.server.wm_config.max_render_fps));
+            if (now_ns - self.last_render_ns < min_interval_ns) return false;
+        }
+    }
+
     // Capture dirty range BEFORE renderDirty resets it. Convert
     // grid rows → pixel Y via cell_height. If the range is empty
     // (min > max sentinel, see Grid.clearDirty) fall back to full
@@ -422,9 +495,18 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     // never reproduced in the headless pixman tests, only on the real GPU.
     // renderDirtyWithSelection below still re-paints ONLY the dirty rows, so CPU
     // stays cheap; we just always present full damage so the GPU re-uploads the
-    // whole pane. (Revisit with buffer double-buffering if upload cost ever bites.)
-    const dirty_y0: c_int = -1;
-    const dirty_y1: c_int = -1;
+    // whole pane. The `partial_damage` config opt-in re-enables real dirty-row-
+    // band damage for real-GPU testing (the pixel buffer insets the grid by
+    // `padding`, so row R lives at y = padding + R*cell_height). Keep it OFF
+    // until visually confirmed on nvidia GLES — see WmConfig.partial_damage.
+    var dirty_y0: c_int = -1;
+    var dirty_y1: c_int = -1;
+    if (self.server.wm_config.partial_damage and grid.dirty_row_min <= grid.dirty_row_max) {
+        const ch: c_int = @intCast(self.renderer.cell_height);
+        const pad: c_int = @intCast(self.renderer.padding);
+        dirty_y0 = pad + @as(c_int, @intCast(grid.dirty_row_min)) * ch;
+        dirty_y1 = pad + (@as(c_int, @intCast(grid.dirty_row_max)) + 1) * ch;
+    }
 
     // Render the dirty range with selection overlay applied per-cell.
     // `terminalMouseMotion` / `terminalMousePress` in ServerCursor now
@@ -447,8 +529,9 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
     self.renderer.renderDirtyWithSelection(grid, sel_ptr, so, sbl);
     self.applyScrollOverlay();
 
-    const border: c_int = if (self.shouldDrawBorder()) blk: {
-        const border_color = self.borderColor();
+    const has_border = self.shouldDrawBorder();
+    const border_color: u32 = if (has_border) self.borderColor() else 0;
+    const border: c_int = if (has_border) blk: {
         self.drawBorder(border_color);
         break :blk 2; // drawBorder paints a 2-px perimeter.
     } else 0;
@@ -462,6 +545,8 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
         dirty_y1,
         border,
     );
+    self.last_render_ns = now_ns;
+    self.applied_chrome = .{ .focused = self.renderer.cursor_focused, .has_border = has_border, .color = border_color };
     return true;
 }
 
@@ -470,18 +555,60 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
 /// border colour changes but the cells haven't; a full `render()`
 /// here was re-SIMD-blitting thousands of cells for nothing.
 pub fn repaintBorderOnly(self: *TerminalPane) void {
+    const want: Chrome = .{
+        .focused = (self.server.focused_terminal == self),
+        .has_border = self.shouldDrawBorder(),
+        .color = 0,
+    };
+    const want_color: u32 = if (want.has_border) self.borderColor() else 0;
+    if (self.applied_chrome) |c| {
+        // Chrome already painted exactly like this — skip the repaint AND the
+        // full-buffer commit below. This is the common case for every pane
+        // except the two whose focus state flipped, and for every pane on a
+        // workspace switch.
+        if (c.focused == want.focused and c.has_border == want.has_border and c.color == want_color) return;
+        // Border removed without a geometry change (e.g. the pane became sole
+        // on its workspace): the 2-px perimeter lives in the padding margin,
+        // which only a row-0 full-range paint refills — the cursor-row repaint
+        // below would leave the stale border on screen. Do the one full paint;
+        // render() records applied_chrome itself.
+        if (c.has_border and !want.has_border) {
+            self.renderer.cursor_focused = want.focused;
+            self.render();
+            return;
+        }
+    }
     // Focus changed: re-apply the cursor's focus style (solid↔hollow) and repaint
     // its row, plus the border. This used to be border-only, which left an
     // unfocused pane still showing a SOLID 'active' cursor (the deferred follow-up
     // noted in renderIfDirty). The cursor row is one cell tall — far cheaper than
     // a full re-blit, so the original perf intent holds.
-    self.renderer.cursor_focused = (self.server.focused_terminal == self);
+    self.renderer.cursor_focused = want.focused;
     const grid = &self.pane.grid;
-    grid.markRowDirty(grid.cursor_row);
-    self.renderer.renderDirty(grid); // repaints the cursor row + cursor in the new style
+    // Repaint the SAME way renderIfDirty does — WITH the selection overlay and
+    // scrollback handling. The old renderDirty(grid) here painted the bare grid,
+    // which (a) stripped an active selection off the cursor row on every focus
+    // flip and (b) spliced the live grid row into a scrolled-back viewport.
+    // CRITICAL: when scrolled into scrollback, applyScrollOverlay shifts the
+    // WHOLE frame, so it needs a full unshifted repaint underneath (exactly why
+    // renderIfDirty markAllDirty's at line 489). A cursor-row-only paint would
+    // let applyScrollOverlay re-shift the already-shifted previous frame →
+    // viewport corruption that persists (renderIfDirty won't repair it — the grid
+    // is clean after clearDirty). Mirror renderIfDirty: full paint when scrolled,
+    // cheap cursor-row paint otherwise.
+    if (self.pane.scroll_offset > 0 or self.pane.scroll_pixel > 0) {
+        grid.markAllDirty();
+    } else {
+        grid.markRowDirty(grid.cursor_row);
+    }
+    const sel_ptr: ?*const Selection = if (self.selection.active) &self.selection else null;
+    const so: u32 = self.pane.scroll_offset;
+    const sbl: u32 = if (grid.scrollback) |sb| @intCast(sb.lineCount()) else 0;
+    self.renderer.cursor_visible = self.pane.vt.cursor_visible and self.pane.scroll_offset == 0;
+    self.renderer.renderDirtyWithSelection(grid, sel_ptr, so, sbl); // cursor row, new focus style
+    self.applyScrollOverlay(); // no-op unless scrolled back; keeps history intact
 
-    const has_border = self.shouldDrawBorder();
-    if (has_border) self.drawBorder(self.borderColor());
+    if (want.has_border) self.drawBorder(want_color);
     // Full-buffer damage: a partial (cursor-row) band half-renders on the GLES
     // path (same root cause as renderIfDirty). Only the cursor row was
     // re-rendered, so CPU stays cheap; full damage just re-uploads the pane.
@@ -494,6 +621,7 @@ pub fn repaintBorderOnly(self: *TerminalPane) void {
         -1,
         0,
     );
+    self.applied_chrome = .{ .focused = want.focused, .has_border = want.has_border, .color = want_color };
 }
 
 /// Write input to the terminal's PTY.
@@ -684,13 +812,18 @@ pub fn render(self: *TerminalPane) void {
     self.renderer.renderWithSelection(&self.pane.grid, sel_ptr, so, sbl);
     self.applyScrollOverlay();
 
-    if (self.shouldDrawBorder()) {
-        const border_color = self.borderColor();
-        self.drawBorder(border_color);
-    }
+    const has_border = self.shouldDrawBorder();
+    const border_color: u32 = if (has_border) self.borderColor() else 0;
+    if (has_border) self.drawBorder(border_color);
+    self.applied_chrome = .{ .focused = self.renderer.cursor_focused, .has_border = has_border, .color = border_color };
 
     // Signal wlroots that buffer content changed (full damage, NULL region)
     wlr.wlr_scene_buffer_set_buffer_with_damage(self.scene_buffer, self.pixel_buffer, null);
+    // NB: deliberately does NOT touch last_render_ns. render() is the on-demand
+    // full-paint path shared by scratchpad show/resize AND by screenshot / MCP
+    // repaints (ServerScreenshot, WmMcpTools); only the vsync path
+    // (renderIfDirty) owns the max_render_fps throttle clock, so an out-of-band
+    // screenshot of a busy pane can't defer its next legitimate vsync paint.
 }
 
 /// Smart borders: suppress the focus border when this pane is the only
@@ -744,9 +877,31 @@ pub fn borderColor(self: *const TerminalPane) u32 {
 }
 
 pub fn setVisible(self: *TerminalPane, visible: bool) void {
+    // recomputeVisibility hits every registered node on every call (switch,
+    // move, fullscreen exit, output changes) — only actual transitions may do
+    // work here, otherwise every visible pane got re-marked fully dirty and
+    // re-uploaded for unrelated events.
+    if (self.visible == visible) return;
     self.visible = visible;
     if (wlr.miozu_scene_buffer_node(self.scene_buffer)) |node| {
         wlr.wlr_scene_node_set_enabled(node, visible);
+    }
+    if (visible) {
+        // Becoming visible after being backgrounded (#mux-redraw): the on-GPU
+        // texture can only be STALE when partial uploads are in play — the
+        // GLES/nvidia per-row partial-upload truncation leaves fallback-atlas
+        // rows (box-drawing, ·, bullets, arrows, block-glyph logos) blank
+        // while plain ASCII survives. With partial_damage OFF (the default)
+        // every commit uploads the whole texture, so a clean grid means the
+        // cached texture already matches the framebuffer and showing it costs
+        // zero repaint — that's what makes a workspace switch to idle panes
+        // land on the very next frame.
+        if (self.server.wm_config.partial_damage) self.pane.grid.markAllDirty();
+        // A pane with pending output (grid dirty from PTY reads while hidden)
+        // must paint on the FIRST frame after the switch: clear the throttle
+        // clock so max_render_fps can't defer the reveal when the user
+        // bounces between workspaces faster than the cap interval.
+        self.last_render_ns = 0;
     }
 }
 
@@ -784,17 +939,26 @@ fn ptyReadable(_: c_int, mask: u32, data: ?*anyopaque) callconv(.c) c_int {
     }
     if (tp.poll()) {
         // Grid is dirty — tell wlroots we need a new frame so handleFrame
-        // renders the updated content on the next vsync.
+        // renders the updated content on the next vsync. But only if this
+        // pane is actually VISIBLE: handleFrame skips the paint for hidden
+        // panes (parked scratchpads, fleets on a background workspace —
+        // Output.zig `if (!tp.visible) continue;`), so waking the output for
+        // them just spins the loop for a commit that paints nothing. They're
+        // force-repainted (setVisible → markAllDirty) when shown, so no output
+        // is lost; the PTY is still drained above either way so agents never
+        // block.
         // Multi-output: schedule on every output, since a pane on
         // workspace K is only ever visible on the output showing K.
         // N ≤ 4 in practice, trivial cost. Fall back to primary_output
         // during the init window where outputs[] hasn't populated yet.
-        if (tp.server.outputs.items.len > 0) {
-            for (tp.server.outputs.items) |o| {
-                wlr.wlr_output_schedule_frame(o.wlr_output);
+        if (tp.visible) {
+            if (tp.server.outputs.items.len > 0) {
+                for (tp.server.outputs.items) |o| {
+                    wlr.wlr_output_schedule_frame(o.wlr_output);
+                }
+            } else if (tp.server.primary_output) |output| {
+                wlr.wlr_output_schedule_frame(output);
             }
-        } else if (tp.server.primary_output) |output| {
-            wlr.wlr_output_schedule_frame(output);
         }
     } else if (!tp.pane.isAlive()) {
         // Woke readable but the read produced nothing and the child is
@@ -822,6 +986,11 @@ pub fn deinit(self: *TerminalPane, allocator: std.mem.Allocator) void {
     // node no longer leaks until display-destroy. set_buffer(null) releases
     // the scene's ref to pixel_buffer; the deferred drain drops it.
     self.freeZoomAtlas();
+    // Pane.deinit → Pty.deinit sends SIGHUP to the shell but never waits
+    // on it; register the pid so the SIGCHLD sweep collects the corpse.
+    // A shell that already self-exited was reaped synchronously by
+    // Pty.isAlive (PTY-EOF path) — track() sees ECHILD and drops it.
+    if (self.pane.childPid()) |shell_pid| Reaper.track(shell_pid);
     self.pane.deinit(allocator);
     if (wlr.miozu_scene_buffer_node(self.scene_buffer)) |node| {
         wlr.wlr_scene_node_set_enabled(node, false);

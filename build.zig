@@ -218,6 +218,15 @@ pub fn build(b: *std.Build) void {
         // Link libteru (lib_mod already carries build_options — don't add again)
         miozu_mod.addImport("teru", lib_mod);
 
+        // klava — vendored keystroke-display engine (keys OSD). Canonical
+        // repo: github.com/nicholasglazer/klava; see vendor/klava/VENDORED.md.
+        const klava_mod = b.createModule(.{
+            .root_source_file = b.path("vendor/klava/klava.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        miozu_mod.addImport("klava", klava_mod);
+
         // wlroots and Wayland server deps
         miozu_mod.linkSystemLibrary("wlroots-0.18", .{});
         miozu_mod.linkSystemLibrary("wayland-server", .{});
@@ -267,6 +276,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         });
         wm_test_mod.addImport("teru", lib_mod);
+        wm_test_mod.addImport("klava", klava_mod);
         wm_test_mod.linkSystemLibrary("wlroots-0.18", .{});
         wm_test_mod.linkSystemLibrary("wayland-server", .{});
         wm_test_mod.linkSystemLibrary("xkbcommon", .{});

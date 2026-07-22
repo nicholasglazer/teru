@@ -365,7 +365,10 @@ fn handleCapture(self: *PaneBackend, body: []const u8, id: ?[]const u8, buf: []u
 
     var row: u64 = start_row;
     while (row < total_rows) : (row += 1) {
-        var line_end: usize = 0;
+        // line_end must start at this row's start (text_pos), not 0 — a row with
+        // no printable cells would otherwise rewind text_pos to 0 (line below)
+        // and silently discard every row captured so far.
+        var line_end: usize = text_pos;
         for (0..grid.cols) |col| {
             const cell = grid.cellAtConst(@intCast(row), @intCast(col));
             const cp = cell.char;

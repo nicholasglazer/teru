@@ -213,6 +213,7 @@ pub const Action = enum(u8) {
     screen_record,
     bar_toggle_top,
     bar_toggle_bottom,
+    keys_osd_toggle, // streaming keystroke overlay (teruwm KeysOsd/klava)
     // Media actions (compositor spawns the appropriate command)
     volume_up,
     volume_down,
@@ -312,6 +313,7 @@ pub const Action = enum(u8) {
             .{ "screen:record", Action.screen_record },
             .{ "bar:toggle_top", Action.bar_toggle_top },
             .{ "bar:toggle_bottom", Action.bar_toggle_bottom },
+            .{ "keys_osd:toggle", Action.keys_osd_toggle },
             .{ "volume:up", Action.volume_up },
             .{ "volume:down", Action.volume_down },
             .{ "volume:mute", Action.volume_mute },
@@ -662,7 +664,7 @@ pub const Keybinds = struct {
         _ = self.add(n, M, '.', .master_count_dec);
 
         // Workspace navigation (v0.4.15)
-        _ = self.add(n, M, 0xFF1B, .workspace_toggle_last); // Mod+Escape
+        _ = self.add(n, M, 0x1B, .workspace_toggle_last); // Mod+Escape (ASCII ESC — see phrasebook note)
         _ = self.add(n, M, '`', .workspace_toggle_last); // Mod+grave (xmonad familiar)
         _ = self.add(n, MC, '`', .workspace_next_nonempty); // Mod+Ctrl+grave
 
@@ -674,8 +676,8 @@ pub const Keybinds = struct {
         _ = self.add(n, MS, ' ', .layout_reset);
 
         // Focus also via Tab (XMonad style)
-        _ = self.add(n, M, 0xFF09, .pane_focus_next); // Mod+Tab
-        _ = self.add(n, MS, 0xFF09, .pane_focus_prev); // Mod+Shift+Tab
+        _ = self.add(n, M, 0x09, .pane_focus_next); // Mod+Tab (ASCII HT — see phrasebook note)
+        _ = self.add(n, MS, 0x09, .pane_focus_prev); // Mod+Shift+Tab
 
         // Pane management
         _ = self.add(n, M, 'c', .split_vertical);
@@ -969,6 +971,7 @@ test "Action.fromString" {
     try std.testing.expect(Action.fromString("zoom:in").? == .zoom_in);
     try std.testing.expect(Action.fromString("mode:prefix").? == .mode_prefix);
     try std.testing.expect(Action.fromString("resize:-2:0").? == .resize_shrink_w);
+    try std.testing.expect(Action.fromString("keys_osd:toggle").? == .keys_osd_toggle);
     try std.testing.expect(Action.fromString("bogus") == null);
 }
 

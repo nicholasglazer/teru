@@ -410,6 +410,13 @@ for line in f:
 | `teruwm_test_drag` | `from_x`, `from_y`, `to_x`, `to_y`, `super` (bool, default false), `button` (int, default 272=BTN_LEFT) | Synthesize a pointer drag. Used by the E2E test suite to verify Mod+drag-to-float, resize handles, etc. |
 | `teruwm_test_key` | `action` (string, e.g. `layout_cycle`) | Dispatch a `Keybinds.Action` by name through the compositor's action handler, bypassing xkb. For testing keybind actions from scripts. |
 | `teruwm_test_scroll` | `name`/`node_id`, `pixel_delta` (int, +ve scrolls up into history), `absolute` (bool, default false) | Set a pane's scrollback position in **pixels**, bypassing the `wlr_pointer_axis` handler (which MCP can't synthesize). Drives sub-pixel smooth scroll deterministically; pair with `teruwm_screenshot_pane` to assert the 1px-per-unit render shift. Returns `scroll_offset`/`scroll_pixel`/`cell_h`/`max_offset`. |
+| `teruwm_keys_osd_feed` | `keysym` (int, X11 keysym) OR `key` (single ASCII char); `super`/`ctrl`/`alt`/`shift` (bool); `released` (bool, default false = press) | Feed one synthetic key event into the keystroke-OSD engine — same code path as the live keyboard tap minus the xkb decode (headless has no input devices, mirroring `teruwm_test_scroll`'s reason to exist). OSD must be on first (`teruwm_keys_osd op=on`). Returns `{entries, shown}`. |
+
+### Keystroke OSD
+
+| Tool | Params | Description |
+|---|---|---|
+| `teruwm_keys_osd` | `op` (`on`/`off`/`toggle`/`status`) | Control the keystroke OSD — the streaming key-combo overlay (vendored [klava](https://github.com/nicholasglazer/klava) engine + `KeysOsd.zig` corner overlay). Equivalent to the `keys_osd:toggle` keybind action. Returns `{active, entries}`. |
 
 ## Writing a push-widget daemon
 

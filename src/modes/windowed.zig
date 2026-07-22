@@ -1605,13 +1605,19 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                 const cy = pr.y + vrow * atlas.cell_height;
                                 const max_x = @min(cx + atlas.cell_width, pr.x + pr.width);
                                 const max_y = @min(cy + atlas.cell_height, pr.y + pr.height);
-                                for (cy..max_y) |py| {
-                                    if (py >= cpu.height) break;
-                                    for (cx..max_x) |px| {
-                                        if (px >= cpu.width) break;
-                                        const idx = py * cpu.width + px;
-                                        if (idx < cpu.framebuffer.len) {
-                                            cpu.framebuffer[idx] ^= 0x00FFFFFF;
+                                // Guard: if the vi cursor lies outside the pane rect (e.g. after a
+                                // resize / font-zoom shrank the pane, or a wide cursor_col), cx/cy can
+                                // exceed max_x/max_y and `cx..max_x` / `cy..max_y` become reversed
+                                // ranges → panic. Skip the overlay for this frame instead.
+                                if (cx < max_x and cy < max_y) {
+                                    for (cy..max_y) |py| {
+                                        if (py >= cpu.height) break;
+                                        for (cx..max_x) |px| {
+                                            if (px >= cpu.width) break;
+                                            const idx = py * cpu.width + px;
+                                            if (idx < cpu.framebuffer.len) {
+                                                cpu.framebuffer[idx] ^= 0x00FFFFFF;
+                                            }
                                         }
                                     }
                                 }

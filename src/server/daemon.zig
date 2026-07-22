@@ -62,6 +62,12 @@ last_pane_check_ns: i128 = 0,
 /// (an un-polled PTY's output is never drained; its buffer fills and the agent
 /// blocks). Grows on demand, never shrinks; freed in deinit.
 poll_fds: []PollFd = &.{},
+/// PIDs of explicitly-closed panes (.close_pane / Multiplexer.closePane)
+/// awaiting reap. closePane SIGHUPs the shell and drops the pane from the
+/// list, so checkPaneAlive's per-live-pane waitpid never sees it — the zombie
+/// would leak in a long-lived daemon. Drained WNOHANG on each health sweep.
+closing_pids: [64]i32 = @splat(0),
+closing_count: usize = 0,
 
 // ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -490,7 +496,12 @@ fn handleCommand(self: *Daemon, payload: []const u8) void {
         },
         .close_pane => {
             if (self.mux.getActivePane()) |pane| {
+                // Capture the shell pid BEFORE closePane deinits + removes the
+                // pane, then queue it for reaping — otherwise its SIGHUP'd shell
+                // zombies (checkPaneAlive only waitpid's panes still in the list).
+                const pid = pane.childPid();
                 self.mux.closePane(pane.id);
+                if (pid) |p| self.queuePidReap(p);
             }
         },
         .cycle_layout => self.mux.cycleLayout(),
@@ -549,7 +560,14 @@ fn sendStateSync(self: *Daemon) void {
         pos += 1;
         buf[pos] = @intCast(@min(ws.node_ids.items.len, 255));
         pos += 1;
-        buf[pos] = @intCast(@min(@as(u32, @intFromFloat(ws.master_ratio * 100)), 100));
+        // Clamp the FLOAT before @intFromFloat: a corrupt/hand-edited .tsess can
+        // carry a negative, huge, or NaN master_ratio, and @intFromFloat on any
+        // of those panics — crashing the daemon on client attach. clamp→[0,1]*100
+        // is always a representable 0..100 that fits u8; NaN falls back to mid.
+        buf[pos] = if (std.math.isNan(ws.master_ratio))
+            50
+        else
+            @intFromFloat(std.math.clamp(ws.master_ratio, 0.0, 1.0) * 100.0);
         pos += 1;
         buf[pos] = 0; // reserved
         pos += 1;
@@ -606,7 +624,36 @@ fn resizeAllPanes(self: *Daemon, rows: u16, cols: u16) void {
 
 // ── Pane health check ─────────────────────────────────────────────
 
+/// Queue a closed pane's shell pid for reaping on the next health sweep.
+fn queuePidReap(self: *Daemon, pid: i32) void {
+    if (pid <= 0) return;
+    if (self.closing_count < self.closing_pids.len) {
+        self.closing_pids[self.closing_count] = pid;
+        self.closing_count += 1;
+    }
+    // Ring full (pathological — drained every ~5 s sweep, closes are user-paced):
+    // drop rather than block the event loop; the OS keeps the zombie until exit.
+}
+
+/// Reap queued closed-pane shells (WNOHANG). Removes reaped/already-gone pids.
+fn drainClosingPids(self: *Daemon) void {
+    var j: usize = 0;
+    while (j < self.closing_count) {
+        var status: c_int = 0;
+        const rc = std.c.waitpid(self.closing_pids[j], &status, 1); // WNOHANG
+        if (rc != 0) {
+            // rc > 0: reaped. rc < 0: ECHILD / already gone. Either way, remove
+            // by swapping the last entry into this slot (order doesn't matter).
+            self.closing_count -= 1;
+            self.closing_pids[j] = self.closing_pids[self.closing_count];
+            continue; // re-check the swapped-in pid at this index
+        }
+        j += 1; // rc == 0: not exited yet — keep for the next sweep
+    }
+}
+
 fn checkPaneAlive(self: *Daemon) void {
+    self.drainClosingPids();
     var i: usize = 0;
     while (i < self.mux.panes.items.len) {
         const pane = &self.mux.panes.items[i];
@@ -623,9 +670,13 @@ fn checkPaneAlive(self: *Daemon) void {
                 // pane — skipping it (as this path did) leaves a freed pane id
                 // live in the layout, so getActivePane()/node lists rot for any
                 // long-lived daemon whose shells exit.
+                // removeNodeFromTree BEFORE removeNode — see Multiplexer.closePane:
+                // removeNode nulls active_node if it equals dead_id, which would
+                // suppress the tree's active-node reselect and leave a split-tree
+                // workspace with no focused pane.
                 for (&self.mux.layout_engine.workspaces) |*ws| {
-                    ws.removeNode(dead_id);
                     ws.removeNodeFromTree(dead_id);
+                    ws.removeNode(dead_id);
                 }
                 pane.deinit(self.allocator);
                 _ = self.mux.panes.orderedRemove(i);

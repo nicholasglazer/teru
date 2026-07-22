@@ -127,11 +127,20 @@ pub fn addNode(self: *Workspace, allocator: Allocator, id: u64) !void {
 }
 
 pub fn removeNode(self: *Workspace, id: u64) void {
+    var removed_index: ?usize = null;
     for (self.node_ids.items, 0..) |existing, i| {
         if (existing == id) {
             _ = self.node_ids.orderedRemove(i);
+            removed_index = i;
             break;
         }
+    }
+    // orderedRemove shifts every later element down one slot. If the removed
+    // pane sat BEFORE the active one, decrement active_index so it keeps
+    // pointing at the same (still-focused) pane instead of silently jumping to
+    // its neighbour when a background pane exits.
+    if (removed_index) |ri| {
+        if (ri < self.active_index) self.active_index -= 1;
     }
     // Clamp active_index
     if (self.node_ids.items.len == 0) {
@@ -686,6 +695,33 @@ test "autoSelectLayout" {
     try t.expectEqual(Layout.grid, autoSelectLayout(9));
 }
 
+test "removeNode keeps active_index on the same pane when a pane before it exits" {
+    const a = t.allocator;
+    var ws = testWorkspace();
+    defer ws.deinit(a);
+
+    try ws.addNode(a, 10);
+    try ws.addNode(a, 20);
+    try ws.addNode(a, 30);
+    ws.active_index = 2; // focus pane 30
+
+    // A background pane BEFORE the active one exits. Focus must stay on 30.
+    ws.removeNode(10);
+    try t.expectEqual(@as(usize, 1), ws.active_index);
+    try t.expectEqual(@as(u64, 30), ws.node_ids.items[ws.active_index]);
+
+    // A pane AFTER the active one exits — active_index unchanged.
+    try ws.addNode(a, 40); // [20,30,40], active_index=1 -> pane 30
+    ws.removeNode(40);
+    try t.expectEqual(@as(usize, 1), ws.active_index);
+    try t.expectEqual(@as(u64, 30), ws.node_ids.items[ws.active_index]);
+
+    // Removing the active pane itself falls through to the next (clamp).
+    ws.removeNode(30); // [20], active_index clamps to 0
+    try t.expectEqual(@as(usize, 0), ws.active_index);
+    try t.expectEqual(@as(u64, 20), ws.node_ids.items[0]);
+}
+
 test "addNodeSplit — first pane creates single leaf" {
     const a = t.allocator;
     var ws = testWorkspace();
@@ -730,6 +766,28 @@ test "addNodeSplit — prevents duplicate pane IDs" {
     try ws.addNodeSplit(a, 1, .vertical);
     try ws.addNodeSplit(a, 1, .vertical); // duplicate, should be no-op
     try t.expectEqual(@as(u16, 1), ws.split_node_count);
+}
+
+test "closing the active tree node reselects a surviving leaf (order matters)" {
+    const a = t.allocator;
+    var ws = testWorkspace();
+    defer ws.deinit(a);
+
+    // Build a 3-pane split tree; pane 3 is active.
+    try ws.addNode(a, 1);
+    try ws.addNodeSplit(a, 1, .vertical);
+    try ws.addNode(a, 2);
+    try ws.addNodeSplit(a, 2, .vertical);
+    try ws.addNode(a, 3);
+    try ws.addNodeSplit(a, 3, .vertical);
+    try t.expectEqual(@as(?u64, 3), ws.active_node);
+
+    // Mirror Multiplexer.closePane's order: tree first, then flat. Closing the
+    // active node must leave a surviving leaf focused, not null.
+    ws.removeNodeFromTree(3);
+    ws.removeNode(3);
+    try t.expect(ws.active_node != null);
+    try t.expect(ws.active_node.? != 3);
 }
 
 test "addNodeSplit — three panes, mixed directions" {

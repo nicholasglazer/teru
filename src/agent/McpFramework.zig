@@ -222,6 +222,11 @@ pub fn Framework(comptime Impl: type) type {
                     .http => {
                         if (tools.findHttpBody(req_buf[0..total])) |body_start| {
                             if (tools.parseHttpContentLength(req_buf[0..total])) |cl| {
+                                // Guard against overflow from a hostile Content-Length:
+                                // body_start + cl can wrap usize and panic, aborting the
+                                // server. A length that can't fit our buffer can never be
+                                // satisfied — treat it as oversized/malformed and stop.
+                                if (cl > req_buf.len) break;
                                 if (total >= body_start + cl) break;
                             } else break; // malformed; stop reading
                         }

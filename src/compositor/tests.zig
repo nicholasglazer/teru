@@ -19,4 +19,8 @@ test {
     _ = @import("CompositorLeader.zig");
     _ = @import("LeaderPanel.zig");
     _ = @import("LeaderConfig.zig");
+    _ = @import("XdgView.zig");
+    _ = @import("KeysOsd.zig");
+    _ = @import("ServerInput.zig"); // foldKeysym / buildMods / dispatch tests
+    _ = @import("ServerCursor.zig"); // zoomStepsForDiscrete (v120) test
 }

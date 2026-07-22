@@ -11,6 +11,7 @@ const XwaylandView = @import("XwaylandView.zig");
 const Launcher = @import("Launcher.zig");
 const LeaderKey = teru.LeaderKey; // shared engine (config/LeaderKey.zig)
 const LeaderPanel = @import("LeaderPanel.zig");
+const KeysOsd = @import("KeysOsd.zig");
 const LeaderConfig = @import("LeaderConfig.zig");
 const Bar = @import("Bar.zig");
 const WmConfig = @import("WmConfig.zig");
@@ -246,6 +247,13 @@ fullscreen_node: ?u64 = null,
 fullscreen_prev_bar_top: bool = true,
 fullscreen_prev_bar_bottom: bool = false,
 
+// Right-Alt held state. xkb collapses Alt_L and Alt_R onto Mod1 (plain `us`),
+// so xkb_state can't tell them apart — we track Alt_R by KEYSYM across
+// press/release in ServerInput.handleKeyEvent. Lets keybind dispatch honour
+// `ralt+` binds and the Alt+RAlt+1..9 scratchpad chord. Keysym-based (not evdev
+// keycode) so a virtual keyboard (wtype) with its own generated keymap works.
+ralt_held: bool = false,
+
 // Mouse move/resize state for floating windows
 cursor_mode: CursorMode = .normal,
 grab_node_id: ?u64 = null,
@@ -308,6 +316,8 @@ mouse_path_timer_src: ?*wlr.wl_event_source = null,
 launcher: Launcher = .{},
 leader: LeaderKey = .{},
 leader_panel: ?LeaderPanel = null,
+/// Keystroke OSD (klava engine + corner overlay) — see KeysOsd.zig.
+keys_osd: KeysOsd = .{},
 /// Stable backing for a config-driven leader tree (`[leader]` sections).
 /// Empty until ServerConfig builds it; LeaderKey.root points into it.
 leader_tree: teru.LeaderDefs.Tree = .{},
@@ -408,6 +418,10 @@ terminal_repeat_len: u8 = 0,
 bar_tick_src: ?*wlr.wl_event_source = null,
 bar_tick_last_sig: u64 = 0,
 
+/// Keys-OSD expiry timer — one-shot, armed only while OSD entries are
+/// visible (KeysOsd.armTimer), released in releaseTimers like the rest.
+keys_osd_timer_src: ?*wlr.wl_event_source = null,
+
 // Frames since the last PTY write from input (key, paste, mouse). Used by
 // Output.handleFrame's edge-trigger fallback poll: poll every vsync for
 // the first few frames after input (catches shell echo stragglers), then
@@ -499,6 +513,15 @@ output_manager_test: wlr.wl_listener = makeListener(Listeners.handleOutputManage
 // wlrctl list our mapped xdg toplevels and can activate/close them.
 // One handle per XdgView, created in handleMap, destroyed in handleUnmap.
 foreign_toplevel_mgr: ?*wlr.wlr_foreign_toplevel_manager_v1 = null,
+
+// pointer-constraints-v1 + relative-pointer-v1 — cursor lock + raw
+// relative motion for games / nested gamescope mouselook. `active_constraint`
+// is the constraint whose surface currently has pointer focus (null = none).
+// See ServerCursor.handleNewPointerConstraint + Server.pointerLocked.
+pointer_constraints_mgr: ?*wlr.wlr_pointer_constraints_v1 = null,
+relative_pointer_mgr: ?*wlr.wlr_relative_pointer_manager_v1 = null,
+active_constraint: ?*wlr.wlr_pointer_constraint_v1 = null,
+new_pointer_constraint: wlr.wl_listener = makeListener(Cursor.handleNewPointerConstraint),
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -705,6 +728,12 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     // route into closeNode / focusView.
     const foreign_toplevel_mgr = wlr.wlr_foreign_toplevel_manager_v1_create(display);
 
+    // pointer-constraints-v1 + relative-pointer-v1 — games / nested
+    // gamescope lock the cursor and read raw relative motion (mouselook).
+    // No NVIDIA explicit-sync needed; works on the iGPU-composited path.
+    const pointer_constraints_mgr = wlr.wlr_pointer_constraints_v1_create(display);
+    const relative_pointer_mgr = wlr.wlr_relative_pointer_manager_v1_create(display);
+
     // XDG shell
     const xdg_shell = wlr.wlr_xdg_shell_create(display, 3) orelse
         return error.XdgShellCreateFailed;
@@ -759,6 +788,8 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
         .virtual_pointer_mgr = virtual_pointer_mgr,
         .output_manager = output_manager,
         .foreign_toplevel_mgr = foreign_toplevel_mgr,
+        .pointer_constraints_mgr = pointer_constraints_mgr,
+        .relative_pointer_mgr = relative_pointer_mgr,
         .cursor_shape_mgr = cursor_shape_mgr,
         .event_loop = event_loop,
     };
@@ -806,6 +837,11 @@ fn registerListeners(self: *Server) void {
     if (self.output_manager) |m| {
         wlr.wl_signal_add(wlr.miozu_output_manager_apply(m), &self.output_manager_apply);
         wlr.wl_signal_add(wlr.miozu_output_manager_test(m), &self.output_manager_test);
+    }
+    // pointer-constraints-v1 — new_constraint fires when a client (game /
+    // gamescope) locks or confines the pointer to one of its surfaces.
+    if (self.pointer_constraints_mgr) |m| {
+        wlr.wl_signal_add(wlr.miozu_pointer_constraints_new_constraint(m), &self.new_pointer_constraint);
     }
     wlr.wl_signal_add(wlr.miozu_cursor_motion(self.cursor), &self.cursor_motion);
     wlr.wl_signal_add(wlr.miozu_cursor_motion_absolute(self.cursor), &self.cursor_motion_absolute);
@@ -957,43 +993,61 @@ fn drainSceneDestroy(data: ?*anyopaque) callconv(.c) void {
     self.pending_scene_destroy.clearRetainingCapacity();
 }
 
+/// Remove the compositor's wl_event_loop TIMER sources (keybind + terminal
+/// repeat, bar tick, mouse_path). MUST run from main.zig's defer chain BEFORE
+/// wl_display_destroy frees the event loop: calling wl_event_source_remove
+/// after the loop is freed is a use-after-free — the exact hazard the
+/// clipboard-paste watcher (cancelClipboardPaste) and the deinit NOTE below
+/// already avoid. Removing them while the loop is still alive also guarantees
+/// no tick fires against torn-down state during destroy_clients. Disarm before
+/// remove so nothing is pending; idempotent via the null guards.
+/// (jiggle_timer_src is excluded — it self-removes in its own callback.)
+pub fn releaseTimers(self: *Server) void {
+    const srcs = [_]*?*wlr.wl_event_source{
+        &self.keybind_repeat_src,   &self.bar_tick_src,
+        &self.terminal_repeat_src,  &self.mouse_path_timer_src,
+        &self.keys_osd_timer_src,
+    };
+    for (srcs) |slot| {
+        if (slot.*) |src| {
+            _ = wlr.wl_event_source_timer_update(src, 0);
+            _ = wlr.wl_event_source_remove(src);
+            slot.* = null;
+        }
+    }
+}
+
+/// Remove the non-timer fd event sources (bar exec pipes, wm_mcp request/event
+/// sockets) that would otherwise be torn down in deinit. deinit runs AFTER
+/// wl_display_destroy freed the loop (main.zig defer order), so
+/// wl_event_source_remove there is a UAF on the freed loop — the exact
+/// event-source shutdown bug class the surrounding comments warn about. Called
+/// from a main.zig defer BEFORE wl_display_destroy, exactly like releaseTimers /
+/// cancelClipboardPaste. The heap frees for these stay in deinit; this only
+/// unhooks them from the still-alive loop.
+pub fn releaseEventSources(self: *Server) void {
+    if (self.bar) |b| b.deinitExecs();
+    if (self.wm_mcp) |mcp| mcp.releaseEventSources();
+}
+
 pub fn deinit(self: *Server) void {
     // Flag before teardown so any destroy-signal handler that fires
     // during wl_display_destroy (idle-inhibit trackers, etc.) skips
     // the server deref path.
     self.shutting_down = true;
 
-    // Tear down timers first so a late tick can't fire against
-    // torn-down Server state.
-    if (self.keybind_repeat_src) |src| {
-        _ = wlr.wl_event_source_remove(src);
-        self.keybind_repeat_src = null;
-    }
-    if (self.bar_tick_src) |src| {
-        _ = wlr.wl_event_source_remove(src);
-        self.bar_tick_src = null;
-    }
-    // terminal_repeat_src is created lazily by armTerminalRepeat and is
-    // only *disarmed* (not removed) by cancelTerminalRepeat, so it can
-    // still be live here. terminalRepeatTick does not check shutting_down —
-    // a tick firing during wl_display_destroy would deref a freed pane.
-    if (self.terminal_repeat_src) |src| {
-        _ = wlr.wl_event_source_remove(src);
-        self.terminal_repeat_src = null;
-    }
-    // mouse_path_timer_src: same lifecycle — lazily created by ServerMouse,
-    // only disarmed (not removed) when a path completes, so it can be live
-    // here. mousePathTick would deref cursor/seat state mid-teardown. A
-    // button still held by an in-flight path is intentionally NOT released —
-    // the seat + clients are being destroyed anyway (and execRestart drops
-    // seat state before exec), so there's nothing left to receive the up.
-    if (self.mouse_path_timer_src) |src| {
-        _ = wlr.wl_event_source_remove(src);
-        self.mouse_path_timer_src = null;
-    }
+    // Timer event sources are NOT removed here. deinit runs AFTER
+    // wl_display_destroy has freed the event loop (main.zig defer order — see
+    // the clipboard NOTE below), so wl_event_source_remove at this point is a
+    // UAF on the freed loop. They're released from main.zig's `releaseTimers`
+    // defer, before display destroy (same as cancelClipboardPaste). This
+    // matches jiggle_timer_src, which is likewise never touched in deinit.
 
-    // Drain in-flight bar exec widgets — removes their pipe event
-    // sources so execReadable can't fire against a torn-down loop.
+    // Drain in-flight bar exec widgets. The pipe event-source removal already
+    // happened in releaseEventSources (before wl_display_destroy) — this call is
+    // now an idempotent no-op for the sources (pe.event_source is null) and just
+    // closes any leftover pipe fd. Removing sources HERE would be a UAF on the
+    // freed loop, same reason the timers/clipboard are released pre-destroy.
     if (self.bar) |b| b.deinitExecs();
     // NOTE: the clipboard paste watcher is NOT drained here — deinit runs
     // after wl_display_destroy (main.zig defer order), so removing event
@@ -1016,6 +1070,9 @@ pub fn deinit(self: *Server) void {
     // risk a drop after display-destroy.
     self.pending_scene_destroy.deinit(self.zig_allocator);
 
+    // wm_mcp's socket event sources were already removed in releaseEventSources
+    // (before wl_display_destroy); deinit here only closes fds, unlinks the
+    // socket files, and frees the heap allocation — all loop-independent.
     if (self.wm_mcp) |mcp| mcp.deinit(self.zig_allocator);
 
     // Remove every Server-owned wl_listener. wlroots allocates each
@@ -1148,6 +1205,19 @@ pub fn pushOutputManagerState(self: *Server) void {
 /// it's a single wlr call, no module needed).
 pub inline fn notifyActivity(self: *Server) void {
     if (self.idle_notifier) |n| wlr.wlr_idle_notifier_v1_notify_activity(n, self.seat);
+}
+
+/// True while a LOCKED pointer constraint is active AND its surface still
+/// holds keyboard focus. ServerCursor freezes the hardware cursor (mouselook)
+/// only while this holds — gating on keyboard focus guarantees the freeze
+/// releases the instant focus leaves the locking window (Mod+J / alt-tab), so
+/// a misbehaving client can never soft-lock the pointer.
+pub fn pointerLocked(self: *Server) bool {
+    const c = self.active_constraint orelse return false;
+    if (wlr.miozu_pointer_constraint_type(c) != 0) return false; // 0 = LOCKED
+    const cs = wlr.miozu_pointer_constraint_surface(c) orelse return false;
+    const kf = wlr.miozu_seat_keyboard_focused_surface(self.seat) orelse return false;
+    return kf == cs;
 }
 pub fn setupKeyboard(self: *Server, device: *wlr.wlr_input_device) void {
     Input.setupKeyboard(self, device);
@@ -1367,6 +1437,15 @@ pub fn spawnTerminal(self: *Server, ws: u8) void {
         }
     }
 
+    // A new tiled terminal joining a workspace that's showing a fullscreen
+    // window drops that fullscreen first — same reconciliation the XDG/xwayland
+    // map paths do. Without it, the arrange below re-tiles the fullscreen window
+    // to a tile while fullscreen_node stays set + the bars stay hidden.
+    // Terminals carry no app_id, so this always reads as a "different app" and
+    // drops any pre-existing fullscreen — spawning a terminal onto a fullscreen
+    // workspace is an explicit "give me a shell here".
+    self.dropFullscreenForNewWindowOn(ws, "");
+
     // NOW arrange — all panes including the new one are findable
     self.arrangeworkspace(ws);
 
@@ -1493,12 +1572,20 @@ pub fn renderLeaderHint(self: *Server) void {
     }
 }
 
+// ── Keystroke OSD (KeysOsd.zig) ────────────────────────────────
+pub const toggleKeysOsd = KeysOsd.toggle;
+pub const setKeysOsdActive = KeysOsd.setActive;
+pub const keysOsdFeed = KeysOsd.feed;
+
 // ── Window & workspace lifecycle (ServerWindow.zig) ────────────
 // Thin re-exports; node lookup, close paths, float/fullscreen,
 // workspace placement, visibility recompute, multi-output focus.
 pub const setWorkspaceVisibility = Window.setWorkspaceVisibility;
 pub const toggleFloat = Window.toggleFloat;
 pub const toggleFullscreen = Window.toggleFullscreen;
+pub const enterFullscreen = Window.enterFullscreen;
+pub const exitFullscreen = Window.exitFullscreen;
+pub const dropFullscreenForNewWindowOn = Window.dropFullscreenForNewWindowOn;
 pub const nodeAtPoint = Window.nodeAtPoint;
 pub const activeOutputDims = Window.activeOutputDims;
 pub const terminalPaneById = Window.terminalPaneById;

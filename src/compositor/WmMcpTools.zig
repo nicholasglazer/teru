@@ -17,6 +17,8 @@ const Server = @import("Server.zig");
 const TerminalPane = @import("TerminalPane.zig");
 const ServerFont = @import("ServerFont.zig");
 const NodeRegistry = @import("Node.zig");
+const KeysOsd = @import("KeysOsd.zig");
+const klava = @import("klava");
 const tools = teru.McpTools;
 const version = teru.build_options.version;
 
@@ -108,6 +110,11 @@ pub fn thunkMoveToWorkspace(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[
 pub fn thunkListWorkspaces(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     _ = p;
     return toolListWorkspaces(self, buf, id);
+}
+
+pub fn thunkGetFocus(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    _ = p;
+    return toolGetFocus(self, buf, id);
 }
 
 pub fn thunkSwitchWorkspace(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -223,6 +230,36 @@ pub fn thunkNotify(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8
 pub fn thunkReloadConfig(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     _ = p;
     return toolReloadConfig(self, buf, id);
+}
+
+pub fn thunkKeysOsd(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const op = extractNestedJsonString(p, "op") orelse
+        return jsonRpcError(buf, id, -32602, "Missing op");
+    return toolKeysOsd(self, op, buf, id);
+}
+
+pub fn thunkKeysOsdFeed(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    var keysym: u32 = 0;
+    if (extractNestedJsonInt(p, "keysym")) |ks| {
+        if (ks <= 0 or ks > 0x0110ffff) return jsonRpcError(buf, id, -32602, "keysym out of range");
+        keysym = @intCast(ks);
+    } else if (extractNestedJsonString(p, "key")) |key| {
+        if (key.len != 1 or key[0] < 0x20 or key[0] > 0x7e)
+            return jsonRpcError(buf, id, -32602, "key must be one printable ASCII char");
+        keysym = key[0];
+    } else {
+        return jsonRpcError(buf, id, -32602, "Need keysym or key");
+    }
+    const mods = klava.Mods{
+        .super = extractNestedJsonBool(p, "super"),
+        .ctrl = extractNestedJsonBool(p, "ctrl"),
+        .alt = extractNestedJsonBool(p, "alt"),
+        .shift = extractNestedJsonBool(p, "shift"),
+    };
+    // extractNestedJsonBool defaults missing keys to false, so the wire flag
+    // is `released` (rare case) rather than `pressed` (the overwhelming one).
+    const pressed = !extractNestedJsonBool(p, "released");
+    return toolKeysOsdFeed(self, keysym, mods, pressed, buf, id);
 }
 
 pub fn thunkScreenshotPane(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -439,7 +476,9 @@ fn resolveNode(self: *WmMcpServer, params_body: []const u8) ?u16 {
     // would match the tool's own "name":"teruwm_set_name" field and resolve to
     // a bogus node (this broke set_name/screenshot_pane by node_id).
     if (extractNestedJsonInt(params_body, "node_id")) |nid| {
-        return self.server.nodes.findById(@intCast(nid));
+        // satNode saturates negatives to 0 (no-match sentinel). A raw @intCast
+        // of a hostile/negative node_id would abort the compositor in ReleaseSafe.
+        return self.server.nodes.findById(satNode(nid));
     }
     if (extractNestedJsonString(params_body, "name")) |name| {
         return self.server.nodes.findByName(name, null);
@@ -656,6 +695,27 @@ fn toolGetConfig(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
     return okText(buf, id, "{{\\\"gap\\\":{d},\\\"border_width\\\":{d},\\\"bg_color\\\":\\\"0x{x:0>8}\\\",\\\"output_width\\\":{d},\\\"output_height\\\":{d},\\\"cell_width\\\":{d},\\\"cell_height\\\":{d},\\\"bar_height\\\":{d},\\\"terminal_count\\\":{d},\\\"active_workspace\\\":{d},\\\"top_bar\\\":{any},\\\"bottom_bar\\\":{any}}}", .{cfg.gap, cfg.border_width, cfg.bg_color, out_w, out_h, cell_w, cell_h, bar_h, srv.terminal_count, srv.layout_engine.active_workspace, top_enabled, bot_enabled});
 }
 
+/// Report the compositor's keyboard-focus state. Exposes the focused_* fields
+/// and — critically for tests — `xor_ok`, which encodes the documented
+/// invariant that AT MOST ONE of focused_terminal / focused_view /
+/// focused_xwayland is set (Server.zig:168). A false xor_ok means focus is
+/// double-owned (e.g. the spawnTerminal bug that nulls focused_view but not
+/// focused_xwayland). node ids are -1 when absent.
+fn toolGetFocus(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
+    const srv = self.server;
+    const has_term = srv.focused_terminal != null;
+    const has_view = srv.focused_view != null;
+    const has_xwl = srv.focused_xwayland != null;
+    const focus_count: u8 = @as(u8, @intFromBool(has_term)) + @intFromBool(has_view) + @intFromBool(has_xwl);
+    const kind: []const u8 = if (has_view) "xdg" else if (has_xwl) "xwayland" else if (has_term) "terminal" else "none";
+    const term_node: i64 = if (srv.focused_terminal) |tp| @intCast(tp.node_id) else -1;
+    const view_node: i64 = if (srv.focused_view) |v| @intCast(v.node_id) else -1;
+    const grab: i64 = if (srv.grab_node_id) |g| @intCast(g) else -1;
+    const aws = srv.layout_engine.active_workspace;
+    const active_node: i64 = if (srv.layout_engine.workspaces[aws].getActiveNodeId()) |n| @intCast(n) else -1;
+    return okText(buf, id, "{{\\\"kind\\\":\\\"{s}\\\",\\\"focus_count\\\":{d},\\\"xor_ok\\\":{any},\\\"terminal_node\\\":{d},\\\"view_node\\\":{d},\\\"xwayland\\\":{any},\\\"grab_node\\\":{d},\\\"active_workspace\\\":{d},\\\"active_node\\\":{d}}}", .{ kind, focus_count, focus_count <= 1, term_node, view_node, has_xwl, grab, aws, active_node });
+}
+
 fn toolSetConfig(self: *WmMcpServer, key: []const u8, value: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const cfg = &self.server.wm_config;
 
@@ -722,6 +782,29 @@ fn toolNotify(self: *WmMcpServer, message: []const u8, buf: []u8, id: ?[]const u
 fn toolReloadConfig(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
     self.server.reloadWmConfig();
     return okText(buf, id, "config reloaded (gap={d}, border={d})", .{self.server.wm_config.gap, self.server.wm_config.border_width});
+}
+
+fn toolKeysOsd(self: *WmMcpServer, op: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const server = self.server;
+    if (std.mem.eql(u8, op, "on")) {
+        KeysOsd.setActive(server, true);
+    } else if (std.mem.eql(u8, op, "off")) {
+        KeysOsd.setActive(server, false);
+    } else if (std.mem.eql(u8, op, "toggle")) {
+        KeysOsd.toggle(server);
+    } else if (!std.mem.eql(u8, op, "status")) {
+        return jsonRpcError(buf, id, -32602, "op must be on|off|toggle|status");
+    }
+    server.scheduleRender();
+    return okText(buf, id, "{{\\\"active\\\":{},\\\"entries\\\":{d}}}", .{ server.keys_osd.active, server.keys_osd.engine.count() });
+}
+
+fn toolKeysOsdFeed(self: *WmMcpServer, keysym: u32, mods: klava.Mods, pressed: bool, buf: []u8, id: ?[]const u8) []const u8 {
+    const server = self.server;
+    if (!server.keys_osd.active)
+        return jsonRpcError(buf, id, -32602, "keys OSD is off — teruwm_keys_osd op=on first");
+    KeysOsd.feed(server, keysym, mods, pressed);
+    return okText(buf, id, "{{\\\"entries\\\":{d},\\\"shown\\\":{}}}", .{ server.keys_osd.engine.count(), server.keys_osd.isShown() });
 }
 
 fn toolScreenshotPane(self: *WmMcpServer, params_body: []const u8, path_opt: ?[]const u8, buf: []u8, id: ?[]const u8) []const u8 {

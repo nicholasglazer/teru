@@ -517,7 +517,10 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
     }
 
     if (std.mem.eql(u8, key, "font_size")) {
-        self.font_size = std.fmt.parseInt(u16, value, 10) catch return;
+        // Clamp to the renderer minimum (FontAtlas.min_font_size == 6). A
+        // config `font_size = 0` would otherwise reach FontAtlas as a 0 cell
+        // size and divide-by-zero at startup before the user can fix it.
+        self.font_size = @max(@as(u16, 6), std.fmt.parseInt(u16, value, 10) catch return);
     } else if (std.mem.eql(u8, key, "font_path") or std.mem.eql(u8, key, "font")) {
         // Accepts a full path OR a bare font name/filename (resolved against
         // the system font dirs by FontAtlas). `font` is the friendlier alias.
@@ -546,6 +549,10 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         self.attention_color = parseHexColor(value) orelse return;
     } else if (std.mem.eql(u8, key, "scrollback_lines")) {
         self.scrollback_lines = @min(std.fmt.parseInt(u32, value, 10) catch return, 1_000_000);
+    } else if (std.mem.eql(u8, key, "tab_width")) {
+        // Documented in CONFIGURATION.md but was never parsed (silently stuck at
+        // the default 8). Clamp to a sane 1..16.
+        self.tab_width = @max(1, @min(std.fmt.parseInt(u8, value, 10) catch return, 16));
     } else if (std.mem.eql(u8, key, "prefix_key")) {
         self.prefix_key = parsePrefixKey(value) orelse return;
     } else if (std.mem.eql(u8, key, "initial_width")) {
@@ -830,6 +837,34 @@ test "parse key=value pairs" {
     try std.testing.expectEqual(@as(u32, 50000), config.scrollback_lines);
     try std.testing.expectEqual(@as(u32, 1200), config.initial_width);
     try std.testing.expectEqual(@as(u32, 800), config.initial_height);
+}
+
+test "tab_width is parsed and clamped" {
+    const allocator = std.testing.allocator;
+    {
+        var config = Config{ .allocator = allocator };
+        config.parse(allocator, "tab_width = 4");
+        defer config.deinit();
+        try std.testing.expectEqual(@as(u8, 4), config.tab_width);
+    }
+    {
+        var config = Config{ .allocator = allocator };
+        config.parse(allocator, "tab_width = 0"); // clamps up to 1
+        defer config.deinit();
+        try std.testing.expectEqual(@as(u8, 1), config.tab_width);
+    }
+    {
+        var config = Config{ .allocator = allocator };
+        config.parse(allocator, "tab_width = 99"); // clamps down to 16
+        defer config.deinit();
+        try std.testing.expectEqual(@as(u8, 16), config.tab_width);
+    }
+    {
+        var config = Config{ .allocator = allocator }; // absent → default 8
+        config.parse(allocator, "font_size = 14");
+        defer config.deinit();
+        try std.testing.expectEqual(@as(u8, 8), config.tab_width);
+    }
 }
 
 test "parse handles comments and blank lines" {

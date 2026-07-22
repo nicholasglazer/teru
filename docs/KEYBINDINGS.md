@@ -456,10 +456,19 @@ bindings use this syntax:
 super+e     = spawn:thunar
 super+p     = launcher_toggle
 super+grave = mode_scroll
+super+f9    = keys_osd:toggle   # streaming keystroke overlay (unbound by default)
 ```
 
 Action names match the identifiers in `Keybinds.Action` (e.g. `pane_close`,
 `workspace_3`, `bar_toggle_top`).
+
+> **Keystroke OSD** (*unreleased*): `keys_osd:toggle` flips a corner overlay
+> that shows pressed key combos to a screencast/streaming audience —
+> privacy-filtered (Ctrl/Alt/Super chords only by default, plain typing never
+> shown), repeat-collapsed (`Ctrl+V ×3`), fading after `keys_osd_linger_ms`.
+> No default chord; bind one as above or drive it over MCP
+> (`teruwm_keys_osd`). Config knobs in
+> [CONFIGURATION.md](CONFIGURATION.md#global-keys).
 
 ## MCP control (teruwm)
 

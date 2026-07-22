@@ -275,10 +275,16 @@ pub fn closePane(self: *Multiplexer, pane_id: u64) void {
         return;
     }
 
-    // Remove from all workspaces (flat list and tree)
+    // Remove from all workspaces (flat list and tree). removeNodeFromTree FIRST:
+    // when the closed pane is the tree's active_node it reselects active_node to
+    // a surviving leaf. removeNode nulls active_node whenever it still equals the
+    // closed id, so running it first wipes the value removeNodeFromTree needs to
+    // detect the reselect — leaving a split-tree workspace with NO active pane
+    // (keystrokes silently dropped). Order is a no-op for flat workspaces
+    // (removeNodeFromTree early-returns when split_root == null).
     for (&self.layout_engine.workspaces) |*ws| {
-        ws.removeNode(pane_id);
         ws.removeNodeFromTree(pane_id);
+        ws.removeNode(pane_id);
     }
 
     // Find and remove from panes list
@@ -486,8 +492,15 @@ pub fn resizePanePtys(self: *Multiplexer, screen_width: u32, screen_height: u32,
             const content = if (pane_ids.len > 1) Compositor.insetRect(rect, 1) else rect;
             const new_cols: u16 = @intCast(@max(1, content.width / @as(u16, @intCast(cell_width))));
             const new_rows: u16 = @intCast(@max(1, content.height / @as(u16, @intCast(cell_height))));
-            pane.ptyResize(new_rows, new_cols);
+            // Only SIGWINCH the child + reflow the grid when the computed size
+            // actually CHANGED. resizePanePtys runs on every panes_changed —
+            // including a pure mux switch (alt+N) where geometry is identical.
+            // An unconditional ptyResize there fires a spurious SIGWINCH; the
+            // TUI reflows, and the reflow drops non-ASCII / fallback-atlas
+            // glyphs (box-drawing, ·, bullets, arrows, block logos) on
+            // switch-back while plain ASCII survives. (#mux-redraw, std teru)
             if (new_rows != pane.grid.rows or new_cols != pane.grid.cols) {
+                pane.ptyResize(new_rows, new_cols);
                 pane.grid.resize(self.allocator, new_rows, new_cols) catch |e| std.log.warn("pane grid resize failed: {s}", .{@errorName(e)});
                 pane.linkVt(self.allocator);
             }

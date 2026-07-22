@@ -26,6 +26,11 @@ show_window_menu: wlr.wl_listener = makeListener(handleShowWindowMenu),
 new_popup: wlr.wl_listener = makeListener(handleNewPopup),
 request_move: wlr.wl_listener = makeListener(handleRequestMove),
 request_resize: wlr.wl_listener = makeListener(handleRequestResize),
+// Client asked to go (un)fullscreen via xdg_toplevel.set_fullscreen —
+// gamescope `-f`, mpv, video players. teruwm honours it by expanding the
+// window to the whole output (see handleRequestFullscreen). Previously
+// ignored, which is why nested gamescope got stuck at its tile size.
+request_fullscreen: wlr.wl_listener = makeListener(handleRequestFullscreen),
 
 // wlr_foreign_toplevel_management_v1 handle. Created on map, destroyed
 // on unmap; null in between. Taskbar clients (waybar, nwg-panel) see
@@ -71,6 +76,7 @@ pub fn create(server: *Server, toplevel: *wlr.wlr_xdg_toplevel) ?*XdgView {
         .new_popup = makeListener(handleNewPopup),
         .request_move = makeListener(handleRequestMove),
         .request_resize = makeListener(handleRequestResize),
+        .request_fullscreen = makeListener(handleRequestFullscreen),
     };
 
     // Register listeners on the surface and toplevel events
@@ -83,6 +89,7 @@ pub fn create(server: *Server, toplevel: *wlr.wlr_xdg_toplevel) ?*XdgView {
     wlr.wl_signal_add(wlr.miozu_xdg_surface_new_popup(xdg_surface), &view.new_popup);
     wlr.wl_signal_add(wlr.miozu_xdg_toplevel_request_move(toplevel), &view.request_move);
     wlr.wl_signal_add(wlr.miozu_xdg_toplevel_request_resize(toplevel), &view.request_resize);
+    wlr.wl_signal_add(wlr.miozu_xdg_toplevel_request_fullscreen(toplevel), &view.request_fullscreen);
 
     return view;
 }
@@ -118,15 +125,30 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         }
     }
 
-    // Transient toplevels (a dialog/modal the client anchored to a parent —
-    // delete confirmation, file chooser, properties) FLOAT centered instead of
-    // joining the tiling layout, which would split the screen "like a new
-    // window". Detected via xdg_toplevel.parent. Everything else tiles.
-    const is_dialog = wlr.miozu_xdg_toplevel_parent(view.toplevel) != null;
-    if (is_dialog and slot != null) {
+    // Placement: a toplevel anchored to a parent (dialog / modal / file-chooser)
+    // FLOATS centered; a toplevel with NO app_id floats TOP-RIGHT like a
+    // notification; everything else tiles. Browsers render web-notification
+    // popups as bare toplevels (no app_id, no title, no parent) when no
+    // notification daemon is running — tiling those gave them a whole tile (the
+    // "facebook notification took half my screen" report). See floatPlacement.
+    const has_parent = wlr.miozu_xdg_toplevel_parent(view.toplevel) != null;
+    const aid_slice: []const u8 = if (app_id) |aid| std.mem.sliceTo(aid, 0) else "";
+    const placement = floatPlacement(has_parent, aid_slice);
+    if (placement != .tiled and slot != null) {
         server.nodes.floating[slot.?] = true;
-        centerFloat(server, slot.?, view.toplevel);
+        switch (placement) {
+            .center => centerFloat(server, slot.?, view.toplevel),
+            .top_right => cornerFloatTopRight(server, slot.?, view.toplevel),
+            .tiled => unreachable,
+        }
     } else {
+        // A real tiled window joining a workspace that's showing a fullscreen
+        // window must drop that fullscreen first — otherwise the arrangeworkspace
+        // below (no fullscreen awareness) re-tiles the fullscreen window to a tile
+        // while fullscreen_node stays set + the bars stay hidden (the broken
+        // half-fullscreen layout). Floats above sit OVER fullscreen, so this is
+        // gated on the tiled branch.
+        server.dropFullscreenForNewWindowOn(ws, aid_slice);
         // Add to tiling engine workspace
         server.layout_engine.workspaces[ws].addNode(server.zig_allocator, view.node_id) catch return;
     }
@@ -161,8 +183,69 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         }
     }
 
-    // Focus the new surface
-    server.focusView(view);
+    // Focus the new surface — with two exceptions:
+    //   * a notification popup (top_right) must appear without stealing keyboard
+    //     focus from whatever you're using;
+    //   * a surface from the SAME client as a currently-fullscreen window. Video
+    //     players (VLC) spawn short-lived transient toplevels while fullscreen;
+    //     focusing them yanks keyboard focus + activation off the fullscreen
+    //     window, which can make the player revert fullscreen (part of the
+    //     observed on/off toggling). Keep focus pinned to the fullscreen window.
+    const same_app_as_fullscreen = blk: {
+        const fs = server.fullscreen_node orelse break :blk false;
+        const fslot = server.nodes.findById(fs) orelse break :blk false;
+        break :blk aid_slice.len > 0 and std.mem.eql(u8, aid_slice, server.nodes.getAppId(fslot));
+    };
+    if (placement != .top_right and !same_app_as_fullscreen) server.focusView(view);
+
+    // Honor a fullscreen request the client made BEFORE its surface mapped.
+    // gamescope `-f`, mpv `--fs`, and video players call xdg_toplevel.
+    // set_fullscreen on their initial commit — when no node exists yet, so the
+    // request_fullscreen handler can't act (findById misses). Re-check the
+    // latched requested-state now that the node is registered + tiled, and
+    // expand it to the whole output. This is what makes a nested gamescope
+    // come up fullscreen instead of squeezed into a tile.
+    //
+    // EXCEPT browsers: Chromium/Vivaldi/Firefox occasionally latch a fullscreen
+    // hint at startup (restored session, a video page, kiosk-ish profiles), and
+    // a general-purpose browser coming up teruwm-fullscreen (bars hidden, every
+    // other window hidden) is surprising — the user reported "the browser opens
+    // fullscreen for no reason". Browsers still fullscreen at RUNTIME via
+    // handleRequestFullscreen when the user fullscreens a video; only this
+    // come-up-fullscreen-on-map shortcut is suppressed for them.
+    const aid_for_fs: []const u8 = if (app_id) |aid| std.mem.sliceTo(aid, 0) else "";
+    if (wlr.miozu_xdg_toplevel_requested_fullscreen(view.toplevel) and !appIdSkipsMapFullscreen(aid_for_fs)) {
+        server.enterFullscreen(view.node_id);
+    }
+}
+
+/// Returns true for app IDs whose pre-map fullscreen request should be IGNORED
+/// (they still honor a RUNTIME set_fullscreen via handleRequestFullscreen). The
+/// case is browsers, which are general-purpose windows the user expects to come
+/// up tiled — unlike a media player / game (mpv, gamescope, …) for which
+/// coming up fullscreen IS the intent. Case-insensitive substring match so the
+/// many app_id spellings ("vivaldi-stable", "Chromium", "google-chrome-stable",
+/// "firefox-esr", "brave-browser") all resolve.
+fn appIdSkipsMapFullscreen(app_id: []const u8) bool {
+    if (app_id.len == 0) return false;
+    const tokens = [_][]const u8{
+        "vivaldi", "chromium", "chrome", "firefox", "brave",
+        "librewolf", "waterfox", "mullvad-browser", "edge", "opera", "zen",
+    };
+    for (tokens) |t| {
+        if (asciiContainsIgnoreCase(app_id, t)) return true;
+    }
+    return false;
+}
+
+/// Case-insensitive substring test (small needles, off the hot path).
+fn asciiContainsIgnoreCase(hay: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or needle.len > hay.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= hay.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(hay[i .. i + needle.len], needle)) return true;
+    }
+    return false;
 }
 
 /// Center a floating node on the active output, sized to the client's own
@@ -182,6 +265,53 @@ fn centerFloat(server: *Server, slot: u16, toplevel: *wlr.wlr_xdg_toplevel) void
     const x = @max(0, @divTrunc(@as(i32, @intCast(dims.w)) - w, 2));
     const y = @max(0, @divTrunc(@as(i32, @intCast(dims.h)) - h, 2));
     server.nodes.applyRect(slot, x, y, @intCast(w), @intCast(h));
+}
+
+/// Where a freshly-mapped xdg toplevel goes.
+const FloatPlacement = enum { tiled, center, top_right };
+
+/// Decide placement for a freshly-mapped xdg toplevel:
+///   - anchored to a parent (dialog / modal / file-chooser) → float CENTERED
+///   - no app_id at all → float TOP-RIGHT. Browsers render web-notification
+///     popups (and some apps render splash screens) as bare toplevels with no
+///     app_id, no title, and no parent; tiling them hands them a whole tile. No
+///     real application window omits its app_id, so an empty app_id is a safe
+///     notification/splash signal.
+///   - otherwise → TILED like a normal application window.
+fn floatPlacement(has_parent: bool, app_id: []const u8) FloatPlacement {
+    if (has_parent) return .center;
+    if (app_id.len == 0) return .top_right;
+    return .tiled;
+}
+
+/// Place a floating node in the TOP-RIGHT corner at its natural size, just below
+/// the top bar — the conventional spot for notification popups. Mirrors
+/// centerFloat's geometry probe; falls back to a notification-sized default.
+fn cornerFloatTopRight(server: *Server, slot: u16, toplevel: *wlr.wlr_xdg_toplevel) void {
+    const margin: i32 = 8;
+    var w: i32 = 380;
+    var h: i32 = 120;
+    if (wlr.miozu_xdg_toplevel_base(toplevel)) |xdg_surface| {
+        var geo: wlr.wlr_box = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        wlr.wlr_xdg_surface_get_geometry(xdg_surface, &geo);
+        if (geo.width > 0) w = geo.width;
+        if (geo.height > 0) h = geo.height;
+    }
+    const dims = server.activeOutputDims();
+    const ow: i32 = @intCast(dims.w);
+    const top: i32 = if (server.bar) |b| @intCast(b.tilingOffsetY()) else 0;
+    const x = @max(0, ow - w - margin);
+    const y = top + margin;
+    server.nodes.applyRect(slot, x, y, @intCast(w), @intCast(h));
+}
+
+test "floatPlacement: dialogs center, no-app_id notifications top-right, apps tile" {
+    try std.testing.expectEqual(FloatPlacement.center, floatPlacement(true, "vivaldi-stable"));
+    try std.testing.expectEqual(FloatPlacement.center, floatPlacement(true, "")); // parented wins
+    try std.testing.expectEqual(FloatPlacement.top_right, floatPlacement(false, "")); // notification
+    try std.testing.expectEqual(FloatPlacement.tiled, floatPlacement(false, "vivaldi-stable"));
+    try std.testing.expectEqual(FloatPlacement.tiled, floatPlacement(false, "vlc"));
+    try std.testing.expectEqual(FloatPlacement.tiled, floatPlacement(false, "foot"));
 }
 
 fn handleFtlActivate(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
@@ -305,6 +435,7 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     wlr.wl_list_remove(&view.new_popup.link);
     wlr.wl_list_remove(&view.request_move.link);
     wlr.wl_list_remove(&view.request_resize.link);
+    wlr.wl_list_remove(&view.request_fullscreen.link);
 
     std.log.scoped(.compositor).info("surface destroyed node={d}", .{view.node_id});
 
@@ -501,6 +632,30 @@ fn handleRequestResize(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) 
     server.grab_w = server.nodes.width[slot];
     server.grab_h = server.nodes.height[slot];
 }
+
+/// xdg_toplevel.set_fullscreen handler. A client (gamescope `-f`, mpv, a
+/// video player) asks to fill the output. We ack the request so the client
+/// learns its state, then drive teruwm's fullscreen for THIS view's node.
+/// Without this teruwm silently ignored the request and a nested gamescope
+/// stayed at its tile size ("stuck at 1280×720").
+fn handleRequestFullscreen(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const view: *XdgView = @fieldParentPtr("request_fullscreen", listener);
+    const server = view.server;
+    const want = wlr.miozu_xdg_toplevel_requested_fullscreen(view.toplevel);
+    // Diagnostic: distinguishes a CLIENT-driven fullscreen change from the
+    // compositor's own exit paths in the log. VLC self-toggles want=true/false
+    // during its Wayland vout negotiation; this makes that visible.
+    std.log.scoped(.compositor).info("client fullscreen request node={d} want={}", .{ view.node_id, want });
+    // Ack: tell the client the fullscreen state it will get on next configure.
+    _ = wlr.wlr_xdg_toplevel_set_fullscreen(view.toplevel, want);
+    if (want) {
+        server.focusView(view);
+        server.enterFullscreen(view.node_id);
+    } else if (server.fullscreen_node == view.node_id) {
+        server.exitFullscreen();
+    }
+    server.scheduleRender();
+}
 // ── Helper ─────────────────────────────────────────────────────
 
 fn makeListener(comptime func: *const fn (*wlr.wl_listener, ?*anyopaque) callconv(.c) void) wlr.wl_listener {
@@ -508,4 +663,20 @@ fn makeListener(comptime func: *const fn (*wlr.wl_listener, ?*anyopaque) callcon
         .link = .{ .prev = null, .next = null },
         .notify = func,
     };
+}
+
+test "appIdSkipsMapFullscreen: browsers suppressed, players honored" {
+    // Browsers (various app_id spellings) → skip come-up-fullscreen-on-map.
+    try std.testing.expect(appIdSkipsMapFullscreen("vivaldi-stable"));
+    try std.testing.expect(appIdSkipsMapFullscreen("Chromium"));
+    try std.testing.expect(appIdSkipsMapFullscreen("google-chrome-stable"));
+    try std.testing.expect(appIdSkipsMapFullscreen("firefox-esr"));
+    try std.testing.expect(appIdSkipsMapFullscreen("brave-browser"));
+    try std.testing.expect(appIdSkipsMapFullscreen("org.mozilla.firefox"));
+    // Players / games / others → keep the at-map fullscreen behavior.
+    try std.testing.expect(!appIdSkipsMapFullscreen("mpv"));
+    try std.testing.expect(!appIdSkipsMapFullscreen("gamescope"));
+    try std.testing.expect(!appIdSkipsMapFullscreen("vlc"));
+    try std.testing.expect(!appIdSkipsMapFullscreen("foot"));
+    try std.testing.expect(!appIdSkipsMapFullscreen(""));
 }

@@ -180,8 +180,13 @@ pub fn feed(self: *Self, bytes: []const u8, daemon_fd: std.posix.fd_t) bool {
                     continue;
                 }
 
-                // If prefix is active, intercept next key as a command
-                if (self.prefix_active) {
+                // If prefix is active, intercept next key as a command — UNLESS
+                // it's ESC. ESC here starts an escape sequence (arrow keys, etc.);
+                // consuming just the ESC as a (no-op) prefix command left the CSI
+                // tail ("[A") to leak to the shell as literal text. ESC is not a
+                // bound prefix command, so cancel the prefix and let the ESC fall
+                // through to the normal escape-sequence handling below.
+                if (self.prefix_active and b != 0x1B) {
                     if (i > raw_start) {
                         _ = daemon_proto.sendMessage(daemon_fd, .active_input, bytes[raw_start..i]);
                     }
@@ -198,6 +203,8 @@ pub fn feed(self: *Self, bytes: []const u8, daemon_fd: std.posix.fd_t) bool {
                     }
                     continue;
                 }
+                // Prefix armed + ESC: drop the armed state and process ESC normally.
+                if (self.prefix_active) self.prefix_active = false;
 
                 if (b == 0x1B) {
                     // Flush raw bytes before ESC

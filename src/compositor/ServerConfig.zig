@@ -10,6 +10,7 @@ const wlr = @import("wlr.zig");
 const WmConfig = @import("WmConfig.zig");
 const Server = @import("Server.zig");
 const LeaderConfig = @import("LeaderConfig.zig");
+const KeysOsd = @import("KeysOsd.zig");
 const teru = @import("teru");
 const Keybinds = teru.Keybinds;
 const Mods = Keybinds.Mods;
@@ -83,7 +84,8 @@ pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem
     };
 
     // ── teruwm-specific config (~/.config/teruwm/config) ────
-    self.wm_config = WmConfig.load(io);
+    // Fill in place: wm_config holds self-referential slices (see WmConfig.load).
+    WmConfig.load(&self.wm_config, io);
     if (self.wm_config.rule_count > 0) {
         std.log.scoped(.config).info("loaded {d} window rules", .{self.wm_config.rule_count});
     }
@@ -111,6 +113,9 @@ pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem
     // hardcoded Super+Space rather than being overridden by it.
     LeaderConfig.build(self);
     LeaderConfig.applyActivate(self);
+
+    // ── Keystroke OSD (`keys_osd*` globals) ────────────────────
+    KeysOsd.applyConfig(self);
 }
 
 /// Resolve each `[keybind] chord = spawn:cmd` entry into a spawn_table
@@ -294,8 +299,10 @@ pub fn applyWmBar(self: *Server) void {
 /// Called by Mod+Shift+R keybind or teruwm_reload_config MCP tool.
 pub fn reloadWmConfig(self: *Server) void {
     // Re-read config file (requires io — use a dummy Io for file access)
-    // Use libc fopen/fread to reload config (no Io needed)
-    self.wm_config = WmConfig.loadWithLibc();
+    // Use libc fopen/fread to reload config (no Io needed). Fill in place:
+    // wm_config holds self-referential slices, and this reload path is live
+    // (Mod+Shift+R / config-watch), so a by-value return would dangle here.
+    WmConfig.loadWithLibc(&self.wm_config);
 
     // Re-seed the xmonad-parity scratchpad rects. loadWithLibc() returns a
     // fresh WmConfig with scratchpad_rule_count = 0, so any user
@@ -328,6 +335,12 @@ pub fn reloadWmConfig(self: *Server) void {
     // added and the menu structure updates live.)
     LeaderConfig.build(self);
     LeaderConfig.applyActivate(self);
+
+    // Re-apply keystroke-OSD knobs (linger/privacy/scale/pos) and drop the
+    // surface so geometry changes rebuild on next paint. Note the asymmetric
+    // enable: `keys_osd = true` in config turns a stopped OSD on, but reload
+    // never force-disables one the user toggled on at runtime.
+    KeysOsd.applyConfig(self);
 
     // Re-apply bar configuration — widget layout or thresholds may
     // have changed in ways the signature hash doesn't detect

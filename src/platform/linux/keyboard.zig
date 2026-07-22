@@ -42,6 +42,7 @@ const XKB_KEY_UP: u32 = 0;
 const XKB_KEY_Return: u32 = 0xff0d;
 const XKB_KEY_BackSpace: u32 = 0xff08;
 const XKB_KEY_Tab: u32 = 0xff09;
+const XKB_KEY_ISO_Left_Tab: u32 = 0xfe20;
 const XKB_KEY_Escape: u32 = 0xff1b;
 const XKB_KEY_Delete: u32 = 0xffff;
 const XKB_KEY_Up: u32 = 0xff52;
@@ -325,6 +326,7 @@ fn keysymToEscape(keysym: u32) []const u8 {
         XKB_KEY_Return => "\r",
         XKB_KEY_BackSpace => "\x7f",
         XKB_KEY_Tab => "\t",
+        XKB_KEY_ISO_Left_Tab => "\t", // xkb delivers this for Shift+Tab
         XKB_KEY_Escape => "\x1b",
         XKB_KEY_Delete => "\x1b[3~",
         XKB_KEY_Up => "\x1b[A",

@@ -3,6 +3,7 @@
 //! Server.zig keeps thin `spawnProcess` / `spawnShell` delegators.
 
 const std = @import("std");
+const teru = @import("teru");
 
 /// Spawn a shell command detached from the compositor (double-fork to
 /// avoid zombies). Uses /bin/sh -c so commands with arguments and pipes
@@ -34,6 +35,7 @@ pub fn spawnProcess(cmd: [*:0]const u8) void {
             // a spawned helper should inherit. A leaked PTY master copy also
             // keeps a closed pane's shell alive (it never receives SIGHUP).
             closeInheritedFds();
+            teru.compat.resetSigpipeToDefault(); // parent ignores SIGPIPE; child must not inherit it
             // Grandchild: exec via shell to handle args/pipes.
             const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", cmd, null };
             const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);

@@ -69,6 +69,36 @@ pub fn arrangeWorkspace(server: *Server, ws_index: u8) void {
     for (node_ids, 0..) |nid, i| {
         if (i >= rects.len) break;
         if (server.nodes.findById(nid)) |slot| {
+            // The fullscreen node is pinned to the whole output — never squeeze
+            // it into a tile. Squeezing clobbers its geometry and, for players
+            // that re-assert fullscreen on resize (VLC), starts a configure ->
+            // fullscreen -> configure flicker loop. recomputeVisibility hides
+            // every OTHER node while a fullscreen node is up, so the tiled rects
+            // computed for them just aren't seen.
+            const is_fullscreen_node = if (server.fullscreen_node) |fs| fs == nid else false;
+            if (is_fullscreen_node) {
+                const d = server.activeOutputDims();
+                const fw: u16 = @intCast(d.w);
+                const fh: u16 = @intCast(d.h);
+                // Idempotent: only (re)configure if it isn't already full-output.
+                // applyRect calls wlr_xdg_toplevel_set_size, so re-applying an
+                // unchanged size on every re-arrange spams the client with
+                // redundant configures — which can disrupt a video player
+                // mid-render. enterFullscreen already sized it; this just keeps
+                // it from being squeezed into a tile.
+                const already = server.nodes.pos_x[slot] == 0 and server.nodes.pos_y[slot] == 0 and
+                    server.nodes.width[slot] == fw and server.nodes.height[slot] == fh;
+                if (!already) {
+                    server.nodes.applyRect(slot, 0, 0, fw, fh);
+                    if (server.nodes.kind[slot] == .terminal) {
+                        if (server.terminalPaneById(nid)) |tp| {
+                            tp.resize(fw, fh);
+                            tp.setPosition(0, 0);
+                        }
+                    }
+                }
+                continue;
+            }
             const rx = rects[i].x + hg;
             const ry = rects[i].y + hg;
             const gu16: u16 = @intCast(g);
@@ -145,6 +175,28 @@ pub fn arrangeWorkspaceSmooth(server: *Server, ws_index: u8) void {
 
     for (node_ids, 0..) |nid, i| {
         if (i >= rects.len) break;
+
+        // Keep the fullscreen node pinned to the whole output here too (a border
+        // drag runs this path); mirrors arrangeWorkspace so the two never
+        // disagree about the fullscreen window's geometry.
+        const is_fullscreen_node = if (server.fullscreen_node) |fs| fs == nid else false;
+        if (is_fullscreen_node) {
+            const d = server.activeOutputDims();
+            const fw: u16 = @intCast(d.w);
+            const fh: u16 = @intCast(d.h);
+            if (server.terminalPaneById(nid)) |tp| {
+                tp.setPosition(0, 0);
+                wlr.wlr_scene_buffer_set_dest_size(tp.scene_buffer, fw, fh);
+            }
+            if (server.nodes.findById(nid)) |slot| {
+                server.nodes.pos_x[slot] = 0;
+                server.nodes.pos_y[slot] = 0;
+                server.nodes.width[slot] = fw;
+                server.nodes.height[slot] = fh;
+            }
+            continue;
+        }
+
         const rx = rects[i].x + hg;
         const ry = rects[i].y + hg;
         const gu16: u16 = @intCast(g);

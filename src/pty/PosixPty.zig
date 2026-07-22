@@ -67,6 +67,12 @@ pub fn spawn(opts: SpawnOptions) !Pty {
         // New session
         _ = posix.system.setsid();
 
+        // Restore SIGPIPE to default — the parent ignores it process-wide
+        // (compat.ignoreSigpipe) and SIG_IGN is inherited across execve; without
+        // this the shell + its pipelines mishandle broken pipes. See
+        // compat.resetSigpipeToDefault.
+        compat.resetSigpipeToDefault();
+
         // Open slave as controlling terminal
         const slave = posix.openatZ(posix.AT.FDCWD, slave_path, .{ .ACCMODE = .RDWR }, 0) catch {
             compat.posixExit(1);
