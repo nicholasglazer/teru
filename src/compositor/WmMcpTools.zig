@@ -112,6 +112,11 @@ pub fn thunkListWorkspaces(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]
     return toolListWorkspaces(self, buf, id);
 }
 
+pub fn thunkGetFocus(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    _ = p;
+    return toolGetFocus(self, buf, id);
+}
+
 pub fn thunkSwitchWorkspace(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const ws = extractNestedJsonInt(p, "workspace") orelse
         return jsonRpcError(buf, id, -32602, "Missing workspace");
@@ -688,6 +693,27 @@ fn toolGetConfig(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
     const bar_h: u32 = if (srv.bar) |b| b.bar_height else 0;
 
     return okText(buf, id, "{{\\\"gap\\\":{d},\\\"border_width\\\":{d},\\\"bg_color\\\":\\\"0x{x:0>8}\\\",\\\"output_width\\\":{d},\\\"output_height\\\":{d},\\\"cell_width\\\":{d},\\\"cell_height\\\":{d},\\\"bar_height\\\":{d},\\\"terminal_count\\\":{d},\\\"active_workspace\\\":{d},\\\"top_bar\\\":{any},\\\"bottom_bar\\\":{any}}}", .{cfg.gap, cfg.border_width, cfg.bg_color, out_w, out_h, cell_w, cell_h, bar_h, srv.terminal_count, srv.layout_engine.active_workspace, top_enabled, bot_enabled});
+}
+
+/// Report the compositor's keyboard-focus state. Exposes the focused_* fields
+/// and — critically for tests — `xor_ok`, which encodes the documented
+/// invariant that AT MOST ONE of focused_terminal / focused_view /
+/// focused_xwayland is set (Server.zig:168). A false xor_ok means focus is
+/// double-owned (e.g. the spawnTerminal bug that nulls focused_view but not
+/// focused_xwayland). node ids are -1 when absent.
+fn toolGetFocus(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
+    const srv = self.server;
+    const has_term = srv.focused_terminal != null;
+    const has_view = srv.focused_view != null;
+    const has_xwl = srv.focused_xwayland != null;
+    const focus_count: u8 = @as(u8, @intFromBool(has_term)) + @intFromBool(has_view) + @intFromBool(has_xwl);
+    const kind: []const u8 = if (has_view) "xdg" else if (has_xwl) "xwayland" else if (has_term) "terminal" else "none";
+    const term_node: i64 = if (srv.focused_terminal) |tp| @intCast(tp.node_id) else -1;
+    const view_node: i64 = if (srv.focused_view) |v| @intCast(v.node_id) else -1;
+    const grab: i64 = if (srv.grab_node_id) |g| @intCast(g) else -1;
+    const aws = srv.layout_engine.active_workspace;
+    const active_node: i64 = if (srv.layout_engine.workspaces[aws].getActiveNodeId()) |n| @intCast(n) else -1;
+    return okText(buf, id, "{{\\\"kind\\\":\\\"{s}\\\",\\\"focus_count\\\":{d},\\\"xor_ok\\\":{any},\\\"terminal_node\\\":{d},\\\"view_node\\\":{d},\\\"xwayland\\\":{any},\\\"grab_node\\\":{d},\\\"active_workspace\\\":{d},\\\"active_node\\\":{d}}}", .{ kind, focus_count, focus_count <= 1, term_node, view_node, has_xwl, grab, aws, active_node });
 }
 
 fn toolSetConfig(self: *WmMcpServer, key: []const u8, value: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
