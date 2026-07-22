@@ -98,6 +98,14 @@ pub fn main(init: std.process.Init) !void {
     // desired run order.
     defer server.deinit();
     defer wlr.wl_display_destroy(display);
+    // Remove wl_event_loop timer sources BEFORE the loop is freed by
+    // wl_display_destroy — wl_event_source_remove on a freed loop is a UAF
+    // (same reason cancelClipboardPaste runs here, not in deinit).
+    defer server.releaseTimers();
+    // Same hazard as releaseTimers: unhook the bar-exec pipe + wm_mcp socket fd
+    // sources while the loop is still alive. deinit runs after wl_display_destroy,
+    // where wl_event_source_remove would be a UAF on the freed loop.
+    defer server.releaseEventSources();
     defer server.cancelClipboardPaste();
     defer server.releaseSeat();
     defer wlr.wl_display_destroy_clients(display);

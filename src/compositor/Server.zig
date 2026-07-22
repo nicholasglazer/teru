@@ -957,43 +957,61 @@ fn drainSceneDestroy(data: ?*anyopaque) callconv(.c) void {
     self.pending_scene_destroy.clearRetainingCapacity();
 }
 
+/// Remove the compositor's wl_event_loop TIMER sources (keybind + terminal
+/// repeat, bar tick, mouse_path). MUST run from main.zig's defer chain BEFORE
+/// wl_display_destroy frees the event loop: calling wl_event_source_remove
+/// after the loop is freed is a use-after-free — the exact hazard the
+/// clipboard-paste watcher (cancelClipboardPaste) and the deinit NOTE below
+/// already avoid. Removing them while the loop is still alive also guarantees
+/// no tick fires against torn-down state during destroy_clients. Disarm before
+/// remove so nothing is pending; idempotent via the null guards.
+/// (jiggle_timer_src is excluded — it self-removes in its own callback.)
+pub fn releaseTimers(self: *Server) void {
+    const srcs = [_]*?*wlr.wl_event_source{
+        &self.keybind_repeat_src,   &self.bar_tick_src,
+        &self.terminal_repeat_src,  &self.mouse_path_timer_src,
+        &self.keys_osd_timer_src,
+    };
+    for (srcs) |slot| {
+        if (slot.*) |src| {
+            _ = wlr.wl_event_source_timer_update(src, 0);
+            _ = wlr.wl_event_source_remove(src);
+            slot.* = null;
+        }
+    }
+}
+
+/// Remove the non-timer fd event sources (bar exec pipes, wm_mcp request/event
+/// sockets) that would otherwise be torn down in deinit. deinit runs AFTER
+/// wl_display_destroy freed the loop (main.zig defer order), so
+/// wl_event_source_remove there is a UAF on the freed loop — the exact
+/// event-source shutdown bug class the surrounding comments warn about. Called
+/// from a main.zig defer BEFORE wl_display_destroy, exactly like releaseTimers /
+/// cancelClipboardPaste. The heap frees for these stay in deinit; this only
+/// unhooks them from the still-alive loop.
+pub fn releaseEventSources(self: *Server) void {
+    if (self.bar) |b| b.deinitExecs();
+    if (self.wm_mcp) |mcp| mcp.releaseEventSources();
+}
+
 pub fn deinit(self: *Server) void {
     // Flag before teardown so any destroy-signal handler that fires
     // during wl_display_destroy (idle-inhibit trackers, etc.) skips
     // the server deref path.
     self.shutting_down = true;
 
-    // Tear down timers first so a late tick can't fire against
-    // torn-down Server state.
-    if (self.keybind_repeat_src) |src| {
-        _ = wlr.wl_event_source_remove(src);
-        self.keybind_repeat_src = null;
-    }
-    if (self.bar_tick_src) |src| {
-        _ = wlr.wl_event_source_remove(src);
-        self.bar_tick_src = null;
-    }
-    // terminal_repeat_src is created lazily by armTerminalRepeat and is
-    // only *disarmed* (not removed) by cancelTerminalRepeat, so it can
-    // still be live here. terminalRepeatTick does not check shutting_down —
-    // a tick firing during wl_display_destroy would deref a freed pane.
-    if (self.terminal_repeat_src) |src| {
-        _ = wlr.wl_event_source_remove(src);
-        self.terminal_repeat_src = null;
-    }
-    // mouse_path_timer_src: same lifecycle — lazily created by ServerMouse,
-    // only disarmed (not removed) when a path completes, so it can be live
-    // here. mousePathTick would deref cursor/seat state mid-teardown. A
-    // button still held by an in-flight path is intentionally NOT released —
-    // the seat + clients are being destroyed anyway (and execRestart drops
-    // seat state before exec), so there's nothing left to receive the up.
-    if (self.mouse_path_timer_src) |src| {
-        _ = wlr.wl_event_source_remove(src);
-        self.mouse_path_timer_src = null;
-    }
+    // Timer event sources are NOT removed here. deinit runs AFTER
+    // wl_display_destroy has freed the event loop (main.zig defer order — see
+    // the clipboard NOTE below), so wl_event_source_remove at this point is a
+    // UAF on the freed loop. They're released from main.zig's `releaseTimers`
+    // defer, before display destroy (same as cancelClipboardPaste). This
+    // matches jiggle_timer_src, which is likewise never touched in deinit.
 
-    // Drain in-flight bar exec widgets — removes their pipe event
-    // sources so execReadable can't fire against a torn-down loop.
+    // Drain in-flight bar exec widgets. The pipe event-source removal already
+    // happened in releaseEventSources (before wl_display_destroy) — this call is
+    // now an idempotent no-op for the sources (pe.event_source is null) and just
+    // closes any leftover pipe fd. Removing sources HERE would be a UAF on the
+    // freed loop, same reason the timers/clipboard are released pre-destroy.
     if (self.bar) |b| b.deinitExecs();
     // NOTE: the clipboard paste watcher is NOT drained here — deinit runs
     // after wl_display_destroy (main.zig defer order), so removing event
@@ -1016,6 +1034,9 @@ pub fn deinit(self: *Server) void {
     // risk a drop after display-destroy.
     self.pending_scene_destroy.deinit(self.zig_allocator);
 
+    // wm_mcp's socket event sources were already removed in releaseEventSources
+    // (before wl_display_destroy); deinit here only closes fds, unlinks the
+    // socket files, and frees the heap allocation — all loop-independent.
     if (self.wm_mcp) |mcp| mcp.deinit(self.zig_allocator);
 
     // Remove every Server-owned wl_listener. wlroots allocates each

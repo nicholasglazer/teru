@@ -140,7 +140,29 @@ pub fn init(server: *Server) ?*WmMcpServer {
     return self;
 }
 
+/// Remove the request/event socket fd sources from the wl_event_loop. MUST run
+/// while the loop is still alive — i.e. BEFORE wl_display_destroy. deinit runs
+/// AFTER wl_display_destroy (main.zig defer order), so calling
+/// wl_event_source_remove there is a UAF on the freed loop. Split out and
+/// invoked from Server.releaseEventSources (a pre-display-destroy defer),
+/// matching how releaseTimers handles the timer sources. Idempotent: the nulled
+/// fields make deinit's own removals no-ops.
+pub fn releaseEventSources(self: *WmMcpServer) void {
+    if (self.event_source) |es| {
+        _ = wlr.wl_event_source_remove(es);
+        self.event_source = null;
+    }
+    if (self.event_source_evt) |es| {
+        _ = wlr.wl_event_source_remove(es);
+        self.event_source_evt = null;
+    }
+}
+
 pub fn deinit(self: *WmMcpServer, allocator: Allocator) void {
+    // Event sources are normally already removed by releaseEventSources (before
+    // wl_display_destroy). These stay as an idempotent fallback — null after
+    // release, so they no-op; if deinit is ever reached without the pre-destroy
+    // release they still get removed (only safe while the loop is alive).
     if (self.event_source) |es| _ = wlr.wl_event_source_remove(es);
     if (self.event_source_evt) |es| _ = wlr.wl_event_source_remove(es);
     _ = posix.system.close(self.socket_fd);
