@@ -367,6 +367,7 @@ fn refreshSectionExecs(self: *Bar, section: *Section, server: *Server, now_ns: i
             Process.closeInheritedFds();
 
             const cmd_slice: [:0]const u8 = cmd_z[0..w.arg.len :0];
+            teru.compat.resetSigpipeToDefault(); // parent ignores SIGPIPE; child must not inherit it
             const argv = [_:null]?[*:0]const u8{ "/bin/sh", "-c", cmd_slice.ptr, null };
             const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
             _ = posix.system.execve("/bin/sh", &argv, @ptrCast(envp));

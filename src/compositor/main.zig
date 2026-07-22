@@ -33,6 +33,9 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.gpa;
 
+    // Broken client sockets / bar-exec pipes must not kill the compositor.
+    teru.compat.ignoreSigpipe();
+
     // ── Check for --restore flag ───────────────────────────────
     var restoring = false;
     {

@@ -47,6 +47,42 @@ const win32 = if (builtin.os.tag == .windows) struct {
     extern "kernel32" fn Sleep(dwMilliseconds: u32) callconv(.c) void;
 } else undefined;
 
+// ── SIGPIPE ──────────────────────────────────────────────────────
+//
+// Ignore SIGPIPE process-wide. We write to pipes (clipboard helpers via
+// forkExecPipeStdin) and unix sockets (MCP client / PaneBackend NDJSON) whose
+// peer can disappear mid-write; with the default disposition that broken-pipe
+// delivers SIGPIPE and the *whole terminal / compositor* dies. Ignoring it
+// turns the failed write into a plain EPIPE return we already discard, so a
+// dead peer just drops that write instead of killing the process. Call once at
+// startup from each binary's main(). No-op on Windows (no SIGPIPE).
+pub fn ignoreSigpipe() void {
+    if (builtin.os.tag == .windows) return;
+    const sa = posix.Sigaction{
+        .handler = .{ .handler = posix.SIG.IGN },
+        .mask = posix.sigemptyset(),
+        .flags = 0,
+    };
+    posix.sigaction(posix.SIG.PIPE, &sa, null);
+}
+
+/// Restore SIGPIPE to its DEFAULT disposition. MUST be called in every forked
+/// child BEFORE execve: ignoreSigpipe() sets SIG_IGN process-wide, and SIG_IGN
+/// is inherited across fork AND execve — and POSIX shells keep an entry-ignored
+/// signal ignored for their own children. Without this reset a shell pane
+/// running `find / | head` would spew "write error: Broken pipe" instead of the
+/// producer dying cleanly via SIGPIPE, and naive infinite writers would never
+/// stop when their reader exits. Async-signal-safe (single sigaction syscall).
+pub fn resetSigpipeToDefault() void {
+    if (builtin.os.tag == .windows) return;
+    const sa = posix.Sigaction{
+        .handler = .{ .handler = posix.SIG.DFL },
+        .mask = posix.sigemptyset(),
+        .flags = 0,
+    };
+    posix.sigaction(posix.SIG.PIPE, &sa, null);
+}
+
 // ── @memset for []u32 framebuffer fills ──────────────────────────
 //
 // History: `@memset(slice_u32, runtime_scalar)` used to mis-codegen on
@@ -349,6 +385,22 @@ test "isSafeScreenshotPath: narrow allowlist, boundary-correct" {
     }
 }
 
+test "ignoreSigpipe: writing to a broken pipe returns EPIPE instead of killing the process" {
+    if (builtin.os.tag == .windows) return;
+    // Regression: sendNdjson (PaneBackend) and forkExecPipeStdin (clipboard)
+    // write to peers that can vanish mid-write. Without SIGPIPE ignored, the
+    // broken-pipe signal terminates the whole process. If this fix regresses,
+    // the write below raises SIGPIPE and takes the ENTIRE test binary down —
+    // a deliberately loud failure.
+    ignoreSigpipe();
+    var fds: [2]posix.fd_t = undefined;
+    try std.testing.expect(std.c.pipe(&fds) == 0);
+    _ = posix.system.close(fds[0]); // close the read end → writes now break the pipe
+    const n = std.c.write(fds[1], "x", 1); // must return -1 (EPIPE), must NOT signal-kill us
+    try std.testing.expect(n < 0);
+    _ = posix.system.close(fds[1]);
+}
+
 /// Open a file for writing, refusing to follow symlinks at the final
 /// path component. Used for screenshot output: an attacker who can
 /// guess a predictable screenshot path (e.g. `/tmp/teru-screenshot.png`)
@@ -455,6 +507,7 @@ pub fn forkExec(argv: [*:null]const ?[*:0]const u8) void {
     if (pid == 0) {
         const pid2 = posixFork();
         if (pid2 == 0) {
+            resetSigpipeToDefault(); // parent ignores SIGPIPE; child must not inherit it
             const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
             _ = posix.system.execve(argv[0].?, argv, @ptrCast(envp));
             posixExit(1);
@@ -495,6 +548,7 @@ pub fn forkExecPipeStdin(argv: [*:null]const ?[*:0]const u8, data: []const u8) v
             _ = posix.system.close(write_end);
             _ = std.c.dup2(read_end, posix.STDIN_FILENO);
             _ = posix.system.close(read_end);
+            resetSigpipeToDefault(); // parent ignores SIGPIPE; child must not inherit it
             const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
             _ = posix.system.execve(argv[0].?, argv, @ptrCast(envp));
             posixExit(1);
@@ -548,6 +602,7 @@ pub fn forkExecCaptureStdout(argv: [*:null]const ?[*:0]const u8, buf: []u8) usiz
         _ = posix.system.close(read_end);
         _ = std.c.dup2(write_end, posix.STDOUT_FILENO);
         _ = posix.system.close(write_end);
+        resetSigpipeToDefault(); // parent ignores SIGPIPE; child must not inherit it
         const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
         _ = posix.system.execve(argv[0].?, argv, @ptrCast(envp));
         posixExit(1);
@@ -619,6 +674,7 @@ pub fn forkExecReadStdout(argv: [*:null]const ?[*:0]const u8, output_fd: posix.f
         _ = posix.system.close(read_end);
         _ = std.c.dup2(write_end, posix.STDOUT_FILENO);
         _ = posix.system.close(write_end);
+        resetSigpipeToDefault(); // parent ignores SIGPIPE; child must not inherit it
         const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
         _ = posix.system.execve(argv[0].?, argv, @ptrCast(envp));
         posixExit(1);

@@ -36,6 +36,9 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.gpa;
 
+    // Broken pipes/sockets must not kill teru — see compat.ignoreSigpipe.
+    compat.ignoreSigpipe();
+
     // Parse command line args (initAllocator required on Windows; works everywhere)
     var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     defer args_iter.deinit();
