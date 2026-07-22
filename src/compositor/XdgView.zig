@@ -125,15 +125,30 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         }
     }
 
-    // Transient toplevels (a dialog/modal the client anchored to a parent —
-    // delete confirmation, file chooser, properties) FLOAT centered instead of
-    // joining the tiling layout, which would split the screen "like a new
-    // window". Detected via xdg_toplevel.parent. Everything else tiles.
-    const is_dialog = wlr.miozu_xdg_toplevel_parent(view.toplevel) != null;
-    if (is_dialog and slot != null) {
+    // Placement: a toplevel anchored to a parent (dialog / modal / file-chooser)
+    // FLOATS centered; a toplevel with NO app_id floats TOP-RIGHT like a
+    // notification; everything else tiles. Browsers render web-notification
+    // popups as bare toplevels (no app_id, no title, no parent) when no
+    // notification daemon is running — tiling those gave them a whole tile (the
+    // "facebook notification took half my screen" report). See floatPlacement.
+    const has_parent = wlr.miozu_xdg_toplevel_parent(view.toplevel) != null;
+    const aid_slice: []const u8 = if (app_id) |aid| std.mem.sliceTo(aid, 0) else "";
+    const placement = floatPlacement(has_parent, aid_slice);
+    if (placement != .tiled and slot != null) {
         server.nodes.floating[slot.?] = true;
-        centerFloat(server, slot.?, view.toplevel);
+        switch (placement) {
+            .center => centerFloat(server, slot.?, view.toplevel),
+            .top_right => cornerFloatTopRight(server, slot.?, view.toplevel),
+            .tiled => unreachable,
+        }
     } else {
+        // A real tiled window joining a workspace that's showing a fullscreen
+        // window must drop that fullscreen first — otherwise the arrangeworkspace
+        // below (no fullscreen awareness) re-tiles the fullscreen window to a tile
+        // while fullscreen_node stays set + the bars stay hidden (the broken
+        // half-fullscreen layout). Floats above sit OVER fullscreen, so this is
+        // gated on the tiled branch.
+        server.dropFullscreenForNewWindowOn(ws, aid_slice);
         // Add to tiling engine workspace
         server.layout_engine.workspaces[ws].addNode(server.zig_allocator, view.node_id) catch return;
     }
@@ -250,6 +265,53 @@ fn centerFloat(server: *Server, slot: u16, toplevel: *wlr.wlr_xdg_toplevel) void
     const x = @max(0, @divTrunc(@as(i32, @intCast(dims.w)) - w, 2));
     const y = @max(0, @divTrunc(@as(i32, @intCast(dims.h)) - h, 2));
     server.nodes.applyRect(slot, x, y, @intCast(w), @intCast(h));
+}
+
+/// Where a freshly-mapped xdg toplevel goes.
+const FloatPlacement = enum { tiled, center, top_right };
+
+/// Decide placement for a freshly-mapped xdg toplevel:
+///   - anchored to a parent (dialog / modal / file-chooser) → float CENTERED
+///   - no app_id at all → float TOP-RIGHT. Browsers render web-notification
+///     popups (and some apps render splash screens) as bare toplevels with no
+///     app_id, no title, and no parent; tiling them hands them a whole tile. No
+///     real application window omits its app_id, so an empty app_id is a safe
+///     notification/splash signal.
+///   - otherwise → TILED like a normal application window.
+fn floatPlacement(has_parent: bool, app_id: []const u8) FloatPlacement {
+    if (has_parent) return .center;
+    if (app_id.len == 0) return .top_right;
+    return .tiled;
+}
+
+/// Place a floating node in the TOP-RIGHT corner at its natural size, just below
+/// the top bar — the conventional spot for notification popups. Mirrors
+/// centerFloat's geometry probe; falls back to a notification-sized default.
+fn cornerFloatTopRight(server: *Server, slot: u16, toplevel: *wlr.wlr_xdg_toplevel) void {
+    const margin: i32 = 8;
+    var w: i32 = 380;
+    var h: i32 = 120;
+    if (wlr.miozu_xdg_toplevel_base(toplevel)) |xdg_surface| {
+        var geo: wlr.wlr_box = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        wlr.wlr_xdg_surface_get_geometry(xdg_surface, &geo);
+        if (geo.width > 0) w = geo.width;
+        if (geo.height > 0) h = geo.height;
+    }
+    const dims = server.activeOutputDims();
+    const ow: i32 = @intCast(dims.w);
+    const top: i32 = if (server.bar) |b| @intCast(b.tilingOffsetY()) else 0;
+    const x = @max(0, ow - w - margin);
+    const y = top + margin;
+    server.nodes.applyRect(slot, x, y, @intCast(w), @intCast(h));
+}
+
+test "floatPlacement: dialogs center, no-app_id notifications top-right, apps tile" {
+    try std.testing.expectEqual(FloatPlacement.center, floatPlacement(true, "vivaldi-stable"));
+    try std.testing.expectEqual(FloatPlacement.center, floatPlacement(true, "")); // parented wins
+    try std.testing.expectEqual(FloatPlacement.top_right, floatPlacement(false, "")); // notification
+    try std.testing.expectEqual(FloatPlacement.tiled, floatPlacement(false, "vivaldi-stable"));
+    try std.testing.expectEqual(FloatPlacement.tiled, floatPlacement(false, "vlc"));
+    try std.testing.expectEqual(FloatPlacement.tiled, floatPlacement(false, "foot"));
 }
 
 fn handleFtlActivate(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
