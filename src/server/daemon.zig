@@ -560,7 +560,14 @@ fn sendStateSync(self: *Daemon) void {
         pos += 1;
         buf[pos] = @intCast(@min(ws.node_ids.items.len, 255));
         pos += 1;
-        buf[pos] = @intCast(@min(@as(u32, @intFromFloat(ws.master_ratio * 100)), 100));
+        // Clamp the FLOAT before @intFromFloat: a corrupt/hand-edited .tsess can
+        // carry a negative, huge, or NaN master_ratio, and @intFromFloat on any
+        // of those panics — crashing the daemon on client attach. clamp→[0,1]*100
+        // is always a representable 0..100 that fits u8; NaN falls back to mid.
+        buf[pos] = if (std.math.isNan(ws.master_ratio))
+            50
+        else
+            @intFromFloat(std.math.clamp(ws.master_ratio, 0.0, 1.0) * 100.0);
         pos += 1;
         buf[pos] = 0; // reserved
         pos += 1;
