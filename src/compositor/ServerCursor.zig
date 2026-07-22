@@ -94,6 +94,18 @@ pub fn handleCursorButton(listener: *wlr.wl_listener, data: ?*anyopaque) callcon
     );
 }
 
+/// Number of font-zoom steps for a wheel `delta_discrete` value. wlroots 0.18
+/// reports discrete axis motion in v120 units (one notch = 120), so a raw
+/// `@abs(discrete)` meant 120 steps per notch. One notch = one step; a
+/// high-resolution sub-notch still counts as at least one so tiny wheels aren't
+/// dead. Pure so it's unit-testable without a pointer event.
+fn zoomStepsForDiscrete(discrete: i32) u32 {
+    if (discrete == 0) return 0;
+    const mag: u32 = @abs(discrete);
+    const step: u32 = @intCast(wlr.WLR_POINTER_AXIS_DISCRETE_STEP);
+    return @max(1, mag / step);
+}
+
 pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const server = wlr.listenerParent(Server, "cursor_axis", listener);
     const event: *wlr.wlr_pointer_axis_event = @ptrCast(@alignCast(data orelse return));
@@ -117,8 +129,10 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
         const discrete = wlr.miozu_pointer_axis_delta_discrete(event);
         if (discrete != 0) {
             // Mouse wheel: exactly one font step per notch (crisp, expected).
+            // delta_discrete is in v120 units (one notch = 120), so the old
+            // `@abs(discrete)` loop ran 120 zoom steps per notch — runaway.
             const target: teru.render.FontAtlas.ZoomTarget = if (delta < 0) .in else .out;
-            var n = @abs(discrete);
+            var n = zoomStepsForDiscrete(discrete);
             while (n > 0) : (n -= 1) _ = tp.zoomFont(target);
             server.zoom_accum = 0; // reset the continuous accumulator
             return;
@@ -142,6 +156,14 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
     // delta falls through to the seat notify below (axis-stop for clients).
     if (orientation == 0 and delta != 0 and server.focused_terminal != null) {
         const tp = server.focused_terminal.?;
+        // Alt-screen guard: a TUI app (vim, htop, less) runs on the alternate
+        // screen, which keeps no scrollback of its own — the scrollback buffer
+        // still holds the MAIN screen's now-stale history. Scrolling it here
+        // dragged that dead history OVER the live TUI. Don't scroll scrollback
+        // while on the alt screen. (Forwarding the wheel to the app as a mouse
+        // report would need native-pane mouse reporting, which the compositor
+        // doesn't implement yet — clicks don't forward either; separate feature.)
+        if (tp.pane.grid.on_alt_screen) return;
         const max_offset: u32 = @intCast(tp.pane.scrollback.total_lines);
         if (max_offset > 0) {
             const cell_h: u32 = if (server.font_atlas) |fa| fa.cell_height else 16;
@@ -391,6 +413,11 @@ fn tryBeginBorderDrag(server: *Server, cx: f64) bool {
         // created an invisible "dead-click strip" that hijacked the click
         // into a master-ratio drag (#45).
         if (server.nodes.workspace[slot] != cur_ws) continue;
+        // Floating panes / scratchpads aren't part of the tiled master-stack, so
+        // their right edge is not a master-ratio handle. Skip them — otherwise a
+        // visible floating window's right border is a dead-click strip that
+        // hijacks a click (or the start of a text selection) into a border drag.
+        if (server.nodes.floating[slot]) continue;
         const px = server.nodes.pos_x[slot];
         const pw: i32 = @intCast(server.nodes.width[slot]);
         const right_edge = px + pw;

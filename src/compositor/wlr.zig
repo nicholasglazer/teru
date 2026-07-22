@@ -644,6 +644,11 @@ pub const XKB_STATE_MODS_EFFECTIVE: c_int = 8;
 // xkb keysym constants (from xkbcommon-keysyms.h)
 pub const XKB_KEY_Return: u32 = 0xff0d;
 pub const XKB_KEY_Escape: u32 = 0xff1b;
+pub const XKB_KEY_Alt_R: u32 = 0xffea;
+
+/// wlroots 0.18: delta_discrete is in "v120" units — one mouse-wheel notch is
+/// 120, not 1 (WLR_POINTER_AXIS_DISCRETE_STEP in wlr/types/wlr_pointer.h).
+pub const WLR_POINTER_AXIS_DISCRETE_STEP: i32 = 120;
 pub const XKB_KEY_space: u32 = 0x0020;
 pub const XKB_KEY_j: u32 = 0x006a;
 pub const XKB_KEY_k: u32 = 0x006b;
