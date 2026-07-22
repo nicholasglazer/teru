@@ -367,6 +367,44 @@ pub fn setupKeyboard(server: *Server, device: *wlr.wlr_input_device) void {
 
 // ── Keybind dispatch ──────────────────────────────────────────
 
+/// Normalize an xkb keysym to the value teru Keybinds are stored against:
+/// uppercase ASCII → lowercase (Shift'd 'J' → 'j'); Shift+number-row → base
+/// digit (!→1 … )→0) so a bind on '1' still matches when Shift is held; and the
+/// common control keysyms → their ASCII codes (both dispatch paths — ServerInput
+/// here and the standalone u8 key_char path — deliver ASCII, so a bind stored as
+/// the 0xff.. keysym would never match). Everything else passes through. Pure so
+/// it's unit-testable without an xkb_state.
+fn foldKeysym(sym: u32) u32 {
+    if (sym >= 'A' and sym <= 'Z') return sym + 32;
+    return switch (sym) {
+        '!' => '1', '@' => '2', '#' => '3', '$' => '4', '%' => '5',
+        '^' => '6', '&' => '7', '*' => '8', '(' => '9', ')' => '0',
+        0xff0d => '\r', // Return → CR
+        0xff1b => 0x1b, // Escape
+        0xff09 => '\t', // Tab
+        0xfe20 => '\t', // ISO_Left_Tab — xkb delivers this for Shift+Tab, so a
+        // Mod+Shift+Tab bind (stored on '\t') needs it folded like the digit-row
+        // shifts (!→1 …) above; without it, Mod+Shift+Tab was silently dead.
+        0xff08 => 0x7f, // BackSpace → DEL
+        else => sym,
+    };
+}
+
+/// Assemble teru Keybinds.Mods from decoded modifier booleans. `ralt_held`
+/// (Right-Alt, tracked by keysym because xkb collapses Alt_R onto Mod1) sets
+/// the `ralt` bit; a `ralt+` bind parses to {alt, ralt} and RAlt held also
+/// reports alt (Mod1), so both are set — matching KeyHandler.platformMods on the
+/// standalone path. Pure so keybind-dispatch matching is unit-testable.
+fn buildMods(alt: bool, shift: bool, ctrl: bool, super_: bool, ralt_held: bool) KBMods {
+    return .{
+        .alt = alt,
+        .shift = shift,
+        .ctrl = ctrl,
+        .super_ = super_,
+        .ralt = ralt_held,
+    };
+}
+
 /// Translate an xkb keycode + modifier state into a teru Keybinds
 /// lookup, then run the resulting action. Returns true if the key was
 /// consumed (don't forward to the focused surface).
@@ -917,4 +955,47 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
             return tryRunSpawnChord(server, action);
         },
     }
+}
+
+// ── Tests: keybind-dispatch decoding (pure, no xkb_state / no injection) ──
+// These cover the logic behind the Tab/Escape/ralt dispatch fixes without a
+// live compositor: foldKeysym (keysym→stored value) and buildMods (modifier
+// decode), then an end-to-end keybinds.lookup so a regression in either the
+// fold or the ralt-mod wiring fails the build.
+
+test "foldKeysym: control keysyms → ASCII, letters → lowercase, digits un-shift" {
+    const t = std.testing;
+    try t.expectEqual(@as(u32, '\t'), foldKeysym(0xff09)); // Tab
+    try t.expectEqual(@as(u32, '\t'), foldKeysym(0xfe20)); // ISO_Left_Tab (Shift+Tab) → Tab
+    try t.expectEqual(@as(u32, 0x1b), foldKeysym(0xff1b)); // Escape
+    try t.expectEqual(@as(u32, '\r'), foldKeysym(0xff0d)); // Return
+    try t.expectEqual(@as(u32, 0x7f), foldKeysym(0xff08)); // BackSpace → DEL
+    try t.expectEqual(@as(u32, 'a'), foldKeysym('A')); // Shift'd letter
+    try t.expectEqual(@as(u32, '1'), foldKeysym('!')); // Shift+1
+    try t.expectEqual(@as(u32, '0'), foldKeysym(')')); // Shift+0
+    try t.expectEqual(@as(u32, 'q'), foldKeysym('q')); // plain ASCII passthrough
+}
+
+test "buildMods: RAlt held → {alt, ralt}; left-alt only → {alt}" {
+    const t = std.testing;
+    // RAlt held reports both alt (Mod1) and ralt — equals the Mods.RALT const.
+    try t.expectEqual(Keybinds.Mods.RALT, buildMods(true, false, false, false, true));
+    const alt_only = buildMods(true, false, false, false, false);
+    try t.expect(alt_only.alt and !alt_only.ralt);
+    const super_only = buildMods(false, false, false, true, false);
+    try t.expect(super_only.super_ and !super_only.alt and !super_only.ralt);
+}
+
+test "dispatch: ralt+ bind requires RAlt (not left-alt); xkb Tab folds and matches" {
+    const t = std.testing;
+    var kb = Keybinds.Keybinds{}; // Keybinds is the file namespace; the struct is nested
+    try t.expect(kb.add(.normal, Keybinds.Mods.RALT, 'h', .pane_focus_next));
+    try t.expect(kb.add(.normal, Keybinds.Mods.SUPER, '\t', .pane_focus_prev));
+
+    // RAlt held → {alt, ralt} → matches ralt+h (the fix that was dead before).
+    try t.expectEqual(Keybinds.Action.pane_focus_next, kb.lookup(.normal, buildMods(true, false, false, false, true), 'h').?);
+    // Left-alt only → {alt} → must NOT match ralt+h (negative control).
+    try t.expect(kb.lookup(.normal, buildMods(true, false, false, false, false), 'h') == null);
+    // Super + raw xkb Tab keysym (0xff09) → folds to '\t' → matches (Tab fix).
+    try t.expectEqual(Keybinds.Action.pane_focus_prev, kb.lookup(.normal, buildMods(false, false, false, true, false), foldKeysym(0xff09)).?);
 }

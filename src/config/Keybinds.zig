@@ -664,7 +664,7 @@ pub const Keybinds = struct {
         _ = self.add(n, M, '.', .master_count_dec);
 
         // Workspace navigation (v0.4.15)
-        _ = self.add(n, M, 0xFF1B, .workspace_toggle_last); // Mod+Escape
+        _ = self.add(n, M, 0x1B, .workspace_toggle_last); // Mod+Escape (ASCII ESC — see phrasebook note)
         _ = self.add(n, M, '`', .workspace_toggle_last); // Mod+grave (xmonad familiar)
         _ = self.add(n, MC, '`', .workspace_next_nonempty); // Mod+Ctrl+grave
 
@@ -676,8 +676,8 @@ pub const Keybinds = struct {
         _ = self.add(n, MS, ' ', .layout_reset);
 
         // Focus also via Tab (XMonad style)
-        _ = self.add(n, M, 0xFF09, .pane_focus_next); // Mod+Tab
-        _ = self.add(n, MS, 0xFF09, .pane_focus_prev); // Mod+Shift+Tab
+        _ = self.add(n, M, 0x09, .pane_focus_next); // Mod+Tab (ASCII HT — see phrasebook note)
+        _ = self.add(n, MS, 0x09, .pane_focus_prev); // Mod+Shift+Tab
 
         // Pane management
         _ = self.add(n, M, 'c', .split_vertical);
