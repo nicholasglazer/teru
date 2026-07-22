@@ -213,6 +213,7 @@ pub const Action = enum(u8) {
     screen_record,
     bar_toggle_top,
     bar_toggle_bottom,
+    keys_osd_toggle, // streaming keystroke overlay (teruwm KeysOsd/klava)
     // Media actions (compositor spawns the appropriate command)
     volume_up,
     volume_down,
@@ -312,6 +313,7 @@ pub const Action = enum(u8) {
             .{ "screen:record", Action.screen_record },
             .{ "bar:toggle_top", Action.bar_toggle_top },
             .{ "bar:toggle_bottom", Action.bar_toggle_bottom },
+            .{ "keys_osd:toggle", Action.keys_osd_toggle },
             .{ "volume:up", Action.volume_up },
             .{ "volume:down", Action.volume_down },
             .{ "volume:mute", Action.volume_mute },
@@ -969,6 +971,7 @@ test "Action.fromString" {
     try std.testing.expect(Action.fromString("zoom:in").? == .zoom_in);
     try std.testing.expect(Action.fromString("mode:prefix").? == .mode_prefix);
     try std.testing.expect(Action.fromString("resize:-2:0").? == .resize_shrink_w);
+    try std.testing.expect(Action.fromString("keys_osd:toggle").? == .keys_osd_toggle);
     try std.testing.expect(Action.fromString("bogus") == null);
 }
 

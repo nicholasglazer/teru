@@ -17,6 +17,8 @@ const Server = @import("Server.zig");
 const TerminalPane = @import("TerminalPane.zig");
 const ServerFont = @import("ServerFont.zig");
 const NodeRegistry = @import("Node.zig");
+const KeysOsd = @import("KeysOsd.zig");
+const klava = @import("klava");
 const tools = teru.McpTools;
 const version = teru.build_options.version;
 
@@ -223,6 +225,36 @@ pub fn thunkNotify(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8
 pub fn thunkReloadConfig(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     _ = p;
     return toolReloadConfig(self, buf, id);
+}
+
+pub fn thunkKeysOsd(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const op = extractNestedJsonString(p, "op") orelse
+        return jsonRpcError(buf, id, -32602, "Missing op");
+    return toolKeysOsd(self, op, buf, id);
+}
+
+pub fn thunkKeysOsdFeed(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    var keysym: u32 = 0;
+    if (extractNestedJsonInt(p, "keysym")) |ks| {
+        if (ks <= 0 or ks > 0x0110ffff) return jsonRpcError(buf, id, -32602, "keysym out of range");
+        keysym = @intCast(ks);
+    } else if (extractNestedJsonString(p, "key")) |key| {
+        if (key.len != 1 or key[0] < 0x20 or key[0] > 0x7e)
+            return jsonRpcError(buf, id, -32602, "key must be one printable ASCII char");
+        keysym = key[0];
+    } else {
+        return jsonRpcError(buf, id, -32602, "Need keysym or key");
+    }
+    const mods = klava.Mods{
+        .super = extractNestedJsonBool(p, "super"),
+        .ctrl = extractNestedJsonBool(p, "ctrl"),
+        .alt = extractNestedJsonBool(p, "alt"),
+        .shift = extractNestedJsonBool(p, "shift"),
+    };
+    // extractNestedJsonBool defaults missing keys to false, so the wire flag
+    // is `released` (rare case) rather than `pressed` (the overwhelming one).
+    const pressed = !extractNestedJsonBool(p, "released");
+    return toolKeysOsdFeed(self, keysym, mods, pressed, buf, id);
 }
 
 pub fn thunkScreenshotPane(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
@@ -724,6 +756,29 @@ fn toolNotify(self: *WmMcpServer, message: []const u8, buf: []u8, id: ?[]const u
 fn toolReloadConfig(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
     self.server.reloadWmConfig();
     return okText(buf, id, "config reloaded (gap={d}, border={d})", .{self.server.wm_config.gap, self.server.wm_config.border_width});
+}
+
+fn toolKeysOsd(self: *WmMcpServer, op: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const server = self.server;
+    if (std.mem.eql(u8, op, "on")) {
+        KeysOsd.setActive(server, true);
+    } else if (std.mem.eql(u8, op, "off")) {
+        KeysOsd.setActive(server, false);
+    } else if (std.mem.eql(u8, op, "toggle")) {
+        KeysOsd.toggle(server);
+    } else if (!std.mem.eql(u8, op, "status")) {
+        return jsonRpcError(buf, id, -32602, "op must be on|off|toggle|status");
+    }
+    server.scheduleRender();
+    return okText(buf, id, "{{\\\"active\\\":{},\\\"entries\\\":{d}}}", .{ server.keys_osd.active, server.keys_osd.engine.count() });
+}
+
+fn toolKeysOsdFeed(self: *WmMcpServer, keysym: u32, mods: klava.Mods, pressed: bool, buf: []u8, id: ?[]const u8) []const u8 {
+    const server = self.server;
+    if (!server.keys_osd.active)
+        return jsonRpcError(buf, id, -32602, "keys OSD is off — teruwm_keys_osd op=on first");
+    KeysOsd.feed(server, keysym, mods, pressed);
+    return okText(buf, id, "{{\\\"entries\\\":{d},\\\"shown\\\":{}}}", .{ server.keys_osd.engine.count(), server.keys_osd.isShown() });
 }
 
 fn toolScreenshotPane(self: *WmMcpServer, params_body: []const u8, path_opt: ?[]const u8, buf: []u8, id: ?[]const u8) []const u8 {

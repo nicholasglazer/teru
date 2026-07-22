@@ -35,6 +35,9 @@ const WmConfig = @This();
 
 pub const max_rules = 32;
 
+/// Keystroke-OSD anchor corner (`keys_osd_pos`).
+pub const KeysOsdPos = enum { bottom_right, bottom_left, top_right, top_left };
+
 /// Fixed buffers for bar format strings so we don't need an allocator.
 const max_bar_str = 256;
 
@@ -229,6 +232,56 @@ natural_scroll: bool = true,
 /// (not pixel-smooth — that's a renderer follow-up). Set false for an instant
 /// jump. Zero-rebuild escape hatch either way.
 smooth_scroll: bool = true,
+
+/// Cap how often a VISIBLE terminal pane re-uploads its buffer to the GPU
+/// while it's churning from PTY output (build log, `cat`, a streaming AI
+/// agent). The CPU render is always cheap (only dirty rows are repainted),
+/// but each paint presents FULL-buffer damage (the GLES path can't do safe
+/// partial uploads — see `partial_damage`), so on a high-refresh panel
+/// streaming output drives one whole-pane texture re-upload per vsync (e.g.
+/// 165/s on a 165 Hz display) — enough to saturate the single-threaded
+/// compositor loop and drop frames. Capping the paint rate gives the loop
+/// headroom: 60 cuts a 165 Hz panel's uploads by ~64% while staying visually
+/// smooth for streaming text; lower (30) saves more power at a slightly
+/// steppier passive repaint, and is the better pick on a 60 Hz panel.
+/// Recent keyboard input, scrolling, and active selection always bypass the
+/// cap, so typing/echo and smooth scroll stay at full vsync. 0 disables the
+/// cap (paint every dirty vsync).
+max_render_fps: u32 = 60,
+
+/// EXPERIMENTAL, real-GPU-gated. When true, `renderIfDirty` presents PARTIAL
+/// (dirty-row band) damage instead of full-buffer damage, so the GPU only
+/// re-uploads the rows that changed — the real bandwidth fix for streaming
+/// output. It was shipped once and REVERTED (commit 180e9de): the wlroots
+/// GLES/nvidia partial texture upload of our reused data-ptr buffer truncated
+/// glyph bottoms, a bug that only manifests on real GPU (never in headless
+/// pixman). Left OFF by default. Flip on ONLY to test on real hardware and
+/// visually confirm glyph bottoms survive sustained streaming before trusting
+/// it. Composes safely with `max_render_fps`.
+partial_damage: bool = false,
+
+/// Keystroke OSD (vendored klava engine): show pressed key combos as a
+/// corner overlay for screencasts/streaming. This is only the STARTUP state
+/// — toggle at runtime via the `keys_osd:toggle` action or `teruwm_keys_osd`
+/// MCP tool. Costs one bool check per key event while off; zero timers while
+/// idle (one-shot expiry timer armed only when combos are on screen).
+keys_osd: bool = false,
+
+/// Milliseconds a combo stays on the OSD after its last press.
+keys_osd_linger_ms: u32 = 2500,
+
+/// Only show Ctrl/Alt/Super combos; plain typing and Shift-only typing are
+/// suppressed so ordinary text (and passwords) never hits the overlay or the
+/// stream. Set false to display every key press.
+keys_osd_combos_only: bool = true,
+
+/// Integer glyph scale for OSD text, clamped 1..4. 2 doubles the shared
+/// font atlas' glyph size (nearest-neighbor), reading clearly on stream
+/// without re-rasterizing a second atlas.
+keys_osd_scale: u8 = 2,
+
+/// Which corner the OSD anchors to, inset past the bars.
+keys_osd_pos: KeysOsdPos = .bottom_right,
 
 /// Lines of scrollback moved per notch of a discrete mouse wheel over a
 /// focused terminal pane. Touchpad / high-resolution continuous scroll ignores
@@ -701,6 +754,17 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.mouse_humanize = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1") or std.mem.eql(u8, value, "yes");
     } else if (std.mem.eql(u8, key, "mouse_path_default_ms")) {
         self.mouse_path_default_ms = std.fmt.parseInt(u32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "keys_osd")) {
+        self.keys_osd = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+    } else if (std.mem.eql(u8, key, "keys_osd_linger_ms")) {
+        self.keys_osd_linger_ms = std.fmt.parseInt(u32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "keys_osd_combos_only")) {
+        self.keys_osd_combos_only = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+    } else if (std.mem.eql(u8, key, "keys_osd_scale")) {
+        const v = std.fmt.parseInt(u8, value, 10) catch return;
+        self.keys_osd_scale = @max(1, @min(4, v));
+    } else if (std.mem.eql(u8, key, "keys_osd_pos")) {
+        self.keys_osd_pos = std.meta.stringToEnum(KeysOsdPos, value) orelse return;
     }
 }
 
@@ -1120,6 +1184,29 @@ test "scroll sensitivity knobs default and parse" {
     try std.testing.expect(!cfg.smooth_scroll);
     try std.testing.expect(!cfg.scroll_to_bottom_on_input);
     try std.testing.expect(!cfg.copy_on_select);
+}
+
+test "keys_osd knobs default and parse" {
+    const def = WmConfig{};
+    try std.testing.expect(!def.keys_osd);
+    try std.testing.expectEqual(@as(u32, 2500), def.keys_osd_linger_ms);
+    try std.testing.expect(def.keys_osd_combos_only);
+    try std.testing.expectEqual(@as(u8, 2), def.keys_osd_scale);
+    try std.testing.expectEqual(KeysOsdPos.bottom_right, def.keys_osd_pos);
+
+    var cfg = WmConfig{};
+    cfg.parse("keys_osd = true\nkeys_osd_linger_ms = 4000\nkeys_osd_combos_only = false\nkeys_osd_scale = 3\nkeys_osd_pos = top_left\n");
+    try std.testing.expect(cfg.keys_osd);
+    try std.testing.expectEqual(@as(u32, 4000), cfg.keys_osd_linger_ms);
+    try std.testing.expect(!cfg.keys_osd_combos_only);
+    try std.testing.expectEqual(@as(u8, 3), cfg.keys_osd_scale);
+    try std.testing.expectEqual(KeysOsdPos.top_left, cfg.keys_osd_pos);
+
+    // Out-of-range scale clamps; bogus pos keeps the previous value.
+    var clamp = WmConfig{};
+    clamp.parse("keys_osd_scale = 9\nkeys_osd_pos = nowhere\n");
+    try std.testing.expectEqual(@as(u8, 4), clamp.keys_osd_scale);
+    try std.testing.expectEqual(KeysOsdPos.bottom_right, clamp.keys_osd_pos);
 }
 
 test "alt_scroll_zoom defaults on and parses false" {

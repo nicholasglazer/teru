@@ -11,6 +11,7 @@ const XwaylandView = @import("XwaylandView.zig");
 const Launcher = @import("Launcher.zig");
 const LeaderKey = teru.LeaderKey; // shared engine (config/LeaderKey.zig)
 const LeaderPanel = @import("LeaderPanel.zig");
+const KeysOsd = @import("KeysOsd.zig");
 const LeaderConfig = @import("LeaderConfig.zig");
 const Bar = @import("Bar.zig");
 const WmConfig = @import("WmConfig.zig");
@@ -308,6 +309,8 @@ mouse_path_timer_src: ?*wlr.wl_event_source = null,
 launcher: Launcher = .{},
 leader: LeaderKey = .{},
 leader_panel: ?LeaderPanel = null,
+/// Keystroke OSD (klava engine + corner overlay) — see KeysOsd.zig.
+keys_osd: KeysOsd = .{},
 /// Stable backing for a config-driven leader tree (`[leader]` sections).
 /// Empty until ServerConfig builds it; LeaderKey.root points into it.
 leader_tree: teru.LeaderDefs.Tree = .{},
@@ -407,6 +410,10 @@ terminal_repeat_len: u8 = 0,
 // — so a truly-idle bar still produces no GPU work.
 bar_tick_src: ?*wlr.wl_event_source = null,
 bar_tick_last_sig: u64 = 0,
+
+/// Keys-OSD expiry timer — one-shot, armed only while OSD entries are
+/// visible (KeysOsd.armTimer), released in releaseTimers like the rest.
+keys_osd_timer_src: ?*wlr.wl_event_source = null,
 
 // Frames since the last PTY write from input (key, paste, mouse). Used by
 // Output.handleFrame's edge-trigger fallback poll: poll every vsync for
@@ -1523,12 +1530,20 @@ pub fn renderLeaderHint(self: *Server) void {
     }
 }
 
+// ── Keystroke OSD (KeysOsd.zig) ────────────────────────────────
+pub const toggleKeysOsd = KeysOsd.toggle;
+pub const setKeysOsdActive = KeysOsd.setActive;
+pub const keysOsdFeed = KeysOsd.feed;
+
 // ── Window & workspace lifecycle (ServerWindow.zig) ────────────
 // Thin re-exports; node lookup, close paths, float/fullscreen,
 // workspace placement, visibility recompute, multi-output focus.
 pub const setWorkspaceVisibility = Window.setWorkspaceVisibility;
 pub const toggleFloat = Window.toggleFloat;
 pub const toggleFullscreen = Window.toggleFullscreen;
+pub const enterFullscreen = Window.enterFullscreen;
+pub const exitFullscreen = Window.exitFullscreen;
+pub const dropFullscreenForNewWindowOn = Window.dropFullscreenForNewWindowOn;
 pub const nodeAtPoint = Window.nodeAtPoint;
 pub const activeOutputDims = Window.activeOutputDims;
 pub const terminalPaneById = Window.terminalPaneById;

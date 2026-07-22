@@ -27,6 +27,7 @@ const Server = @import("Server.zig");
 const TerminalPane = @import("TerminalPane.zig");
 const Session = @import("Session.zig");
 const ServerClipboard = @import("ServerClipboard.zig");
+const KeysOsd = @import("KeysOsd.zig");
 
 const Keybinds = teru.Keybinds;
 const KBAction = Keybinds.Action;
@@ -843,6 +844,10 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
                 const copied = wlr.miozu_set_clipboard_png_from_file(server.seat, server.display, path_buf[0..path.len :0].ptr) == 0;
                 std.log.scoped(.compositor).info("pane screenshot → {s} (clipboard={})", .{ path, copied });
             }
+            return true;
+        },
+        .keys_osd_toggle => {
+            KeysOsd.toggle(server);
             return true;
         },
         .bar_toggle_top => {

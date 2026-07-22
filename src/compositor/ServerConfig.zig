@@ -10,6 +10,7 @@ const wlr = @import("wlr.zig");
 const WmConfig = @import("WmConfig.zig");
 const Server = @import("Server.zig");
 const LeaderConfig = @import("LeaderConfig.zig");
+const KeysOsd = @import("KeysOsd.zig");
 const teru = @import("teru");
 const Keybinds = teru.Keybinds;
 const Mods = Keybinds.Mods;
@@ -112,6 +113,9 @@ pub fn applyConfig(self: *Server, config: *const teru.Config, allocator: std.mem
     // hardcoded Super+Space rather than being overridden by it.
     LeaderConfig.build(self);
     LeaderConfig.applyActivate(self);
+
+    // ── Keystroke OSD (`keys_osd*` globals) ────────────────────
+    KeysOsd.applyConfig(self);
 }
 
 /// Resolve each `[keybind] chord = spawn:cmd` entry into a spawn_table
@@ -331,6 +335,12 @@ pub fn reloadWmConfig(self: *Server) void {
     // added and the menu structure updates live.)
     LeaderConfig.build(self);
     LeaderConfig.applyActivate(self);
+
+    // Re-apply keystroke-OSD knobs (linger/privacy/scale/pos) and drop the
+    // surface so geometry changes rebuild on next paint. Note the asymmetric
+    // enable: `keys_osd = true` in config turns a stopped OSD on, but reload
+    // never force-disables one the user toggled on at runtime.
+    KeysOsd.applyConfig(self);
 
     // Re-apply bar configuration — widget layout or thresholds may
     // have changed in ways the signature hash doesn't detect

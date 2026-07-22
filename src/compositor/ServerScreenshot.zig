@@ -201,6 +201,16 @@ fn compositeOutput(server: *Server, pixels: []u32, out_w: u32, out_h: u32) void 
             blitRect(pixels, out_w, out_h, p.renderer.framebuffer, p.width, p.height, 0, @intCast(py));
         }
     }
+
+    // Keystroke OSD — same reasoning as the leader panel, but its buffer is
+    // transparent outside the chips, so blend by alpha instead of memcpy
+    // (blitRect would stamp the transparent margin as opaque black).
+    if (server.keys_osd.isShown()) {
+        const osd = &server.keys_osd;
+        if (osd.renderer) |*r| {
+            blitRectAlpha(pixels, out_w, out_h, r.framebuffer, osd.width, osd.height, osd.pos_x, osd.pos_y);
+        }
+    }
 }
 
 /// Crop a rectangular region of the composited output to a PNG. Used by the
@@ -280,6 +290,39 @@ pub fn takeAreaScreenshot(server: *Server, rx: i32, ry: i32, rw: u32, rh: u32) b
 /// Generic ARGB framebuffer blit. Pure pixel math — no wlroots or
 /// Server state. Lives here rather than in render/software.zig only
 /// because it's the sole caller; move if a second consumer appears.
+/// blitRect with per-pixel alpha blend — for overlay buffers that are
+/// transparent outside their drawn content (keys OSD). Fully-opaque pixels
+/// copy, fully-transparent skip, partials blend over the destination.
+fn blitRectAlpha(dst: []u32, dst_w: u32, dst_h: u32, src: []const u32, src_w: u32, src_h: u32, off_x: i32, off_y: i32) void {
+    if (off_x < 0 or off_y < 0) return;
+    const ox: u32 = @intCast(off_x);
+    const oy: u32 = @intCast(off_y);
+    const rows = @min(src_h, dst_h -| oy);
+    const cols = @min(src_w, dst_w -| ox);
+    if (rows == 0 or cols == 0) return;
+
+    for (0..rows) |y| {
+        const dst_start = (@as(usize, oy) + y) * @as(usize, dst_w) + @as(usize, ox);
+        const src_start = y * @as(usize, src_w);
+        if (dst_start + cols > dst.len or src_start + cols > src.len) continue;
+        for (0..cols) |x| {
+            const s = src[src_start + x];
+            const a: u32 = s >> 24;
+            if (a == 0) continue;
+            if (a == 0xff) {
+                dst[dst_start + x] = s;
+                continue;
+            }
+            const d = dst[dst_start + x];
+            const inv: u32 = 255 - a;
+            const r = ((s >> 16 & 0xff) * a + (d >> 16 & 0xff) * inv) / 255;
+            const g = ((s >> 8 & 0xff) * a + (d >> 8 & 0xff) * inv) / 255;
+            const b = ((s & 0xff) * a + (d & 0xff) * inv) / 255;
+            dst[dst_start + x] = 0xff000000 | (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
 fn blitRect(dst: []u32, dst_w: u32, dst_h: u32, src: []const u32, src_w: u32, src_h: u32, off_x: i32, off_y: i32) void {
     if (off_x < 0 or off_y < 0) return;
     const ox: u32 = @intCast(off_x);
