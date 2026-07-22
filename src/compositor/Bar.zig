@@ -531,6 +531,10 @@ fn barSignature(self: *Bar, server: *Server) u64 {
         // so old code only caught length changes, not content changes.)
         const title_bytes = tp.pane.vt.title[0..tp.pane.vt.title_len];
         h ^= std.hash.Wyhash.hash(0, title_bytes);
+    } else if (focusedClientTitle(server)) |t| {
+        // External client focused — hash its title too, so a browser
+        // retitling on page navigation repaints within one bar tick.
+        h ^= std.hash.Wyhash.hash(0, t);
     }
     h *%= prime;
 
@@ -616,6 +620,10 @@ fn buildBarData(_: *Bar, server: *Server) BarData {
         // No app-set title (OSC 0/2) → show nothing rather than a confusing
         // generic "shell". (A cwd-based title would need OSC 7 tracking.)
         data.title = if (tp.pane.vt.title_len > 0) tp.pane.vt.title[0..tp.pane.vt.title_len] else "";
+    } else if (focusedClientTitle(server)) |t| {
+        // External Wayland/X11 client focused — show its title, not the
+        // BarData default (which used to be a stuck "shell").
+        data.title = t;
     }
 
     const active_ws = server.layout_engine.getActiveWorkspace();
@@ -665,6 +673,39 @@ fn buildBarData(_: *Bar, server: *Server) BarData {
     }
 
     return data;
+}
+
+/// Title for the focused external client (xdg or xwayland), or null when
+/// focus is on a terminal pane / nothing at all.
+///
+/// Priority for xdg views: an explicit name — a `[names]` config rule or
+/// MCP set_window_name — wins; at map time XdgView falls back to storing
+/// the app_id AS the name, so `name != app_id` detects a real override.
+/// Then the client's live toplevel title (browser tab titles etc.), then
+/// the app_id-derived name. Xwayland surfaces aren't in the name registry,
+/// so they resolve to their live title only.
+///
+/// Returned slices borrow wlroots-owned (or registry-owned) memory — valid
+/// for the current bar tick only, never stored.
+fn focusedClientTitle(server: *Server) ?[]const u8 {
+    if (server.focused_view) |view| {
+        var fallback: []const u8 = "";
+        if (server.nodes.findById(view.node_id)) |slot| {
+            const name = server.nodes.getName(slot);
+            if (name.len > 0 and !std.mem.eql(u8, name, server.nodes.getAppId(slot))) return name;
+            fallback = name;
+        }
+        if (wlr.miozu_xdg_toplevel_title(view.toplevel)) |t| {
+            const title = std.mem.sliceTo(t, 0);
+            if (title.len > 0) return title;
+        }
+        return fallback;
+    }
+    if (server.focused_xwayland) |xw| {
+        if (wlr.miozu_xwayland_surface_title(xw)) |t| return std.mem.sliceTo(t, 0);
+        return "";
+    }
+    return null;
 }
 
 /// Thread-local storage for the short form returned by shortKeymap.

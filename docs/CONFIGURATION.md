@@ -533,7 +533,7 @@ an `{exec:...}` command works without escaping.
 | Token | Output |
 |-------|--------|
 | `{workspaces}` | Workspace tabs (active highlighted) |
-| `{title}` | Focused pane/window title |
+| `{title}` | Focused pane/window title — a terminal pane's OSC 0/2 title, or the focused client's window title (a `[names]` mapping or MCP-set window name overrides it) |
 | `{layout}` | Current layout indicator, e.g. `[M]`, `[G]`, `[#]` |
 | `{panes}` | Pane count for the active workspace |
 | `{clock}` | Local time in `HH:MM` (shorthand for `{clock:%H:%M}`) |
