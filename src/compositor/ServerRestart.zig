@@ -195,6 +195,12 @@ pub fn execRestart(server: *Server) void {
     server.destroyXwayland();
     server.releaseSeat();
 
+    // Condemned-but-unreaped children (closed-pane shells mid-SIGHUP,
+    // in-flight bar execs) survive execve as children of the new image,
+    // but the Reaper registry does not — flush them now or they zombie
+    // forever (the new image never sees their pids).
+    Reaper.flushBeforeExec();
+
     var argv_buf: [3:null]?[*:0]const u8 = .{ self_exe, @ptrCast("--restore"), null };
     _ = std.posix.system.execve(self_exe, @ptrCast(&argv_buf), std.c.environ);
 

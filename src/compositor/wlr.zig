@@ -762,6 +762,20 @@ pub extern "c" fn miozu_xwayland_surface_request_configure(surface: *wlr_xwaylan
 pub extern "c" fn miozu_xwayland_surface_is_fixed_size(surface: *wlr_xwayland_surface) callconv(.c) bool;
 pub extern "c" fn miozu_xwayland_surface_has_parent(surface: *wlr_xwayland_surface) callconv(.c) bool;
 pub extern "c" fn miozu_xwayland_surface_is_modal(surface: *wlr_xwayland_surface) callconv(.c) bool;
+pub extern "c" fn miozu_xwayland_surface_set_geometry(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_xwayland_surface_request_fullscreen(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_xwayland_surface_set_override_redirect(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_xwayland_surface_fullscreen(surface: *wlr_xwayland_surface) callconv(.c) bool;
+
+/// request_configure event payload (struct wlr_xwayland_surface_configure_event).
+pub const wlr_xwayland_surface_configure_event = opaque {};
+pub extern "c" fn miozu_xwayland_configure_event_x(e: *wlr_xwayland_surface_configure_event) callconv(.c) i16;
+pub extern "c" fn miozu_xwayland_configure_event_y(e: *wlr_xwayland_surface_configure_event) callconv(.c) i16;
+pub extern "c" fn miozu_xwayland_configure_event_width(e: *wlr_xwayland_surface_configure_event) callconv(.c) u16;
+pub extern "c" fn miozu_xwayland_configure_event_height(e: *wlr_xwayland_surface_configure_event) callconv(.c) u16;
+pub extern "wlroots-0.18" fn wlr_xwayland_surface_set_fullscreen(surface: *wlr_xwayland_surface, fullscreen: bool) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_xwayland_or_surface_wants_focus(surface: *const wlr_xwayland_surface) callconv(.c) bool;
+pub extern "c" fn miozu_scene_node_destroy_signal(node: *wlr_scene_node) callconv(.c) *wl_signal;
 
 // ── Custom pixel buffer for terminal panes ─────────────────────
 

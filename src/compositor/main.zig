@@ -13,6 +13,7 @@ const Config = teru.Config;
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 const ServerRestart = @import("ServerRestart.zig");
+const Reaper = @import("Reaper.zig");
 
 // Env-gated logging (TERU_LOG=debug|info|warn|err). TERU_LOG=debug captures the
 // full teruwm MCP trace via std.log.scoped(.mcp).
@@ -159,16 +160,18 @@ pub fn main(init: std.process.Init) !void {
     _ = wlr.wl_event_loop_add_signal(event_loop, @intCast(@intFromEnum(std.posix.SIG.INT)), handleTerminationSignal, display);
 
     // ── Reap exited children (SIGCHLD) ──────────────────────────
-    // The bar's non-blocking exec widgets ({exec:N:cmd}) fork `/bin/sh`
-    // directly and read its output via a pipe. cleanupExec() runs the
-    // moment the pipe yields its first line — usually BEFORE the shell
-    // (which is still waiting on its own pipeline, e.g. `nvidia-smi|awk`)
-    // has exited, so its WNOHANG waitpid reaps nothing and the child is
-    // untracked. With a 5s refresh that leaked ~1 zombie `sh` every few
-    // seconds (894 observed on a long-lived session). Drain every corpse
-    // here instead — SIGCHLD can coalesce, so loop until WNOHANG is dry.
-    // (Double-forked spawns via compat.forkExec reparent to init and are
-    // reaped there; this only catches teruwm's own direct forks.)
+    // Two async corpse sources: bar exec widgets ({exec:N:cmd}), whose
+    // pipe usually yields its first line BEFORE the /bin/sh pipeline
+    // exits (a 5s refresh leaked ~1 zombie sh every few seconds — 894
+    // observed on a long-lived session), and closed-pane shells, which
+    // Pty.deinit SIGHUPs but never waits on. Both pids are registered
+    // with Reaper and reaped here on SIGCHLD.
+    //
+    // The sweep is TARGETED — never waitpid(-1). A global reap steals
+    // the intermediate fork wlroots' lazy Xwayland startup must reap
+    // itself; wlroots then treats the successful launch as failed and
+    // permanently unlinks the X11 sockets ("Unable to open a connection
+    // to X" for the whole session). See Reaper.zig.
     _ = wlr.wl_event_loop_add_signal(event_loop, @intCast(@intFromEnum(std.posix.SIG.CHLD)), handleChildSignal, null);
 
     // ── Run event loop ──────────────────────────────────────────
@@ -188,10 +191,12 @@ fn handleTerminationSignal(_: c_int, data: ?*anyopaque) callconv(.c) c_int {
     return 0;
 }
 
-/// SIGCHLD handler — runs in event-loop context (signalfd). Reaps every
-/// exited child so direct forks (bar exec widgets) never linger as zombies.
+/// SIGCHLD handler — runs in event-loop context (signalfd). Reaps only
+/// the pids teruwm registered (bar execs, closed-pane shells); wlroots'
+/// own children are left for wlroots (see Reaper.zig for why this must
+/// never be a waitpid(-1) loop).
 fn handleChildSignal(_: c_int, _: ?*anyopaque) callconv(.c) c_int {
-    while (std.c.waitpid(-1, null, std.c.W.NOHANG) > 0) {}
+    Reaper.sweep();
     return 0;
 }
 

@@ -651,6 +651,48 @@ bool miozu_xwayland_surface_is_modal(struct wlr_xwayland_surface *s) {
     return s != NULL && s->modal;
 }
 
+/* Fires after xwm has applied a geometry change (own ConfigureNotify
+ * round-trip or a client XMoveWindow on an override-redirect window).
+ * s->x/y/width/height hold the NEW geometry when this fires. */
+struct wl_signal *miozu_xwayland_surface_set_geometry(struct wlr_xwayland_surface *s) {
+    return &s->events.set_geometry;
+}
+
+struct wl_signal *miozu_xwayland_surface_request_fullscreen(struct wlr_xwayland_surface *s) {
+    return &s->events.request_fullscreen;
+}
+
+/* Fires when a client toggles the override-redirect attribute on an
+ * already-created window (Chromium/CEF does this for popups). */
+struct wl_signal *miozu_xwayland_surface_set_override_redirect(struct wlr_xwayland_surface *s) {
+    return &s->events.set_override_redirect;
+}
+
+/* Requested/current _NET_WM_STATE_FULLSCREEN. When request_fullscreen
+ * fires, this already holds the state the client asked for. */
+bool miozu_xwayland_surface_fullscreen(struct wlr_xwayland_surface *s) {
+    return s != NULL && s->fullscreen;
+}
+
+/* Requested geometry carried by request_configure's event data. The
+ * surface's own x/y/width/height still hold the OLD geometry at that
+ * point — the request must be granted (or overridden) explicitly via
+ * wlr_xwayland_surface_configure, else the client never receives a
+ * ConfigureNotify and stays stuck at its previous geometry. */
+int16_t miozu_xwayland_configure_event_x(struct wlr_xwayland_surface_configure_event *e) { return e->x; }
+int16_t miozu_xwayland_configure_event_y(struct wlr_xwayland_surface_configure_event *e) { return e->y; }
+uint16_t miozu_xwayland_configure_event_width(struct wlr_xwayland_surface_configure_event *e) { return e->width; }
+uint16_t miozu_xwayland_configure_event_height(struct wlr_xwayland_surface_configure_event *e) { return e->height; }
+
+/* A scene node's own destroy signal. A wlr_scene_subsurface_tree destroys
+ * ITSELF when its wl_surface dies — which can happen BEFORE dissociate
+ * fires (xwayland teardown, X client crash), leaving any cached tree
+ * pointer dangling. Compositor-side owners must watch this signal instead
+ * of assuming they are the only destroyer. */
+struct wl_signal *miozu_scene_node_destroy_signal(struct wlr_scene_node *n) {
+    return &n->events.destroy;
+}
+
 /* ── Seat keyboard accessor ──────────────────────────────────── */
 
 struct wlr_keyboard *miozu_seat_get_keyboard(struct wlr_seat *s) {

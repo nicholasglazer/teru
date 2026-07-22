@@ -19,6 +19,7 @@ const MouseState = teru.mouse.MouseState;
 const compat = teru.compat;
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
+const Reaper = @import("Reaper.zig");
 
 const TerminalPane = @This();
 
@@ -124,6 +125,9 @@ fn initWithSpawn(server: *Server, rows: u16, cols: u16, spawn_config: Pane.Spawn
     };
 
     var renderer = SoftwareRenderer.initWithScheme(allocator, pixel_w, pixel_h, cell_w, cell_h, server.color_scheme) catch {
+        // Pane.deinit only SIGHUPs the just-spawned shell; Reaper collects
+        // the corpse (there is no global waitpid(-1) — see Reaper.zig).
+        if (pane.childPid()) |shell_pid| Reaper.track(shell_pid);
         pane.deinit(allocator);
         if (wlr.miozu_scene_buffer_node(scene_buffer)) |node| wlr.wlr_scene_node_destroy(node);
         wlr.wlr_buffer_drop(pixel_buffer);
@@ -153,6 +157,7 @@ fn initWithSpawn(server: *Server, rows: u16, cols: u16, spawn_config: Pane.Spawn
     if (server.font_variant_bold_italic) |v| renderer.glyph_atlas_bold_italic = v.data;
 
     const tp = allocator.create(TerminalPane) catch {
+        if (pane.childPid()) |shell_pid| Reaper.track(shell_pid);
         pane.deinit(allocator);
         if (wlr.miozu_scene_buffer_node(scene_buffer)) |node| wlr.wlr_scene_node_destroy(node);
         wlr.wlr_buffer_drop(pixel_buffer);
@@ -822,6 +827,11 @@ pub fn deinit(self: *TerminalPane, allocator: std.mem.Allocator) void {
     // node no longer leaks until display-destroy. set_buffer(null) releases
     // the scene's ref to pixel_buffer; the deferred drain drops it.
     self.freeZoomAtlas();
+    // Pane.deinit → Pty.deinit sends SIGHUP to the shell but never waits
+    // on it; register the pid so the SIGCHLD sweep collects the corpse.
+    // A shell that already self-exited was reaped synchronously by
+    // Pty.isAlive (PTY-EOF path) — track() sees ECHILD and drops it.
+    if (self.pane.childPid()) |shell_pid| Reaper.track(shell_pid);
     self.pane.deinit(allocator);
     if (wlr.miozu_scene_buffer_node(self.scene_buffer)) |node| {
         wlr.wlr_scene_node_set_enabled(node, false);
