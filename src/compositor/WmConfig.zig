@@ -456,48 +456,56 @@ bar_bottom_right_buf: [max_bar_str]u8 = undefined,
 // ── Loading ─────────────────────────────────────────────────────
 
 /// Load config using libc (for hot-reload, no Io needed).
-pub fn loadWithLibc() WmConfig {
-    var config = WmConfig{};
-    const home = teru.compat.getenv("HOME") orelse return config;
+// NOTE: load / loadWithLibc fill a caller-provided *WmConfig IN PLACE rather
+// than returning by value. The parsed struct is self-referential — bar_*,
+// workspace_startup[], xkb_*, screenshot_dir etc. are slices that point into
+// this struct's OWN *_buf fields. Returning by value copied the buffers but
+// left those slices pointing at the returning function's dead stack frame
+// (a by-value return only accidentally works when RLS elides the copy — the
+// Zig upgrade that just landed is exactly the kind of change that can flip
+// that). Filling `self` in place, where `self` is the stable &server.wm_config,
+// keeps every internal slice valid for the struct's whole lifetime.
+pub fn loadWithLibc(self: *WmConfig) void {
+    self.* = .{};
+    const home = teru.compat.getenv("HOME") orelse return;
 
     var path_buf: [512:0]u8 = undefined;
-    const path = std.fmt.bufPrint(&path_buf, "{s}/.config/teruwm/config", .{home}) catch return config;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/.config/teruwm/config", .{home}) catch return;
     path_buf[path.len] = 0;
 
-    const file = std.c.fopen(@ptrCast(path_buf[0..path.len :0]), "rb") orelse return config;
+    const file = std.c.fopen(@ptrCast(path_buf[0..path.len :0]), "rb") orelse return;
     defer _ = std.c.fclose(file);
 
     var content: [64 * 1024]u8 = undefined;
     const n = std.c.fread(&content, 1, content.len, file);
-    if (n == 0) return config;
+    if (n == 0) return;
 
-    config.parse(content[0..n]);
-    return config;
+    self.parse(content[0..n]);
 }
 
-/// Load teruwm config from ~/.config/teruwm/config.
-/// Returns defaults if the file does not exist or cannot be parsed.
-pub fn load(io: Io) WmConfig {
-    var config = WmConfig{};
+/// Load teruwm config from ~/.config/teruwm/config into `self` in place.
+/// Leaves `self` at defaults if the file does not exist or cannot be parsed.
+/// Fills in place (not by value) — see the loadWithLibc NOTE above for why.
+pub fn load(self: *WmConfig, io: Io) void {
+    self.* = .{};
 
-    const home = teru.compat.getenv("HOME") orelse return config;
+    const home = teru.compat.getenv("HOME") orelse return;
 
     var path_buf: [Dir.max_path_bytes]u8 = undefined;
-    const path = std.fmt.bufPrint(&path_buf, "{s}/.config/teruwm/config", .{home}) catch return config;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/.config/teruwm/config", .{home}) catch return;
 
-    const file = Dir.cwd().openFile(io, path, .{}) catch return config;
+    const file = Dir.cwd().openFile(io, path, .{}) catch return;
     defer file.close(io);
 
-    const s = file.stat(io) catch return config;
+    const s = file.stat(io) catch return;
     const size: usize = @intCast(s.size);
-    if (size == 0 or size > 64 * 1024) return config;
+    if (size == 0 or size > 64 * 1024) return;
 
     // Read into stack buffer (config files are small)
     var content: [64 * 1024]u8 = undefined;
-    const n = file.readPositionalAll(io, content[0..size], 0) catch return config;
+    const n = file.readPositionalAll(io, content[0..size], 0) catch return;
 
-    config.parse(content[0..n]);
-    return config;
+    self.parse(content[0..n]);
 }
 
 /// Parse config file content (key=value with [section] headers).
