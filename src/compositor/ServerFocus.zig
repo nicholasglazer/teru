@@ -327,7 +327,23 @@ pub fn focusXwaylandSurface(server: *Server, xw: *wlr.wlr_xwayland_surface) void
 
 pub fn updateFocusedTerminal(server: *Server) void {
     const ws = server.layout_engine.getActiveWorkspace();
-    const active_id = ws.active_node orelse ws.getActiveNodeId() orelse return;
+    const active_id = ws.active_node orelse ws.getActiveNodeId() orelse {
+        // Empty workspace (no tiled/active node): clear focused_terminal so the
+        // status bar stops showing the PREVIOUS workspace's terminal title.
+        // focusWorkspace renders the bar right after this call, and both the bar
+        // signature and the title widget read server.focused_terminal — leaving
+        // it stale kept the old title (and its focus border) on screen until the
+        // next focus/title event (the reported "old title lingers on an empty
+        // workspace until I open a new app" bug). Only focused_terminal is
+        // touched on purpose: focused_view/focused_xwayland drive floating-window
+        // focus, which is managed elsewhere — clearing them here would unfocus a
+        // floating window when switching back to a floating-only workspace.
+        if (server.focused_terminal != null) {
+            server.focused_terminal = null;
+            refreshAllBorders(server);
+        }
+        return;
+    };
 
     var found = false;
     for (server.terminal_panes) |maybe_tp| {
