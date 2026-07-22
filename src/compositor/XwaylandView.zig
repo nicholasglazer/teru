@@ -100,15 +100,19 @@ fn mapView(view: *XwaylandView) void {
     //   - Class allowlist: hard-coded fallback for clients that set a
     //     window-type atom but no size hint (we don't intern atoms here).
     //
-    // Anything matching is treated like an override-redirect: we honour
-    // its requested position + size and don't put it in the tiling list.
-    const wants_floating = is_or
-        or wlr.miozu_xwayland_surface_is_fixed_size(view.surface)
+    // True override-redirects (menus, tooltips, dropdowns) stay UNMANAGED:
+    // no node, honour position verbatim, optional keyboard. Everything else
+    // that matches goes MANAGED-FLOATING below — it gets a node like any
+    // window (workspace-gated visibility, click-focus, close, move), it
+    // just never joins the tiling list. Steam's CEF windows map with
+    // PMinSize == PMaxSize; the old unmanaged treatment left a real,
+    // interactive window glued to every workspace with no way to close it.
+    const wants_aux_float = wlr.miozu_xwayland_surface_is_fixed_size(view.surface)
         or wlr.miozu_xwayland_surface_has_parent(view.surface)
         or wlr.miozu_xwayland_surface_is_modal(view.surface)
         or classIsAlwaysFloating(class);
 
-    if (wants_floating) {
+    if (is_or) {
         // Position at client-requested coords, don't tile, don't put it
         // in the layout engine's node list.
         const x = wlr.miozu_xwayland_surface_x(view.surface);
@@ -135,6 +139,55 @@ fn mapView(view: *XwaylandView) void {
         if (is_or and wlr.wlr_xwayland_or_surface_wants_focus(view.surface)) {
             seatKeyboardEnter(server, wlr_surface);
             view.took_keyboard_focus = true;
+        }
+    } else if (wants_aux_float) {
+        // Managed floating: register a real node so the window belongs to
+        // the active workspace, hides on switch, and responds to
+        // focus/close/move — but skip the tiling list and honour the
+        // client's requested geometry (clamped on-screen: Steam maps at
+        // negative coords, and an offscreen float is as lost as the old
+        // unmanaged one).
+        view.node_id = server.next_node_id;
+        server.next_node_id += 1;
+
+        const ws = server.layout_engine.active_workspace;
+        if (view.scene_tree) |tree| {
+            if (server.nodes.addSurface(server.zig_allocator, view.node_id, ws, null, tree, null)) |slot| {
+                server.nodes.xwayland_surface[slot] = view.surface;
+                if (class) |c| server.nodes.setAppId(slot, std.mem.sliceTo(c, 0));
+                server.nodes.floating[slot] = true;
+
+                const dims = server.activeOutputDims();
+                const out_w: i32 = @intCast(dims.w);
+                const out_h: i32 = @intCast(dims.h);
+                var w: i32 = @intCast(wlr.miozu_xwayland_surface_width(view.surface));
+                var h: i32 = @intCast(wlr.miozu_xwayland_surface_height(view.surface));
+                if (w <= 0) w = 480;
+                if (h <= 0) h = 280;
+                if (w > out_w) w = out_w;
+                if (h > out_h) h = out_h;
+                const x = std.math.clamp(wlr.miozu_xwayland_surface_x(view.surface), 0, @max(0, out_w - w));
+                const y = std.math.clamp(wlr.miozu_xwayland_surface_y(view.surface), 0, @max(0, out_h - h));
+                server.nodes.applyRect(slot, x, y, @intCast(w), @intCast(h));
+            }
+        }
+
+        std.log.scoped(.compositor).info("X11 aux float managed class='{s}' node={d} ws={d} fixed={} parent={} modal={}", .{
+            class orelse "none",
+            view.node_id,
+            server.layout_engine.active_workspace,
+            wlr.miozu_xwayland_surface_is_fixed_size(view.surface),
+            wlr.miozu_xwayland_surface_has_parent(view.surface),
+            wlr.miozu_xwayland_surface_is_modal(view.surface),
+        });
+
+        // Dialogs and modals are interactive — give them the keyboard like
+        // any freshly-mapped window. Fixed-size-only / allowlisted windows
+        // are usually passive HUDs (dunst, conky); don't steal focus.
+        if (wlr.miozu_xwayland_surface_has_parent(view.surface) or
+            wlr.miozu_xwayland_surface_is_modal(view.surface))
+        {
+            server.focusXwaylandSurface(view.surface);
         }
     } else {
         // Regular X11 window: tile like XDG surface
