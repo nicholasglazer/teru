@@ -65,8 +65,10 @@ pub const BarData = struct {
         "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
     },
 
-    // Focused pane/window
-    title: []const u8 = "shell",
+    // Focused pane/window. Default is empty — the caller decides what to
+    // show; a non-empty default here leaks a bogus "shell" whenever the
+    // caller has no title source (e.g. an external client is focused).
+    title: []const u8 = "",
 
     // Layout
     layout_char: u8 = 'M',
