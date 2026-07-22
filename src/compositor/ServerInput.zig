@@ -884,6 +884,11 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
                 const name = if (server.nodes.findById(tp.node_id)) |s| server.nodes.getName(s) else "pane";
                 const path = std.fmt.bufPrint(&path_buf, "/tmp/teruwm-pane-{s}-{d}.png", .{ name, ts }) catch return true;
                 path_buf[path.len] = 0;
+                // The pane name (settable via teruwm_set_name over MCP) is
+                // interpolated into the path — a name containing `../` could
+                // escape /tmp. Gate through the same allowlist the MCP
+                // screenshot tools use before writing.
+                if (!teru.compat.isSafeScreenshotPath(path)) return true;
                 const png = teru.png;
                 png.write(server.zig_allocator, @ptrCast(path_buf[0..path.len :0]), tp.renderer.framebuffer, tp.renderer.width, tp.renderer.height) catch return true;
                 // Also copy to the Wayland clipboard, like .screenshot and
