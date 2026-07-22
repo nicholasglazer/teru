@@ -664,6 +664,10 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.natural_scroll = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "smooth_scroll")) {
         self.smooth_scroll = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+    } else if (std.mem.eql(u8, key, "max_render_fps")) {
+        self.max_render_fps = std.fmt.parseInt(u32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "partial_damage")) {
+        self.partial_damage = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "scroll_to_bottom_on_input")) {
         self.scroll_to_bottom_on_input = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "copy_on_select")) {

@@ -67,6 +67,13 @@ zoom_atlas: ?*FontAtlas = null,
 // frozen-pane look.
 sync_started_ns: i128 = 0,
 
+/// Monotonic ns of the last full paint+commit (renderIfDirty / render). Drives
+/// the `max_render_fps` throttle: a pane streaming PTY output faster than the
+/// cap defers its (full-buffer) GPU re-upload to the next eligible vsync rather
+/// than re-uploading on every one. 0 = never painted, so the first paint is
+/// always immediate.
+last_render_ns: i128 = 0,
+
 /// Mirrors the scene node's enabled state (driven by setVisible). When false
 /// the pane is on a non-active workspace / parked, so the frame loop skips its
 /// paint — an agent fleet on a background workspace shouldn't burn a full SIMD
@@ -371,6 +378,15 @@ pub fn createFloating(server: *Server, rows: u16, cols: u16, spawn_config: Pane.
 /// to prevent heavy output (e.g., Claude AI streaming) from starving mouse/keyboard.
 pub fn poll(self: *TerminalPane) bool {
     const max_reads_per_tick = 4; // 4 * 8KB = 32KB max per event loop tick
+    // Wall-clock safety valve: one dispatch must not park the event loop
+    // parsing a pathological burst (a huge run of escape sequences), which
+    // starves input/MCP/frame callbacks — the touchpad-freeze class of stall
+    // (commit 25333b3). 32KB of plain text parses in well under this budget;
+    // it only bites on adversarial input. Leftover bytes stay in the PTY (the
+    // master fd is level-triggered, so ptyReadable re-fires and handleFrame
+    // re-polls), so nothing is dropped and agents never block.
+    const parse_budget_ns: i128 = 8 * std.time.ns_per_ms;
+    const poll_start_ns = compat.monotonicNow();
     var any = false;
     for (0..max_reads_per_tick) |_| {
         const n = self.pane.readAndProcess(&self.read_buf) catch return any;
@@ -387,6 +403,7 @@ pub fn poll(self: *TerminalPane) bool {
         }
         self.server.perf.recordPtyRead(n);
         any = true;
+        if (compat.monotonicNow() - poll_start_ns >= parse_budget_ns) break;
     }
     // Recover an orphaned alt screen (SSH dropped / TUI killed without sending
     // ESC[?1049l) — otherwise the dead frame shows through under the shell.
@@ -430,6 +447,34 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
         self.sync_started_ns = 0;
     }
     self.sync_flushed = false;
+
+    // ── Render-rate cap (max_render_fps) ─────────────────────────
+    // A pane streaming PTY output (build log, `cat`, an AI agent) marks the
+    // grid dirty every few ms. Each paint presents FULL-buffer damage (see the
+    // dirty_y0 = -1 note below — the GLES path forces it unless partial_damage
+    // is enabled), so painting on every vsync means a whole-pane GPU re-upload
+    // at the monitor's refresh rate. Cap the paint rate for sustained output:
+    // if we painted more recently than the cap allows, DEFER — leave the grid
+    // dirty and return false so handleFrame reschedules a follow-up frame (the
+    // same path the DEC-2026 hold above uses). This cuts the upload COUNT
+    // without touching the damage shape, so it carries no GLES partial-upload
+    // risk. When output stops the grid goes clean and renderIfDirty returns at
+    // the top, so the throttle never sustains a wakeup loop on its own.
+    //
+    // Bypass the cap whenever responsiveness beats upload cost:
+    //   • recent keyboard input   → typing/echo must feel instant
+    //   • scrolled / scroll-anim  → smooth scroll needs every frame
+    //   • active selection drag   → the highlight must track the cursor
+    const now_ns = compat.monotonicNow();
+    if (self.server.wm_config.max_render_fps > 0 and self.last_render_ns != 0) {
+        const interactive = self.server.frames_since_pty_input < input_grace_frames or
+            self.pane.scroll_offset > 0 or self.pane.scroll_pixel > 0 or
+            self.scroll_anim_active or self.selection.active;
+        if (!interactive) {
+            const min_interval_ns: i128 = @divTrunc(@as(i128, std.time.ns_per_s), @as(i128, self.server.wm_config.max_render_fps));
+            if (now_ns - self.last_render_ns < min_interval_ns) return false;
+        }
+    }
 
     // Capture dirty range BEFORE renderDirty resets it. Convert
     // grid rows → pixel Y via cell_height. If the range is empty
@@ -500,6 +545,8 @@ pub fn renderIfDirty(self: *TerminalPane) bool {
         dirty_y1,
         border,
     );
+    self.last_render_ns = now_ns;
+    self.applied_chrome = .{ .focused = self.renderer.cursor_focused, .has_border = has_border, .color = border_color };
     return true;
 }
 
@@ -892,17 +939,26 @@ fn ptyReadable(_: c_int, mask: u32, data: ?*anyopaque) callconv(.c) c_int {
     }
     if (tp.poll()) {
         // Grid is dirty — tell wlroots we need a new frame so handleFrame
-        // renders the updated content on the next vsync.
+        // renders the updated content on the next vsync. But only if this
+        // pane is actually VISIBLE: handleFrame skips the paint for hidden
+        // panes (parked scratchpads, fleets on a background workspace —
+        // Output.zig `if (!tp.visible) continue;`), so waking the output for
+        // them just spins the loop for a commit that paints nothing. They're
+        // force-repainted (setVisible → markAllDirty) when shown, so no output
+        // is lost; the PTY is still drained above either way so agents never
+        // block.
         // Multi-output: schedule on every output, since a pane on
         // workspace K is only ever visible on the output showing K.
         // N ≤ 4 in practice, trivial cost. Fall back to primary_output
         // during the init window where outputs[] hasn't populated yet.
-        if (tp.server.outputs.items.len > 0) {
-            for (tp.server.outputs.items) |o| {
-                wlr.wlr_output_schedule_frame(o.wlr_output);
+        if (tp.visible) {
+            if (tp.server.outputs.items.len > 0) {
+                for (tp.server.outputs.items) |o| {
+                    wlr.wlr_output_schedule_frame(o.wlr_output);
+                }
+            } else if (tp.server.primary_output) |output| {
+                wlr.wlr_output_schedule_frame(output);
             }
-        } else if (tp.server.primary_output) |output| {
-            wlr.wlr_output_schedule_frame(output);
         }
     } else if (!tp.pane.isAlive()) {
         // Woke readable but the read produced nothing and the child is
