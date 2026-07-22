@@ -26,6 +26,11 @@ show_window_menu: wlr.wl_listener = makeListener(handleShowWindowMenu),
 new_popup: wlr.wl_listener = makeListener(handleNewPopup),
 request_move: wlr.wl_listener = makeListener(handleRequestMove),
 request_resize: wlr.wl_listener = makeListener(handleRequestResize),
+// Client asked to go (un)fullscreen via xdg_toplevel.set_fullscreen —
+// gamescope `-f`, mpv, video players. teruwm honours it by expanding the
+// window to the whole output (see handleRequestFullscreen). Previously
+// ignored, which is why nested gamescope got stuck at its tile size.
+request_fullscreen: wlr.wl_listener = makeListener(handleRequestFullscreen),
 
 // wlr_foreign_toplevel_management_v1 handle. Created on map, destroyed
 // on unmap; null in between. Taskbar clients (waybar, nwg-panel) see
@@ -71,6 +76,7 @@ pub fn create(server: *Server, toplevel: *wlr.wlr_xdg_toplevel) ?*XdgView {
         .new_popup = makeListener(handleNewPopup),
         .request_move = makeListener(handleRequestMove),
         .request_resize = makeListener(handleRequestResize),
+        .request_fullscreen = makeListener(handleRequestFullscreen),
     };
 
     // Register listeners on the surface and toplevel events
@@ -83,6 +89,7 @@ pub fn create(server: *Server, toplevel: *wlr.wlr_xdg_toplevel) ?*XdgView {
     wlr.wl_signal_add(wlr.miozu_xdg_surface_new_popup(xdg_surface), &view.new_popup);
     wlr.wl_signal_add(wlr.miozu_xdg_toplevel_request_move(toplevel), &view.request_move);
     wlr.wl_signal_add(wlr.miozu_xdg_toplevel_request_resize(toplevel), &view.request_resize);
+    wlr.wl_signal_add(wlr.miozu_xdg_toplevel_request_fullscreen(toplevel), &view.request_fullscreen);
 
     return view;
 }
@@ -161,8 +168,69 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         }
     }
 
-    // Focus the new surface
-    server.focusView(view);
+    // Focus the new surface — with two exceptions:
+    //   * a notification popup (top_right) must appear without stealing keyboard
+    //     focus from whatever you're using;
+    //   * a surface from the SAME client as a currently-fullscreen window. Video
+    //     players (VLC) spawn short-lived transient toplevels while fullscreen;
+    //     focusing them yanks keyboard focus + activation off the fullscreen
+    //     window, which can make the player revert fullscreen (part of the
+    //     observed on/off toggling). Keep focus pinned to the fullscreen window.
+    const same_app_as_fullscreen = blk: {
+        const fs = server.fullscreen_node orelse break :blk false;
+        const fslot = server.nodes.findById(fs) orelse break :blk false;
+        break :blk aid_slice.len > 0 and std.mem.eql(u8, aid_slice, server.nodes.getAppId(fslot));
+    };
+    if (placement != .top_right and !same_app_as_fullscreen) server.focusView(view);
+
+    // Honor a fullscreen request the client made BEFORE its surface mapped.
+    // gamescope `-f`, mpv `--fs`, and video players call xdg_toplevel.
+    // set_fullscreen on their initial commit — when no node exists yet, so the
+    // request_fullscreen handler can't act (findById misses). Re-check the
+    // latched requested-state now that the node is registered + tiled, and
+    // expand it to the whole output. This is what makes a nested gamescope
+    // come up fullscreen instead of squeezed into a tile.
+    //
+    // EXCEPT browsers: Chromium/Vivaldi/Firefox occasionally latch a fullscreen
+    // hint at startup (restored session, a video page, kiosk-ish profiles), and
+    // a general-purpose browser coming up teruwm-fullscreen (bars hidden, every
+    // other window hidden) is surprising — the user reported "the browser opens
+    // fullscreen for no reason". Browsers still fullscreen at RUNTIME via
+    // handleRequestFullscreen when the user fullscreens a video; only this
+    // come-up-fullscreen-on-map shortcut is suppressed for them.
+    const aid_for_fs: []const u8 = if (app_id) |aid| std.mem.sliceTo(aid, 0) else "";
+    if (wlr.miozu_xdg_toplevel_requested_fullscreen(view.toplevel) and !appIdSkipsMapFullscreen(aid_for_fs)) {
+        server.enterFullscreen(view.node_id);
+    }
+}
+
+/// Returns true for app IDs whose pre-map fullscreen request should be IGNORED
+/// (they still honor a RUNTIME set_fullscreen via handleRequestFullscreen). The
+/// case is browsers, which are general-purpose windows the user expects to come
+/// up tiled — unlike a media player / game (mpv, gamescope, …) for which
+/// coming up fullscreen IS the intent. Case-insensitive substring match so the
+/// many app_id spellings ("vivaldi-stable", "Chromium", "google-chrome-stable",
+/// "firefox-esr", "brave-browser") all resolve.
+fn appIdSkipsMapFullscreen(app_id: []const u8) bool {
+    if (app_id.len == 0) return false;
+    const tokens = [_][]const u8{
+        "vivaldi", "chromium", "chrome", "firefox", "brave",
+        "librewolf", "waterfox", "mullvad-browser", "edge", "opera", "zen",
+    };
+    for (tokens) |t| {
+        if (asciiContainsIgnoreCase(app_id, t)) return true;
+    }
+    return false;
+}
+
+/// Case-insensitive substring test (small needles, off the hot path).
+fn asciiContainsIgnoreCase(hay: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or needle.len > hay.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= hay.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(hay[i .. i + needle.len], needle)) return true;
+    }
+    return false;
 }
 
 /// Center a floating node on the active output, sized to the client's own
@@ -305,6 +373,7 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     wlr.wl_list_remove(&view.new_popup.link);
     wlr.wl_list_remove(&view.request_move.link);
     wlr.wl_list_remove(&view.request_resize.link);
+    wlr.wl_list_remove(&view.request_fullscreen.link);
 
     std.log.scoped(.compositor).info("surface destroyed node={d}", .{view.node_id});
 
@@ -501,6 +570,30 @@ fn handleRequestResize(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) 
     server.grab_w = server.nodes.width[slot];
     server.grab_h = server.nodes.height[slot];
 }
+
+/// xdg_toplevel.set_fullscreen handler. A client (gamescope `-f`, mpv, a
+/// video player) asks to fill the output. We ack the request so the client
+/// learns its state, then drive teruwm's fullscreen for THIS view's node.
+/// Without this teruwm silently ignored the request and a nested gamescope
+/// stayed at its tile size ("stuck at 1280×720").
+fn handleRequestFullscreen(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const view: *XdgView = @fieldParentPtr("request_fullscreen", listener);
+    const server = view.server;
+    const want = wlr.miozu_xdg_toplevel_requested_fullscreen(view.toplevel);
+    // Diagnostic: distinguishes a CLIENT-driven fullscreen change from the
+    // compositor's own exit paths in the log. VLC self-toggles want=true/false
+    // during its Wayland vout negotiation; this makes that visible.
+    std.log.scoped(.compositor).info("client fullscreen request node={d} want={}", .{ view.node_id, want });
+    // Ack: tell the client the fullscreen state it will get on next configure.
+    _ = wlr.wlr_xdg_toplevel_set_fullscreen(view.toplevel, want);
+    if (want) {
+        server.focusView(view);
+        server.enterFullscreen(view.node_id);
+    } else if (server.fullscreen_node == view.node_id) {
+        server.exitFullscreen();
+    }
+    server.scheduleRender();
+}
 // ── Helper ─────────────────────────────────────────────────────
 
 fn makeListener(comptime func: *const fn (*wlr.wl_listener, ?*anyopaque) callconv(.c) void) wlr.wl_listener {
@@ -508,4 +601,20 @@ fn makeListener(comptime func: *const fn (*wlr.wl_listener, ?*anyopaque) callcon
         .link = .{ .prev = null, .next = null },
         .notify = func,
     };
+}
+
+test "appIdSkipsMapFullscreen: browsers suppressed, players honored" {
+    // Browsers (various app_id spellings) → skip come-up-fullscreen-on-map.
+    try std.testing.expect(appIdSkipsMapFullscreen("vivaldi-stable"));
+    try std.testing.expect(appIdSkipsMapFullscreen("Chromium"));
+    try std.testing.expect(appIdSkipsMapFullscreen("google-chrome-stable"));
+    try std.testing.expect(appIdSkipsMapFullscreen("firefox-esr"));
+    try std.testing.expect(appIdSkipsMapFullscreen("brave-browser"));
+    try std.testing.expect(appIdSkipsMapFullscreen("org.mozilla.firefox"));
+    // Players / games / others → keep the at-map fullscreen behavior.
+    try std.testing.expect(!appIdSkipsMapFullscreen("mpv"));
+    try std.testing.expect(!appIdSkipsMapFullscreen("gamescope"));
+    try std.testing.expect(!appIdSkipsMapFullscreen("vlc"));
+    try std.testing.expect(!appIdSkipsMapFullscreen("foot"));
+    try std.testing.expect(!appIdSkipsMapFullscreen(""));
 }

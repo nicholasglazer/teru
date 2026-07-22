@@ -109,42 +109,9 @@ pub fn toggleFloat(self: *Server) void {
 /// focused_terminal OR focused_view and expands either one.
 pub fn toggleFullscreen(self: *Server) void {
     if (self.fullscreen_node != null) {
-        // ── Exit fullscreen ──
-        self.fullscreen_node = null;
-
-        // Restore bar visibility
-        if (self.bar) |b| {
-            b.top.enabled = self.fullscreen_prev_bar_top;
-            b.bottom.enabled = self.fullscreen_prev_bar_bottom;
-            if (b.top.enabled) {
-                if (wlr.miozu_scene_buffer_node(b.top.scene_buffer)) |node| {
-                    wlr.wlr_scene_node_set_enabled(node, true);
-                }
-            }
-            if (b.bottom.enabled) {
-                if (wlr.miozu_scene_buffer_node(b.bottom.scene_buffer)) |node| {
-                    wlr.wlr_scene_node_set_enabled(node, true);
-                }
-            }
-        }
-
-        // Re-show every node via the derived-visibility pass. Unlike the
-        // tiled-only setWorkspaceVisibility, this covers floating windows and
-        // shown scratchpads (which enter-fullscreen hid via recomputeVisibility)
-        // across all outputs, and observes fullscreen_node == null. Symmetric
-        // with the enter path.
-        recomputeVisibility(self);
-
-        // Re-tile (respects bar height again)
-        const ws = self.layout_engine.active_workspace;
-        self.arrangeworkspace(ws);
-        if (self.bar) |b| _ = b.render(self);
-
-        std.log.scoped(.compositor).info("fullscreen off", .{});
+        exitFullscreen(self);
         return;
     }
-
-    // ── Enter fullscreen ──
     // Target = focused terminal OR focused xdg view. Either way we
     // expand its node to the full output.
     const target_id: u64 = if (self.focused_terminal) |tp|
@@ -153,7 +120,18 @@ pub fn toggleFullscreen(self: *Server) void {
         v.node_id
     else
         return;
+    enterFullscreen(self, target_id);
+}
 
+/// Make `target_id` fill the entire output (no bar, no gaps). Used by the
+/// fullscreen keybind AND by a client's xdg_toplevel.set_fullscreen request
+/// (gamescope `-f`, mpv, video players). Re-entrant-safe: if a different node
+/// is already fullscreen it is restored first.
+pub fn enterFullscreen(self: *Server, target_id: u64) void {
+    if (self.fullscreen_node) |cur| {
+        if (cur == target_id) return;
+        exitFullscreen(self);
+    }
     self.fullscreen_node = target_id;
 
     // Save and hide bars
@@ -169,18 +147,19 @@ pub fn toggleFullscreen(self: *Server) void {
     }
 
     // Hide everything except the fullscreened node. recomputeVisibility
-    // now observes fullscreen_node as an override, so one O(N) pass
-    // covers terminals + xdg views on every output — no double loop.
+    // observes fullscreen_node as an override, so one O(N) pass covers
+    // terminals + xdg views on every output — no double loop.
     recomputeVisibility(self);
 
-    // Expand focused pane to fill entire output (no bar, no gaps).
-    // For terminals we also resize the SW renderer framebuffer so the
-    // cell grid expands to match; for xdg clients, applyRect sends the
-    // xdg_toplevel_set_size configure.
+    // Expand to fill the entire output (no bar, no gaps). For terminals we
+    // also resize the SW renderer framebuffer so the cell grid expands; for
+    // xdg/xwayland clients, applyRect sends the set_size/configure. Keyed on
+    // the target node's kind (not focused_terminal) so the client-request
+    // path fullscreens the right window even when focus is elsewhere.
     const dims_fs = activeOutputDims(self);
     const out_w: u32 = dims_fs.w;
     const out_h: u32 = dims_fs.h;
-    if (self.focused_terminal) |tp| {
+    if (terminalPaneById(self, target_id)) |tp| {
         tp.resize(out_w, out_h);
         tp.setPosition(0, 0);
     } else if (self.nodes.findById(target_id)) |slot| {
@@ -188,6 +167,68 @@ pub fn toggleFullscreen(self: *Server) void {
     }
 
     std.log.scoped(.compositor).info("fullscreen on node={d}", .{target_id});
+}
+
+/// Restore from fullscreen — re-show bars + all windows, re-tile. No-op if
+/// nothing is currently fullscreen.
+pub fn exitFullscreen(self: *Server) void {
+    if (self.fullscreen_node == null) return;
+    self.fullscreen_node = null;
+
+    // Restore bar visibility
+    if (self.bar) |b| {
+        b.top.enabled = self.fullscreen_prev_bar_top;
+        b.bottom.enabled = self.fullscreen_prev_bar_bottom;
+        if (b.top.enabled) {
+            if (wlr.miozu_scene_buffer_node(b.top.scene_buffer)) |node| {
+                wlr.wlr_scene_node_set_enabled(node, true);
+            }
+        }
+        if (b.bottom.enabled) {
+            if (wlr.miozu_scene_buffer_node(b.bottom.scene_buffer)) |node| {
+                wlr.wlr_scene_node_set_enabled(node, true);
+            }
+        }
+    }
+
+    // Re-show every node via the derived-visibility pass — covers floating
+    // windows and shown scratchpads, and observes fullscreen_node == null.
+    recomputeVisibility(self);
+
+    // Re-tile (respects bar height again)
+    const ws = self.layout_engine.active_workspace;
+    self.arrangeworkspace(ws);
+    if (self.bar) |b| _ = b.render(self);
+
+    std.log.scoped(.compositor).info("fullscreen off", .{});
+}
+
+/// A new TILED window is about to join workspace `ws`. If a fullscreen window
+/// already lives on that same workspace, drop fullscreen FIRST: arrangeworkspace
+/// has no fullscreen awareness, so re-tiling `ws` would shrink the fullscreen
+/// window to a tile while `fullscreen_node` stays set and the bars stay hidden —
+/// a broken half-fullscreen layout (the reported "open VLC over a fullscreen
+/// browser → windows mis-tile, black gaps" symptom). Callers MUST skip this for
+/// floating/dialog/popup maps: those correctly float OVER the fullscreen window
+/// (e.g. a player's open-file dialog) and must not collapse it. A window landing
+/// on a DIFFERENT workspace also leaves fullscreen intact (its arrangeworkspace
+/// never touches the fullscreen window's workspace).
+pub fn dropFullscreenForNewWindowOn(self: *Server, ws: u8, new_app_id: []const u8) void {
+    const fs = self.fullscreen_node orelse return;
+    const slot = self.nodes.findById(fs) orelse return;
+    if (self.nodes.workspace[slot] != ws) return;
+    // Same-app windows are the FULLSCREEN CLIENT'S OWN surfaces. Video players —
+    // VLC especially — spawn short-lived transient toplevels while entering /
+    // exiting fullscreen; dropping fullscreen on each one fights the client and
+    // produces a fullscreen-on/off flicker loop (observed live: vlc mapped
+    // nodes 15-22, each toggling fullscreen). Only a DIFFERENT app opening a
+    // window means "show me this" → drop. Empty app_id never matches (so two
+    // distinct no-app_id windows still drop, which is correct — they're not one
+    // client's fullscreen machinery). arrangeWorkspace additionally pins the
+    // fullscreen node to full-output so the same-app transient can't resize it.
+    const fs_app = self.nodes.getAppId(slot);
+    if (new_app_id.len > 0 and std.mem.eql(u8, new_app_id, fs_app)) return;
+    exitFullscreen(self);
 }
 
 // ── Terminal lifecycle ─────────────────────────────────────────

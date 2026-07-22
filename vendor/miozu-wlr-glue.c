@@ -134,6 +134,13 @@ struct wlr_xdg_toplevel *miozu_xdg_toplevel_parent(struct wlr_xdg_toplevel *t) {
     return t->parent;
 }
 
+/* The client's requested fullscreen state (set when it sends
+ * xdg_toplevel.set_fullscreen). Read in the request_fullscreen handler to
+ * decide enter vs exit. */
+bool miozu_xdg_toplevel_requested_fullscreen(struct wlr_xdg_toplevel *t) {
+    return t->requested.fullscreen;
+}
+
 /* ── XDG surface fields ──────────────────────────────────────── */
 
 struct wlr_surface *miozu_xdg_surface_surface(struct wlr_xdg_surface *s) {

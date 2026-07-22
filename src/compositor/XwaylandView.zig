@@ -148,8 +148,20 @@ fn mapView(view: *XwaylandView) void {
                 // stay at whatever pre-map size X assigned them (a 1x1
                 // square in the top-left is the usual outcome).
                 server.nodes.xwayland_surface[slot] = view.surface;
+                // WM_CLASS as app_id — dropFullscreenForNewWindowOn's
+                // same-app guard (and the focus guard below) match on it;
+                // without this every X11 node reads "" and a fullscreen
+                // X11 game is kicked out by its own secondary windows.
+                if (class) |c| server.nodes.setAppId(slot, std.mem.sliceTo(c, 0));
             }
         }
+        // Same fullscreen reconciliation as the XDG tiled path: a real tiled X11
+        // window joining the fullscreen workspace drops fullscreen first, so the
+        // re-tile below produces a clean, bar-restored layout instead of a broken
+        // half-fullscreen one. The wants_floating branch above is the dialog/HUD
+        // case and intentionally floats over fullscreen.
+        server.dropFullscreenForNewWindowOn(ws, if (class) |c| std.mem.sliceTo(c, 0) else "");
+
         server.layout_engine.workspaces[ws].addNode(server.zig_allocator, view.node_id) catch return;
 
         std.log.scoped(.compositor).info("X11 surface mapped class='{s}' node={d} ws={d}", .{ class orelse "none", view.node_id, ws });

@@ -447,6 +447,7 @@ pub extern "c" fn miozu_xdg_toplevel_destroy(toplevel: *wlr_xdg_toplevel) callco
 pub extern "c" fn miozu_xdg_toplevel_request_move(toplevel: *wlr_xdg_toplevel) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_xdg_toplevel_request_resize(toplevel: *wlr_xdg_toplevel) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_xdg_toplevel_request_fullscreen(toplevel: *wlr_xdg_toplevel) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_xdg_toplevel_requested_fullscreen(toplevel: *wlr_xdg_toplevel) callconv(.c) bool;
 pub extern "c" fn miozu_xdg_toplevel_request_show_window_menu(toplevel: *wlr_xdg_toplevel) callconv(.c) *wl_signal;
 
 pub extern "c" fn miozu_xdg_toplevel_base(toplevel: *wlr_xdg_toplevel) callconv(.c) ?*wlr_xdg_surface;
@@ -593,6 +594,7 @@ pub extern "wlroots-0.18" fn wlr_scene_node_set_position(node: *wlr_scene_node, 
 pub extern "wlroots-0.18" fn wlr_scene_node_set_enabled(node: *wlr_scene_node, enabled: bool) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_xdg_toplevel_set_size(toplevel: *wlr_xdg_toplevel, width: u32, height: u32) callconv(.c) u32;
 pub extern "wlroots-0.18" fn wlr_xdg_toplevel_set_activated(toplevel: *wlr_xdg_toplevel, activated: bool) callconv(.c) u32;
+pub extern "wlroots-0.18" fn wlr_xdg_toplevel_set_fullscreen(toplevel: *wlr_xdg_toplevel, fullscreen: bool) callconv(.c) u32;
 pub extern "wlroots-0.18" fn wlr_scene_rect_create(parent: *wlr_scene_tree, width: c_int, height: c_int, color: *const [4]f32) callconv(.c) ?*wlr_scene_rect;
 pub extern "wlroots-0.18" fn wlr_scene_rect_set_size(rect: *wlr_scene_rect, width: c_int, height: c_int) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_scene_rect_set_color(rect: *wlr_scene_rect, color: *const [4]f32) callconv(.c) void;

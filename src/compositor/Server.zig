@@ -1388,6 +1388,15 @@ pub fn spawnTerminal(self: *Server, ws: u8) void {
         }
     }
 
+    // A new tiled terminal joining a workspace that's showing a fullscreen
+    // window drops that fullscreen first — same reconciliation the XDG/xwayland
+    // map paths do. Without it, the arrange below re-tiles the fullscreen window
+    // to a tile while fullscreen_node stays set + the bars stay hidden.
+    // Terminals carry no app_id, so this always reads as a "different app" and
+    // drops any pre-existing fullscreen — spawning a terminal onto a fullscreen
+    // workspace is an explicit "give me a shell here".
+    self.dropFullscreenForNewWindowOn(ws, "");
+
     // NOW arrange — all panes including the new one are findable
     self.arrangeworkspace(ws);
 
