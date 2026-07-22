@@ -673,6 +673,30 @@ pub extern "wlroots-0.18" fn wlr_seat_pointer_notify_button(seat: *wlr_seat, tim
 pub extern "wlroots-0.18" fn wlr_seat_pointer_notify_frame(seat: *wlr_seat) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_seat_pointer_clear_focus(seat: *wlr_seat) callconv(.c) void;
 
+// ── pointer-constraints-v1 + relative-pointer-v1 ───────────────
+// Cursor lock + raw relative motion for games / nested gamescope mouselook.
+// teruwm activates a constraint while its surface holds pointer focus;
+// ServerCursor freezes the cursor while a LOCKED constraint is active AND
+// its surface still holds keyboard focus (so the freeze always releases on
+// focus change). relative-pointer motion is sent on every pointer motion.
+pub const wlr_relative_pointer_manager_v1 = opaque {};
+pub extern "wlroots-0.18" fn wlr_relative_pointer_manager_v1_create(display: *wl_display) callconv(.c) ?*wlr_relative_pointer_manager_v1;
+pub extern "wlroots-0.18" fn wlr_relative_pointer_manager_v1_send_relative_motion(manager: *wlr_relative_pointer_manager_v1, seat: *wlr_seat, time_usec: u64, dx: f64, dy: f64, dx_unaccel: f64, dy_unaccel: f64) callconv(.c) void;
+
+pub const wlr_pointer_constraints_v1 = opaque {};
+pub const wlr_pointer_constraint_v1 = opaque {};
+pub extern "wlroots-0.18" fn wlr_pointer_constraints_v1_create(display: *wl_display) callconv(.c) ?*wlr_pointer_constraints_v1;
+pub extern "wlroots-0.18" fn wlr_pointer_constraints_v1_constraint_for_surface(constraints: *wlr_pointer_constraints_v1, surface: *wlr_surface, seat: *wlr_seat) callconv(.c) ?*wlr_pointer_constraint_v1;
+pub extern "wlroots-0.18" fn wlr_pointer_constraint_v1_send_activated(constraint: *wlr_pointer_constraint_v1) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_pointer_constraint_v1_send_deactivated(constraint: *wlr_pointer_constraint_v1) callconv(.c) void;
+
+// Glue accessors (vendor/miozu-wlr-glue.c)
+pub extern "c" fn miozu_pointer_constraints_new_constraint(mgr: *wlr_pointer_constraints_v1) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_pointer_constraint_surface(c: *wlr_pointer_constraint_v1) callconv(.c) ?*wlr_surface;
+pub extern "c" fn miozu_pointer_constraint_type(c: *wlr_pointer_constraint_v1) callconv(.c) c_int;
+pub extern "c" fn miozu_pointer_constraint_destroy_signal(c: *wlr_pointer_constraint_v1) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_seat_keyboard_focused_surface(seat: *wlr_seat) callconv(.c) ?*wlr_surface;
+
 // Scene node hit testing + surface resolution
 pub extern "wlroots-0.18" fn wlr_scene_node_at(node: *wlr_scene_node, lx: f64, ly: f64, nx: *f64, ny: *f64) callconv(.c) ?*wlr_scene_node;
 pub extern "wlroots-0.18" fn wlr_scene_buffer_from_node(node: *wlr_scene_node) callconv(.c) ?*wlr_scene_buffer;
@@ -699,6 +723,8 @@ pub extern "c" fn miozu_pointer_motion_time(event: *wlr_pointer_motion_event) ca
 pub extern "c" fn miozu_pointer_motion_abs_x(event: *wlr_pointer_motion_absolute_event) callconv(.c) f64;
 pub extern "c" fn miozu_pointer_motion_abs_y(event: *wlr_pointer_motion_absolute_event) callconv(.c) f64;
 pub extern "c" fn miozu_pointer_motion_abs_time(event: *wlr_pointer_motion_absolute_event) callconv(.c) u32;
+pub extern "c" fn miozu_pointer_motion_unaccel_dx(event: *wlr_pointer_motion_event) callconv(.c) f64;
+pub extern "c" fn miozu_pointer_motion_unaccel_dy(event: *wlr_pointer_motion_event) callconv(.c) f64;
 pub extern "c" fn miozu_pointer_button_button(event: *wlr_pointer_button_event) callconv(.c) u32;
 pub extern "c" fn miozu_pointer_button_state(event: *wlr_pointer_button_event) callconv(.c) u32;
 pub extern "c" fn miozu_pointer_button_time(event: *wlr_pointer_button_event) callconv(.c) u32;

@@ -274,6 +274,11 @@ double miozu_pointer_motion_dx(struct wlr_pointer_motion_event *e) { return e->d
 double miozu_pointer_motion_dy(struct wlr_pointer_motion_event *e) { return e->delta_y; }
 uint32_t miozu_pointer_motion_time(struct wlr_pointer_motion_event *e) { return e->time_msec; }
 
+/* Unaccelerated (raw) deltas — fed to relative-pointer-v1 so games doing
+ * their own mouse acceleration (most FPS) get untouched motion. */
+double miozu_pointer_motion_unaccel_dx(struct wlr_pointer_motion_event *e) { return e->unaccel_dx; }
+double miozu_pointer_motion_unaccel_dy(struct wlr_pointer_motion_event *e) { return e->unaccel_dy; }
+
 double miozu_pointer_motion_abs_x(struct wlr_pointer_motion_absolute_event *e) { return e->x; }
 double miozu_pointer_motion_abs_y(struct wlr_pointer_motion_absolute_event *e) { return e->y; }
 uint32_t miozu_pointer_motion_abs_time(struct wlr_pointer_motion_absolute_event *e) { return e->time_msec; }
@@ -1220,6 +1225,40 @@ struct wl_signal *miozu_ftl_request_close(struct wlr_foreign_toplevel_handle_v1 
  * _destroy on freed memory. */
 struct wl_signal *miozu_ftl_handle_destroy_signal(struct wlr_foreign_toplevel_handle_v1 *h) {
     return &h->events.destroy;
+}
+
+/* ── pointer_constraints_v1 + relative_pointer_v1 ─────────────────
+ *
+ * Lets games / nested gamescope lock the cursor for mouselook and read raw
+ * relative motion. teruwm activates a constraint while its surface holds
+ * pointer focus; ServerCursor freezes the hardware cursor while a LOCKED
+ * constraint is active AND its surface still holds keyboard focus (so the
+ * freeze can never outlive focus — Mod+J / alt-tab releases it). */
+
+#include <wlr/types/wlr_pointer_constraints_v1.h>
+
+struct wl_signal *miozu_pointer_constraints_new_constraint(struct wlr_pointer_constraints_v1 *m) {
+    return &m->events.new_constraint;
+}
+
+struct wlr_surface *miozu_pointer_constraint_surface(struct wlr_pointer_constraint_v1 *c) {
+    return c->surface;
+}
+
+/* 0 = WLR_POINTER_CONSTRAINT_V1_LOCKED, 1 = WLR_POINTER_CONSTRAINT_V1_CONFINED */
+int miozu_pointer_constraint_type(struct wlr_pointer_constraint_v1 *c) {
+    return (int)c->type;
+}
+
+struct wl_signal *miozu_pointer_constraint_destroy_signal(struct wlr_pointer_constraint_v1 *c) {
+    return &c->events.destroy;
+}
+
+/* The surface that currently holds keyboard focus on the seat. Gates the
+ * pointer-lock freeze: a frozen cursor is only ever held while the locking
+ * window is the focused window. */
+struct wlr_surface *miozu_seat_keyboard_focused_surface(struct wlr_seat *s) {
+    return s->keyboard_state.focused_surface;
 }
 
 /* ── pixman damage regions ───────────────────────────────────── */

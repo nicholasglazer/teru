@@ -507,6 +507,15 @@ output_manager_test: wlr.wl_listener = makeListener(Listeners.handleOutputManage
 // One handle per XdgView, created in handleMap, destroyed in handleUnmap.
 foreign_toplevel_mgr: ?*wlr.wlr_foreign_toplevel_manager_v1 = null,
 
+// pointer-constraints-v1 + relative-pointer-v1 — cursor lock + raw
+// relative motion for games / nested gamescope mouselook. `active_constraint`
+// is the constraint whose surface currently has pointer focus (null = none).
+// See ServerCursor.handleNewPointerConstraint + Server.pointerLocked.
+pointer_constraints_mgr: ?*wlr.wlr_pointer_constraints_v1 = null,
+relative_pointer_mgr: ?*wlr.wlr_relative_pointer_manager_v1 = null,
+active_constraint: ?*wlr.wlr_pointer_constraint_v1 = null,
+new_pointer_constraint: wlr.wl_listener = makeListener(Cursor.handleNewPointerConstraint),
+
 // ── Types ─────────────────────────────────────────────────────
 
 pub const PerfStats = struct {
@@ -712,6 +721,12 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     // route into closeNode / focusView.
     const foreign_toplevel_mgr = wlr.wlr_foreign_toplevel_manager_v1_create(display);
 
+    // pointer-constraints-v1 + relative-pointer-v1 — games / nested
+    // gamescope lock the cursor and read raw relative motion (mouselook).
+    // No NVIDIA explicit-sync needed; works on the iGPU-composited path.
+    const pointer_constraints_mgr = wlr.wlr_pointer_constraints_v1_create(display);
+    const relative_pointer_mgr = wlr.wlr_relative_pointer_manager_v1_create(display);
+
     // XDG shell
     const xdg_shell = wlr.wlr_xdg_shell_create(display, 3) orelse
         return error.XdgShellCreateFailed;
@@ -766,6 +781,8 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
         .virtual_pointer_mgr = virtual_pointer_mgr,
         .output_manager = output_manager,
         .foreign_toplevel_mgr = foreign_toplevel_mgr,
+        .pointer_constraints_mgr = pointer_constraints_mgr,
+        .relative_pointer_mgr = relative_pointer_mgr,
         .cursor_shape_mgr = cursor_shape_mgr,
         .event_loop = event_loop,
     };
@@ -813,6 +830,11 @@ fn registerListeners(self: *Server) void {
     if (self.output_manager) |m| {
         wlr.wl_signal_add(wlr.miozu_output_manager_apply(m), &self.output_manager_apply);
         wlr.wl_signal_add(wlr.miozu_output_manager_test(m), &self.output_manager_test);
+    }
+    // pointer-constraints-v1 — new_constraint fires when a client (game /
+    // gamescope) locks or confines the pointer to one of its surfaces.
+    if (self.pointer_constraints_mgr) |m| {
+        wlr.wl_signal_add(wlr.miozu_pointer_constraints_new_constraint(m), &self.new_pointer_constraint);
     }
     wlr.wl_signal_add(wlr.miozu_cursor_motion(self.cursor), &self.cursor_motion);
     wlr.wl_signal_add(wlr.miozu_cursor_motion_absolute(self.cursor), &self.cursor_motion_absolute);
@@ -1176,6 +1198,19 @@ pub fn pushOutputManagerState(self: *Server) void {
 /// it's a single wlr call, no module needed).
 pub inline fn notifyActivity(self: *Server) void {
     if (self.idle_notifier) |n| wlr.wlr_idle_notifier_v1_notify_activity(n, self.seat);
+}
+
+/// True while a LOCKED pointer constraint is active AND its surface still
+/// holds keyboard focus. ServerCursor freezes the hardware cursor (mouselook)
+/// only while this holds — gating on keyboard focus guarantees the freeze
+/// releases the instant focus leaves the locking window (Mod+J / alt-tab), so
+/// a misbehaving client can never soft-lock the pointer.
+pub fn pointerLocked(self: *Server) bool {
+    const c = self.active_constraint orelse return false;
+    if (wlr.miozu_pointer_constraint_type(c) != 0) return false; // 0 = LOCKED
+    const cs = wlr.miozu_pointer_constraint_surface(c) orelse return false;
+    const kf = wlr.miozu_seat_keyboard_focused_surface(self.seat) orelse return false;
+    return kf == cs;
 }
 pub fn setupKeyboard(self: *Server, device: *wlr.wlr_input_device) void {
     Input.setupKeyboard(self, device);
