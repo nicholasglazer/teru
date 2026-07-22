@@ -498,6 +498,15 @@ pub fn focusWorkspace(self: *Server, target: u8) void {
 /// recomputes visibility and re-arranges affected outputs.
 pub fn moveNodeToWorkspace(self: *Server, nid: u64, target: u8) void {
     if (target >= 10) return;
+
+    // Moving the fullscreen window to another workspace would strand it:
+    // recomputeVisibility's fullscreen override keeps it composited regardless
+    // of workspace (and the bars stay disabled), so it would float fullscreen
+    // over the now-empty current workspace with no status bar — the same trap
+    // focusWorkspace guards against. Drop fullscreen first when the moved node
+    // IS the fullscreen one; a normal re-tile + bar repaint follows below.
+    if (self.fullscreen_node == nid) exitFullscreen(self);
+
     const slot = self.nodes.findById(nid) orelse return;
     const from = self.nodes.workspace[slot];
     if (from == target) return;
