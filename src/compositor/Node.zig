@@ -173,10 +173,12 @@ pub fn remove(self: *Node, id: u64) bool {
         const ws = self.workspace[i];
         if (ws < self.urgent_count_per_ws.len) self.urgent_count_per_ws[ws] -|= 1;
     }
-    // Scene rects are owned by the node — wlroots keeps them alive
-    // until explicit destroy even if the parent tree goes away, which
-    // in turn prevents leaked rects from showing up as ghost borders
-    // on other surfaces.
+    // Border rects are CHILDREN of the slot's scene tree, and
+    // wlr_scene_node_destroy frees children recursively — if the tree is
+    // already gone, so are the rects. This call is only safe because
+    // every path that destroys the tree first (XwaylandView's
+    // scene_destroy_listener) nulls border_rects[slot] before we get
+    // here; destroyBorderRects skips null entries.
     self.destroyBorderRects(@intCast(i));
     self.kind[i] = .empty;
     self.node_id[i] = 0;

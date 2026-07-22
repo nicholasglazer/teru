@@ -77,6 +77,13 @@ fn mapView(view: *XwaylandView) void {
     // Create scene surface under root tree
     const scene_tree_root = wlr.miozu_scene_tree(server.scene) orelse return;
     view.scene_tree = wlr.wlr_scene_subsurface_tree_create(scene_tree_root, wlr_surface);
+    // Watch the node's own destroy: the subsurface tree self-destructs if
+    // the wl_surface dies before dissociate (see scene_destroy_listener).
+    if (view.scene_tree) |tree| {
+        if (wlr.miozu_scene_tree_node(tree)) |node| {
+            wlr.wl_signal_add(wlr.miozu_scene_node_destroy_signal(node), &view.scene_destroy_listener);
+        }
+    }
     view.mapped = true;
 
     const is_or = wlr.miozu_xwayland_surface_override_redirect(view.surface);
