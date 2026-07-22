@@ -439,7 +439,9 @@ fn resolveNode(self: *WmMcpServer, params_body: []const u8) ?u16 {
     // would match the tool's own "name":"teruwm_set_name" field and resolve to
     // a bogus node (this broke set_name/screenshot_pane by node_id).
     if (extractNestedJsonInt(params_body, "node_id")) |nid| {
-        return self.server.nodes.findById(@intCast(nid));
+        // satNode saturates negatives to 0 (no-match sentinel). A raw @intCast
+        // of a hostile/negative node_id would abort the compositor in ReleaseSafe.
+        return self.server.nodes.findById(satNode(nid));
     }
     if (extractNestedJsonString(params_body, "name")) |name| {
         return self.server.nodes.findByName(name, null);

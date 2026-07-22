@@ -132,10 +132,16 @@ pub fn extractNestedJsonInt(json: []const u8, key: []const u8) ?u64 {
 
     // Search in "arguments" first, then top-level
     const search_start = if (std.mem.find(u8, json, "\"arguments\"")) |ap| ap else 0;
-    const key_pos = std.mem.find(u8, json[search_start..], needle) orelse
-        std.mem.find(u8, json, needle) orelse return null;
-
-    const after_key = search_start + key_pos + needle.len;
+    // Absolute needle position: add search_start only to the relative first
+    // search, not to the already-absolute top-level fallback (the old
+    // search_start + key_pos double-counted, mis-locating top-level keys and
+    // usually pushing after_key past json.len → a silent null instead of the
+    // value). The i >= json.len guard below kept this from OOB-ing, but it was
+    // still wrong; the bool sibling had no such guard and did OOB.
+    const after_key = (if (std.mem.find(u8, json[search_start..], needle)) |r|
+        search_start + r
+    else
+        std.mem.find(u8, json, needle) orelse return null) + needle.len;
 
     var i = after_key;
     while (i < json.len and (json[i] == ' ' or json[i] == '\t')) : (i += 1) {}
@@ -160,9 +166,17 @@ pub fn extractNestedJsonBool(json: []const u8, key: []const u8) bool {
     var needle_buf: [64]u8 = undefined;
     const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\"", .{key}) catch return false;
     const search_start = if (std.mem.find(u8, json, "\"arguments\"")) |ap| ap else 0;
-    const rel = std.mem.find(u8, json[search_start..], needle) orelse
+    // Absolute position of the needle. The first search is RELATIVE to
+    // json[search_start..], so add search_start; the top-level fallback is
+    // already absolute and must NOT have search_start added. The old code added
+    // search_start to the fallback result too, so `i` could exceed json.len and
+    // the json[i..] below was an OOB slice (panic in safe builds) on crafted MCP
+    // JSON where a >11-char key sits before an empty "arguments" object.
+    const key_pos = if (std.mem.find(u8, json[search_start..], needle)) |r|
+        search_start + r
+    else
         std.mem.find(u8, json, needle) orelse return false;
-    var i = search_start + rel + needle.len;
+    var i = key_pos + needle.len;
     while (i < json.len and (json[i] == ' ' or json[i] == '\t' or json[i] == ':')) : (i += 1) {}
     return std.mem.startsWith(u8, json[i..], "true");
 }
@@ -389,6 +403,23 @@ test "extractNestedJsonInt" {
     const lines = extractNestedJsonInt(json, "lines");
     try t.expect(lines != null);
     try t.expectEqual(@as(u64, 20), lines.?);
+}
+
+test "extractNestedJsonBool: hostile top-level key before empty arguments does not OOB" {
+    // Regression: a key that sits BEFORE the "arguments" block (so the in-args
+    // search misses and the top-level fallback fires) must not double-add
+    // search_start. The old code computed i = search_start + abs_pos + needle.len,
+    // which overshot json.len and made `json[i..]` an OOB slice → panic on
+    // crafted MCP JSON. Key >11 chars maximizes the overshoot; old code panicked.
+    try t.expect(extractNestedJsonBool("{\"long_flag_name\":true,\"arguments\":{}}", "long_flag_name"));
+    // And it must still read the value correctly on the fallback path.
+    try t.expect(extractNestedJsonBool("{\"humanize\":true,\"arguments\":{}}", "humanize"));
+    try t.expect(!extractNestedJsonBool("{\"humanize\":false,\"arguments\":{}}", "humanize"));
+    // Normal in-arguments path unaffected.
+    try t.expect(extractNestedJsonBool("{\"arguments\":{\"humanize\":true}}", "humanize"));
+    try t.expect(!extractNestedJsonBool("{\"arguments\":{\"x\":1}}", "humanize"));
+    // Signed/unsigned int siblings: top-level fallback now returns the value.
+    try t.expectEqual(@as(u64, 7), extractNestedJsonInt("{\"node_id\":7,\"arguments\":{}}", "node_id").?);
 }
 
 test "extractJsonObject skips braces inside string values" {

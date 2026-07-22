@@ -284,8 +284,12 @@ fn toolReadOutput(self: *McpServer, pane_id: u64, lines: u32, buf: []u8, id: ?[]
 
     var row: u32 = start_row;
     while (row < total_rows) : (row += 1) {
-        // Extract line text
-        var line_end: usize = 0;
+        // Extract line text. line_end tracks the position after the last
+        // printable cell so trailing spaces get trimmed (text_pos = line_end
+        // below). It MUST start at this row's start (text_pos), not 0 — a row
+        // with no printable cells would otherwise rewind text_pos to 0 and
+        // silently discard every row extracted so far.
+        var line_end: usize = text_pos;
         for (0..grid.cols) |col| {
             const cell = grid.cellAtConst(@intCast(row), @intCast(col));
             const cp = cell.char;
@@ -1052,12 +1056,15 @@ fn extractNestedJsonArray(json: []const u8, key: []const u8) ?[]const u8 {
     var needle_buf: [64]u8 = undefined;
     const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\":", .{key}) catch return null;
 
-    // Search in "arguments" first, then top-level
+    // Search in "arguments" first, then top-level. Absolute needle position: add
+    // search_start ONLY to the relative in-arguments find, not the already-
+    // absolute top-level fallback (the old `search_start + key_pos` double-added
+    // on the fallback, mislocating a top-level array before an arguments block).
     const search_start = if (std.mem.find(u8, json, "\"arguments\"")) |ap| ap else 0;
-    const key_pos = std.mem.find(u8, json[search_start..], needle) orelse
-        std.mem.find(u8, json, needle) orelse return null;
-
-    const after_key = search_start + key_pos + needle.len;
+    const after_key = (if (std.mem.find(u8, json[search_start..], needle)) |r|
+        search_start + r
+    else
+        std.mem.find(u8, json, needle) orelse return null) + needle.len;
 
     var i = after_key;
     while (i < json.len and (json[i] == ' ' or json[i] == '\t')) : (i += 1) {}

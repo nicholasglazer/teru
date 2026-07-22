@@ -163,8 +163,10 @@ fn curvedPath(
     const c2y = fy + dy * 0.667 + perp_y * off2;
 
     // Sample count: target ~60 Hz. Clamp to [8, 240] so a tiny move
-    // still has some curve and a huge one doesn't burst.
-    const samples: u32 = @max(8, @min(MAX_SAMPLES, duration_ms * 60 / 1000));
+    // still has some curve and a huge one doesn't burst. Compute in u64: a
+    // hostile/huge MCP-supplied duration_ms would overflow `duration_ms * 60`
+    // in u32 (panic) BEFORE the @min clamp could bound it.
+    const samples: u32 = @intCast(@max(@as(u64, 8), @min(@as(u64, MAX_SAMPLES), @as(u64, duration_ms) * 60 / 1000)));
     const per_sample_ns: u64 = (@as(u64, duration_ms) * 1_000_000) / @max(1, samples);
     // wl_event_loop timers are millisecond-granularity; floor at 1ms
     // (0 would disarm the timer). ~16ms at the default 250ms/15-sample.
