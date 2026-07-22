@@ -247,6 +247,13 @@ fullscreen_node: ?u64 = null,
 fullscreen_prev_bar_top: bool = true,
 fullscreen_prev_bar_bottom: bool = false,
 
+// Right-Alt held state. xkb collapses Alt_L and Alt_R onto Mod1 (plain `us`),
+// so xkb_state can't tell them apart — we track Alt_R by KEYSYM across
+// press/release in ServerInput.handleKeyEvent. Lets keybind dispatch honour
+// `ralt+` binds and the Alt+RAlt+1..9 scratchpad chord. Keysym-based (not evdev
+// keycode) so a virtual keyboard (wtype) with its own generated keymap works.
+ralt_held: bool = false,
+
 // Mouse move/resize state for floating windows
 cursor_mode: CursorMode = .normal,
 grab_node_id: ?u64 = null,

@@ -85,6 +85,25 @@ pub const Keyboard = struct {
 
         kb.server.notifyActivity();
 
+        // Track Right-Alt held state across press/release. Keyed on the Alt_R
+        // KEYSYM (0xffea), not the evdev keycode — a virtual keyboard (wtype)
+        // generates its own keymap with arbitrary keycodes, but the keysym is
+        // stable. MUST run before every swallow path below (area-select /
+        // dispatch / PTY writes all `return` early) so a release is never
+        // missed and ralt can't get stuck on.
+        if (wlr.xkb_state_key_get_one_sym(xkb_st, keycode + 8) == wlr.XKB_KEY_Alt_R) {
+            kb.server.ralt_held = (key_state == 1);
+        }
+
+        // Keystroke-OSD tap — MUST stay above every swallow path below
+        // (area-select, keybind consumption, leader/launcher modes, PTY
+        // writes) so the OSD sees every hardware key edge. Guarded by
+        // `active` so the disabled path costs one bool check.
+        if (kb.server.keys_osd.active) {
+            const osd_sym = wlr.xkb_state_key_get_one_sym(xkb_st, keycode + 8);
+            KeysOsd.feedFromXkb(kb.server, osd_sym, xkb_st, key_state == 1);
+        }
+
         // While area-select is armed, the keyboard belongs to it: Escape
         // cancels and every key is swallowed so a chord can't leak to a
         // client mid-selection.
@@ -215,6 +234,11 @@ pub const Keyboard = struct {
     fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
         const kb: *Keyboard = @fieldParentPtr("destroy_listener", listener);
         const server = kb.server;
+
+        // A keyboard destroyed mid-hold never delivers its release; clear the
+        // tracked Right-Alt state so it can't get stuck on (e.g. a one-shot
+        // virtual keyboard, or a device unplugged while held).
+        server.ralt_held = false;
 
         wlr.wl_list_remove(&kb.key_listener.link);
         wlr.wl_list_remove(&kb.modifiers_listener.link);
@@ -419,28 +443,15 @@ pub fn handleKey(server: *Server, keycode: u32, xkb_state_ptr: *wlr.xkb_state) b
         return true;
     }
 
-    // Normalize: uppercase ASCII → lowercase (Shift'd 'J' → 'j'),
-    // Shift+number-row → base digit (!→1, @→2, …) so keybinds defined
-    // against '1' still match when Shift is held — without this,
-    // Mod+Shift+1..0 (move-pane-to-workspace) silently missed because
-    // xkb delivers the shifted symbol, not the unmodified digit.
-    // ASCII passes through, common xkb specials → ASCII equivalents,
-    // everything else stays as the raw keysym (XF86/media keys).
-    const key: u32 = if (sym >= 'A' and sym <= 'Z') sym + 32 else switch (sym) {
-        '!' => '1', '@' => '2', '#' => '3', '$' => '4', '%' => '5',
-        '^' => '6', '&' => '7', '*' => '8', '(' => '9', ')' => '0',
-        0xff0d => '\r',
-        0xff1b => 0x1b,
-        0xff09 => '\t',
-        0xff08 => 0x7f,
-        else => if (sym >= 0x20 and sym <= 0x7e) sym else sym,
-    };
+    const key = foldKeysym(sym);
 
-    var mods = KBMods{};
-    if (wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_ALT, wlr.XKB_STATE_MODS_EFFECTIVE) > 0) mods.alt = true;
-    if (wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_SHIFT, wlr.XKB_STATE_MODS_EFFECTIVE) > 0) mods.shift = true;
-    if (wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_CTRL, wlr.XKB_STATE_MODS_EFFECTIVE) > 0) mods.ctrl = true;
-    if (wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_LOGO, wlr.XKB_STATE_MODS_EFFECTIVE) > 0) mods.super_ = true;
+    const mods = buildMods(
+        wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_ALT, wlr.XKB_STATE_MODS_EFFECTIVE) > 0,
+        wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_SHIFT, wlr.XKB_STATE_MODS_EFFECTIVE) > 0,
+        wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_CTRL, wlr.XKB_STATE_MODS_EFFECTIVE) > 0,
+        wlr.xkb_state_mod_name_is_active(xkb_state_ptr, wlr.XKB_MOD_NAME_LOGO, wlr.XKB_STATE_MODS_EFFECTIVE) > 0,
+        server.ralt_held,
+    );
 
     // Launcher mode swallows EVERY key until deactivated — including ones it
     // doesn't act on. handleKey only consumes printable / Tab / Enter / Esc /
