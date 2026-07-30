@@ -37,13 +37,46 @@ pub fn main(init: std.process.Init) !void {
     // Broken client sockets / bar-exec pipes must not kill the compositor.
     teru.compat.ignoreSigpipe();
 
-    // ── Check for --restore flag ───────────────────────────────
+    // ── Parse args ──────────────────────────────────────────────
+    // Informational flags (--version/--help) MUST be handled here, before any
+    // compositor init. teruwm IS the display server: the old code recognized only
+    // `--restore` and let every other arg fall through to a normal start, so
+    // `teruwm --version` booted a full compositor that grabbed the DRM seat —
+    // run while a session was live it stole the seat and crashed the running
+    // compositor (dropping the user to a TTY). An unknown flag now fails loudly
+    // instead of silently taking over the display.
     var restoring = false;
     {
         var it = init.minimal.args.iterate();
         _ = it.next(); // skip argv[0]
-        while (it.next()) |arg| {
-            if (std.mem.eql(u8, std.mem.sliceTo(arg, 0), "--restore")) restoring = true;
+        while (it.next()) |arg_z| {
+            const arg = std.mem.sliceTo(arg_z, 0);
+            if (std.mem.eql(u8, arg, "--restore")) {
+                restoring = true;
+            } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
+                var vbuf: [128]u8 = undefined;
+                const m = std.fmt.bufPrint(&vbuf, "teruwm {s}\n", .{teru.build_options.version}) catch "teruwm\n";
+                _ = std.c.write(1, m.ptr, m.len);
+                std.process.exit(0);
+            } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+                const h =
+                    "teruwm \xe2\x80\x94 tiling Wayland compositor (part of teru)\n\n" ++
+                    "usage: teruwm [OPTION]\n\n" ++
+                    "  (no args)      start the compositor (needs a free VT / DRM seat)\n" ++
+                    "  --restore      internal: resume after a hot-restart (xmonad-style exec)\n" ++
+                    "  -v, --version  print version and exit\n" ++
+                    "  -h, --help     print this help and exit\n";
+                _ = std.c.write(1, h.ptr, h.len);
+                std.process.exit(0);
+            } else if (arg.len > 0 and arg[0] == '-') {
+                // Unknown flag: do NOT boot a display server (it would grab the
+                // DRM seat and could crash a running session). Fail instead.
+                var ebuf: [256]u8 = undefined;
+                const em = std.fmt.bufPrint(&ebuf, "teruwm: unknown option '{s}' (try --help)\n", .{arg}) catch "teruwm: unknown option\n";
+                _ = std.c.write(2, em.ptr, em.len);
+                std.process.exit(2);
+            }
+            // Non-flag positional args (none expected) are ignored.
         }
     }
 
