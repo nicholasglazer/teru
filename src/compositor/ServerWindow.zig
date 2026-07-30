@@ -198,13 +198,7 @@ pub fn exitFullscreen(self: *Server) void {
     // must drop back beneath floats/scratchpads (click routing prefers
     // floats). No layer trees exist, so re-assert the float stratum by
     // raising every float/scratchpad instead.
-    var i: u16 = 0;
-    while (i < NodeRegistry.max_nodes) : (i += 1) {
-        if (self.nodes.kind[i] == .empty) continue;
-        if (self.nodes.floating[i] or self.nodes.getScratchpad(i).len != 0) {
-            Focus.raiseNode(self, i);
-        }
-    }
+    Focus.reassertFloatStratum(self);
 
     std.log.scoped(.compositor).info("fullscreen off", .{});
 }

@@ -234,6 +234,7 @@ pub extern "c" fn miozu_keyboard_num_keycodes(k: *wlr_keyboard) callconv(.c) usi
 /// pre-filter since `wlr_scene_node_at` returns rects / trees too.
 pub extern "c" fn miozu_scene_node_is_buffer(n: *wlr_scene_node) callconv(.c) c_int;
 pub extern "c" fn miozu_scene_node_parent_node(n: *wlr_scene_node) callconv(.c) ?*wlr_scene_node;
+pub extern "c" fn miozu_scene_node_enabled(n: *wlr_scene_node) callconv(.c) bool;
 
 // ── wlroots cursor ────────────────────────────────────────────
 
@@ -775,6 +776,17 @@ pub extern "wlroots-0.18" fn wlr_xwayland_destroy(xwayland: *wlr_xwayland) callc
 pub extern "wlroots-0.18" fn wlr_xwayland_surface_configure(surface: *wlr_xwayland_surface, x: i16, y: i16, width: u16, height: u16) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_xwayland_surface_activate(surface: *wlr_xwayland_surface, activated: bool) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_xwayland_surface_close(surface: *wlr_xwayland_surface) callconv(.c) void;
+/// Restack the window in the X SERVER's own stacking order. Xwayland
+/// routes pointer input by re-picking against X stacking (DIX
+/// XYToWindow), NOT by which wl_surface the compositor entered — and
+/// wlroots' xwm demotes every managed window to the X-stack bottom at
+/// MapNotify, expecting the compositor to raise it back. Every scene
+/// raise of an X11 window must be mirrored through this or pixels and
+/// click delivery diverge (the Steam-dialog / game-over-Steam bug).
+pub extern "wlroots-0.18" fn wlr_xwayland_surface_restack(surface: *wlr_xwayland_surface, sibling: ?*wlr_xwayland_surface, mode: c_int) callconv(.c) void;
+/// xcb_stack_mode_t values (xcb/xproto.h) for wlr_xwayland_surface_restack.
+pub const XCB_STACK_MODE_ABOVE: c_int = 0;
+pub const XCB_STACK_MODE_BELOW: c_int = 1;
 pub extern "wlroots-0.18" fn wlr_xwayland_set_seat(xwayland: *wlr_xwayland, seat: *wlr_seat) callconv(.c) void;
 
 // XWayland C glue accessors
@@ -799,6 +811,7 @@ pub extern "c" fn miozu_xwayland_surface_is_modal(surface: *wlr_xwayland_surface
 pub extern "c" fn miozu_xwayland_surface_set_geometry(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_xwayland_surface_request_fullscreen(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_xwayland_surface_set_override_redirect(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_xwayland_surface_request_activate(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_xwayland_surface_fullscreen(surface: *wlr_xwayland_surface) callconv(.c) bool;
 
 /// request_configure event payload (struct wlr_xwayland_surface_configure_event).

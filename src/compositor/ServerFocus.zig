@@ -335,11 +335,41 @@ pub fn raiseNode(server: *Server, slot: u16) void {
     if (server.nodes.scene_tree[slot]) |tree| {
         if (wlr.miozu_scene_tree_node(tree)) |node| {
             wlr.wlr_scene_node_raise_to_top(node);
+            // Mirror the raise into the X SERVER's stacking. Xwayland
+            // delivers pointer input by re-picking against X stacking
+            // (DIX XYToWindow), not by which wl_surface we entered — and
+            // wlroots' xwm glues every managed window to the X-stack
+            // bottom at MapNotify. Without this mirror a window can
+            // render on top while Xwayland hands its clicks to the X
+            // window underneath. Gated on `enabled`: exitFullscreen
+            // re-asserts ALL floats including hidden ones, and a hidden
+            // window restacked X-top would be an invisible click-steal.
+            if (server.nodes.xwayland_surface[slot]) |xw| {
+                if (wlr.miozu_scene_node_enabled(node)) {
+                    wlr.wlr_xwayland_surface_restack(xw, null, wlr.XCB_STACK_MODE_ABOVE);
+                }
+            }
             return;
         }
     }
     if (server.nodes.kind[slot] == .terminal) {
         if (server.terminalPaneById(server.nodes.node_id[slot])) |tp| tp.raiseToTop();
+    }
+}
+
+/// Re-assert the float/scratchpad stratum above tiled surfaces — in the
+/// scene AND (via the raiseNode mirror) in X stacking. Needed after any
+/// operation that puts a tiled surface on top of the stack: map appends
+/// the new tree at the scene top and its X restack raises it X-top, both
+/// of which would otherwise leave an overlapping float visually or
+/// click-wise buried.
+pub fn reassertFloatStratum(server: *Server) void {
+    var i: u16 = 0;
+    while (i < NodeRegistry.max_nodes) : (i += 1) {
+        if (server.nodes.kind[i] == .empty) continue;
+        if (server.nodes.floating[i] or server.nodes.getScratchpad(i).len != 0) {
+            raiseNode(server, i);
+        }
     }
 }
 

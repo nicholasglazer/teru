@@ -28,6 +28,7 @@ configure_listener: wlr.wl_listener,
 geometry_listener: wlr.wl_listener,
 fullscreen_listener: wlr.wl_listener,
 override_redirect_listener: wlr.wl_listener,
+activate_listener: wlr.wl_listener,
 /// Armed per map cycle on the scene tree's node. A subsurface tree
 /// destroys ITSELF when its wl_surface dies, which can precede the
 /// dissociate event (xwayland teardown at quit/hot-restart, X client
@@ -49,6 +50,7 @@ pub fn create(server: *Server, surface: *wlr.wlr_xwayland_surface) ?*XwaylandVie
         .geometry_listener = makeListener(handleSetGeometry),
         .fullscreen_listener = makeListener(handleRequestFullscreen),
         .override_redirect_listener = makeListener(handleSetOverrideRedirect),
+        .activate_listener = makeListener(handleRequestActivate),
         .scene_destroy_listener = makeListener(handleSceneTreeDestroy),
     };
 
@@ -59,6 +61,7 @@ pub fn create(server: *Server, surface: *wlr.wlr_xwayland_surface) ?*XwaylandVie
     wlr.wl_signal_add(wlr.miozu_xwayland_surface_set_geometry(surface), &view.geometry_listener);
     wlr.wl_signal_add(wlr.miozu_xwayland_surface_request_fullscreen(surface), &view.fullscreen_listener);
     wlr.wl_signal_add(wlr.miozu_xwayland_surface_set_override_redirect(surface), &view.override_redirect_listener);
+    wlr.wl_signal_add(wlr.miozu_xwayland_surface_request_activate(surface), &view.activate_listener);
 
     return view;
 }
@@ -169,6 +172,17 @@ fn mapView(view: *XwaylandView) void {
                 const x = std.math.clamp(wlr.miozu_xwayland_surface_x(view.surface), 0, @max(0, out_w - w));
                 const y = std.math.clamp(wlr.miozu_xwayland_surface_y(view.surface), 0, @max(0, out_h - h));
                 server.nodes.applyRect(slot, x, y, @intCast(w), @intCast(h));
+
+                // Undo xwm's map-time demotion: wlroots restacks every
+                // managed window to the X-stack BOTTOM at MapNotify and
+                // expects the compositor to raise it. Scene-side the
+                // fresh tree is already appended on top; without the X
+                // mirror, Xwayland keeps delivering this window's clicks
+                // to whatever X window overlaps it from above — the
+                // "Special Offers dialog renders on top but only Steam
+                // main is clickable" bug. Aux floats always map onto the
+                // active workspace, so no visibility gate is needed.
+                wlr.wlr_xwayland_surface_restack(view.surface, null, wlr.XCB_STACK_MODE_ABOVE);
             }
         }
 
@@ -244,6 +258,20 @@ fn mapView(view: *XwaylandView) void {
             break :blk cls_slice.len > 0 and std.mem.eql(u8, cls_slice, server.nodes.getAppId(fslot));
         };
         if (!same_app_as_fullscreen) server.focusXwaylandSurface(view.surface);
+
+        // Undo xwm's map-time X-stack-bottom demotion for the visible
+        // case (same rationale as the aux-float branch: a game window
+        // mapping over Steam rendered on top but Xwayland delivered its
+        // clicks to Steam). raiseIfFloating skips tiled nodes, so the
+        // focus call above never restacks these. Gated: a window mapped
+        // onto a hidden workspace (window rules) or under an active
+        // same-app fullscreen must not become an invisible X-top
+        // click-steal. Floats render above tiled surfaces (scene
+        // invariant) — re-assert that stratum in X too.
+        if (ws == server.layout_engine.active_workspace and !same_app_as_fullscreen) {
+            wlr.wlr_xwayland_surface_restack(view.surface, null, wlr.XCB_STACK_MODE_ABOVE);
+            server.reassertFloatStratum();
+        }
 
         // Come-up-fullscreen: games set _NET_WM_STATE_FULLSCREEN before
         // mapping, so request_fullscreen fired while node_id was still 0
@@ -371,6 +399,7 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     wlr.wl_list_remove(&view.geometry_listener.link);
     wlr.wl_list_remove(&view.fullscreen_listener.link);
     wlr.wl_list_remove(&view.override_redirect_listener.link);
+    wlr.wl_list_remove(&view.activate_listener.link);
 
     // Destroy-without-dissociate safety: if the scene tree still exists,
     // destroy it now so the armed scene_destroy_listener can never fire
@@ -429,8 +458,34 @@ fn handleConfigure(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) v
 
     if (view.node_id > 0) {
         if (server.nodes.findById(view.node_id)) |slot| {
-            // Same truncate/saturate casts as Node.applyRect — raw
-            // @intCast would Debug-panic on multi-output coords > i16.
+            // Managed FLOATS are granted what they ask for (the policy
+            // the doc comment above always promised): Steam self-centers
+            // and self-resizes its dialogs post-map, and denying left
+            // them frozen at their initial geometry. Clamped on-screen
+            // like the map path; applyRect dual-writes registry + scene
+            // + X11 configure so click coordinates stay in sync. Denied
+            // while the user is interactively dragging this node — the
+            // grab owns the geometry.
+            if (server.nodes.floating[slot] and server.grab_node_id != view.node_id) {
+                const dims = server.activeOutputDims();
+                const out_w: i32 = @intCast(dims.w);
+                const out_h: i32 = @intCast(dims.h);
+                var w: i32 = wlr.miozu_xwayland_configure_event_width(ev);
+                var h: i32 = wlr.miozu_xwayland_configure_event_height(ev);
+                if (w <= 0) w = 480;
+                if (h <= 0) h = 280;
+                if (w > out_w) w = out_w;
+                if (h > out_h) h = out_h;
+                const gx = std.math.clamp(@as(i32, wlr.miozu_xwayland_configure_event_x(ev)), 0, @max(0, out_w - w));
+                const gy = std.math.clamp(@as(i32, wlr.miozu_xwayland_configure_event_y(ev)), 0, @max(0, out_h - h));
+                server.nodes.applyRect(slot, gx, gy, @intCast(w), @intCast(h));
+                server.scheduleRender();
+                return;
+            }
+            // Tiled (or mid-drag): deny — re-send the current rect so
+            // the client at least receives a ConfigureNotify and stops
+            // waiting. Same truncate/saturate casts as Node.applyRect —
+            // raw @intCast would Debug-panic on multi-output coords > i16.
             const w = server.nodes.width[slot];
             const h = server.nodes.height[slot];
             const ww: u16 = if (w > 0xFFFF) 0xFFFF else @intCast(w);
@@ -519,6 +574,45 @@ fn handleSetOverrideRedirect(listener: *wlr.wl_listener, _: ?*anyopaque) callcon
     if (!view.mapped) return;
     unmapView(view);
     mapView(view);
+}
+
+/// _NET_ACTIVE_WINDOW request (xwm forwards it as request_activate) —
+/// Steam re-activates its own dialogs this way. House policy matches
+/// handleXdgActivation: a background app must not steal focus. But a
+/// client activating a SIBLING window of the already-focused X11 client
+/// (same WM_CLASS, same workspace — Steam main → Steam dialog) is the
+/// legitimate raise case; honouring it routes through
+/// focusXwaylandSurface → raiseIfFloating → raiseNode, which mirrors
+/// the raise into X stacking. Everything else goes urgent.
+fn handleRequestActivate(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
+    const view: *XwaylandView = @fieldParentPtr("activate_listener", listener);
+    const server = view.server;
+    if (!view.mapped or view.node_id == 0) return; // unmanaged O-R owns its own stacking
+    const slot = server.nodes.findById(view.node_id) orelse return;
+
+    const on_active_ws = server.nodes.workspace[slot] == server.layout_engine.active_workspace;
+    const same_class_as_focused = blk: {
+        const fid = server.focusedNodeId() orelse break :blk false;
+        const fslot = server.nodes.findById(fid) orelse break :blk false;
+        const focused_class = server.nodes.getAppId(fslot);
+        break :blk focused_class.len > 0 and
+            std.mem.eql(u8, focused_class, server.nodes.getAppId(slot));
+    };
+
+    if (on_active_ws and same_class_as_focused) {
+        server.focusXwaylandSurface(view.surface);
+        server.scheduleRender();
+        return;
+    }
+
+    if (server.nodes.markUrgent(slot)) {
+        const nid = server.nodes.node_id[slot];
+        const ws = server.nodes.workspace[slot];
+        std.log.scoped(.compositor).info("urgent (x11 activate) node={d} ws={d}", .{ nid, ws });
+        server.emitMcpEventKind("urgent", ",\"node_id\":{d},\"workspace\":{d}", .{ nid, ws });
+        if (server.bar) |b| _ = b.render(server);
+        server.scheduleRender();
+    }
 }
 
 /// Route the seat keyboard to `target` without touching the activate /

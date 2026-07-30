@@ -122,6 +122,17 @@ place:
 - **Workspace.removeNode** clears `active_node` and `master_id` when
   they equal the removed id — otherwise `updateFocusedTerminal` looks
   up a heap-freed pane pointer next frame.
+- **X11 stacking mirror**: every scene raise of an xwayland node must be
+  mirrored into the X server's stacking via `wlr_xwayland_surface_restack`
+  (done centrally in `ServerFocus.raiseNode`, plus map-time restacks in
+  `XwaylandView.mapView`). Xwayland delivers pointer input by re-picking
+  against ITS OWN stacking (DIX `XYToWindow`), not by which wl_surface the
+  compositor entered — and wlroots' xwm demotes every managed window to
+  the X-stack bottom at MapNotify. A window that is scene-raised but not
+  X-restacked renders on top while its clicks are delivered to the X
+  window underneath (the 2026-07 Steam-dialog / game-over-Steam bug).
+  Restack only windows whose scene node is enabled — a hidden window
+  restacked X-top is an invisible click-steal.
 - **DCS parser isolation**: an `ESC` inside a DCS body routes through
   the dedicated `.dcs_st_esc` state, never the general `.escape` state.
   Before v0.4.22 an embedded `ESC[` inside a DCS payload leaked into

@@ -680,6 +680,12 @@ struct wl_signal *miozu_xwayland_surface_set_override_redirect(struct wlr_xwayla
     return &s->events.set_override_redirect;
 }
 
+/* Client asked for activation via _NET_ACTIVE_WINDOW (xwm forwards it as
+ * request_activate). Steam activates its own dialogs this way. */
+struct wl_signal *miozu_xwayland_surface_request_activate(struct wlr_xwayland_surface *s) {
+    return &s->events.request_activate;
+}
+
 /* Requested/current _NET_WM_STATE_FULLSCREEN. When request_fullscreen
  * fires, this already holds the state the client asked for. */
 bool miozu_xwayland_surface_fullscreen(struct wlr_xwayland_surface *s) {
@@ -1041,6 +1047,13 @@ int miozu_surface_is_live(struct wlr_surface *s) {
  * output init), so callers must pre-filter. */
 int miozu_scene_node_is_buffer(struct wlr_scene_node *n) {
     return n && n->type == WLR_SCENE_NODE_BUFFER;
+}
+
+/* Whether a scene node is currently enabled (visible). Gate for mirroring
+ * scene raises into X11 stacking: a hidden window must not be restacked
+ * above visible X windows (invisible click-steal). */
+bool miozu_scene_node_enabled(struct wlr_scene_node *n) {
+    return n && n->enabled;
 }
 
 /* Parent of a scene node as a node pointer (NULL at the scene root).

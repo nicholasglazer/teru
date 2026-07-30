@@ -1579,6 +1579,7 @@ pub const keysOsdFeed = KeysOsd.feed;
 
 // ── Focus resolution (ServerFocus.zig) ─────────────────────────
 pub const focusedNodeId = Focus.focusedNodeId;
+pub const reassertFloatStratum = Focus.reassertFloatStratum;
 
 // ── Window & workspace lifecycle (ServerWindow.zig) ────────────
 // Thin re-exports; node lookup, close paths, float/fullscreen,
