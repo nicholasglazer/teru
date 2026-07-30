@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
     // in Zig 0.17 (Module.CreateOptions.strip). The Makefile previously
     // post-processed binaries with `strip(1)`; setting it here means a bare
     // `zig build -Doptimize=ReleaseSafe` produces the same artifact.
-    const want_strip: ?bool = if (optimize == .Debug) null else true;
+    const want_strip: ?bool = if (optimize == .debug) null else true;
 
     // ── libteru (core library, pure Zig, no system deps) ─────────────
     const lib_mod = b.createModule(.{
@@ -137,7 +137,7 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
     // LTO on ReleaseFast/ReleaseSmall — compile step in 0.17 (Compile.zig:177).
-    if (optimize == .ReleaseFast or optimize == .ReleaseSmall) exe.lto = .full;
+    if (optimize == .fast or optimize == .small) exe.lto = .full;
     b.installArtifact(exe);
 
     // ── run step ─────────────────────────────────────────────────────
@@ -166,7 +166,7 @@ pub fn build(b: *std.Build) void {
             .name = "teruwmctl",
             .root_module = teruwmctl_mod,
         });
-        if (optimize == .ReleaseFast or optimize == .ReleaseSmall) teruwmctl_exe.lto = .full;
+        if (optimize == .fast or optimize == .small) teruwmctl_exe.lto = .full;
         b.installArtifact(teruwmctl_exe);
     }
 
@@ -176,7 +176,7 @@ pub fn build(b: *std.Build) void {
     const bench_mod = b.createModule(.{
         .root_source_file = b.path("tools/bench.zig"),
         .target = target,
-        .optimize = .ReleaseFast,
+        .optimize = .fast,
         .link_libc = true,
     });
     bench_mod.addImport("teru", lib_mod);
@@ -256,7 +256,7 @@ pub fn build(b: *std.Build) void {
             .name = "teruwm",
             .root_module = miozu_mod,
         });
-        if (optimize == .ReleaseFast or optimize == .ReleaseSmall) miozu_exe.lto = .full;
+        if (optimize == .fast or optimize == .small) miozu_exe.lto = .full;
         b.installArtifact(miozu_exe);
 
         const miozu_run = b.addRunArtifact(miozu_exe);
