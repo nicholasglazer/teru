@@ -343,6 +343,36 @@ pub fn applyRect(self: *Node, slot: u16, x: i32, y: i32, w: u32, h: u32) void {
     }
 }
 
+/// Position-only variant of applyRect for interactive move drags:
+/// stores the new origin, moves the scene node, and keeps the X11
+/// client's idea of its own position in sync. The move drag used to
+/// skip the xwayland configure, so after a Super+drag the scene and
+/// the X server disagreed about where the window was — X11 clients
+/// (games) then computed pointer coordinates against the stale origin
+/// and clicks landed offset from the pixels.
+pub fn applyPosition(self: *Node, slot: u16, x: i32, y: i32) void {
+    self.pos_x[slot] = x;
+    self.pos_y[slot] = y;
+
+    if (self.scene_tree[slot]) |tree| {
+        if (wlr.miozu_scene_tree_node(tree)) |node| {
+            wlr.wlr_scene_node_set_position(node, x, y);
+        }
+    }
+
+    if (self.kind[slot] == .wayland_surface) {
+        if (self.xwayland_surface[slot]) |xw| {
+            const w = self.width[slot];
+            const h = self.height[slot];
+            const ww: u16 = if (w > 0xFFFF) 0xFFFF else @intCast(w);
+            const hh: u16 = if (h > 0xFFFF) 0xFFFF else @intCast(h);
+            const xx: i16 = @truncate(x);
+            const yy: i16 = @truncate(y);
+            wlr.wlr_xwayland_surface_configure(xw, xx, yy, ww, hh);
+        }
+    }
+}
+
 /// Ensure the 4 border scene_rects exist for `slot` with the given
 /// width + colour (ARGB u32). Rects are children of the slot's own
 /// scene_tree so they inherit position translations. Size 0 means no

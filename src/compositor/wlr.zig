@@ -233,6 +233,7 @@ pub extern "c" fn miozu_keyboard_num_keycodes(k: *wlr_keyboard) callconv(.c) usi
 /// `wlr_scene_buffer_from_node` *asserts* on any other node type — must
 /// pre-filter since `wlr_scene_node_at` returns rects / trees too.
 pub extern "c" fn miozu_scene_node_is_buffer(n: *wlr_scene_node) callconv(.c) c_int;
+pub extern "c" fn miozu_scene_node_parent_node(n: *wlr_scene_node) callconv(.c) ?*wlr_scene_node;
 
 // ── wlroots cursor ────────────────────────────────────────────
 

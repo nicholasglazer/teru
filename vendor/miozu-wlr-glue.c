@@ -1043,6 +1043,14 @@ int miozu_scene_node_is_buffer(struct wlr_scene_node *n) {
     return n && n->type == WLR_SCENE_NODE_BUFFER;
 }
 
+/* Parent of a scene node as a node pointer (NULL at the scene root).
+ * Lets Zig climb a hit-test result up to its root-direct child to
+ * identify the owning window in the flat scene graph. */
+struct wlr_scene_node *miozu_scene_node_parent_node(struct wlr_scene_node *n) {
+    if (!n || !n->parent) return NULL;
+    return &n->parent->node;
+}
+
 /* ── idle_inhibit_v1 ─────────────────────────────────────────── */
 
 struct wl_signal *miozu_idle_inhibit_new_inhibitor(struct wlr_idle_inhibit_manager_v1 *m) {

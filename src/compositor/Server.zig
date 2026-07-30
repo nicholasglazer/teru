@@ -1577,6 +1577,9 @@ pub const toggleKeysOsd = KeysOsd.toggle;
 pub const setKeysOsdActive = KeysOsd.setActive;
 pub const keysOsdFeed = KeysOsd.feed;
 
+// ── Focus resolution (ServerFocus.zig) ─────────────────────────
+pub const focusedNodeId = Focus.focusedNodeId;
+
 // ── Window & workspace lifecycle (ServerWindow.zig) ────────────
 // Thin re-exports; node lookup, close paths, float/fullscreen,
 // workspace placement, visibility recompute, multi-output focus.

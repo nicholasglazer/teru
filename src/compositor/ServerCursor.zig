@@ -313,6 +313,23 @@ fn endGrab(server: *Server, button: u32, state: u32, time: u32) void {
         server.arrangeworkspace(server.layout_engine.active_workspace);
     }
     if (server.cursor_mode != .normal) {
+        // Final authoritative geometry sync on release: applyRect keeps the
+        // dual-write contract (registry + scene + X11 configure), so an X11
+        // float can never end a move/resize drag with the X server's idea
+        // of its position diverged from where it is rendered.
+        if (server.cursor_mode == .move or server.cursor_mode == .resize) {
+            if (server.grab_node_id) |id| {
+                if (server.nodes.findById(id)) |slot| {
+                    server.nodes.applyRect(
+                        slot,
+                        server.nodes.pos_x[slot],
+                        server.nodes.pos_y[slot],
+                        server.nodes.width[slot],
+                        server.nodes.height[slot],
+                    );
+                }
+            }
+        }
         server.cursor_mode = .normal;
         server.grab_node_id = null;
     }
@@ -363,12 +380,18 @@ fn tryBeginFloatDrag(server: *Server, button: u32, cx: f64, cy: f64) bool {
         const cur_h = server.nodes.height[slot];
         const float_w: u32 = if (cur_w > 0) cur_w else server.wm_config.float_default_w;
         const float_h: u32 = if (cur_h > 0) cur_h else server.wm_config.float_default_h;
-        const fx: i32 = @intFromFloat(cx - @as(f64, @floatFromInt(float_w)) / 2.0);
-        const fy: i32 = @intFromFloat(cy - @as(f64, @floatFromInt(float_h)) / 2.0);
+        // Clamp on-screen like the map-time float path: a negative origin
+        // pushes the window's border rects into the visible area and hangs
+        // the float where no layout pass will ever repair it.
+        const fx: i32 = @max(0, @as(i32, @intFromFloat(cx - @as(f64, @floatFromInt(float_w)) / 2.0)));
+        const fy: i32 = @max(0, @as(i32, @intFromFloat(cy - @as(f64, @floatFromInt(float_h)) / 2.0)));
 
         server.nodes.floating[slot] = true;
         server.layout_engine.workspaces[server.layout_engine.active_workspace].removeNode(nid);
         server.nodes.applyRect(slot, fx, fy, float_w, float_h);
+        // Leaving the tiling list: destroy the tile-geometry border frame,
+        // or it survives as orphaned rects that arrange never touches again.
+        server.nodes.setBorder(slot, 0, 0);
         if (server.nodes.kind[slot] == .terminal) {
             if (server.terminalPaneById(nid)) |tp| tp.resize(float_w, float_h);
         }
@@ -917,14 +940,10 @@ pub fn processCursorMotion(server: *Server, time: u32) void {
             if (server.nodes.findById(id)) |slot| {
                 const new_x: i32 = @intFromFloat(cx - server.grab_x);
                 const new_y: i32 = @intFromFloat(cy - server.grab_y);
-                server.nodes.pos_x[slot] = new_x;
-                server.nodes.pos_y[slot] = new_y;
-
-                if (server.nodes.scene_tree[slot]) |tree| {
-                    if (wlr.miozu_scene_tree_node(tree)) |node| {
-                        wlr.wlr_scene_node_set_position(node, new_x, new_y);
-                    }
-                }
+                // applyPosition also configures xwayland surfaces — the
+                // X server must track the drag or X11 clients resolve
+                // pointer coords against a stale origin (offset clicks).
+                server.nodes.applyPosition(slot, new_x, new_y);
                 if (server.nodes.kind[slot] == .terminal) {
                     if (server.terminalPaneById(id)) |tp| tp.setPosition(new_x, new_y);
                 }
@@ -953,6 +972,14 @@ pub fn processCursorMotion(server: *Server, time: u32) void {
                 if (server.nodes.kind[slot] == .wayland_surface) {
                     if (server.nodes.xdg_toplevel[slot]) |toplevel| {
                         _ = wlr.wlr_xdg_toplevel_set_size(toplevel, new_w, new_h);
+                    } else if (server.nodes.xwayland_surface[slot]) |xw| {
+                        // X11 floats never learned about mouse resizes —
+                        // configure carries both geometry halves for X11.
+                        const ww: u16 = if (new_w > 0xFFFF) 0xFFFF else @intCast(new_w);
+                        const hh: u16 = if (new_h > 0xFFFF) 0xFFFF else @intCast(new_h);
+                        const xx: i16 = @truncate(server.nodes.pos_x[slot]);
+                        const yy: i16 = @truncate(server.nodes.pos_y[slot]);
+                        wlr.wlr_xwayland_surface_configure(xw, xx, yy, ww, hh);
                     }
                 }
                 // Defer terminal pane resize to frame callback (avoids

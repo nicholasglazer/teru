@@ -161,15 +161,7 @@ fn buildSpawnConfig(
 /// or null if nothing is focused. Used to remember the pre-scratchpad focus
 /// target. XWayland surfaces carry no node_id, so reverse-look-up the registry.
 fn currentFocusedNodeId(server: *Server) ?u64 {
-    if (server.focused_terminal) |tp| return tp.node_id;
-    if (server.focused_view) |v| return v.node_id;
-    if (server.focused_xwayland) |xw| {
-        for (0..NodeRegistry.max_nodes) |i| {
-            if (server.nodes.kind[i] == .empty) continue;
-            if (server.nodes.xwayland_surface[i] == xw) return server.nodes.node_id[i];
-        }
-    }
-    return null;
+    return Focus.focusedNodeId(server);
 }
 
 fn focusScratchpad(server: *Server, tp: *TerminalPane) void {
@@ -191,6 +183,9 @@ fn focusScratchpad(server: *Server, tp: *TerminalPane) void {
         if (maybe_other) |other| if (other != tp) other.repaintBorderOnly();
     }
     Focus.refreshAllBorders(server);
+    // Focus raises floats/scratchpads (show() reparents to the root tail,
+    // but a later-raised float could still be sitting above us).
+    Focus.raiseIfFloating(server, tp.node_id);
 }
 
 /// Promote a parked scratchpad slot onto workspace `ws` and focus it.

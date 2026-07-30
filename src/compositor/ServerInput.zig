@@ -601,12 +601,11 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
         // browser (xdg toplevel) isn't in `node_ids`, so the old path
         // silently grabbed the master tile instead of the focused
         // window — user symptom was "Win+Shift+N does nothing on my
-        // floating window / Chromium". Prefer focused_view (last-touched
-        // xdg client) then focused_terminal; fall back to the tiled
-        // active id only if neither is set.
-        const nid: ?u64 = if (server.focused_view) |v| v.node_id
-        else if (server.focused_terminal) |tp| tp.node_id
-        else server.layout_engine.getActiveWorkspace().getActiveNodeId();
+        // floating window / Chromium". focusedNodeId covers all three
+        // focus authorities (terminal, xdg view, xwayland); fall back
+        // to the tiled active id only if nothing is focused.
+        const nid: ?u64 = server.focusedNodeId() orelse
+            server.layout_engine.getActiveWorkspace().getActiveNodeId();
         if (nid) |id| server.moveNodeToWorkspace(id, ws);
         return true;
     }

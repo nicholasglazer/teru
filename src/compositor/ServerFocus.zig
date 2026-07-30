@@ -57,6 +57,7 @@ pub fn focusView(server: *Server, view: *XdgView) void {
     server.focused_view = view;
     server.focused_terminal = null;
     refreshAllBorders(server);
+    raiseIfFloating(server, view.node_id);
     // Repaint terminal cursors too: focusView nulls focused_terminal, so any
     // terminal that held focus (solid cursor) must drop to hollow. Without this,
     // focusing an XDG client (e.g. Vivaldi) left the prior terminal showing a
@@ -290,6 +291,58 @@ pub fn refreshAllBorders(server: *Server) void {
     }
 }
 
+/// Node id of the focused window across ALL THREE focus authorities:
+/// terminal pane, xdg view, or xwayland surface. Action handlers must
+/// resolve their target through this instead of reading
+/// focused_terminal/focused_view directly — the xwayland arm is the one
+/// every hand-rolled resolver forgot, which made Super+S / Super+F
+/// silent no-ops on X11 clients (Steam games). An unmanaged
+/// override-redirect surface has no registry slot and resolves to null,
+/// so actions correctly stay no-ops for it.
+pub fn focusedNodeId(server: *Server) ?u64 {
+    if (server.focused_terminal) |tp| return tp.node_id;
+    if (server.focused_view) |view| return view.node_id;
+    if (server.focused_xwayland) |xw| {
+        var i: u16 = 0;
+        while (i < NodeRegistry.max_nodes) : (i += 1) {
+            if (server.nodes.xwayland_surface[i]) |slot_xw| {
+                if (@intFromPtr(xw) == @intFromPtr(slot_xw)) return server.nodes.node_id[i];
+            }
+        }
+    }
+    return null;
+}
+
+/// Raise a floating window (or scratchpad) to the top of the flat scene
+/// root when it gains focus. Tiled windows are deliberately NOT raised:
+/// floats must stay above tiled surfaces because click routing
+/// (nodeAtPoint) prefers floats — raising a tiled window over a float
+/// would make pixels and hitboxes disagree. The scene graph has no
+/// layer sub-trees; sibling order under the root is the only z-order
+/// there is, so without this a scratchpad shown once stayed above a
+/// floating game forever, no matter what the user focused.
+pub fn raiseIfFloating(server: *Server, node_id: u64) void {
+    const slot = server.nodes.findById(node_id) orelse return;
+    const is_scratch = server.nodes.getScratchpad(slot).len != 0;
+    if (!server.nodes.floating[slot] and !is_scratch) return;
+    raiseNode(server, slot);
+}
+
+/// Unconditionally raise a node's scene node to the top of the root.
+/// Used by raiseIfFloating and by enterFullscreen (a fullscreen window
+/// must beat even floats/scratchpads).
+pub fn raiseNode(server: *Server, slot: u16) void {
+    if (server.nodes.scene_tree[slot]) |tree| {
+        if (wlr.miozu_scene_tree_node(tree)) |node| {
+            wlr.wlr_scene_node_raise_to_top(node);
+            return;
+        }
+    }
+    if (server.nodes.kind[slot] == .terminal) {
+        if (server.terminalPaneById(server.nodes.node_id[slot])) |tp| tp.raiseToTop();
+    }
+}
+
 /// Focus an XWayland surface: activate it, and route the seat keyboard
 /// focus to its wlr_surface so typed keys actually reach the X11 client.
 /// Without this, Emacs / Steam / GIMP under XWayland could be clicked
@@ -312,6 +365,7 @@ pub fn focusXwaylandSurface(server: *Server, xw: *wlr.wlr_xwayland_surface) void
     server.focused_view = null;
     server.focused_terminal = null;
     refreshAllBorders(server);
+    if (focusedNodeId(server)) |nid| raiseIfFloating(server, nid);
 
     const kb_opt = wlr.miozu_seat_get_keyboard(server.seat);
     const modifiers: ?*anyopaque = if (kb_opt) |kb| wlr.miozu_keyboard_modifiers_ptr(kb) else null;
@@ -359,6 +413,7 @@ pub fn updateFocusedTerminal(server: *Server) void {
                 server.focused_view = null;
                 server.focused_xwayland = null;
                 refreshAllBorders(server);
+                raiseIfFloating(server, tp.node_id);
                 found = true;
                 break;
             }

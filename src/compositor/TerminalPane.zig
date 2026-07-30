@@ -921,6 +921,15 @@ pub fn setPosition(self: *TerminalPane, x: i32, y: i32) void {
     }
 }
 
+/// Raise the pane's scene buffer to the top of its parent tree. Focus
+/// raises floating panes/scratchpads; z within the flat root is pure
+/// sibling order.
+pub fn raiseToTop(self: *TerminalPane) void {
+    if (wlr.miozu_scene_buffer_node(self.scene_buffer)) |node| {
+        wlr.wlr_scene_node_raise_to_top(node);
+    }
+}
+
 // ── Event loop callback ────────────────────────────────────────
 
 fn ptyReadable(_: c_int, mask: u32, data: ?*anyopaque) callconv(.c) c_int {

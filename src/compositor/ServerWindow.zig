@@ -79,13 +79,9 @@ pub fn setWorkspaceVisibility(self: *Server, ws: u8, visible: bool) void {
 /// layout, mouse users get a dedicated physical gesture for floats.
 /// No-op if the focused node is already tiled.
 pub fn toggleFloat(self: *Server) void {
-    // Determine the focused node ID
-    const nid: u64 = if (self.focused_terminal) |tp|
-        tp.node_id
-    else if (self.focused_view) |view|
-        view.node_id
-    else
-        return;
+    // All three focus authorities — a hand-rolled terminal/view check
+    // here made Super+S a silent no-op on focused X11 windows.
+    const nid: u64 = Focus.focusedNodeId(self) orelse return;
 
     const slot = self.nodes.findById(nid) orelse return;
     const ws = self.layout_engine.active_workspace;
@@ -102,24 +98,18 @@ pub fn toggleFloat(self: *Server) void {
 
 // ── Fullscreen ───────────────────────────────────────────────
 
-/// Toggle the focused node (terminal OR Wayland client) to fill the
-/// entire output. Before v0.5.1 this bailed early for xdg views because
-/// it only read `focused_terminal` — so Mod+F did nothing on Chrome /
-/// Firefox / any native-Wayland client. Now resolves the target via
-/// focused_terminal OR focused_view and expands either one.
+/// Toggle the focused node (terminal, Wayland client, OR X11 client)
+/// to fill the entire output. Before v0.5.1 this bailed early for xdg
+/// views because it only read `focused_terminal` — so Mod+F did nothing
+/// on Chrome / Firefox / any native-Wayland client. The same bug then
+/// recurred for xwayland surfaces; the target now resolves through
+/// Focus.focusedNodeId, which covers all three focus authorities.
 pub fn toggleFullscreen(self: *Server) void {
     if (self.fullscreen_node != null) {
         exitFullscreen(self);
         return;
     }
-    // Target = focused terminal OR focused xdg view. Either way we
-    // expand its node to the full output.
-    const target_id: u64 = if (self.focused_terminal) |tp|
-        tp.node_id
-    else if (self.focused_view) |v|
-        v.node_id
-    else
-        return;
+    const target_id: u64 = Focus.focusedNodeId(self) orelse return;
     enterFullscreen(self, target_id);
 }
 
@@ -166,6 +156,10 @@ pub fn enterFullscreen(self: *Server, target_id: u64) void {
         self.nodes.applyRect(slot, 0, 0, out_w, out_h);
     }
 
+    // The flat scene root has no fullscreen layer — raise the target so a
+    // shown scratchpad or stale float can't keep compositing above it.
+    if (self.nodes.findById(target_id)) |slot| Focus.raiseNode(self, slot);
+
     std.log.scoped(.compositor).info("fullscreen on node={d}", .{target_id});
 }
 
@@ -199,6 +193,18 @@ pub fn exitFullscreen(self: *Server) void {
     const ws = self.layout_engine.active_workspace;
     self.arrangeworkspace(ws);
     if (self.bar) |b| _ = b.render(self);
+
+    // enterFullscreen raised the target to the scene top; if it is tiled it
+    // must drop back beneath floats/scratchpads (click routing prefers
+    // floats). No layer trees exist, so re-assert the float stratum by
+    // raising every float/scratchpad instead.
+    var i: u16 = 0;
+    while (i < NodeRegistry.max_nodes) : (i += 1) {
+        if (self.nodes.kind[i] == .empty) continue;
+        if (self.nodes.floating[i] or self.nodes.getScratchpad(i).len != 0) {
+            Focus.raiseNode(self, i);
+        }
+    }
 
     std.log.scoped(.compositor).info("fullscreen off", .{});
 }
@@ -240,6 +246,15 @@ pub fn dropFullscreenForNewWindowOn(self: *Server, ws: u8, new_app_id: []const u
 /// or null. Floating panes win over tiled because they render on top in
 /// the scene graph. Linear scan — fine given the node count budget.
 pub fn nodeAtPoint(self: *const Server, x: f64, y: f64) ?u64 {
+    // Scene-first: wlr_scene_node_at walks true z-order (topmost wins),
+    // which the registry rect scan below cannot know — with overlapping
+    // floats the scan's slot order picked whichever float happened to sit
+    // later in the registry, so clicks focused/dragged the float UNDER
+    // the one the user was actually looking at. The rect scan remains as
+    // a fallback for points where no committed buffer is hit (e.g. a
+    // float whose client buffer is smaller than its registry rect).
+    if (sceneNodeIdAt(self, x, y)) |nid| return nid;
+
     var best_floating: ?u64 = null;
     var best_tiled: ?u64 = null;
     const ix: i32 = @intFromFloat(x);
@@ -262,6 +277,46 @@ pub fn nodeAtPoint(self: *const Server, x: f64, y: f64) ?u64 {
         }
     }
     return best_floating orelse best_tiled;
+}
+
+/// Resolve the topmost window at (x, y) via the scene graph. The hit node
+/// (a surface buffer or border rect) is climbed to its root-direct child —
+/// in the flat scene graph that container IS the window: nodes.scene_tree
+/// for xdg/xwayland windows, the pane's scene_buffer for terminals. Null
+/// when the top hit belongs to no window (bg rect, bars, overlays) so the
+/// caller can fall back to the registry rect scan.
+fn sceneNodeIdAt(self: *const Server, x: f64, y: f64) ?u64 {
+    const scene_tree_root = wlr.miozu_scene_tree(self.scene) orelse return null;
+    const root_node = wlr.miozu_scene_tree_node(scene_tree_root) orelse return null;
+
+    var sx: f64 = 0;
+    var sy: f64 = 0;
+    var n: ?*wlr.wlr_scene_node = wlr.wlr_scene_node_at(root_node, x, y, &sx, &sy);
+    while (n) |node| {
+        if (node == root_node) return null; // hit the root itself
+        const parent = wlr.miozu_scene_node_parent_node(node) orelse return null;
+        if (parent == root_node) break;
+        n = parent;
+    }
+    const top = n orelse return null;
+
+    var i: u16 = 0;
+    while (i < NodeRegistry.max_nodes) : (i += 1) {
+        if (self.nodes.kind[i] == .empty) continue;
+        if (self.nodes.scene_tree[i]) |tree| {
+            if (wlr.miozu_scene_tree_node(tree)) |tn| {
+                if (tn == top) return self.nodes.node_id[i];
+            }
+        }
+    }
+    for (self.terminal_panes) |maybe_tp| {
+        if (maybe_tp) |tp| {
+            if (wlr.miozu_scene_buffer_node(tp.scene_buffer)) |bn| {
+                if (bn == top) return tp.node_id;
+            }
+        }
+    }
+    return null;
 }
 
 /// Dimensions of the currently-focused output (or first connected if

@@ -97,6 +97,11 @@ pub fn arrangeWorkspace(server: *Server, ws_index: u8) void {
                         }
                     }
                 }
+                // A fullscreen surface must not keep its tile-geometry
+                // border rects — they'd paint lines across the surface
+                // (rects are children of the node's own tree, above its
+                // pixels). setBorder(_, 0, _) destroys them.
+                server.nodes.setBorder(slot, 0, 0);
                 continue;
             }
             const rx = rects[i].x + hg;
@@ -123,12 +128,11 @@ pub fn arrangeWorkspace(server: *Server, ws_index: u8) void {
                 //
                 // Smart borders: when the workspace has exactly one
                 // tiled window, suppress the border entirely — there's
-                // no other window to distinguish it from. Mirrors the
-                // TerminalPane.shouldDrawBorder() convention so terminal
-                // panes and xdg/xwayland windows behave identically when
-                // they're the lone item on a workspace.
-                const slot_ws = server.nodes.workspace[slot];
-                const solo = server.nodes.countInWorkspace(slot_ws) <= 1;
+                // no other window to distinguish it from. Counts TILED
+                // nodes only (this loop's own list): a shown scratchpad
+                // or float sharing the workspace must not frame the lone
+                // tiled window (the frame paints above other surfaces).
+                const solo = node_ids.len <= 1;
                 const bw: u16 = if (solo) 0 else server.wm_config.border_width;
                 const focused = isSlotFocused(server, slot);
                 const color = if (focused)
@@ -220,18 +224,14 @@ pub fn arrangeWorkspaceSmooth(server: *Server, ws_index: u8) void {
 /// Un-float the focused node if currently floating. Reverses a
 /// previous float toggle.
 ///
-/// Resolves the target via focused_terminal/focused_view rather than
+/// Resolves the target via the focused window (any focus authority,
+/// including xwayland) rather than
 /// layout_engine.getActiveNodeId (which iterates tiled nodes only) —
 /// the focused node may be floating, and sinking it is exactly what
 /// the caller wants. Before this fix the action silently no-op'd on
 /// the very case it exists to handle.
 pub fn sinkFocused(server: *Server) void {
-    const nid: u64 = if (server.focused_terminal) |tp|
-        tp.node_id
-    else if (server.focused_view) |v|
-        v.node_id
-    else
-        return;
+    const nid: u64 = server.focusedNodeId() orelse return;
     const slot = server.nodes.findById(nid) orelse return;
     if (!server.nodes.floating[slot]) return;
     server.nodes.floating[slot] = false;
