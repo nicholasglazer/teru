@@ -1041,6 +1041,16 @@ int miozu_surface_is_live(struct wlr_surface *s) {
     return s && s->resource && s->mapped;
 }
 
+/* Resource-only variant for the request_set_cursor path. Cursor surfaces
+ * may legally be unmapped at event time (set_cursor before the surface's
+ * first commit — wlr_cursor installs a commit listener and catches up),
+ * so requiring `mapped` there silently dropped legitimate re-shows while
+ * the null-surface hide always landed. The freed-resource check is the
+ * part that guards the crash class. */
+int miozu_surface_has_resource(struct wlr_surface *s) {
+    return s && s->resource ? 1 : 0;
+}
+
 /* wlr_scene_buffer_from_node asserts node->type == WLR_SCENE_NODE_BUFFER
  * — passing a TREE or RECT node crashes the compositor. scene_node_at
  * happily returns any visible node type (e.g. the bg_rect we create at

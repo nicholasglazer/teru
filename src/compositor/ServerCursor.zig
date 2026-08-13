@@ -249,11 +249,27 @@ pub fn handleRequestSetCursor(listener: *wlr.wl_listener, data: ?*anyopaque) cal
     const hx = wlr.miozu_set_cursor_event_hotspot_x(event_ptr);
     const hy = wlr.miozu_set_cursor_event_hotspot_y(event_ptr);
     if (surface) |s| {
-        if (wlr.miozu_surface_is_live(s) == 0) return; // stale surface
+        // Resource-only guard: a freed resource is the crash class (see
+        // miozu_surface_is_live), but an UNMAPPED cursor surface is legal —
+        // clients may send set_cursor before the surface's first commit,
+        // and wlr_cursor_set_surface handles that. Requiring `mapped` here
+        // made hide (null) always land while re-show could be silently
+        // dropped — a stuck-invisible pointer.
+        if (wlr.miozu_surface_has_resource(s) == 0) return; // stale surface
         wlr.wlr_cursor_set_surface(server.cursor, s, hx, hy);
     } else {
         wlr.wlr_cursor_set_surface(server.cursor, null, 0, 0);
     }
+    // The client now owns the on-screen cursor image (possibly hidden it —
+    // video players send set_cursor(null) during fullscreen playback).
+    // Drop the xcursor dedup cache: wlr_cursor no longer shows whatever
+    // `last_xcursor_name` says, so the next setXcursorIfChanged("default")
+    // — a cursor-shape-v1 re-show on mouse motion, or motion onto a native
+    // pane/bar — must reach wlr_cursor_set_xcursor instead of early-
+    // returning as a "no change". Stale cache here = pointer permanently
+    // invisible after fullscreen video until some non-"default" shape
+    // happens to be requested.
+    server.last_xcursor_name = "";
 }
 
 /// wp_cursor_shape_v1.request_set_shape — the modern alternative to

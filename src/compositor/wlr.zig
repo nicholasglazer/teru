@@ -216,6 +216,7 @@ pub extern "c" fn miozu_xdg_toplevel_from_surface(s: *wlr_surface) callconv(.c) 
 /// out-live their underlying surface briefly during unmap→destroy,
 /// and wlr_seat_pointer_notify_enter asserts on a freed resource.
 pub extern "c" fn miozu_surface_is_live(s: *wlr_surface) callconv(.c) c_int;
+pub extern "c" fn miozu_surface_has_resource(s: *wlr_surface) callconv(.c) c_int;
 
 /// True iff both surfaces are alive and belong to the same wl_client.
 /// Used by focusView to decide whether the pointer-entered leaf is
