@@ -162,6 +162,22 @@ last_xcursor_name: []const u8 = "",
 // progress so motion events continue updating the pane's Selection
 // even if the cursor wanders outside the pane bounds.
 drag_terminal: ?*TerminalPane = null,
+// ── Pointer-latency instrumentation (diagnostic, 2026-08-11) ──────
+// libinput stamps every motion event with a CLOCK_MONOTONIC ms time.
+// Comparing that stamp against the wall clock at the moment we run the
+// handler measures how long the event sat queued before we serviced it —
+// i.e. event-loop scheduling latency, isolated from both the hardware
+// (evdev is measured separately) and from rendering (the cursor is on a
+// DRM hardware plane, so it never waits on a compositor frame).
+// Healthy is 0-2 ms. A stall shows up as a spike.
+// Enabled by WmConfig.pointer_latency_debug; zero cost when off.
+ptr_lat_n: u64 = 0,
+ptr_lat_sum_ms: u64 = 0,
+ptr_lat_max_ms: u64 = 0,
+ptr_lat_stalls: u32 = 0,
+// i64, NOT i128: an i128 field would raise Server's alignment to 16 and break
+// the @fieldParentPtr listener plumbing in wlr.zig. Monotonic ns fits i64.
+ptr_lat_next_report_ns: i64 = 0,
 // XWayland (Emacs, Steam, GIMP) focus target. Lives alongside
 // focused_view because an xwayland_surface isn't an XdgView and we
 // don't want to fake one just to fit the existing XOR invariant.

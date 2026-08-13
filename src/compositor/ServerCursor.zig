@@ -44,6 +44,10 @@ pub fn handleCursorMotion(listener: *wlr.wl_listener, data: ?*anyopaque) callcon
     const dy = wlr.miozu_pointer_motion_dy(event);
     const time = wlr.miozu_pointer_motion_time(event);
 
+    // Measured FIRST, before any handling work, so it reflects queue latency
+    // rather than anything this handler goes on to do.
+    recordPointerLatency(server, time);
+
     // relative-pointer-v1: deliver raw motion to the focused client (games
     // reading mouselook). No-op when no client has bound a relative pointer.
     if (server.relative_pointer_mgr) |m| {
@@ -68,6 +72,63 @@ pub fn handleCursorMotion(listener: *wlr.wl_listener, data: ?*anyopaque) callcon
     wlr.wlr_cursor_move(server.cursor, null, dx, dy);
     server.notifyActivity();
     processCursorMotion(server, time);
+}
+
+/// Diagnostic: how long did this motion event sit queued before we ran?
+///
+/// libinput stamps `time_msec` from CLOCK_MONOTONIC and `compat.monotonicNow`
+/// reads the same clock, so the delta is meaningful — it is NOT a cross-clock
+/// comparison. Healthy is 0-2 ms; a spike means the wl_display event loop was
+/// busy elsewhere when the event arrived.
+///
+/// Deliberately isolates ONE layer. The hardware/evdev side is measured
+/// separately (raw /dev/input reads), and rendering can't be implicated because
+/// the cursor lives on a DRM hardware plane and never waits on a frame. So a
+/// spike here points squarely at teruwm's event-loop scheduling.
+fn recordPointerLatency(server: *Server, event_time_ms: u32) void {
+    if (!server.wm_config.pointer_latency_debug) return;
+
+    const now_ns: i64 = @intCast(teru.compat.monotonicNow());
+    const now_ms: i64 = @divTrunc(now_ns, std.time.ns_per_ms);
+    const ev_ms: i64 = @intCast(event_time_ms);
+    const lat: i64 = now_ms - ev_ms;
+
+    // time_msec is u32 and wraps every ~49.7 days of uptime; across a wrap the
+    // delta is garbage. Drop implausible samples rather than report nonsense.
+    if (lat < 0 or lat > 10_000) return;
+    const lat_ms: u64 = @intCast(lat);
+
+    server.ptr_lat_n += 1;
+    server.ptr_lat_sum_ms += lat_ms;
+    if (lat_ms > server.ptr_lat_max_ms) server.ptr_lat_max_ms = lat_ms;
+
+    if (lat_ms >= server.wm_config.pointer_latency_stall_ms) {
+        server.ptr_lat_stalls += 1;
+        std.log.scoped(.compositor).warn(
+            "pointer STALL: event sat {d} ms in the queue before dispatch",
+            .{lat_ms},
+        );
+    }
+
+    // Periodic summary so a clean run is also visible, not just stalls.
+    if (server.ptr_lat_next_report_ns == 0) {
+        server.ptr_lat_next_report_ns = now_ns + 10 * std.time.ns_per_s;
+        return;
+    }
+    if (now_ns < server.ptr_lat_next_report_ns) return;
+    server.ptr_lat_next_report_ns = now_ns + 10 * std.time.ns_per_s;
+
+    const n = server.ptr_lat_n;
+    if (n > 0) {
+        std.log.scoped(.compositor).info(
+            "pointer latency: n={d} mean={d}ms max={d}ms stalls>={d}ms={d}",
+            .{ n, server.ptr_lat_sum_ms / n, server.ptr_lat_max_ms, server.wm_config.pointer_latency_stall_ms, server.ptr_lat_stalls },
+        );
+    }
+    server.ptr_lat_n = 0;
+    server.ptr_lat_sum_ms = 0;
+    server.ptr_lat_max_ms = 0;
+    server.ptr_lat_stalls = 0;
 }
 
 pub fn handleCursorMotionAbsolute(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {

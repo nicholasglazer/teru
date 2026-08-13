@@ -327,6 +327,17 @@ flat_pointer_accel: bool = false,
 /// Applied when a pointer device connects, so restart teruwm (Mod+') to apply.
 pointer_accel_speed: f32 = 0.0,
 
+/// Diagnostic: log pointer event-loop scheduling latency. Each libinput motion
+/// event carries a CLOCK_MONOTONIC ms stamp; comparing it to the wall clock when
+/// the handler actually runs measures how long the event sat queued. Healthy is
+/// 0-2 ms. Logs any single event over `pointer_latency_stall_ms`, plus a summary
+/// every 10 s. Off by default — it's an investigation tool, not a feature.
+pointer_latency_debug: bool = false,
+
+/// Threshold (ms) above which a single pointer event's queue latency is logged
+/// individually as a stall. Only consulted when `pointer_latency_debug` is on.
+pointer_latency_stall_ms: u32 = 50,
+
 /// Snap the scrollback view back to the live bottom when the user TYPES or
 /// PASTES into a pane (like every terminal — you're interacting, so show the
 /// prompt). True by default; set false to keep the scrolled-back position and
@@ -768,6 +779,10 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.flat_pointer_accel = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "pointer_accel_speed")) {
         self.pointer_accel_speed = std.fmt.parseFloat(f32, value) catch return;
+    } else if (std.mem.eql(u8, key, "pointer_latency_debug")) {
+        self.pointer_latency_debug = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+    } else if (std.mem.eql(u8, key, "pointer_latency_stall_ms")) {
+        self.pointer_latency_stall_ms = std.fmt.parseInt(u32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "disable_while_typing")) {
         self.disable_while_typing = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "alt_scroll_zoom")) {
