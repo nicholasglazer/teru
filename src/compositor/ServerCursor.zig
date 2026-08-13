@@ -335,7 +335,16 @@ fn endGrab(server: *Server, button: u32, state: u32, time: u32) void {
     }
     // Finalize any in-progress terminal drag-select. Selection stays
     // painted (user can copy / refine); mouse_down toggles off.
-    if (server.drag_terminal) |tp| terminalMouseRelease(server, tp);
+    if (server.drag_terminal) |tp| {
+        terminalMouseRelease(server, tp);
+        // The release closes the terminal's exclusive grab — it belongs to
+        // the pane, not to any client. Forwarding it let the window
+        // underneath finalize the phantom selection it should never have
+        // started (see processCursorMotion / forwardAndFocus). Returning
+        // here is safe: drag_terminal is only ever set by a press that
+        // landed on a pane, so no client is waiting on this release.
+        return;
+    }
     _ = wlr.wlr_seat_pointer_notify_button(server.seat, time, button, state);
     // Every button notify must be followed by a frame, or clients
     // that batch (chromium, GTK) never dispatch the click. libinput
@@ -467,11 +476,20 @@ fn tryBeginBorderDrag(server: *Server, cx: f64) bool {
 fn forwardAndFocus(server: *Server, button: u32, state: u32, time: u32, super_held: bool, cx: f64, cy: f64) void {
     _ = super_held;
 
+    // Set when the press lands on a native terminal pane. Such a pane is a
+    // bare wlr_scene_buffer with no wl_surface, so the seat's pointer focus
+    // is still latched onto whatever client the last motion hit-test
+    // entered — the window UNDER the pane. Forwarding the button there gave
+    // it a press it should never have seen; for a browser that started a
+    // text selection which then tracked our drag motion-for-motion.
+    var claimed_by_pane = false;
+
     if (state == 1) {
         if (server.nodeAtPoint(cx, cy)) |nid| {
             if (server.nodes.findById(nid)) |slot| {
                 switch (server.nodes.kind[slot]) {
                     .terminal => {
+                        claimed_by_pane = true;
                         focusTerminalByNode(server, nid);
                         // Left-click over a native terminal starts
                         // drag-select bookkeeping. Without this path
@@ -521,6 +539,14 @@ fn forwardAndFocus(server: *Server, button: u32, state: u32, time: u32, super_he
     // routes to the (now-activated) surface; chromium sees
     // configure → enter → button as three ordered protocol events
     // rather than one batched frame.
+    if (claimed_by_pane) {
+        // Compositor chrome owns this click. Drop any stale client pointer
+        // focus so the window underneath sees a clean leave rather than a
+        // press whose matching release it will never receive.
+        wlr.wlr_seat_pointer_clear_focus(server.seat);
+        return;
+    }
+
     _ = wlr.wlr_seat_pointer_notify_button(server.seat, time, button, state);
     wlr.wlr_seat_pointer_notify_frame(server.seat);
 }
@@ -906,8 +932,17 @@ pub fn processCursorMotion(server: *Server, time: u32) void {
     // paneLocalCell).
     if (server.drag_terminal) |tp| {
         terminalMouseMotion(server, tp, cx, cy);
-        // Don't return — still let the rest of the motion path run so
-        // other state (border hover, focus, etc.) stays consistent.
+        // A drag-select is an EXCLUSIVE pointer grab — same contract as
+        // wl_pointer's implicit grab. Falling through to the client
+        // dispatch path below leaked EVERY motion tick to whatever client
+        // sat under the pane: the native terminal has no wl_surface, so
+        // the scene hit-test misses, and fallbackPointerToTiledView then
+        // handed the pointer to the window underneath. With the press
+        // already leaked too (see forwardAndFocus), a maximized browser
+        // behind a floating terminal ran its own text selection in
+        // lockstep — dragging in the terminal highlighted the page behind
+        // it. Own the pointer until release.
+        return;
     }
 
     // Tiled border drag — update ratio, defer layout to frame callback.
