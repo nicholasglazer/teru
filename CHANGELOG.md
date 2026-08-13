@@ -1,5 +1,204 @@
 # Changelog
 
+## 0.13.0 — 2026-08-13
+
+A Doom-style **leader / which-key** across every front-end, a long batch of
+**X11** window-management fixes (Steam, games, Emacs), and an
+input-correctness pass on the pointer — drag-select, the wheel, the cursor
+image, and where the keyboard actually goes. `0.12.0` was written up but never
+tagged, so upgrading from `v0.11.0` gets that section below as well.
+
+### Security
+
+- **MCP request parsing hardened against hostile input.** JSON extraction and
+  HTTP framing tolerate malformed, truncated and oversized requests instead of
+  trusting them. Screenshot MCP tools now restrict output paths to an explicit
+  allowlist (with `~/Pictures` re-allowed after the first pass narrowed it too
+  far).
+
+### Added
+
+- **Super+Space leader with a which-key hint**, Doom-Emacs style, on all three
+  front-ends: teruwm (wlr pixels), the teru TUI/SSH client (ANSI cells), and
+  windowed teru (`Alt+Space` on the two terminal front-ends). Keys either
+  descend into a mnemonic group (`w` window, `s` session, `c` capture, `b` bar)
+  — re-rendering the hint for that group — or fire an action and exit; Esc or
+  any unbound key dismisses. One shared engine, one tree, one config: the
+  `[leader]` section in `teru.conf` drives all three.
+- **Unified command palette on `mod+d`.** The launcher now carries the leader's
+  commands, flattened from the live tree and ranked *ahead* of `$PATH` apps —
+  "do something" first, "launch something" second — with a case-insensitive
+  fuzzy filter over both. `Super+Space Super+Space` opens it commands-first
+  from inside the which-key. One command vocabulary, reachable three ways:
+  chord, search, and MCP.
+- **`[keybind]` binds any compositor action**, not just `spawn:` and
+  `scratchpad:`. Any action name works (`pane:focus_next`, `workspace:3`,
+  `pane:move_to:2`, `screenshot`, `leader:activate`, …), applied on init *and*
+  on reload so edits hot-apply, and an action chord overrides the built-in
+  bound to the same chord — that is how you rebind a default.
+- **Client fullscreen requests are honored** (xdg + xwayland). Video players,
+  F11 in a browser, and games setting `_NET_WM_STATE_FULLSCREEN` before map now
+  enter compositor fullscreen, with tiling reconciliation on the way in and out.
+- **Screenshots capture external client windows.** The native composite
+  (`mod+w`, area-select, `teruwm_screenshot`) only blitted teru's own pane
+  framebuffers and the bars, so chromium/firefox came out as wallpaper. Client
+  buffers are now read back from the renderer and blitted at the node rect,
+  clipped, with subsurfaces and xdg popups riding along. Override-redirect X11
+  windows and the cursor plane remain out of scope — grim still covers those.
+- **Keys OSD** — a corner overlay showing pressed keys and combos, for
+  screencasts and streams (`keys_osd:toggle`, plus `teruwm_keys_osd*` MCP
+  tools). Fed from the key handler and expired by a one-shot timer, so it costs
+  nothing at idle.
+- **pointer-constraints-v1** — games can lock or confine the cursor.
+- **Pointer and scroll tuning, four new config keys.** `client_scroll_factor`
+  scales continuous scroll deltas forwarded to Wayland/Xwayland clients:
+  `touchpad_scroll_factor` only ever governed teruwm's own native panes, so
+  clients got libinput's raw delta and a browser scrolled at a visibly
+  different speed from the terminal beside it. `disable_while_typing`,
+  `flat_pointer_accel` and `pointer_accel_speed` expose libinput's
+  disable-while-typing switch and its acceleration profile and speed — DWT was
+  hardcoded on with no escape hatch, and the profile was left at the adaptive
+  default, whose near-zero multiplier at low speeds reads as "the pointer is
+  dead" until you move faster. Every default preserves the previous behaviour.
+- **`{watts}` reports platform draw on AC.** Four text shapes now: ` 18.4W`
+  discharging, `+38.2W` charging, `~21.5W` platform draw on AC, and a plain
+  ` AC` tag when that reading is unavailable.
+- `teruwm_get_focus` MCP tool — reports the three focus authorities and the
+  `xor_ok` invariant, used as a regression canary by the test suite.
+
+### Changed
+
+- **`teruwm --version` and `--help` exit before compositor init.** The old
+  argument loop recognised only `--restore` and let every other flag fall
+  through to a normal start, so `teruwm --version` booted a full compositor
+  that grabbed the DRM seat — run inside a live session it stole the seat and
+  dropped the user to a TTY. Unknown flags now exit `2` instead of silently
+  taking over the display.
+- **Fixed-size, transient and modal X11 windows are managed floats.** Steam's
+  CEF windows map with `PMinSize == PMaxSize`, so the aux-window heuristic
+  (meant for dunst/dmenu HUDs) routed real, interactive windows through the
+  unmanaged override-redirect path: no node, no workspace, visible on every
+  workspace, and impossible to focus or close. Only true override-redirects
+  stay unmanaged now.
+
+### Fixed
+
+- **"Dragging in the terminal highlights the page behind it."** A native pane
+  is a bare scene buffer with no `wl_surface`, so the seat's pointer focus
+  stayed latched on the client the last hit-test entered — the window *under*
+  the pane. The press, every motion tick, and the release all leaked there, so
+  a maximized browser behind a floating terminal ran its own text selection in
+  lockstep. A pane-claimed gesture now owns the pointer until release. The
+  matching hover bug is fixed too: the tile-rect fallback used to scan the node
+  registry in slot order, completely z-blind, and is now resolved through the
+  same top-most-node helper click-to-focus uses.
+- **"Can't scroll inside claude-code."** Native panes never saw the wheel:
+  `handleCursorAxis` only ever scrolled local scrollback or fell through to a
+  seat axis event that cannot reach a surface-less pane. A program with mouse
+  tracking on — Claude Code, vim, htop, `less +mouse` — got nothing, and on the
+  alternate screen the wheel silently shifted invisible history instead. The
+  wheel now follows standalone teru's rules: tracking on (1000/1002/1003) →
+  SGR/X10 button-64/65 reports; alt screen with alternate-scroll (1007) →
+  cursor-key presses; alt screen with neither → swallowed; normal screen
+  without tracking → local scrollback, unchanged.
+- **The pointer stayed invisible after fullscreen video.** A player sending
+  `set_cursor(null)` hid the cursor, but the re-show was dropped twice over:
+  the surface guard required a `mapped` bit that a cursor surface legitimately
+  lacks at event time, and the xcursor dedup cache still read `"default"`, so
+  the next `"default"` request early-returned as "no change". The pointer came
+  back only when some other shape happened to be asked for.
+- **Typing on an empty workspace went to a window on another one.** Switching
+  away from a workspace left external (xdg/X11) focus in place — the bar kept
+  reading `Overwatch` while you sat on an empty workspace, and, worse, the seat
+  kept delivering every keystroke to that hidden client. Focus is now dropped
+  on *visibility*, not workspace equality, and dropping it deactivates the
+  client and clears the seat's keyboard focus. `Mod+Shift+N` on a focused
+  external window had the same bug from the mirror-image direction, and a
+  workspace whose only window is a float now focuses it on entry.
+- **"The window renders on top but only the window underneath is clickable."**
+  Xwayland re-picks the pointer target from the *X server's* own stacking, and
+  wlroots' xwm demotes every newly mapped managed window to the bottom of that
+  stack expecting the compositor to raise it back — which teruwm never did. X
+  stacking degenerated to reverse map order, so Steam's Special Offers dialog
+  and a launching game rendered on top while every click went to Steam main.
+  Scene raises are now mirrored into X stacking, freshly mapped windows undo
+  the map-time demotion, and `request_activate` is wired.
+- **`Super+S` / `Super+F` / `Super+Shift+N` were silent no-ops on focused X11
+  clients.** Every hand-rolled terminal/view focus check forgot the xwayland
+  arm; one resolver now covers all three focus authorities. Overlapping floats
+  also resolve by true scene z-order, and interactive move/resize keeps the X
+  server's idea of float geometry in sync so clicks stop landing offset from
+  the pixels.
+- **`Mod+X` and `teruwm_close_window` no-op'd on every X11 window** — the close
+  path handled terminals and XDG toplevels only, and xwayland nodes fell
+  through to "Window not found".
+- **Fullscreen was a trap, and leaving it could crash.** Navigation and close
+  now exit fullscreen instead of stranding the session, and the X11 teardown
+  segfault from dangling scene-tree mirrors is fixed.
+- **Intermittent touchpad freeze under load.** The single-threaded compositor
+  loop could be parked by synchronous work in MCP handlers, leaving libinput
+  unread so the I2C touchpad froze for the duration and then jumped (the
+  keyboard, on a separate path, kept working — which is why only the pad
+  stalled). Humanized `mouse_path` is now an async timer state machine instead
+  of an inline sleep, the MCP readability poll is capped at 5 ms, and
+  screenshot capture only re-renders dirty panes.
+- **Context menus closed as soon as they opened** — clicking an
+  already-focused window re-focused it, which dismissed the popup.
+- **The bar showed a stale title.** `{title}` read `shell` for focused external
+  clients, and the previous workspace's terminal title lingered after switching
+  to an empty one.
+- **Spawning a terminal while an X11 window held focus left two focus owners**
+  — the X11 window stayed activated and kept X input focus while the new pane
+  took the focus border.
+- Also: alt-screen recovery when a program dies mid-screen; prefix mode no
+  longer swallows the ESC of an escape sequence; daemon tolerance for partial
+  header reads, state-sync scroll-ratio clamping and zombie reaping for
+  explicitly-closed panes; no spurious reflow on a pure workspace switch; the
+  all-dirty repaint sentinel is preserved; close-path focus reselect; the
+  documented `tab_width` key is actually parsed and `font_size` is clamped;
+  right-Alt is tracked in keybind modifier state; default Tab/Escape chords
+  fire; the Shift'd number row folds to its base digit; the launcher palette is
+  drawn on one bar instead of both; web-notification popups float top-right
+  instead of taking a tile; restart/restore hardening; live config reload no
+  longer leaves dangling pointers; bar-exec and MCP event sources are removed
+  before display destroy; and `SIGPIPE` is ignored process-wide, so a broken
+  pipe no longer kills teru or teruwm.
+
+### Performance
+
+- **Render-fps cap and hidden-pane gating.** `max_render_fps` bounds how often
+  a churning visible pane re-uploads its buffer to the GPU, and hidden panes
+  skip the paint entirely — a scratchpad streaming output no longer burns a
+  full-buffer upload every dirty vsync. PTY draining continues either way, so
+  background agents never block.
+- **Workspace-switch repaint path** no longer performs a double full-buffer
+  upload per pane.
+- **The dGPU can finally runtime-suspend.** Pinning the render device was not
+  enough: GLVND loads every installed EGL vendor library at `eglInitialize`,
+  and the NVIDIA one opens `/dev/nvidia0` and holds it for the compositor's
+  whole lifetime — which also made `modprobe -r nvidia` impossible while teruwm
+  ran. `startt` now restricts GLVND to the Mesa vendor on Intel-iGPU machines,
+  and unsets it along with the other pins on the self-heal retry.
+
+### Notes
+
+- **`0.12.0` was never tagged.** Its section below was written and its release
+  commit exists, but no tag was ever published — the last public release was
+  `v0.11.0`. Upgrading from `v0.11.0` therefore picks up both sections; read
+  them in order.
+- **Explicit sync ships gated OFF.** `wp_linux_drm_syncobj_v1` is implemented
+  and measurably helps NVIDIA clients (Overwatch walled at 110 fps — exactly
+  2/3 of a 165 Hz panel — with GPU and CPU both half idle), but advertising it
+  unconditionally stopped *every* Xwayland window from mapping at all on
+  wlroots 0.18.3 + Xwayland 24.1.13 + NVIDIA 610.57.04. It is behind
+  `TERUWM_EXPLICIT_SYNC=1`, which doubles as the retest handle after a wlroots
+  bump. Do not treat it as a shipped feature.
+- Pointer event-loop latency instrumentation (`pointer_latency_debug`,
+  `pointer_latency_stall_ms`) is diagnostic scaffolding for an unresolved
+  touchpad-stall investigation. Off by default, zero cost when off, and
+  deliberately undocumented — not a supported feature.
+- Building now requires **Zig `0.17.0-dev.1509`**.
+
 ## 0.12.0 — 2026-06-10
 
 First-public-release hardening: an audit fleet re-checked every open issue
