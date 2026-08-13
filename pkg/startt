@@ -103,6 +103,17 @@ if [ -z "${WLR_DRM_DEVICES:-}" ]; then
         if [ -n "$_igpu_render" ] && [ -e "$_igpu_render" ]; then
             export WLR_RENDER_DRM_DEVICE="$_igpu_render"
         fi
+        # The render-node pin above is not enough to keep EGL off the dGPU:
+        # GLVND's eglInitialize loads EVERY vendor library, and the NVIDIA one
+        # opens /dev/nvidia0 and holds it for the compositor's lifetime — which
+        # blocks dGPU runtime-suspend AND makes `modprobe -r nvidia` impossible
+        # while teruwm runs (no live driver reload). Restricting GLVND to the
+        # Mesa vendor keeps the NVIDIA library from ever loading. Vulkan
+        # (DXVK, native) and GLX use different loaders and are unaffected;
+        # an EGL client inherits this list and must re-set it to offload.
+        if [ -f /usr/share/glvnd/egl_vendor.d/50_mesa.json ]; then
+            export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
+        fi
     fi
 fi
 
@@ -141,6 +152,7 @@ if [ "$status" -ne 0 ] && [ "$_startt_pinned_gpu" -eq 1 ]; then
         "$status" "$WLR_DRM_DEVICES" | tee -a "$TERU_LOG"
     unset WLR_DRM_DEVICES
     unset WLR_RENDER_DRM_DEVICE
+    unset __EGL_VENDOR_LIBRARY_FILENAMES
     _run_teruwm
     status=$?
 fi
