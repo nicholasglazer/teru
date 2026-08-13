@@ -50,7 +50,13 @@ pub fn handleNewInput(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c
         // OFF; without this the touchpad feels broken even when clicks-via-
         // physical-button still work. natural_scroll is config-driven
         // (default ON) — set natural_scroll=false for traditional scrolling.
-        wlr.miozu_configure_libinput_pointer(device, @intFromBool(server.wm_config.natural_scroll));
+        wlr.miozu_configure_libinput_pointer(
+            device,
+            @intFromBool(server.wm_config.natural_scroll),
+            @intFromBool(server.wm_config.disable_while_typing),
+            @intFromBool(server.wm_config.flat_pointer_accel),
+            @floatCast(server.wm_config.pointer_accel_speed),
+        );
     }
 
     var caps: u32 = wlr.WL_SEAT_CAPABILITY_POINTER;

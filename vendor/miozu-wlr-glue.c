@@ -392,7 +392,9 @@ int miozu_cursor_shape_event_from_focused(
  * libinput-backed (headless backend, virtual pointer) the handle lookup
  * returns NULL and we silently skip — no-op is the correct behavior. */
 
-void miozu_configure_libinput_pointer(struct wlr_input_device *dev, int natural_scroll) {
+void miozu_configure_libinput_pointer(struct wlr_input_device *dev, int natural_scroll,
+                                      int disable_while_typing, int flat_accel,
+                                      double accel_speed) {
     if (!dev) return;
     if (!wlr_input_device_is_libinput(dev)) return;
 
@@ -421,10 +423,37 @@ void miozu_configure_libinput_pointer(struct wlr_input_device *dev, int natural_
         libinput_device_config_scroll_set_natural_scroll_enabled(h, natural_scroll ? 1 : 0);
     }
 
-    /* Disable-while-typing: prevents palm hits while writing code. */
+    /* Disable-while-typing: prevents palm hits while writing code, at the
+     * cost of the pad ignoring input for a moment after every keystroke.
+     * This was hardcoded ON with no escape hatch — the usual cause of a
+     * touchpad that feels "dead for a second" right after typing, most
+     * noticeable after unplugging an external mouse. Now config-driven
+     * (still default ON): set `disable_while_typing = false`. */
     if (libinput_device_config_dwt_is_available(h)) {
         libinput_device_config_dwt_set_enabled(h,
-            LIBINPUT_CONFIG_DWT_ENABLED);
+            disable_while_typing ? LIBINPUT_CONFIG_DWT_ENABLED
+                                 : LIBINPUT_CONFIG_DWT_DISABLED);
+    }
+
+    /* Pointer acceleration. libinput's default is the ADAPTIVE profile, whose
+     * multiplier is very small at low movement speeds — slow travel produces
+     * almost no cursor motion, which reads as "the pointer is dead", then it
+     * jumps once you move faster. On a hidpi panel that's pronounced, and it
+     * applies to mice and touchpads alike. teruwm previously set neither the
+     * profile nor the speed, so every user got the default curve with no way
+     * to change it. FLAT is a constant 1:1 multiplier (no speed-dependent
+     * curve). accel_speed is libinput's normalised [-1.0, 1.0] knob. */
+    if (libinput_device_config_accel_is_available(h)) {
+        if (flat_accel) {
+            uint32_t profiles = libinput_device_config_accel_get_profiles(h);
+            if (profiles & LIBINPUT_CONFIG_ACCEL_PROFILE_FLAT) {
+                libinput_device_config_accel_set_profile(h,
+                    LIBINPUT_CONFIG_ACCEL_PROFILE_FLAT);
+            }
+        }
+        if (accel_speed < -1.0) accel_speed = -1.0;
+        if (accel_speed > 1.0) accel_speed = 1.0;
+        libinput_device_config_accel_set_speed(h, accel_speed);
     }
 
     /* Click method: clickfinger (same gesture as tap buttons above). */

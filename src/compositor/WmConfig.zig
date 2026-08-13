@@ -305,6 +305,28 @@ touchpad_scroll_factor: f32 = 1.5,
 /// Notched wheel events are never scaled — clients expect raw v120 units.
 client_scroll_factor: f32 = 1.0,
 
+/// libinput disable-while-typing: suppress touchpad input for a short window
+/// after each keystroke, so a palm brushing the pad mid-type can't move the
+/// cursor. Was hardcoded ON with no escape hatch. It is the usual cause of a
+/// touchpad that feels "dead for a second" right after typing — most visible
+/// when you unplug an external mouse and start using the pad again. Set
+/// `disable_while_typing = false` if you'd rather have zero input latency.
+disable_while_typing: bool = true,
+
+/// Use libinput's FLAT pointer-acceleration profile instead of the default
+/// ADAPTIVE one. Adaptive applies a very small multiplier at low movement
+/// speeds, so slow travel produces almost no cursor motion — it reads as "the
+/// pointer is dead for a moment", then jumps once you move faster. Pronounced
+/// on hidpi panels, and it affects mice and touchpads identically. Flat is a
+/// constant 1:1 multiplier with no speed-dependent curve.
+/// Applied when a pointer device connects, so restart teruwm (Mod+') to apply.
+flat_pointer_accel: bool = false,
+
+/// libinput pointer speed, normalised [-1.0, 1.0]. 0.0 is libinput's default;
+/// positive is faster, negative slower. Applies to every pointer device.
+/// Applied when a pointer device connects, so restart teruwm (Mod+') to apply.
+pointer_accel_speed: f32 = 0.0,
+
 /// Snap the scrollback view back to the live bottom when the user TYPES or
 /// PASTES into a pane (like every terminal — you're interacting, so show the
 /// prompt). True by default; set false to keep the scrolled-back position and
@@ -742,6 +764,12 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.touchpad_scroll_factor = std.fmt.parseFloat(f32, value) catch return;
     } else if (std.mem.eql(u8, key, "client_scroll_factor")) {
         self.client_scroll_factor = std.fmt.parseFloat(f32, value) catch return;
+    } else if (std.mem.eql(u8, key, "flat_pointer_accel")) {
+        self.flat_pointer_accel = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+    } else if (std.mem.eql(u8, key, "pointer_accel_speed")) {
+        self.pointer_accel_speed = std.fmt.parseFloat(f32, value) catch return;
+    } else if (std.mem.eql(u8, key, "disable_while_typing")) {
+        self.disable_while_typing = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "alt_scroll_zoom")) {
         self.alt_scroll_zoom = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "font_zoom_min")) {
