@@ -1119,55 +1119,62 @@ pub fn processCursorMotion(server: *Server, time: u32) void {
 /// to that view's root surface at clamped coords. Fix for "can't
 /// click client area while it's still resizing to fill the tile".
 fn fallbackPointerToTiledView(server: *Server, cx: f64, cy: f64, time: u32) bool {
-    const ix: i32 = @intFromFloat(cx);
-    const iy: i32 = @intFromFloat(cy);
-    var i: u16 = 0;
-    while (i < NodeRegistry.max_nodes) : (i += 1) {
-        if (server.nodes.kind[i] != .wayland_surface) continue;
-        if (server.nodes.workspace[i] != server.layout_engine.active_workspace) continue;
-        const px = server.nodes.pos_x[i];
-        const py = server.nodes.pos_y[i];
-        const pw: i32 = @intCast(server.nodes.width[i]);
-        const ph: i32 = @intCast(server.nodes.height[i]);
-        if (ix < px or ix >= px + pw) continue;
-        if (iy < py or iy >= py + ph) continue;
+    // Resolve the TOPMOST node at this point. The previous implementation
+    // scanned the registry in slot order and took the first node whose rect
+    // contained the point — completely z-blind. With a floating terminal
+    // over a maximized browser that scan returned the BROWSER, so pointer
+    // enter/motion was delivered to a window the user could not see at that
+    // pixel: on a plain hover it silently moved pointer focus to the wrong
+    // window, and during a terminal drag-select it made the page behind
+    // highlight in lockstep with the pane. nodeAtPoint walks true scene
+    // z-order (and prefers floats in its rect fallback) and is the same
+    // helper click-to-focus uses — so hover and click now agree.
+    const nid = server.nodeAtPoint(cx, cy) orelse return false;
+    const slot = server.nodes.findById(nid) orelse return false;
 
-        // Resolve the root surface. XDG: xdg_toplevel.base.surface.
-        // XWayland: wlr_xwayland_surface->surface. Electron apps like
-        // figma-linux route everything through a child subsurface that
-        // rejects input via empty region; the toplevel root's region
-        // defaults to infinite so enter-events there are accepted.
-        const surface: *wlr.wlr_surface = blk: {
-            if (server.nodes.xdg_view[i]) |opaque_view| {
-                const view: *XdgView = @ptrCast(@alignCast(opaque_view));
-                const s = wlr.miozu_xdg_surface_surface(
-                    wlr.miozu_xdg_toplevel_base(view.toplevel) orelse continue,
-                ) orelse continue;
-                break :blk s;
-            }
-            if (server.nodes.xwayland_surface[i]) |xw| {
-                const s = wlr.miozu_xwayland_surface_surface(xw) orelse continue;
-                break :blk s;
-            }
-            continue;
-        };
-        if (wlr.miozu_surface_is_live(surface) == 0) continue;
+    // A native terminal pane — or any non-client node — on top means the
+    // pointer belongs to compositor chrome. Returning false lets the caller
+    // clear seat pointer focus rather than leak to a client underneath.
+    if (server.nodes.kind[slot] != .wayland_surface) return false;
+    if (server.nodes.workspace[slot] != server.layout_engine.active_workspace) return false;
 
-        // Surface-local coords. When the client's buffer covers the
-        // full tile we can pass (cx-px, cy-py); mid-resize the buffer
-        // is smaller than the tile and delivered coords are just a
-        // "best effort" — chromium/electron accept the position and
-        // fire their own hit-testing internally.
-        const sx_local: f64 = @max(0, cx - @as(f64, @floatFromInt(px)));
-        const sy_local: f64 = @max(0, cy - @as(f64, @floatFromInt(py)));
-        server.last_pointer_surface = surface;
-        wlr.wlr_seat_pointer_notify_enter(server.seat, surface, sx_local, sy_local);
-        wlr.wlr_seat_pointer_notify_motion(server.seat, time, sx_local, sy_local);
-        wlr.wlr_seat_pointer_notify_frame(server.seat);
-        updateConstraintForSurface(server, surface);
-        return true;
-    }
-    return false;
+    const px = server.nodes.pos_x[slot];
+    const py = server.nodes.pos_y[slot];
+
+    // Resolve the root surface. XDG: xdg_toplevel.base.surface.
+    // XWayland: wlr_xwayland_surface->surface. Electron apps like
+    // figma-linux route everything through a child subsurface that
+    // rejects input via empty region; the toplevel root's region
+    // defaults to infinite so enter-events there are accepted.
+    const surface: *wlr.wlr_surface = blk: {
+        if (server.nodes.xdg_view[slot]) |opaque_view| {
+            const view: *XdgView = @ptrCast(@alignCast(opaque_view));
+            const s = wlr.miozu_xdg_surface_surface(
+                wlr.miozu_xdg_toplevel_base(view.toplevel) orelse return false,
+            ) orelse return false;
+            break :blk s;
+        }
+        if (server.nodes.xwayland_surface[slot]) |xw| {
+            const s = wlr.miozu_xwayland_surface_surface(xw) orelse return false;
+            break :blk s;
+        }
+        return false;
+    };
+    if (wlr.miozu_surface_is_live(surface) == 0) return false;
+
+    // Surface-local coords. When the client's buffer covers the
+    // full tile we can pass (cx-px, cy-py); mid-resize the buffer
+    // is smaller than the tile and delivered coords are just a
+    // "best effort" — chromium/electron accept the position and
+    // fire their own hit-testing internally.
+    const sx_local: f64 = @max(0, cx - @as(f64, @floatFromInt(px)));
+    const sy_local: f64 = @max(0, cy - @as(f64, @floatFromInt(py)));
+    server.last_pointer_surface = surface;
+    wlr.wlr_seat_pointer_notify_enter(server.seat, surface, sx_local, sy_local);
+    wlr.wlr_seat_pointer_notify_motion(server.seat, time, sx_local, sy_local);
+    wlr.wlr_seat_pointer_notify_frame(server.seat);
+    updateConstraintForSurface(server, surface);
+    return true;
 }
 
 // ── pointer-constraints-v1 ─────────────────────────────────────
