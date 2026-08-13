@@ -698,9 +698,10 @@ fn toolGetConfig(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
 /// Report the compositor's keyboard-focus state. Exposes the focused_* fields
 /// and — critically for tests — `xor_ok`, which encodes the documented
 /// invariant that AT MOST ONE of focused_terminal / focused_view /
-/// focused_xwayland is set (Server.zig:168). A false xor_ok means focus is
-/// double-owned (e.g. the spawnTerminal bug that nulls focused_view but not
-/// focused_xwayland). node ids are -1 when absent.
+/// focused_xwayland is set (see Server.zig's focus fields). A false xor_ok
+/// means focus is double-owned (regression canary — e.g. spawnTerminal used
+/// to null focused_view but not focused_xwayland). node ids are -1 when
+/// absent.
 fn toolGetFocus(self: *WmMcpServer, buf: []u8, id: ?[]const u8) []const u8 {
     const srv = self.server;
     const has_term = srv.focused_terminal != null;

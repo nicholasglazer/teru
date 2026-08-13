@@ -1449,9 +1449,20 @@ pub fn spawnTerminal(self: *Server, ws: u8) void {
     // NOW arrange — all panes including the new one are findable
     self.arrangeworkspace(ws);
 
-    // Focus the new terminal
+    // Focus the new terminal. Deactivate + clear BOTH external refs — the
+    // xwayland one used to be left set, breaking the focus XOR invariant
+    // (teruwm_get_focus reported focus_count=2 / xor_ok=false after
+    // spawning a terminal while an X11 window held focus).
+    if (self.focused_view) |prev| {
+        _ = wlr.wlr_xdg_toplevel_set_activated(prev.toplevel, false);
+    }
+    if (self.focused_xwayland) |prev_xw| {
+        wlr.wlr_xwayland_surface_activate(prev_xw, false);
+    }
     self.focused_terminal = tp;
     self.focused_view = null;
+    self.focused_xwayland = null;
+    Focus.refreshAllBorders(self);
 
     // Re-render all panes (borders update for new focus)
     for (self.terminal_panes) |maybe_tp| {
