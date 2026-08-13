@@ -18,6 +18,12 @@ Both binaries route diagnostics through `std.log`, gated at **runtime** by the
 Output goes to **stderr**, formatted `[level] (scope) message`. Redirect stderr
 to capture it.
 
+### Other environment variables
+
+| variable | effect |
+|---|---|
+| `TERUWM_EXPLICIT_SYNC` | Opt in to advertising `wp_linux_drm_syncobj_v1` (explicit GPU sync). **Off by default**: with the global advertised, no Xwayland window could map at all on wlroots 0.18.3 + Xwayland 24.1.13 + NVIDIA 610.57.04 rendering into an i915 GLES2 compositor — Steam and the game were both invisible while the game spun at 123% CPU with the GPU idle. Set to any value to re-test after a wlroots or driver bump; only leave it on if an Xwayland client demonstrably maps and presents |
+
 ### teruwm (compositor)
 ```sh
 # From a free TTY (Ctrl+Alt+F2). The `trace` mode builds, sets TERU_LOG=debug,

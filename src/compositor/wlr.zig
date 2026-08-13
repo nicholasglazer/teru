@@ -348,6 +348,19 @@ pub extern "wlroots-0.18" fn wlr_data_control_manager_v1_create(display: *wl_dis
 pub const wlr_tearing_control_manager_v1 = opaque {};
 pub extern "wlroots-0.18" fn wlr_tearing_control_manager_v1_create(display: *wl_display, version: u32) callconv(.c) ?*wlr_tearing_control_manager_v1;
 
+// wp_linux_drm_syncobj_v1: explicit GPU sync. The NVIDIA driver
+// implements no implicit sync on dmabufs — without this global its
+// Vulkan/Xwayland clients fall back to conservative blocking waits
+// on every frame handoff (observed 2026-08-06: Overwatch walled at
+// 110 fps = exactly 2/3 of the 165 Hz panel with GPU and CPU both
+// half-idle). wlroots' scene graph does all timeline wait/signal
+// bookkeeping internally — the compositor only advertises the
+// global. Creation needs a DRM fd with timeline-syncobj caps, so
+// the pixman/headless test path (drm_fd = -1) must skip it.
+pub const wlr_linux_drm_syncobj_manager_v1 = opaque {};
+pub extern "wlroots-0.18" fn wlr_linux_drm_syncobj_manager_v1_create(display: *wl_display, version: u32, drm_fd: c_int) callconv(.c) ?*wlr_linux_drm_syncobj_manager_v1;
+pub extern "wlroots-0.18" fn wlr_renderer_get_drm_fd(renderer: *wlr_renderer) callconv(.c) c_int;
+
 // wlr_idle_inhibit_v1: clients (mpv, browsers, video calls) pin an
 // inhibitor to a surface while they need the screen awake. We count
 // inhibitors and flip wlr_idle_notifier_v1's inhibited flag

@@ -696,6 +696,29 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
     // listener required.
     _ = wlr.wlr_tearing_control_manager_v1_create(display, 1);
 
+    // wp_linux_drm_syncobj_v1: explicit sync for GPU clients. NVIDIA
+    // does no implicit dmabuf sync, so without this global its frame
+    // handoffs serialize on conservative waits — fps walls at refresh
+    // fractions while the GPU sits half-idle. wlroots handles every
+    // timeline wait in the scene graph; we only advertise. Skipped
+    // when the renderer has no DRM fd (pixman/headless tests).
+    //
+    // 2026-08-06 GATED OFF after a live regression: with the global
+    // advertised, NO Xwayland window could map at all (Steam and
+    // Overwatch both invisible; the game spun at 123% CPU with the
+    // GPU at 0%) on wlroots 0.18.3 + Xwayland 24.1.13 + NVIDIA
+    // 610.57.04 clients rendering into this i915 GLES2 compositor.
+    // Suspected cross-device timeline handling in the dGPU→iGPU
+    // buffer path. Re-test with TERUWM_EXPLICIT_SYNC=1 after each
+    // wlroots bump; do NOT re-enable unconditionally until an
+    // Xwayland client demonstrably maps + presents under it.
+    if (std.c.getenv("TERUWM_EXPLICIT_SYNC") != null) {
+        const syncobj_drm_fd = wlr.wlr_renderer_get_drm_fd(renderer);
+        if (syncobj_drm_fd >= 0) {
+            _ = wlr.wlr_linux_drm_syncobj_manager_v1_create(display, 1, syncobj_drm_fd);
+        }
+    }
+
     // wlr_idle_inhibit_v1: mpv, browsers, video-call clients pin an
     // inhibitor while they need the screen awake. Track live inhibitor
     // count and flip the idle notifier's inhibited flag so any idle
