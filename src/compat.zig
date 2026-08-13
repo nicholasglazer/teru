@@ -214,6 +214,17 @@ pub fn monotonicNow() i128 {
     return clockGettime(.MONOTONIC);
 }
 
+/// Monotonic time that keeps counting across suspend (CLOCK_BOOTTIME).
+/// CLOCK_MONOTONIC freezes during s2idle/S3, so deltas taken across a
+/// nap silently shrink — fatal for rate-from-counter math (e.g. the bar's
+/// RAPL psys watts). Linux-only concept; every current caller sits behind
+/// a Linux-only sysfs feature, the fallback just keeps other targets
+/// compiling.
+pub fn boottimeNow() i128 {
+    if (builtin.os.tag == .linux) return clockGettime(.BOOTTIME);
+    return monotonicNow();
+}
+
 fn clockGettime(clock: anytype) i128 {
     if (builtin.os.tag == .windows) {
         var freq: i64 = undefined;

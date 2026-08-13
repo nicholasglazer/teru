@@ -15,7 +15,8 @@
 //!   {cpu}               — CPU usage % from /proc/stat
 //!   {cputemp}           — CPU temperature °C from /sys/class/hwmon
 //!   {battery} / {bat}   — Battery % from /sys/class/power_supply
-//!   {watts} / {power}   — Battery power draw (W) from power_now
+//!   {watts} / {power}   — Power draw (W): battery power_now; on AC with
+//!                         idle battery, RAPL psys platform draw or "AC"
 //!   {keymap} / {lang}   — Active keyboard layout (teruwm only)
 //!   {perf}              — frame avg/max µs (teruwm only)
 //!   {notify}            — desktop notification marquee (teruwm only — see Server.Notification)
@@ -38,7 +39,7 @@ pub const WidgetKind = enum {
     cpu,      // CPU usage % from /proc/stat (sampled across render calls)
     cputemp,  // CPU temperature °C from /sys/class/hwmon
     battery,  // Battery % from /sys/class/power_supply
-    watts,    // Battery power draw from /sys/class/power_supply/BAT*/power_now
+    watts,    // Power draw: BAT*/power_now; on AC-idle, RAPL psys or "AC" tag
     keymap,   // Active keyboard layout (compositor only — populated in BarData)
     perf,
     exec,

@@ -124,8 +124,7 @@ var cache_battery_percent: u8 = 0;
 var cache_battery_charging: bool = false;
 var cache_battery_present: bool = false;
 var cache_watts: f32 = 0.0;
-var cache_watts_charging: bool = false;
-var cache_watts_present: bool = false;
+var cache_watts_mode: WattsMode = .none;
 
 var cache_last_mem_ns: i128 = 0;
 var cache_last_cpu_ns: i128 = 0;
@@ -193,13 +192,11 @@ pub fn refreshCachedData(now_ns: i128) bool {
     if (now_ns - cache_last_watts_ns > 10 * ns_per_s) {
         cache_last_watts_ns = now_ns;
         const pw = readWatts();
-        const present = pw != null;
+        const mode: WattsMode = if (pw) |p| p.mode else .none;
         const w: f32 = if (pw) |p| p.watts else 0.0;
-        const chg = if (pw) |p| p.charging else false;
-        if (present != cache_watts_present or !approxEq(w, cache_watts) or chg != cache_watts_charging) changed = true;
-        cache_watts_present = present;
+        if (mode != cache_watts_mode or !approxEq(w, cache_watts)) changed = true;
         cache_watts = w;
-        cache_watts_charging = chg;
+        cache_watts_mode = mode;
     }
 
     cache_valid = true;
@@ -416,7 +413,11 @@ pub fn measureWidgets(widgets: []BarWidget.Widget, data: *const BarData, cw: usi
             .cpu => 6 * cw,       // "99%  " worst case
             .cputemp => 6 * cw,   // "99C"
             .battery => 6 * cw,   // "100%"
-            .watts => 7 * cw,     // "12.3W"
+            .watts => blk: {      // "+12.3W" / "~12.3W" / " AC"
+                if (!cache_valid) break :blk 7 * cw;
+                var b: [16]u8 = undefined;
+                break :blk wattsText(&b, cache_watts_mode, cache_watts).len * cw;
+            },
             .keymap => @max(data.keymap.len, 2) * cw,
             .perf => 12 * cw,
             .exec => @as(usize, w.cache_len) * cw,
@@ -821,24 +822,31 @@ const max_exec_cmd = 512;
 // BAT*/power_now (microwatts). Some platforms only expose current_now /
 // voltage_now — compute W from those as fallback. Shows a '+' prefix
 // when charging.
+//
+// On AC with zero battery flow (status "Not charging" / "Full" — e.g. a
+// charge-limit threshold holding the battery) power_now is legitimately 0
+// and a " 0.0W" reading is noise. In that state the widget shows platform
+// draw from the RAPL psys energy counter as "~12.3W" when readable, or a
+// plain " AC" tag when not (energy_uj is root-only on stock kernels).
+
+const WattsMode = enum { none, discharging, charging, ac };
 
 fn renderWattsWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, max_x: usize, th: *const Thresholds) usize {
     var x = start_x;
-    const present, const w, const charging = if (cache_valid)
-        .{ cache_watts_present, cache_watts, cache_watts_charging }
+    const mode, const w = if (cache_valid)
+        .{ cache_watts_mode, cache_watts }
     else blk: {
         const pw = readWatts();
-        break :blk .{ pw != null, if (pw) |p| p.watts else @as(f32, 0.0), if (pw) |p| p.charging else false };
+        break :blk .{ if (pw) |p| p.mode else WattsMode.none, if (pw) |p| p.watts else @as(f32, 0.0) };
     };
     var buf: [16]u8 = undefined;
-    const text = if (present)
-        std.fmt.bufPrint(&buf, "{c}{d:.1}W", .{ if (charging) @as(u8, '+') else @as(u8, ' '), w }) catch "?W"
-    else
-        "";
-    const color: u32 = if (present)
-        (if (charging) s.ansi[2] else rampColor(@intFromFloat(w), th.watts_warning, th.watts_critical, false, s))
-    else
-        s.ansi[8];
+    const text = wattsText(&buf, mode, w);
+    const color: u32 = switch (mode) {
+        .none => s.ansi[8],
+        .charging => s.ansi[2],
+        .ac => s.ansi[4],
+        .discharging => rampColor(@intFromFloat(w), th.watts_warning, th.watts_critical, false, s),
+    };
     for (text) |ch| {
         Ui.blitCharAt(cpu, ch, x, y, color);
         x += cw;
@@ -847,43 +855,143 @@ fn renderWattsWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize
     return x;
 }
 
-const Power = struct { watts: f32, charging: bool };
+/// Shared between render and measure so alignment tracks the actual text.
+/// In .ac mode `w` carries psys platform watts; 0 means no reading
+/// (domain absent, root-only, or no delta sample yet) → textual tag.
+fn wattsText(buf: []u8, mode: WattsMode, w: f32) []const u8 {
+    return switch (mode) {
+        .none => "",
+        .discharging => std.fmt.bufPrint(buf, " {d:.1}W", .{w}) catch "?W",
+        .charging => std.fmt.bufPrint(buf, "+{d:.1}W", .{w}) catch "?W",
+        .ac => if (w > 0.05) std.fmt.bufPrint(buf, "~{d:.1}W", .{w}) catch "?W" else " AC",
+    };
+}
+
+const Power = struct { watts: f32, mode: WattsMode };
+
+const BatteryStatus = enum { charging, discharging, idle, unknown };
 
 fn readWatts() ?Power {
     var i: u8 = 0;
     while (i < 4) : (i += 1) {
-        // Try power_now first (most direct)
+        // Battery flow: power_now first (most direct), else current_now ×
+        // voltage_now (both µ; µA × µV = 10^-12 W).
         var pn_buf: [64]u8 = undefined;
         const pn_path = std.fmt.bufPrintSentinel(&pn_buf, "/sys/class/power_supply/BAT{d}/power_now", .{i}, 0) catch continue;
-        if (readSysfsInt(pn_path)) |uw| {
-            const charging = isCharging(i);
-            return .{ .watts = @as(f32, @floatFromInt(uw)) / 1_000_000.0, .charging = charging };
-        }
-        // Fallback: current_now * voltage_now (both µ)
-        var cn_buf: [64]u8 = undefined;
-        var vn_buf: [64]u8 = undefined;
-        const cn_path = std.fmt.bufPrintSentinel(&cn_buf, "/sys/class/power_supply/BAT{d}/current_now", .{i}, 0) catch continue;
-        const vn_path = std.fmt.bufPrintSentinel(&vn_buf, "/sys/class/power_supply/BAT{d}/voltage_now", .{i}, 0) catch continue;
-        const current = readSysfsInt(cn_path) orelse continue;
-        const voltage = readSysfsInt(vn_path) orelse continue;
-        // current µA × voltage µV = 10^-12 W, divide by 1e12 for W
-        const watts = (@as(f32, @floatFromInt(current)) * @as(f32, @floatFromInt(voltage))) / 1.0e12;
-        return .{ .watts = watts, .charging = isCharging(i) };
+        const flow: f32 = if (readSysfsInt(pn_path)) |uw|
+            @as(f32, @floatFromInt(uw)) / 1_000_000.0
+        else blk: {
+            var cn_buf: [64]u8 = undefined;
+            var vn_buf: [64]u8 = undefined;
+            const cn_path = std.fmt.bufPrintSentinel(&cn_buf, "/sys/class/power_supply/BAT{d}/current_now", .{i}, 0) catch continue;
+            const vn_path = std.fmt.bufPrintSentinel(&vn_buf, "/sys/class/power_supply/BAT{d}/voltage_now", .{i}, 0) catch continue;
+            const current = readSysfsInt(cn_path) orelse continue;
+            const voltage = readSysfsInt(vn_path) orelse continue;
+            break :blk (@as(f32, @floatFromInt(current)) * @as(f32, @floatFromInt(voltage))) / 1.0e12;
+        };
+        const mode: WattsMode = switch (batteryStatus(i)) {
+            .charging => .charging,
+            .discharging => .discharging,
+            .idle => .ac,
+            // No/odd status: trust the flow value — anything measurable is a
+            // discharge, a dead-zero flow means the AC is carrying the load.
+            .unknown => if (flow > 0.5) .discharging else .ac,
+        };
+        // BOOTTIME, not MONOTONIC: the delta window must include suspend
+        // time or the first post-resume sample divides hours of accumulated
+        // energy by a ~10s window and prints a four-digit wattage.
+        if (mode == .ac) return .{ .watts = readPsysWatts(compat.boottimeNow()) orelse 0.0, .mode = .ac };
+        return .{ .watts = flow, .mode = mode };
     }
     return null;
 }
 
-fn isCharging(bat_idx: u8) bool {
+fn batteryStatus(bat_idx: u8) BatteryStatus {
     var buf: [64]u8 = undefined;
-    const path = std.fmt.bufPrintSentinel(&buf, "/sys/class/power_supply/BAT{d}/status", .{bat_idx}, 0) catch return false;
+    const path = std.fmt.bufPrintSentinel(&buf, "/sys/class/power_supply/BAT{d}/status", .{bat_idx}, 0) catch return .unknown;
     const fd = libc.open(path.ptr, 0, 0);
-    if (fd < 0) return false;
+    if (fd < 0) return .unknown;
     defer _ = libc.close(fd);
     var sbuf: [16]u8 = undefined;
     const n = libc.read(fd, &sbuf, sbuf.len);
-    if (n <= 0) return false;
+    if (n <= 0) return .unknown;
     const data = sbuf[0..@as(usize, @intCast(n))];
-    return std.mem.startsWith(u8, data, "Charging") or std.mem.startsWith(u8, data, "Full");
+    if (std.mem.startsWith(u8, data, "Charging")) return .charging;
+    if (std.mem.startsWith(u8, data, "Discharging")) return .discharging;
+    if (std.mem.startsWith(u8, data, "Full") or std.mem.startsWith(u8, data, "Not charging")) return .idle;
+    return .unknown;
+}
+
+// ── RAPL psys (platform power while on AC) ──────────────────────
+// The Intel RAPL "psys" powercap domain is the only sysfs source of true
+// platform draw when the battery has no flow. energy_uj is a monotonic
+// µJ counter; watts are derived from the delta between two refresh ticks.
+// Stock kernels make energy_uj root-only (energy side-channel hardening,
+// CVE-2020-8694) — every failure path degrades to null and the widget
+// shows " AC". The domain scan caches its result; readability is
+// re-tested on every read so a udev/tmpfiles permission fix is picked up
+// without a restart.
+
+var psys_scanned: bool = false;
+var psys_idx: ?u8 = null;
+var psys_last_uj: u64 = 0;
+var psys_last_ns: i128 = 0;
+var psys_last_watts: f32 = 0.0; // 0 = no derived sample yet
+
+fn readPsysWatts(now_ns: i128) ?f32 {
+    if (!psys_scanned) {
+        psys_scanned = true;
+        var i: u8 = 0;
+        scan: while (i < 8) : (i += 1) {
+            var nb: [80]u8 = undefined;
+            const npath = std.fmt.bufPrintSentinel(&nb, "/sys/class/powercap/intel-rapl:{d}/name", .{i}, 0) catch continue :scan;
+            const fd = libc.open(npath.ptr, 0, 0);
+            if (fd < 0) continue :scan;
+            defer _ = libc.close(fd);
+            var buf: [16]u8 = undefined;
+            const n = libc.read(fd, &buf, buf.len);
+            if (n > 0 and std.mem.startsWith(u8, buf[0..@as(usize, @intCast(n))], "psys")) {
+                psys_idx = i;
+                break :scan;
+            }
+        }
+    }
+    const idx = psys_idx orelse return null;
+    // Stability floor: callers on the uncached per-render path (standalone
+    // teru bar, pre-cache compositor frames) can arrive at millisecond
+    // cadence, where µJ-counter quantization turns into visible value
+    // jitter. Hold the last derived value until a ≥2s window has passed;
+    // the compositor's 10s refresh tick always clears this gate.
+    if (psys_last_ns != 0 and now_ns - psys_last_ns < 2 * std.time.ns_per_s)
+        return if (psys_last_watts > 0) psys_last_watts else null;
+    var eb: [80]u8 = undefined;
+    const epath = std.fmt.bufPrintSentinel(&eb, "/sys/class/powercap/intel-rapl:{d}/energy_uj", .{idx}, 0) catch return null;
+    const uj = readSysfsInt(epath) orelse return null;
+    defer {
+        psys_last_uj = uj;
+        psys_last_ns = now_ns;
+    }
+    const w = psysDelta(psys_last_uj, psys_last_ns, uj, now_ns);
+    if (w) |v| psys_last_watts = v;
+    return w;
+}
+
+/// Pure delta→watts step. Null when there is no usable baseline: first
+/// sample, counter wrap (µJ counter rolled over max_energy_range_uj), a
+/// stale baseline (>60s — e.g. the machine just switched onto AC and
+/// the last sample predates a long discharge stretch), or an implausible
+/// result (>500 W — laptops don't draw that; it means the two samples
+/// don't describe the same wall-clock window, whatever the clock said).
+fn psysDelta(prev_uj: u64, prev_ns: i128, uj: u64, now_ns: i128) ?f32 {
+    if (prev_ns == 0 or now_ns <= prev_ns) return null;
+    const dt_ns = now_ns - prev_ns;
+    if (dt_ns > 60 * std.time.ns_per_s) return null;
+    if (uj < prev_uj) return null;
+    const dj = @as(f64, @floatFromInt(uj - prev_uj)) / 1e6; // µJ → J
+    const dt = @as(f64, @floatFromInt(dt_ns)) / 1e9; // ns → s
+    const w = dj / dt;
+    if (w > 500.0) return null;
+    return @floatCast(w);
 }
 
 fn readSysfsInt(path: [:0]const u8) ?u64 {
@@ -938,4 +1046,30 @@ test "rampColor inverted direction (lower = worse, e.g. battery)" {
     try std.testing.expectEqual(@as(u32, 0xFFFFFF00), rampColor(30, 50, 20, true, s));
     try std.testing.expectEqual(@as(u32, 0xFFFF0000), rampColor(20, 50, 20, true, s));
     try std.testing.expectEqual(@as(u32, 0xFFFF0000), rampColor(5, 50, 20, true, s));
+}
+
+test "wattsText: one text shape per mode" {
+    var buf: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("", wattsText(&buf, .none, 0.0));
+    try std.testing.expectEqualStrings(" 18.4W", wattsText(&buf, .discharging, 18.4));
+    try std.testing.expectEqualStrings("+38.2W", wattsText(&buf, .charging, 38.2));
+    try std.testing.expectEqualStrings("~21.5W", wattsText(&buf, .ac, 21.5));
+    // AC with no psys reading → textual tag, never "0.0W"
+    try std.testing.expectEqualStrings(" AC", wattsText(&buf, .ac, 0.0));
+}
+
+test "psysDelta: watts from µJ deltas, null on wrap/stale/first sample" {
+    const s = std.time.ns_per_s;
+    // 200_000_000 µJ over 10s = 20 J/s
+    try std.testing.expectApproxEqAbs(@as(f32, 20.0), psysDelta(1_000_000_000, 100 * s, 1_200_000_000, 110 * s).?, 0.001);
+    // First sample: no baseline yet
+    try std.testing.expectEqual(@as(?f32, null), psysDelta(0, 0, 1_000_000, 10 * s));
+    // Counter wrapped
+    try std.testing.expectEqual(@as(?f32, null), psysDelta(1_000_000_000, 100 * s, 500, 110 * s));
+    // Stale baseline (>60s)
+    try std.testing.expectEqual(@as(?f32, null), psysDelta(1_000_000_000, 100 * s, 1_200_000_000, 200 * s));
+    // Non-advancing clock
+    try std.testing.expectEqual(@as(?f32, null), psysDelta(1_000_000_000, 100 * s, 1_200_000_000, 100 * s));
+    // Implausible wattage (suspend-gap artifact): 60 kJ over 10s = 6000 W
+    try std.testing.expectEqual(@as(?f32, null), psysDelta(1_000_000_000, 100 * s, 61_000_000_000, 110 * s));
 }

@@ -552,7 +552,7 @@ an `{exec:...}` command works without escaping.
 | `{cputemp}` | CPU temperature `°C` | `/sys/class/hwmon/*/temp1_input` (known CPU sensor names) |
 | `{mem}` | RAM used `%` | `/proc/meminfo` |
 | `{battery}` / `{bat}` | Battery `%` (`+` prefix when charging) | `/sys/class/power_supply/BAT*/capacity` |
-| `{watts}` / `{power}` | Battery power draw in W | `/sys/class/power_supply/BAT*/power_now` |
+| `{watts}` / `{power}` | Power draw in W: ` 12.3W` discharging, `+38.2W` charging, `~21.5W` platform draw on AC, ` AC` when platform draw is unreadable | `/sys/class/power_supply/BAT*/power_now`; on AC with an idle battery (`Full`/`Not charging`, e.g. a charge-limit threshold) falls back to the Intel RAPL `psys` counter (`/sys/class/powercap/intel-rapl:*/energy_uj`) |
 | `{keymap}` / `{lang}` | Active keyboard layout code, e.g. `Us`, `Ua`, `Dv` | XKB — updates live on layout switch |
 | `{perf}` | Compositor frame avg / max time (µs) | Internal `PerfStats` |
 
@@ -589,8 +589,16 @@ perf_us_critical = 100
 ```
 
 The older `*_low` / `*_high` names are accepted as aliases. Unknown
-keys are silently ignored. The widget `{watts}` is always green when
-the battery is charging, regardless of thresholds.
+keys are silently ignored. The watts thresholds only apply while
+discharging: `{watts}` is always green while charging and always blue
+in the AC states (`~12.3W` platform draw / ` AC`), since AC-side draw
+is not a battery-drain signal.
+
+> **Note (AC platform draw):** stock kernels make the RAPL `psys`
+> energy counter root-only (energy side-channel hardening). To get
+> `~12.3W` instead of ` AC` on AC power, grant read access, e.g.
+> `echo 'z /sys/class/powercap/intel-rapl:*/energy_uj 0444 - - -' | sudo tee /etc/tmpfiles.d/rapl-read.conf && sudo systemd-tmpfiles --create`
+> — a deliberate security trade-off on multi-user machines.
 
 ### `[rules]` — Window → Workspace
 
