@@ -590,6 +590,7 @@ pub extern "wlroots-0.18" fn wlr_seat_set_capabilities(seat: *wlr_seat, capabili
 pub extern "wlroots-0.18" fn wlr_seat_keyboard_notify_enter(seat: *wlr_seat, surface: *wlr_surface, keycodes: ?[*]const u32, num_keycodes: usize, modifiers: ?*anyopaque) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_seat_keyboard_notify_key(seat: *wlr_seat, time_msec: u32, key: u32, state: u32) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_seat_keyboard_notify_modifiers(seat: *wlr_seat, modifiers: ?*anyopaque) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_seat_keyboard_notify_clear_focus(seat: *wlr_seat) callconv(.c) void;
 
 pub extern "wlroots-0.18" fn wlr_scene_xdg_surface_create(parent: *wlr_scene_tree, surface: *wlr_xdg_surface) callconv(.c) ?*wlr_scene_tree;
 pub extern "wlroots-0.18" fn wlr_scene_subsurface_tree_create(parent: *wlr_scene_tree, surface: *wlr_surface) callconv(.c) ?*wlr_scene_tree;

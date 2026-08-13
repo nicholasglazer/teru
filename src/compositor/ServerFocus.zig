@@ -409,22 +409,172 @@ pub fn focusXwaylandSurface(server: *Server, xw: *wlr.wlr_xwayland_surface) void
     if (server.bar) |b| _ = b.render(server);
 }
 
+/// True when the node in `slot` is composited on some output right now.
+/// HIDDEN_WS (parked scratchpad) is never visible. The zero-output
+/// fallback mirrors focusWorkspace's legacy path: visibility follows
+/// active_workspace directly.
+fn nodeVisibleAnywhere(server: *Server, slot: u16) bool {
+    const ws = server.nodes.workspace[slot];
+    if (ws == NodeRegistry.HIDDEN_WS) return false;
+    if (server.outputs.items.len == 0) return ws == server.layout_engine.active_workspace;
+    return server.outputShowing(ws) != null;
+}
+
+/// Clear the seat's keyboard focus iff it currently rests on `root`'s
+/// client. The enter target may have been a leaf subsurface of the same
+/// client (focusView picks leaf-if-same-client), so compare by client,
+/// not by surface identity. Without this, scene-disabling a window
+/// changes nothing about input: ServerInput's fall-through delivers
+/// every non-keybind key via wlr_seat_keyboard_notify_key to whatever
+/// surface the seat last entered — i.e. the hidden window.
+fn clearSeatKeyboardIfClient(server: *Server, root: ?*wlr.wlr_surface) void {
+    const focused = wlr.miozu_seat_keyboard_focused_surface(server.seat) orelse return;
+    const r = root orelse return;
+    if (wlr.miozu_surfaces_same_client(focused, r) != 0) {
+        wlr.wlr_seat_keyboard_notify_clear_focus(server.seat);
+    }
+}
+
+/// Drop external-client focus (xdg or xwayland) when the focused window is
+/// no longer visible on ANY output — its workspace was switched away, or it
+/// was moved to a workspace nothing shows. Returns true if a ref was dropped.
+///
+/// The gate is visibility, not workspace equality: a window showing on
+/// another output keeps focus (matches moveNodeToWorkspace's outputShowing
+/// guard for terminals), and a float on the newly-active workspace keeps
+/// focus (floats aren't in ws.node_ids, so a floating-only workspace reaches
+/// the empty branch below while its float is plainly visible).
+///
+/// Dropping is the full unfocus, not a bare pointer null: deactivate the
+/// client (xdg activated-state configure / xwm X-input-focus) AND clear the
+/// seat keyboard focus. The seat part matters most — with no terminal
+/// focused there is no PTY short-circuit, so a stale seat focus silently
+/// feeds every keystroke typed on the "empty" workspace to the hidden
+/// client (the Overwatch-title-on-ws3 bug was the visible half of that).
+///
+/// Keep-on-miss: a focus holder with no registry slot (modal focused
+/// outside the addSurface guard, registry-full map) has unknown
+/// visibility — keep it. Those are transient; their unmap/destroy
+/// handlers null the refs.
+pub fn dropInvisibleExternalFocus(server: *Server) bool {
+    var dropped = false;
+
+    if (server.focused_view) |view| {
+        if (server.nodes.findById(view.node_id)) |slot| {
+            if (!nodeVisibleAnywhere(server, slot)) {
+                _ = wlr.wlr_xdg_toplevel_set_activated(view.toplevel, false);
+                if (view.ftl_handle) |h| {
+                    wlr.wlr_foreign_toplevel_handle_v1_set_activated(h, false);
+                }
+                server.focused_view = null;
+                const root: ?*wlr.wlr_surface = if (wlr.miozu_xdg_toplevel_base(view.toplevel)) |base|
+                    wlr.miozu_xdg_surface_surface(base)
+                else
+                    null;
+                clearSeatKeyboardIfClient(server, root);
+                dropped = true;
+            }
+        }
+    }
+
+    if (server.focused_xwayland) |xw| {
+        // wlr_xwayland_surface carries no node_id — reverse registry scan
+        // (same as focusedNodeId).
+        const slot: ?u16 = blk: {
+            var i: u16 = 0;
+            while (i < NodeRegistry.max_nodes) : (i += 1) {
+                if (server.nodes.xwayland_surface[i]) |slot_xw| {
+                    if (@intFromPtr(xw) == @intFromPtr(slot_xw)) break :blk i;
+                }
+            }
+            break :blk null;
+        };
+        if (slot) |s| {
+            if (!nodeVisibleAnywhere(server, s)) {
+                wlr.wlr_xwayland_surface_activate(xw, false);
+                server.focused_xwayland = null;
+                clearSeatKeyboardIfClient(server, wlr.miozu_xwayland_surface_surface(xw));
+                dropped = true;
+            }
+        }
+    }
+
+    if (dropped) {
+        refreshAllBorders(server);
+        for (server.terminal_panes) |maybe_tp| {
+            if (maybe_tp) |tp| tp.repaintBorderOnly();
+        }
+        if (server.bar) |b| _ = b.render(server);
+    }
+    return dropped;
+}
+
+/// Focus the first float on `ws_index` — the empty-branch fallback when
+/// nothing holds focus. Floats aren't in ws.node_ids, so a floating-only
+/// workspace has no active node to reconcile to; entering it should still
+/// focus something (dwm semantics). Previously a map-time-focused float
+/// kept focus only via the preserved stale pointer, and a floating
+/// TERMINAL lost focus entirely (focused_terminal was cleared with no
+/// re-pick). Records the choice via ws.setFocus so the next reconcile
+/// takes the non-empty path directly.
+fn focusFallbackFloat(server: *Server, ws_index: u8) void {
+    var i: u16 = 0;
+    while (i < NodeRegistry.max_nodes) : (i += 1) {
+        if (server.nodes.kind[i] == .empty) continue;
+        if (server.nodes.workspace[i] != ws_index) continue;
+        if (!server.nodes.floating[i]) continue;
+        const nid = server.nodes.node_id[i];
+        server.layout_engine.workspaces[ws_index].setFocus(nid);
+        switch (server.nodes.kind[i]) {
+            .terminal => {
+                if (server.terminalPaneById(nid)) |tp| {
+                    server.focused_terminal = tp;
+                    refreshAllBorders(server);
+                    raiseIfFloating(server, nid);
+                    for (server.terminal_panes) |maybe_tp| {
+                        if (maybe_tp) |t| t.repaintBorderOnly();
+                    }
+                    if (server.bar) |b| _ = b.render(server);
+                }
+            },
+            .wayland_surface => {
+                if (server.nodes.xdg_view[i]) |opaque_view| {
+                    const view: *XdgView = @ptrCast(@alignCast(opaque_view));
+                    focusView(server, view);
+                } else if (server.nodes.xwayland_surface[i]) |xw| {
+                    focusXwaylandSurface(server, xw);
+                }
+            },
+            .empty => {},
+        }
+        return;
+    }
+}
+
 pub fn updateFocusedTerminal(server: *Server) void {
     const ws = server.layout_engine.getActiveWorkspace();
     const active_id = ws.active_node orelse ws.getActiveNodeId() orelse {
-        // Empty workspace (no tiled/active node): clear focused_terminal so the
-        // status bar stops showing the PREVIOUS workspace's terminal title.
-        // focusWorkspace renders the bar right after this call, and both the bar
-        // signature and the title widget read server.focused_terminal — leaving
-        // it stale kept the old title (and its focus border) on screen until the
-        // next focus/title event (the reported "old title lingers on an empty
-        // workspace until I open a new app" bug). Only focused_terminal is
-        // touched on purpose: focused_view/focused_xwayland drive floating-window
-        // focus, which is managed elsewhere — clearing them here would unfocus a
-        // floating window when switching back to a floating-only workspace.
+        // No tiled/active node on this workspace. Three duties:
+        //
+        //  1. Clear focused_terminal so the bar stops showing the PREVIOUS
+        //     workspace's terminal title (the "old title lingers on an empty
+        //     workspace" bug, first fixed for terminals only).
+        //  2. Drop external focus (xdg/xwayland) IF its window is invisible —
+        //     the same bug for external clients ("Overwatch" lingering on an
+        //     empty ws3), plus the input half: the seat kept delivering
+        //     keystrokes to the hidden client. Visibility-gated so a float on
+        //     THIS workspace (floating-only ws — floats aren't in node_ids,
+        //     which is why we're in this branch at all) keeps its focus.
+        //  3. If nothing holds focus now, adopt a float living here — a
+        //     floating-only workspace should focus its float on entry, not
+        //     depend on stale pointers surviving the trip.
         if (server.focused_terminal != null) {
             server.focused_terminal = null;
             refreshAllBorders(server);
+        }
+        _ = dropInvisibleExternalFocus(server);
+        if (server.focused_terminal == null and server.focused_view == null and server.focused_xwayland == null) {
+            focusFallbackFloat(server, server.layout_engine.active_workspace);
         }
         return;
     };

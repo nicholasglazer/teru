@@ -606,6 +606,15 @@ pub fn moveNodeToWorkspace(self: *Server, nid: u64, target: u8) void {
             self.focused_terminal = null;
             updateFocusedTerminal(self);
         }
+    } else if (Focus.dropInvisibleExternalFocus(self)) {
+        // The terminal guard above never fires for a focused EXTERNAL
+        // window (was_focused reads focused_terminal only). Mod+Shift+N
+        // on an xdg/X11 window left both the bar title and the seat
+        // keyboard focus on the now-hidden client — same disease as the
+        // switch-to-empty-workspace bug, mirror-image trigger. Visibility
+        // gate inside the helper matches the outputShowing guard above;
+        // then re-derive focus from what's left on the current workspace.
+        updateFocusedTerminal(self);
     }
     self.emitMcpEventKind("node_moved", ",\"node_id\":{d},\"from\":{d},\"to\":{d}", .{ nid, from, target });
 
