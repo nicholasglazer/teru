@@ -840,23 +840,17 @@ fn applyThreshold(self: *WmConfig, key: []const u8, value: []const u8) void {
 
     const eqi = std.mem.eql;
     // CPU
-    if (eqi(u8, key, "cpu_warning") or eqi(u8, key, "cpu_low")) t.cpu_warning = val_u16
-    else if (eqi(u8, key, "cpu_critical") or eqi(u8, key, "cpu_high")) t.cpu_critical = val_u16
-    // CPU temperature
-    else if (eqi(u8, key, "cputemp_warning") or eqi(u8, key, "cputemp_low")) t.cputemp_warning = val_u16
-    else if (eqi(u8, key, "cputemp_critical") or eqi(u8, key, "cputemp_high")) t.cputemp_critical = val_u16
-    // Memory
-    else if (eqi(u8, key, "mem_warning") or eqi(u8, key, "mem_low")) t.mem_warning = val_u16
-    else if (eqi(u8, key, "mem_critical") or eqi(u8, key, "mem_high")) t.mem_critical = val_u16
-    // Battery (inverted: low % is bad)
-    else if (eqi(u8, key, "battery_warning") or eqi(u8, key, "battery_low")) t.battery_warning = val_u16
-    else if (eqi(u8, key, "battery_critical") or eqi(u8, key, "battery_high")) t.battery_critical = val_u16
-    // Power draw
-    else if (eqi(u8, key, "watts_warning") or eqi(u8, key, "watts_low")) t.watts_warning = val_u16
-    else if (eqi(u8, key, "watts_critical") or eqi(u8, key, "watts_high")) t.watts_critical = val_u16
-    // Render perf (µs)
-    else if (eqi(u8, key, "perf_us_warning") or eqi(u8, key, "perf_us_low")) t.perf_us_warning = val_u32
-    else if (eqi(u8, key, "perf_us_critical") or eqi(u8, key, "perf_us_high")) t.perf_us_critical = val_u32;
+    if (eqi(u8, key, "cpu_warning") or eqi(u8, key, "cpu_low")) t.cpu_warning = val_u16 else if (eqi(u8, key, "cpu_critical") or eqi(u8, key, "cpu_high")) t.cpu_critical = val_u16
+        // CPU temperature
+    else if (eqi(u8, key, "cputemp_warning") or eqi(u8, key, "cputemp_low")) t.cputemp_warning = val_u16 else if (eqi(u8, key, "cputemp_critical") or eqi(u8, key, "cputemp_high")) t.cputemp_critical = val_u16
+        // Memory
+    else if (eqi(u8, key, "mem_warning") or eqi(u8, key, "mem_low")) t.mem_warning = val_u16 else if (eqi(u8, key, "mem_critical") or eqi(u8, key, "mem_high")) t.mem_critical = val_u16
+        // Battery (inverted: low % is bad)
+    else if (eqi(u8, key, "battery_warning") or eqi(u8, key, "battery_low")) t.battery_warning = val_u16 else if (eqi(u8, key, "battery_critical") or eqi(u8, key, "battery_high")) t.battery_critical = val_u16
+        // Power draw
+    else if (eqi(u8, key, "watts_warning") or eqi(u8, key, "watts_low")) t.watts_warning = val_u16 else if (eqi(u8, key, "watts_critical") or eqi(u8, key, "watts_high")) t.watts_critical = val_u16
+        // Render perf (µs)
+    else if (eqi(u8, key, "perf_us_warning") or eqi(u8, key, "perf_us_low")) t.perf_us_warning = val_u32 else if (eqi(u8, key, "perf_us_critical") or eqi(u8, key, "perf_us_high")) t.perf_us_critical = val_u32;
 }
 
 fn applyBarTop(self: *WmConfig, key: []const u8, value: []const u8) void {
@@ -1033,10 +1027,7 @@ fn applyScratchpadRule(self: *WmConfig, idx: u8, key: []const u8, value: []const
     // field while preserving the 0..1 fraction semantics for cheap
     // multiply-by-output-dim in ServerScratchpad.rectForName.
     var target: ?*f32 = null;
-    if (std.mem.eql(u8, key, "x")) target = &rule.x
-    else if (std.mem.eql(u8, key, "y")) target = &rule.y
-    else if (std.mem.eql(u8, key, "w")) target = &rule.w
-    else if (std.mem.eql(u8, key, "h")) target = &rule.h;
+    if (std.mem.eql(u8, key, "x")) target = &rule.x else if (std.mem.eql(u8, key, "y")) target = &rule.y else if (std.mem.eql(u8, key, "w")) target = &rule.w else if (std.mem.eql(u8, key, "h")) target = &rule.h;
     if (target) |slot| {
         if (parseFracOrPct(value)) |f| {
             slot.* = f;

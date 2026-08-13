@@ -407,8 +407,16 @@ pub fn setupKeyboard(server: *Server, device: *wlr.wlr_input_device) void {
 fn foldKeysym(sym: u32) u32 {
     if (sym >= 'A' and sym <= 'Z') return sym + 32;
     return switch (sym) {
-        '!' => '1', '@' => '2', '#' => '3', '$' => '4', '%' => '5',
-        '^' => '6', '&' => '7', '*' => '8', '(' => '9', ')' => '0',
+        '!' => '1',
+        '@' => '2',
+        '#' => '3',
+        '$' => '4',
+        '%' => '5',
+        '^' => '6',
+        '&' => '7',
+        '*' => '8',
+        '(' => '9',
+        ')' => '0',
         0xff0d => '\r', // Return → CR
         0xff1b => 0x1b, // Escape
         0xff09 => '\t', // Tab
@@ -569,9 +577,9 @@ fn applyScrollAction(tp: *TerminalPane, action: KBAction) void {
 
 /// Resolve a `spawn_N` action variant to its configured command.
 fn tryRunSpawnChord(server: *Server, action: KBAction) bool {
-    const tag: u8 = @intFromEnum(action);
-    const first: u8 = @intFromEnum(KBAction.spawn_0);
-    const last: u8 = @intFromEnum(KBAction.spawn_31);
+    const tag: u8 = @backingInt(action);
+    const first: u8 = @backingInt(KBAction.spawn_0);
+    const last: u8 = @backingInt(KBAction.spawn_31);
     if (tag < first or tag > last) return false;
     const slot: u8 = tag - first;
     const len: usize = server.spawn_table_len[slot];
@@ -583,9 +591,9 @@ fn tryRunSpawnChord(server: *Server, action: KBAction) bool {
 /// name and toggle. Unconfigured slots are silently ignored — the chord
 /// is still "consumed" so it doesn't leak through to the client.
 fn tryRunScratchpadChord(server: *Server, action: KBAction) bool {
-    const tag: u8 = @intFromEnum(action);
-    const first: u8 = @intFromEnum(KBAction.scratchpad_0);
-    const last: u8 = @intFromEnum(KBAction.scratchpad_7);
+    const tag: u8 = @backingInt(action);
+    const first: u8 = @backingInt(KBAction.scratchpad_0);
+    const last: u8 = @backingInt(KBAction.scratchpad_7);
     if (tag < first or tag > last) return false;
     const slot: u8 = tag - first;
     const len: usize = server.scratchpad_table_len[slot];

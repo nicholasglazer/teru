@@ -1043,8 +1043,8 @@ fn drainSceneDestroy(data: ?*anyopaque) callconv(.c) void {
 /// (jiggle_timer_src is excluded — it self-removes in its own callback.)
 pub fn releaseTimers(self: *Server) void {
     const srcs = [_]*?*wlr.wl_event_source{
-        &self.keybind_repeat_src,   &self.bar_tick_src,
-        &self.terminal_repeat_src,  &self.mouse_path_timer_src,
+        &self.keybind_repeat_src,  &self.bar_tick_src,
+        &self.terminal_repeat_src, &self.mouse_path_timer_src,
         &self.keys_osd_timer_src,
     };
     for (srcs) |slot| {
@@ -1421,17 +1421,24 @@ pub fn tickScrollAnim(self: *Server) void {
     Cursor.tickScrollAnim(self);
 }
 
-
 // ── Layout facade ──────────────────────────────────────────────
 // Thin forwarders so external callers (Session, Output, WmMcpServer,
 // Xwayland/XdgView) keep a stable Server surface even though the real
 // implementations live in ServerLayout. See that file for the gap
 // math, drag-feedback path, and float-sink semantics.
 
-pub fn sinkFocused(self: *Server) void { Layout.sinkFocused(self); }
-pub fn sinkAllOnActiveWorkspace(self: *Server) void { Layout.sinkAllOnActiveWorkspace(self); }
-pub fn arrangeworkspace(self: *Server, ws_index: u8) void { Layout.arrangeWorkspace(self, ws_index); }
-pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void { Layout.arrangeWorkspaceSmooth(self, ws_index); }
+pub fn sinkFocused(self: *Server) void {
+    Layout.sinkFocused(self);
+}
+pub fn sinkAllOnActiveWorkspace(self: *Server) void {
+    Layout.sinkAllOnActiveWorkspace(self);
+}
+pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
+    Layout.arrangeWorkspace(self, ws_index);
+}
+pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
+    Layout.arrangeWorkspaceSmooth(self, ws_index);
+}
 
 /// Focus a view — activate its toplevel and send keyboard focus.
 ///

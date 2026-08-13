@@ -31,7 +31,6 @@ const Selection = teru.Selection;
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 const XdgView = @import("XdgView.zig");
-const NodeRegistry = @import("Node.zig");
 const Focus = @import("ServerFocus.zig");
 const ServerClipboard = @import("ServerClipboard.zig");
 
@@ -240,7 +239,12 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
                 // applied instantly. (A wheel notch is the case that benefits
                 // from animation — a touchpad is already continuous.)
                 const pixel_delta = teru.Pane.axisScrollPixels(
-                    delta, discrete, cell_h, sign, server.wm_config.wheel_scroll_lines, 1.0,
+                    delta,
+                    discrete,
+                    cell_h,
+                    sign,
+                    server.wm_config.wheel_scroll_lines,
+                    1.0,
                 );
                 if (pixel_delta == 0) return;
                 if (server.wm_config.smooth_scroll) {
@@ -266,7 +270,10 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
             // arrives as a dense event stream, so per-vsync coalescing in the
             // frame callback keeps it smooth without a target-chasing animation.
             const px = teru.Pane.fractionalScrollStep(
-                &tp.scroll_frac_px, delta, server.wm_config.touchpad_scroll_factor, sign,
+                &tp.scroll_frac_px,
+                delta,
+                server.wm_config.touchpad_scroll_factor,
+                sign,
             );
             // A continuous gesture supersedes any in-flight wheel glide.
             tp.scroll_anim_active = false;
