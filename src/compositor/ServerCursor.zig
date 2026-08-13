@@ -217,12 +217,24 @@ pub fn handleCursorAxis(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(
         }
     }
 
+    // Client forward. Scale CONTINUOUS (touchpad) deltas only: a notched
+    // wheel carries a non-zero delta_discrete and clients scale those
+    // themselves, so touching it would desync delta from delta_discrete.
+    // Native panes get touchpad_scroll_factor in the branch above; before
+    // client_scroll_factor existed, clients got libinput's raw delta and so
+    // scrolled at a visibly different speed from a terminal.
+    const client_discrete = wlr.miozu_pointer_axis_delta_discrete(event);
+    const client_delta: f64 = if (client_discrete == 0)
+        delta * @as(f64, server.wm_config.client_scroll_factor)
+    else
+        delta;
+
     wlr.wlr_seat_pointer_notify_axis(
         server.seat,
         wlr.miozu_pointer_axis_time(event),
         orientation,
-        delta,
-        wlr.miozu_pointer_axis_delta_discrete(event),
+        client_delta,
+        client_discrete,
         wlr.miozu_pointer_axis_source(event),
         0,
     );

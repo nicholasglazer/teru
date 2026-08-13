@@ -294,6 +294,17 @@ wheel_scroll_lines: u32 = 5,
 /// affects continuous scroll — a notched wheel uses `wheel_scroll_lines`.
 touchpad_scroll_factor: f32 = 1.5,
 
+/// Sensitivity multiplier for CONTINUOUS (touchpad) scroll deltas forwarded to
+/// Wayland/Xwayland CLIENTS. `touchpad_scroll_factor` only governs teruwm's own
+/// native panes — client axis events were forwarded with libinput's raw delta,
+/// so a browser scrolled at a very different speed than a terminal did. That
+/// asymmetry is invisible while an external mouse is attached (a notched wheel
+/// sends discrete events, which clients scale themselves) and becomes obvious
+/// the moment you unplug it and fall back to the touchpad. 1.0 preserves the
+/// historical raw-forward behaviour; lower it (try 0.5) if pages fly past.
+/// Notched wheel events are never scaled — clients expect raw v120 units.
+client_scroll_factor: f32 = 1.0,
+
 /// Snap the scrollback view back to the live bottom when the user TYPES or
 /// PASTES into a pane (like every terminal — you're interacting, so show the
 /// prompt). True by default; set false to keep the scrolled-back position and
@@ -729,6 +740,8 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.wheel_scroll_lines = std.fmt.parseInt(u32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "touchpad_scroll_factor")) {
         self.touchpad_scroll_factor = std.fmt.parseFloat(f32, value) catch return;
+    } else if (std.mem.eql(u8, key, "client_scroll_factor")) {
+        self.client_scroll_factor = std.fmt.parseFloat(f32, value) catch return;
     } else if (std.mem.eql(u8, key, "alt_scroll_zoom")) {
         self.alt_scroll_zoom = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "font_zoom_min")) {
