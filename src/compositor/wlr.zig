@@ -347,6 +347,13 @@ pub extern "wlroots-0.18" fn wlr_data_control_manager_v1_create(display: *wl_dis
 // today.
 pub const wlr_tearing_control_manager_v1 = opaque {};
 pub extern "wlroots-0.18" fn wlr_tearing_control_manager_v1_create(display: *wl_display, version: u32) callconv(.c) ?*wlr_tearing_control_manager_v1;
+// True only when this surface explicitly requested async presentation. Tearing
+// is opt-in per surface at the protocol level, so honouring it globally cannot
+// introduce tearing into clients that never asked.
+pub extern "c" fn miozu_surface_wants_tearing(mgr: ?*wlr_tearing_control_manager_v1, surface: ?*wlr_surface) callconv(.c) bool;
+// wlr_scene_output_commit() plus an optional tearing page-flip. tearing=false
+// delegates straight to upstream, so the normal path is unchanged.
+pub extern "c" fn miozu_scene_output_commit_tearing(scene_output: *wlr_scene_output, tearing: bool) callconv(.c) bool;
 
 // wp_linux_drm_syncobj_v1: explicit GPU sync. The NVIDIA driver
 // implements no implicit sync on dmabufs — without this global its
@@ -438,6 +445,21 @@ pub extern "c" fn miozu_idle_inhibit_count(mgr: *wlr_idle_inhibit_manager_v1) ca
 // ── C stdlib (for setenv) ──────────────────────────────────────
 
 pub extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) callconv(.c) c_int;
+
+/// `access(2)`. Used with `F_OK` by ServerSocketGuard to confirm the Wayland
+/// socket path still exists; a plain existence probe needs no `struct stat`
+/// layout, so it stays free of libc-struct guesswork.
+pub extern "c" fn access(path: [*:0]const u8, mode: c_int) callconv(.c) c_int;
+pub const F_OK: c_int = 0;
+
+/// `symlink(2)`. ServerSocketGuard points the original socket name at a
+/// replacement socket so clients holding the old `WAYLAND_DISPLAY` still
+/// connect — `connect(2)` resolves symlinks like any other path.
+pub extern "c" fn symlink(target: [*:0]const u8, linkpath: [*:0]const u8) callconv(.c) c_int;
+
+/// `unlink(2)`. Only ever used to clear a socket path that has already been
+/// confirmed non-resolving — never a live socket.
+pub extern "c" fn unlink(path: [*:0]const u8) callconv(.c) c_int;
 
 // ── C glue accessors (vendor/miozu-wlr-glue.c) ────────────────
 // Safe access to wlroots struct fields without replicating C layouts.

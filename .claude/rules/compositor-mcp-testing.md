@@ -14,7 +14,19 @@ See `memory/feedback_verify_before_release.md`.
 ## Launch teruwm (Claude-driven, not the user's TTY session)
 
 - Kill any existing instance: `pkill -f "^/home/ng/code/foss/teru/zig-out/bin/teruwm"`
-- Clean stale sockets: `rm -f /run/user/1000/wayland-*.lock`
+- **NEVER `rm` `wayland-*` or `wayland-*.lock` from `$XDG_RUNTIME_DIR`.** This
+  instruction used to read `rm -f /run/user/1000/wayland-*.lock`; it destroyed a
+  live session on 2026-08-14 and is the reason `ServerSocketGuard.zig` exists.
+  The user's real compositor holds `wayland-0` via a flock on that lock file.
+  Deleting it frees the name, so the *next* teruwm (this test instance) binds
+  `wayland-0` — new clients now silently reach the TEST compositor — and when the
+  test instance exits cleanly, libwayland unlinks `wayland-0`, leaving the user's
+  session bound to a path that no longer exists. Symptom: no new window will ever
+  open again, nothing is logged, and only a full restart recovers it.
+  Stale sockets need no cleanup: `wl_display_add_socket_auto` skips names whose
+  lock is genuinely held and reclaims the rest, so a test instance lands on
+  `wayland-1` on its own. If you think you have a stale socket, diagnose instead:
+  `grep -i wayland /proc/net/unix` (bound?) vs `ls $XDG_RUNTIME_DIR/wayland-*` (present?).
 - **Pick the backend** — teruwm uses `wlr_backend_autocreate`, which chooses by env:
   - **Headless** (default for Claude-driven tests, no visible window):
     `WLR_BACKENDS=headless WLR_RENDERER=pixman` → off-screen `HEADLESS-1` output,

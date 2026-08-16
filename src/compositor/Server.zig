@@ -258,8 +258,13 @@ current_notification: ?Notification = null,
 /// by barTick while a notification is live; reset to 0 on each new one.
 notify_scroll: u32 = 0,
 
+// wp_tearing_control_v1 manager. Held (not discarded) because honouring the
+// hint requires querying it back at output-commit time — see Output.commit.
+tearing_mgr: ?*wlr.wlr_tearing_control_manager_v1 = null,
+
 // Fullscreen state: tracks which node is fullscreen (null = none)
 fullscreen_node: ?u64 = null,
+// (see tearingWanted below for how fullscreen_node gates tearing)
 fullscreen_prev_bar_top: bool = true,
 fullscreen_prev_bar_bottom: bool = false,
 
@@ -411,6 +416,13 @@ keybind_repeat_action: ?KBAction = null,
 keybind_repeat_rate_ms: c_int = 40,
 keybind_repeat_delay_ms: c_int = 400,
 event_loop: ?*wlr.wl_event_loop = null,
+
+// Wayland-socket guard: full NUL-terminated path of the socket we bound
+// ($XDG_RUNTIME_DIR/wayland-N) plus the timer that re-confirms it still
+// exists. A socket unlinked out-of-band leaves us bound to nothing and
+// silently rejects every new client — see ServerSocketGuard.zig.
+wl_socket_path: [256]u8 = @splat(0),
+socket_guard_src: ?*wlr.wl_event_source = null,
 
 // Terminal-input repeat state (v0.6.4). Same rationale as
 // keybind_repeat_src but for raw key bytes routed to focused_terminal.
@@ -708,9 +720,14 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
 
     // wp_tearing_control_v1: games + emulators opt specific surfaces
     // into tearing presents (no vsync) to lower input latency.
-    // wlroots reads the per-surface hint during output commit; no
-    // listener required.
-    _ = wlr.wlr_tearing_control_manager_v1_create(display, 1);
+    //
+    // The manager MUST be kept. The previous comment here claimed "wlroots
+    // reads the per-surface hint during output commit; no listener required" —
+    // that is wrong. wlroots only parses the protocol and stores the hint; it
+    // never applies it. Nothing set wlr_output_state.tearing_page_flip, so a
+    // client could negotiate tearing successfully and stay vsync-locked.
+    // Output.commit now queries this manager and honours the hint.
+    const tearing_mgr = wlr.wlr_tearing_control_manager_v1_create(display, 1);
 
     // wp_linux_drm_syncobj_v1: explicit sync for GPU clients. NVIDIA
     // does no implicit dmabuf sync, so without this global its frame
@@ -830,6 +847,7 @@ fn initFields(display: *wlr.wl_display, event_loop: *wlr.wl_event_loop, allocato
         .pointer_constraints_mgr = pointer_constraints_mgr,
         .relative_pointer_mgr = relative_pointer_mgr,
         .cursor_shape_mgr = cursor_shape_mgr,
+        .tearing_mgr = tearing_mgr,
         .event_loop = event_loop,
     };
 }
@@ -1045,7 +1063,7 @@ pub fn releaseTimers(self: *Server) void {
     const srcs = [_]*?*wlr.wl_event_source{
         &self.keybind_repeat_src,  &self.bar_tick_src,
         &self.terminal_repeat_src, &self.mouse_path_timer_src,
-        &self.keys_osd_timer_src,
+        &self.keys_osd_timer_src,  &self.socket_guard_src,
     };
     for (srcs) |slot| {
         if (slot.*) |src| {
@@ -1829,6 +1847,38 @@ pub fn resetWorkspaceStartupIfEmpty(self: *Server, ws: u8) void {
 
 /// Apply wm_config.unfocused_opacity to every terminal pane's buffer.
 /// Delegates to ServerFocus.zig.
+/// Should the next output commit request a tearing (async) page-flip?
+///
+/// Three conditions, all required:
+///   1. the tearing manager exists,
+///   2. something is FULLSCREEN — tearing a tiled window would shear the whole
+///      composited desktop, not just that pane, since one flip drives the whole
+///      CRTC. Fullscreen is also the only state where direct scanout engages,
+///      and without direct scanout an async flip is pointless (the compositor
+///      re-renders into its own buffer anyway),
+///   3. the focused surface actually asked for it via wp_tearing_control_v1.
+///
+/// Condition 3 means enabling this cannot tear anything that did not opt in;
+/// virtually nothing requests it except games running with vsync off.
+pub fn tearingWanted(self: *Server) bool {
+    const mgr = self.tearing_mgr orelse return false;
+    if (self.fullscreen_node == null) return false;
+
+    // Exactly one of focused_xwayland / focused_view is set for an external
+    // client (see the focus invariant near the field declarations). Terminal
+    // panes are ours and never request tearing, so they are not consulted.
+    const surface: ?*wlr.wlr_surface = blk: {
+        if (self.focused_xwayland) |xw| break :blk wlr.miozu_xwayland_surface_surface(xw);
+        if (self.focused_view) |v| {
+            const base = wlr.miozu_xdg_toplevel_base(v.toplevel) orelse break :blk null;
+            break :blk wlr.miozu_xdg_surface_surface(base);
+        }
+        break :blk null;
+    };
+
+    return wlr.miozu_surface_wants_tearing(mgr, surface);
+}
+
 pub fn applyFocusOpacity(self: *Server) void {
     Focus.applyFocusOpacity(self);
 }

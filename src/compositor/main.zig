@@ -13,6 +13,7 @@ const Config = teru.Config;
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 const ServerRestart = @import("ServerRestart.zig");
+const ServerSocketGuard = @import("ServerSocketGuard.zig");
 const Reaper = @import("Reaper.zig");
 
 // Env-gated logging (TERU_LOG=debug|info|warn|err). TERU_LOG=debug captures the
@@ -165,6 +166,11 @@ pub fn main(init: std.process.Init) !void {
     // Set environment for child processes
     if (socket) |sock| {
         _ = wlr.setenv("WAYLAND_DISPLAY", sock, 1);
+        // Watch the socket path itself. Being bound is not the same as being
+        // reachable: the path can be unlinked out from under us, after which
+        // every new client fails at connect() while the session still looks
+        // healthy. See ServerSocketGuard.zig.
+        ServerSocketGuard.start(server, std.mem.sliceTo(sock, 0));
     }
 
     // ── Restore session from restart ───────────────────────────
