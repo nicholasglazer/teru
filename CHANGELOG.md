@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.14.2 — 2026-08-16
+
+`tui_pane_border` gains the setting it should have shipped with.
+
+### Added
+
+- **`tui_pane_border = line`** — one shared separator per boundary, and nothing
+  at the screen edge. This is what tmux actually draws, and it is now the
+  setting to reach for.
+
+  0.14.1 offered only `true` (a full frame around every pane) and `false`
+  (nothing). "Nothing" turned out to be unusable in practice: adjacent panes
+  touch, so one pane's text runs straight into the next one's on the same row.
+  The gap between them was never the point — a *boundary* was.
+
+  The difference is ownership. `box` gives every pane its own ring, so two
+  neighbours spend 2 cells between them plus 2 more at the screen edges. `line`
+  draws each boundary once, owned by the pane on its left or top: neighbours
+  spend 1 cell, the screen edge costs nothing, and the owning pane colours it —
+  so the active pane highlights the boundaries it owns while the rest stay dim.
+
+  The key now takes `box` (default), `line`, or `none`. The 0.14.1 booleans
+  still parse — `true` → `box`, `false` → `none` — so existing configs keep
+  working, and an unrecognised value leaves the default alone rather than
+  silently removing chrome.
+
+  Because `line` is asymmetric — a pane gives up a column only where it actually
+  has a neighbour — the four sites that split a pane rect into separator and
+  content now share a per-side `PaneFrame` rather than one scalar. They have to
+  agree exactly: a mismatch resizes the shell to one geometry and draws it at
+  another, so output wraps at the wrong column and the cursor sits a cell off.
+
 ## 0.14.1 — 2026-08-16
 
 Nine fixes, all one shape: a tool or config key that reported success while

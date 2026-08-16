@@ -18,6 +18,7 @@ const Rect = LayoutEngine.Rect;
 const Compositor = @import("Compositor.zig");
 const daemon_proto = @import("../server/protocol.zig");
 const LeaderKey = @import("../config/LeaderKey.zig");
+const Config = @import("../config/Config.zig");
 
 const Self = @This();
 
@@ -28,10 +29,11 @@ daemon_fd: posix.fd_t,
 /// (`tui_pane_gap`). The mouse hit-test in modes/tui.zig reads this same field
 /// so click geometry stays identical to render geometry.
 pane_gap: u16 = default_pane_gap,
-/// Draw a box frame around each pane when multiple are visible; set from
-/// teru.conf (`tui_pane_border`). False makes panes touch edge-to-edge and
-/// reclaims the 1-cell-per-side content inset the frame requires.
-pane_border: bool = true,
+/// How panes are separated when more than one is visible; set from teru.conf
+/// (`tui_pane_border`). See Config.PaneBorder — `.box` frames every pane,
+/// `.line` draws one shared separator per boundary, `.none` reclaims every
+/// cell and lets neighbours touch.
+pane_border: Config.PaneBorder = .box,
 /// Track last-sent pane sizes to avoid redundant resizes
 last_pane_sizes: [64]PaneSize = @splat(.{}),
 last_pane_count: usize = 0,
@@ -45,7 +47,26 @@ const PaneSize = struct { id: u64 = 0, rows: u16 = 0, cols: u16 = 0 };
 /// inter-pane and edge spacing both equal `2 * pane_gap`.
 pub const default_pane_gap: u16 = 0;
 
-/// Cells each pane surrenders **per side** to its frame.
+/// Cells a pane surrenders on each side to whatever separates it.
+///
+/// Per-side rather than a single number because `line` mode is asymmetric: a
+/// pane gives up a column only on the sides where it actually has a neighbour,
+/// and nothing at the screen edge.
+pub const PaneFrame = struct {
+    left: u16 = 0,
+    top: u16 = 0,
+    right: u16 = 0,
+    bottom: u16 = 0,
+
+    pub fn horizontal(self: PaneFrame) u16 {
+        return self.left +| self.right;
+    }
+    pub fn vertical(self: PaneFrame) u16 {
+        return self.top +| self.bottom;
+    }
+};
+
+/// What `raw` (a pane's slice of `area`, before any gap inset) gives up.
 ///
 /// Every site that splits a pane rect into frame + content derives from this:
 /// the resize sent to the daemon, the cache that suppresses redundant resizes,
@@ -53,12 +74,36 @@ pub const default_pane_gap: u16 = 0;
 /// mismatch resizes the shell to one geometry and draws it at another, so
 /// output wraps at the wrong column and the cursor sits a cell off.
 ///
-/// A lone pane is never framed (no chrome, no waste), so the toggle only has an
-/// effect once a second pane exists. The result is 1 or 0 because the TUI
-/// addresses character cells, not pixels: there is no fractional inset, and one
-/// cell is roughly twice as tall as it is wide.
-pub fn frameInset(multi_pane: bool, pane_border: bool) u16 {
-    return if (multi_pane and pane_border) 1 else 0;
+/// A lone pane is never separated from anything, so it always keeps the whole
+/// rect — no chrome, no waste — and the setting only bites once a second pane
+/// exists.
+pub fn paneFrame(mode: Config.PaneBorder, multi_pane: bool, raw: Rect, area: Rect) PaneFrame {
+    if (!multi_pane) return .{};
+    return switch (mode) {
+        .none => .{},
+        .box => .{ .left = 1, .top = 1, .right = 1, .bottom = 1 },
+        // Own the separator on the sides that face another pane. The layout
+        // engine tiles `area` exactly, so "my right edge is short of the
+        // area's right edge" is precisely "someone is over there". Each
+        // boundary is therefore drawn once, by the pane on its left/top —
+        // which is what makes this cost 1 cell between neighbours instead of
+        // box mode's 2, with none spent at the screen edge.
+        .line => .{
+            .right = if (raw.x +| raw.width < area.x +| area.width) 1 else 0,
+            .bottom = if (raw.y +| raw.height < area.y +| area.height) 1 else 0,
+        },
+    };
+}
+
+/// Shrink `rect` by a per-side frame, saturating so a rect too small to hold
+/// its own separator collapses to zero rather than wrapping around.
+pub fn insetByFrame(rect: Rect, f: PaneFrame) Rect {
+    return .{
+        .x = rect.x +| f.left,
+        .y = rect.y +| f.top,
+        .width = rect.width -| f.horizontal(),
+        .height = rect.height -| f.vertical(),
+    };
 }
 
 // Border colors (ANSI indexed)
@@ -137,8 +182,6 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
     // AND equal gaps. A single pane keeps the full screen (no chrome, no waste).
     const g: u16 = if (multi_pane) self.pane_gap else 0;
 
-    const b = frameInset(multi_pane, self.pane_border);
-
     // Calculate layout rects in character cells (within the gapped tiling area)
     const screen_rect = Rect{
         .x = g,
@@ -162,14 +205,15 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
     for (pane_ids, 0..) |pane_id, ri| {
         if (ri >= rects.len) break;
         const rect = Compositor.insetRect(rects[ri], g);
-        // Content area: minus the frame on both sides, when there is one.
-        // Saturating, to match insetRect — which clamps to 0 rather than
-        // falling back to the full extent. A rect too small to hold its own
-        // frame (2 cells tall in a crowded master-stack) otherwise resizes the
-        // shell to 2 rows while the stamp draws 0, so the pane renders empty
-        // while its shell believes it has room.
-        const content_rows = rect.height -| 2 * b;
-        const content_cols = rect.width -| 2 * b;
+        // Content area: the rect minus whatever separates this pane. Saturating
+        // (insetByFrame clamps to 0) rather than falling back to the full
+        // extent — a rect too small to hold its own separator, like the 2-cell
+        // rows a crowded master-stack hands out, would otherwise resize the
+        // shell to 2 rows while the stamp draws 0, leaving the pane blank while
+        // its shell believes it has room.
+        const frame = paneFrame(self.pane_border, multi_pane, rects[ri], screen_rect);
+        const content_rows = rect.height -| frame.vertical();
+        const content_cols = rect.width -| frame.horizontal();
 
         // Only send resize if dimensions changed
         var needs_resize = true;
@@ -198,10 +242,11 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
     for (pane_ids, 0..) |pane_id, ci| {
         if (ci >= self.last_pane_sizes.len or ci >= rects.len) break;
         const rect = Compositor.insetRect(rects[ci], g);
+        const frame = paneFrame(self.pane_border, multi_pane, rects[ci], screen_rect);
         self.last_pane_sizes[ci] = .{
             .id = pane_id,
-            .rows = rect.height -| 2 * b,
-            .cols = rect.width -| 2 * b,
+            .rows = rect.height -| frame.vertical(),
+            .cols = rect.width -| frame.horizontal(),
         };
     }
 
@@ -212,22 +257,25 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
         const rect = Compositor.insetRect(rects[i], g);
         const is_active = (ws.active_index == i);
 
-        if (b > 0) {
-            // Content is inset by the frame for ALL panes (whether or not a
-            // border is drawn), so focus changes never reflow a pane's geometry.
-            const inset = Compositor.insetRect(rect, b);
-            self.screen.stamp(&pane.grid, inset.y, inset.x, inset.height, inset.width);
+        const frame = paneFrame(self.pane_border, multi_pane, rects[i], screen_rect);
+        const inset = insetByFrame(rect, frame);
 
-            // Every pane gets a frame: orange when focused, dim base02 otherwise,
-            // so panes are visually separated even before you look for the active
-            // one. The content inset above is identical for both, so a focus
-            // change only recolors the ring — it never reflows pane geometry.
-            self.drawPaneBorder(rect, if (is_active) border_active else border_inactive);
-        } else {
-            // A single pane, or `tui_pane_border = false`: the grid fills its rect
-            // exactly. With borders off, adjacent panes touch edge-to-edge (the
-            // tmux look) and the cursor is the only cue to which pane is active.
-            self.screen.stamp(&pane.grid, rect.y, rect.x, rect.height, rect.width);
+        // The inset is identical whether or not this pane is focused, so a
+        // focus change only recolours the chrome — it never reflows geometry.
+        self.screen.stamp(&pane.grid, inset.y, inset.x, inset.height, inset.width);
+
+        const color = if (is_active) border_active else border_inactive;
+        switch (self.pane_border) {
+            .none => {},
+            .box => self.drawPaneBorder(rect, color),
+            // Each boundary belongs to the pane on its left/top, so it is drawn
+            // exactly once. Colouring it by that owner means the active pane
+            // highlights the edges it owns; a boundary owned by an unfocused
+            // neighbour stays dim, which reads as a divider rather than a ring.
+            .line => {
+                if (frame.right > 0) self.drawVLine(rect.x +| rect.width -| 1, rect.y, rect.height, color);
+                if (frame.bottom > 0) self.drawHLine(rect.y +| rect.height -| 1, rect.x, rect.width, color);
+            },
         }
     }
 
@@ -247,21 +295,30 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
         const active_idx = ws.active_index;
         if (active_idx < rects.len) {
             const rect = Compositor.insetRect(rects[active_idx], g);
-            if (b > 0) {
-                const inset = Compositor.insetRect(rect, b);
-                const cursor_row = inset.y + @min(pane.grid.cursor_row, inset.height -| 1);
-                const cursor_col = inset.x + @min(pane.grid.cursor_col, inset.width -| 1);
-                self.screen.setCursorPosition(cursor_row, cursor_col, stdout_fd);
-            } else {
-                const cursor_row = rect.y + @min(pane.grid.cursor_row, rect.height -| 1);
-                const cursor_col = rect.x + @min(pane.grid.cursor_col, rect.width -| 1);
-                self.screen.setCursorPosition(cursor_row, cursor_col, stdout_fd);
-            }
+            const frame = paneFrame(self.pane_border, multi_pane, rects[active_idx], screen_rect);
+            const inset = insetByFrame(rect, frame);
+            const cursor_row = inset.y + @min(pane.grid.cursor_row, inset.height -| 1);
+            const cursor_col = inset.x + @min(pane.grid.cursor_col, inset.width -| 1);
+            self.screen.setCursorPosition(cursor_row, cursor_col, stdout_fd);
         }
     }
 }
 
 /// Draw a Unicode box border around a rect.
+/// One vertical separator column, `height` cells tall from `y`.
+fn drawVLine(self: *Self, x: u16, y: u16, height: u16, color: Color) void {
+    var r = y;
+    const end = y +| height;
+    while (r < end) : (r += 1) self.screen.setCell(r, x, 0x2502, color, .default, .{}); // │
+}
+
+/// One horizontal separator row, `width` cells wide from `x`.
+fn drawHLine(self: *Self, y: u16, x: u16, width: u16, color: Color) void {
+    var c = x;
+    const end = x +| width;
+    while (c < end) : (c += 1) self.screen.setCell(y, c, 0x2500, color, .default, .{}); // ─
+}
+
 fn drawPaneBorder(self: *Self, rect: Rect, color: Color) void {
     const x1 = rect.x;
     const y1 = rect.y;
@@ -504,53 +561,85 @@ test "TuiRenderer: drawPaneBorder" {
     try std.testing.expectEqual(@as(u21, 0x2502), screen.cells[1 * 80].char); // │
 }
 
-test "TuiRenderer: frameInset governs whether panes are framed" {
-    // A lone pane is never framed, so the toggle cannot change its geometry.
-    try std.testing.expectEqual(@as(u16, 0), frameInset(false, true));
-    try std.testing.expectEqual(@as(u16, 0), frameInset(false, false));
-    // Multi-pane: the frame is on by default, off only when asked.
-    try std.testing.expectEqual(@as(u16, 1), frameInset(true, true));
-    try std.testing.expectEqual(@as(u16, 0), frameInset(true, false));
+test "TuiRenderer: paneFrame — a lone pane is never separated from anything" {
+    const area = Rect{ .x = 0, .y = 0, .width = 80, .height = 24 };
+    const full = Rect{ .x = 0, .y = 0, .width = 80, .height = 24 };
+    inline for (.{ Config.PaneBorder.box, .line, .none }) |mode| {
+        const f = paneFrame(mode, false, full, area);
+        try std.testing.expectEqual(@as(u16, 0), f.horizontal());
+        try std.testing.expectEqual(@as(u16, 0), f.vertical());
+    }
 }
 
-test "TuiRenderer: pane content reclaims both frame cells when borders are off" {
-    const rect = Rect{ .x = 0, .y = 0, .width = 40, .height = 20 };
+test "TuiRenderer: paneFrame — box frames all four sides, none frames nothing" {
+    const area = Rect{ .x = 0, .y = 0, .width = 80, .height = 24 };
+    const left = Rect{ .x = 0, .y = 0, .width = 40, .height = 24 };
 
-    const framed = frameInset(true, true);
-    try std.testing.expectEqual(@as(u16, 18), rect.height - 2 * framed);
-    try std.testing.expectEqual(@as(u16, 38), rect.width - 2 * framed);
+    const box = paneFrame(.box, true, left, area);
+    try std.testing.expectEqual(@as(u16, 2), box.horizontal());
+    try std.testing.expectEqual(@as(u16, 2), box.vertical());
 
-    const bare = frameInset(true, false);
-    try std.testing.expectEqual(rect.height, rect.height - 2 * bare);
-    try std.testing.expectEqual(rect.width, rect.width - 2 * bare);
+    const none = paneFrame(.none, true, left, area);
+    try std.testing.expectEqual(@as(u16, 0), none.horizontal());
+    try std.testing.expectEqual(@as(u16, 0), none.vertical());
 }
 
-test "TuiRenderer: a rect too small for its frame reports zero content, not full" {
-    // A crowded master-stack hands out 2-cell-tall rects. insetRect clamps such
-    // a rect to height 0, so the resize must agree — reporting the full height
-    // here resizes the shell to rows nothing will ever draw.
-    const b = frameInset(true, true);
+test "TuiRenderer: paneFrame — line separates only where a neighbour exists" {
+    const area = Rect{ .x = 0, .y = 0, .width = 80, .height = 24 };
+    // Two panes side by side. The left one owns the boundary; the right one
+    // touches the screen edge and so spends nothing.
+    const left = Rect{ .x = 0, .y = 0, .width = 40, .height = 24 };
+    const right = Rect{ .x = 40, .y = 0, .width = 40, .height = 24 };
+
+    const lf = paneFrame(.line, true, left, area);
+    try std.testing.expectEqual(@as(u16, 1), lf.right);
+    try std.testing.expectEqual(@as(u16, 0), lf.left);
+    try std.testing.expectEqual(@as(u16, 0), lf.vertical());
+
+    const rf = paneFrame(.line, true, right, area);
+    try std.testing.expectEqual(@as(u16, 0), rf.horizontal());
+    try std.testing.expectEqual(@as(u16, 0), rf.vertical());
+
+    // One boundary, drawn once: 1 cell total between neighbours, versus box's
+    // 2, and nothing wasted at the screen edge.
+    try std.testing.expectEqual(@as(u16, 1), lf.horizontal() + rf.horizontal());
+    const bl = paneFrame(.box, true, left, area);
+    const br = paneFrame(.box, true, right, area);
+    try std.testing.expectEqual(@as(u16, 4), bl.horizontal() + br.horizontal());
+}
+
+test "TuiRenderer: paneFrame — line detects a neighbour below" {
+    const area = Rect{ .x = 0, .y = 0, .width = 80, .height = 24 };
+    const top = Rect{ .x = 0, .y = 0, .width = 80, .height = 12 };
+    const bottom = Rect{ .x = 0, .y = 12, .width = 80, .height = 12 };
+
+    try std.testing.expectEqual(@as(u16, 1), paneFrame(.line, true, top, area).bottom);
+    try std.testing.expectEqual(@as(u16, 0), paneFrame(.line, true, bottom, area).bottom);
+}
+
+test "TuiRenderer: insetByFrame collapses a rect too small to hold its separator" {
+    // A crowded master-stack hands out 2-cell-tall rects. The content must
+    // collapse to 0 rather than wrap — reporting the full height would resize
+    // the shell to rows nothing will ever draw.
+    const area = Rect{ .x = 0, .y = 0, .width = 80, .height = 24 };
     const tiny = Rect{ .x = 0, .y = 0, .width = 2, .height = 2 };
+    const f = paneFrame(.box, true, tiny, area);
 
-    try std.testing.expectEqual(@as(u16, 0), tiny.height -| 2 * b);
-    try std.testing.expectEqual(@as(u16, 0), tiny.width -| 2 * b);
-    // …which is exactly what the stamp will use.
-    const inset = Compositor.insetRect(tiny, b);
-    try std.testing.expectEqual(inset.height, tiny.height -| 2 * b);
-    try std.testing.expectEqual(inset.width, tiny.width -| 2 * b);
-
-    // Borderless panes keep every cell at the same size.
-    const bare = frameInset(true, false);
-    try std.testing.expectEqual(tiny.height, tiny.height -| 2 * bare);
+    const inset = insetByFrame(tiny, f);
+    try std.testing.expectEqual(@as(u16, 0), inset.height);
+    try std.testing.expectEqual(@as(u16, 0), inset.width);
+    // The resize sites compute the same numbers from the same frame.
+    try std.testing.expectEqual(inset.height, tiny.height -| f.vertical());
+    try std.testing.expectEqual(inset.width, tiny.width -| f.horizontal());
 }
 
-test "TuiRenderer: pane_border defaults on" {
+test "TuiRenderer: pane_border defaults to box" {
     const allocator = std.testing.allocator;
     var screen = try TuiScreen.init(allocator, 24, 80);
     defer screen.deinit(allocator);
 
     const renderer = init(&screen, allocator, -1);
-    try std.testing.expectEqual(true, renderer.pane_border);
+    try std.testing.expectEqual(Config.PaneBorder.box, renderer.pane_border);
 }
 
 test "TuiRenderer: drawStatusBar" {

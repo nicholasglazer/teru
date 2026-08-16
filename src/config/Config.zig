@@ -21,6 +21,33 @@ const LayoutEngine = @import("../tiling/LayoutEngine.zig");
 const themes = @import("themes.zig");
 pub const Keybinds = @import("Keybinds.zig");
 pub const LeaderDefs = @import("LeaderDefs.zig");
+
+/// How panes are separated in the nested multiplexer (`tui_pane_border`).
+///
+/// The TUI addresses character cells, not pixels, so separation is always a
+/// whole number of cells — and a cell is roughly twice as tall as it is wide,
+/// which is why a symmetric inset never looks symmetric.
+pub const PaneBorder = enum {
+    /// Nothing. Panes touch, so adjacent text runs together — readable only
+    /// when paired with a non-zero `tui_pane_gap`.
+    none,
+    /// One shared separator between neighbours, and nothing at the screen
+    /// edge. What tmux draws. Costs 1 cell between two panes rather than
+    /// `box`'s 2, and spends none on the outside.
+    line,
+    /// A full frame around every pane: 1 cell on all four sides, so two
+    /// neighbours spend 2 cells between them plus 2 more at the screen edges.
+    box,
+
+    pub fn parse(s: []const u8) ?PaneBorder {
+        if (std.mem.eql(u8, s, "box")) return .box;
+        if (std.mem.eql(u8, s, "line")) return .line;
+        if (std.mem.eql(u8, s, "none")) return .none;
+        // 0.14.1 shipped this as a bool; keep those configs working.
+        if (parseBool(s)) |b| return if (b) .box else .none;
+        return null;
+    }
+};
 const Config = @This();
 
 pub const Bell = enum { visual, none };
@@ -197,13 +224,7 @@ bar_right: ?[]const u8 = null, // format string (null = dimensions)
 // hardcoded; the TUI client now loads teru.conf and honours them.
 tui_pane_gap: u16 = 0, // gap (in text cells) between panes in the nested multiplexer
 tui_nested_bar: bool = false, // show the inner status bar when nested (else TERU_NESTED_BAR env)
-// Box frame around each pane when more than one is visible. On (default) every
-// pane spends 1 cell per side on its ring. Off = panes touch edge-to-edge, the
-// tmux `pane-border-status off` look, and the active pane is identified by the
-// cursor alone. There is no middle setting: the TUI addresses character cells,
-// not pixels, so the smallest non-zero inset is one whole cell — which is about
-// twice as tall as it is wide, hence the vertical/horizontal asymmetry.
-tui_pane_border: bool = true,
+tui_pane_border: PaneBorder = .box,
 
 // Per-workspace config (10 workspaces, 1-indexed in config, 0-indexed in array)
 workspace_layouts: [10]?LayoutEngine.Layout = @splat(null),
@@ -628,7 +649,7 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
     } else if (std.mem.eql(u8, key, "tui_nested_bar")) {
         self.tui_nested_bar = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "tui_pane_border")) {
-        self.tui_pane_border = parseBool(value) orelse return;
+        self.tui_pane_border = PaneBorder.parse(value) orelse return;
     } else if (std.mem.eql(u8, key, "bar_left")) {
         self.setString(allocator, &self.bar_left, value);
     } else if (std.mem.eql(u8, key, "bar_center")) {
@@ -943,15 +964,8 @@ test "parse tui_pane_gap and tui_nested_bar (nested multiplexer config)" {
     config.parse(allocator, content);
     try std.testing.expectEqual(@as(u16, 4), config.tui_pane_gap);
     try std.testing.expectEqual(true, config.tui_nested_bar);
-    // Unset key keeps the frame — turning it off must be opt-in.
-    try std.testing.expectEqual(true, config.tui_pane_border);
-}
-
-test "parse tui_pane_border = false (tmux-style edge-to-edge panes)" {
-    const allocator = std.testing.allocator;
-    var config = Config{ .allocator = allocator };
-    config.parse(allocator, "tui_pane_border = false\n");
-    try std.testing.expectEqual(false, config.tui_pane_border);
+    // Unset key keeps the frame — reducing chrome must be opt-in.
+    try std.testing.expectEqual(PaneBorder.box, config.tui_pane_border);
 }
 
 test "missing config file returns defaults" {
@@ -1366,4 +1380,30 @@ test "deinit frees workspace names" {
 
     try std.testing.expectEqual(@as(?[]const u8, null), config.workspace_names[0]);
     try std.testing.expectEqual(@as(?[]const u8, null), config.workspace_names[4]);
+}
+
+test "parse tui_pane_border accepts box/line/none and the old bools" {
+    const allocator = std.testing.allocator;
+
+    var c1 = Config{ .allocator = allocator };
+    c1.parse(allocator, "tui_pane_border = line\n");
+    try std.testing.expectEqual(PaneBorder.line, c1.tui_pane_border);
+
+    var c2 = Config{ .allocator = allocator };
+    c2.parse(allocator, "tui_pane_border = none\n");
+    try std.testing.expectEqual(PaneBorder.none, c2.tui_pane_border);
+
+    // 0.14.1 shipped this key as a bool — those configs must keep working.
+    var c3 = Config{ .allocator = allocator };
+    c3.parse(allocator, "tui_pane_border = false\n");
+    try std.testing.expectEqual(PaneBorder.none, c3.tui_pane_border);
+
+    var c4 = Config{ .allocator = allocator };
+    c4.parse(allocator, "tui_pane_border = true\n");
+    try std.testing.expectEqual(PaneBorder.box, c4.tui_pane_border);
+
+    // Garbage leaves the default alone rather than silently disabling chrome.
+    var c5 = Config{ .allocator = allocator };
+    c5.parse(allocator, "tui_pane_border = wibble\n");
+    try std.testing.expectEqual(PaneBorder.box, c5.tui_pane_border);
 }
