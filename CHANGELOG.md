@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.14.3 — 2026-08-16
+
+### Fixed
+
+- **Reattaching to a session destroyed every non-ASCII character and all
+  colour.** The daemon's grid re-sync — sent on attach and again after every
+  resize — hand-rolled its repaint as
+
+  ```zig
+  if (cell.char >= 32 and cell.char < 127) … else ' '
+  ```
+
+  so box-drawing, em dashes, accented letters and arrows all came back as
+  blanks, and SGR was dropped entirely. A TUI redrew as monochrome rubble the
+  moment you reconnected. Ink-based apps (claude) swallow same-size SIGWINCH,
+  so the app's own repaint may never arrive to correct it.
+
+  It now uses `VtParser.dumpReplaySnapshot`, the encoder the compositor's
+  hot-restart already relies on, which carries colours, attributes, wide
+  glyphs, the cursor and the parser's modes. A colourful snapshot exceeds the
+  64KB protocol payload cap, so it is chunked — safe at any byte boundary,
+  including mid-escape, because the receiving end is a byte-at-a-time state
+  machine that carries its position across reads.
+
+  This was never a 0.14.x regression; the re-sync had been ASCII-only since it
+  was written, and its own doc comment said so. It surfaces the moment you
+  detach and reattach, which is precisely what a persistent session is for.
+
 ## 0.14.2 — 2026-08-16
 
 `tui_pane_border` gains the setting it should have shipped with.

@@ -19,6 +19,7 @@ const ProcessGraph = @import("../graph/ProcessGraph.zig");
 const McpServer = @import("../agent/McpServer.zig");
 const Hooks = @import("../config/Hooks.zig");
 const Session = @import("../persist/Session.zig");
+const VtParser = @import("../core/VtParser.zig");
 const proto = @import("protocol.zig");
 
 const Daemon = @This();
@@ -336,71 +337,48 @@ fn tryAcceptClient(self: *Daemon) void {
 /// frozen copy at the top plus the live prompt lower down. Clearing first
 /// replaces any stale content; restoring the cursor makes the live shell's next
 /// output land exactly on the replayed copy instead of beside it.
-/// (Plaintext/ASCII only — SGR/wide-glyph fidelity is a separately-scoped TODO.)
+/// Fidelity comes from `VtParser.dumpReplaySnapshot` — the same encoder the
+/// compositor's hot-restart uses — so the replay carries colours, attributes,
+/// wide glyphs and the parser's modes, not just letters.
+///
+/// It used to hand-roll the repaint with `if (cell.char >= 32 and cell.char <
+/// 127) … else ' '`, which turned every non-ASCII codepoint into a space and
+/// dropped SGR entirely. Reattaching to a session was therefore lossy in a way
+/// that looked like corruption rather than a limitation: box-drawing, em
+/// dashes and accented letters all became blanks, and colour vanished — so a
+/// TUI redrew as monochrome rubble until the app happened to repaint. Ink-based
+/// apps (claude) swallow same-size SIGWINCH, so that repaint may never come.
 fn sendPaneGridSync(self: *Daemon, pane: *Pane) void {
     const cfd = self.client_fd orelse return;
-    var line_buf: [16384]u8 = undefined;
-    var grid_buf: [65536]u8 = undefined;
-    var gpos: usize = 0;
 
-    // pane_id prefix
-    std.mem.writeInt(u64, grid_buf[0..8], pane.id, .little);
-    gpos = 8;
+    // Worst case is ~80B/cell (attr reset + truecolor fg/bg + UTF-8), far past
+    // any sane stack buffer on a large grid, so this one is heap-allocated.
+    const cap = VtParser.replaySnapshotBufSize(pane.grid.rows, pane.grid.cols);
+    const snap = self.allocator.alloc(u8, cap) catch {
+        std.log.scoped(.daemon).warn(
+            "grid re-sync skipped for pane {d}: no memory for a {d}B snapshot",
+            .{ pane.id, cap },
+        );
+        return;
+    };
+    defer self.allocator.free(snap);
 
-    // Clear the pane then home, so this repaint REPLACES any stale snapshot
-    // rather than layering on top of it (the duplication bug).
-    const clear_home = "\x1b[2J\x1b[H";
-    @memcpy(grid_buf[gpos..][0..clear_home.len], clear_home);
-    gpos += clear_home.len;
+    const n = pane.vt.dumpReplaySnapshot(snap);
 
-    var row: u16 = 0;
-    while (row < pane.grid.rows) : (row += 1) {
-        const row_start = @as(usize, row) * @as(usize, pane.grid.cols);
-        var col: u16 = 0;
-        var line_len: usize = 0;
-        while (col < pane.grid.cols) : (col += 1) {
-            if (row_start + col >= pane.grid.cells.len) break;
-            const cell = pane.grid.cells[row_start + col];
-            if (cell.char >= 32 and cell.char < 127) {
-                if (line_len < line_buf.len) {
-                    line_buf[line_len] = @intCast(cell.char);
-                    line_len += 1;
-                }
-            } else {
-                if (line_len < line_buf.len) {
-                    line_buf[line_len] = ' ';
-                    line_len += 1;
-                }
-            }
-        }
-        // Trim trailing spaces
-        while (line_len > 0 and line_buf[line_len - 1] == ' ') line_len -= 1;
-
-        if (gpos + line_len + 2 > grid_buf.len) break;
-        @memcpy(grid_buf[gpos..][0..line_len], line_buf[0..line_len]);
-        gpos += line_len;
-        // Newline (CR+LF) between rows
-        if (row + 1 < pane.grid.rows) {
-            grid_buf[gpos] = '\r';
-            grid_buf[gpos + 1] = '\n';
-            gpos += 2;
-        }
+    // One .output message caps at proto.max_payload, and a colourful snapshot
+    // blows past that, so send it in pieces. Splitting at an arbitrary byte —
+    // even mid-escape-sequence — is safe: the receiving end is a byte-at-a-time
+    // state machine that carries its position across reads.
+    const chunk_max = proto.max_payload - 8; // 8 = the pane_id prefix
+    var sent: usize = 0;
+    while (sent < n) {
+        const take = @min(chunk_max, n - sent);
+        var msg_buf: [proto.max_payload]u8 = undefined;
+        std.mem.writeInt(u64, msg_buf[0..8], pane.id, .little);
+        @memcpy(msg_buf[8..][0..take], snap[sent..][0..take]);
+        if (!proto.sendMessage(cfd, .output, msg_buf[0 .. 8 + take])) return;
+        sent += take;
     }
-
-    // Restore the cursor to the daemon's real position (1-based CUP) so the live
-    // shell's next byte continues where the replay left off — not at the bottom
-    // where the trailing-blank-row CRLFs would otherwise have parked it.
-    var cur_buf: [24]u8 = undefined;
-    const cur = std.fmt.bufPrint(&cur_buf, "\x1b[{d};{d}H", .{
-        pane.grid.cursor_row + 1,
-        pane.grid.cursor_col + 1,
-    }) catch "";
-    if (gpos + cur.len <= grid_buf.len) {
-        @memcpy(grid_buf[gpos..][0..cur.len], cur);
-        gpos += cur.len;
-    }
-
-    _ = proto.sendMessage(cfd, .output, grid_buf[0..gpos]);
 }
 
 /// Replay every pane's grid to the client (on attach / full re-sync).

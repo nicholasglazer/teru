@@ -2884,3 +2884,32 @@ test "dumpReplaySnapshot: scroll region + DECSC saved cursor survive" {
     try std.testing.expectEqual(grid_a.cursor_row, grid_b.cursor_row);
     try std.testing.expectEqual(grid_a.cursor_col, grid_b.cursor_col);
 }
+
+test "dumpReplaySnapshot: narrow non-ASCII survives the round trip" {
+    // The daemon's attach re-sync used to hand-roll this repaint with an
+    // `cell.char >= 32 and cell.char < 127` filter, replacing every other
+    // codepoint with a space — so reattaching to a session turned box-drawing,
+    // em dashes and accented letters into blanks. These are exactly the
+    // characters a TUI draws its chrome with.
+    const a = std.testing.allocator;
+    var ga = try Grid.init(a, 4, 40);
+    defer ga.deinit(a);
+    var pa = VtParser.init(a, &ga);
+
+    pa.feed("Saut\u{00e9}ed \u{2014} box:\u{2500}\u{2502} arrow:\u{25b6}\u{25b6}");
+
+    var sbuf: [replaySnapshotBufSize(4, 40)]u8 = undefined;
+    const n = pa.dumpReplaySnapshot(&sbuf);
+
+    var gb = try Grid.init(a, 4, 40);
+    defer gb.deinit(a);
+    var pb = VtParser.init(a, &gb);
+    pb.feed(sbuf[0..n]);
+
+    const expect = "Saut\u{00e9}ed \u{2014} box:\u{2500}\u{2502} arrow:\u{25b6}\u{25b6}";
+    var it = std.unicode.Utf8View.initUnchecked(expect).iterator();
+    var col: u16 = 0;
+    while (it.nextCodepoint()) |cp| : (col += 1) {
+        try std.testing.expectEqual(cp, gb.cellAtConst(0, col).char);
+    }
+}
