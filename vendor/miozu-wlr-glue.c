@@ -17,6 +17,7 @@
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_tearing_control_v1.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_shell.h>
@@ -1505,4 +1506,66 @@ int miozu_capture_surface_tree(struct wlr_surface *root,
     };
     wlr_surface_for_each_surface(root, miozu_capture_iter, &ctx);
     return ctx.count;
+}
+
+/* ── wp_tearing_control_v1: actually honour the hint ────────────────────────
+ *
+ * teruwm advertised wp_tearing_control_manager_v1 but never applied it. The
+ * old comment at Server.zig claimed "wlroots reads the per-surface hint during
+ * output commit; no listener required" — that is false. wlroots only PARSES
+ * the protocol and stores the hint; the compositor must read it back and set
+ * wlr_output_state.tearing_page_flip itself. Until then a client could request
+ * async presentation, get a successful handshake, and still be vsync-locked.
+ *
+ * Measured cost of that on 2026-08-14 (Overwatch, direct scanout active, panel
+ * 165 Hz / no VRR): frames straddled the 6.06 ms deadline, so vblanks-per-flip
+ * came out a clean bimodal 1:422 / 2:463 — half the frames waited an entire
+ * extra refresh. 111 fps against ~164 fps of real capability.
+ */
+
+/* Returns true only if this surface explicitly asked for async presentation.
+ * Tearing is strictly opt-in per surface, so a compositor-wide enable cannot
+ * introduce tearing into clients that never requested it. */
+bool miozu_surface_wants_tearing(struct wlr_tearing_control_manager_v1 *mgr,
+                                 struct wlr_surface *surface) {
+    if (mgr == NULL || surface == NULL) return false;
+    return wlr_tearing_control_manager_v1_surface_hint_from_surface(mgr, surface)
+        == WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC;
+}
+
+/* wlr_scene_output_commit() with an optional tearing page-flip.
+ *
+ * When tearing is false this is a straight delegation, so the default path
+ * stays byte-identical to before. When true we must open-code what
+ * wlr_scene_output_commit() does, because it gives no way to reach into the
+ * wlr_output_state it builds internally. The early-out below mirrors upstream's
+ * exactly — without it we would commit on every frame even with nothing to
+ * present. */
+bool miozu_scene_output_commit_tearing(struct wlr_scene_output *so, bool tearing) {
+    if (!tearing) return wlr_scene_output_commit(so, NULL);
+
+    if (!so->output->needs_frame &&
+        !pixman_region32_not_empty(&so->pending_commit_damage)) {
+        return true;
+    }
+
+    struct wlr_output_state state;
+    wlr_output_state_init(&state);
+    if (!wlr_scene_output_build_state(so, &state, NULL)) {
+        wlr_output_state_finish(&state);
+        return false;
+    }
+
+    state.tearing_page_flip = true;
+    bool ok = wlr_output_commit_state(so->output, &state);
+    if (!ok) {
+        /* The DRM backend rejects async flips it cannot perform (wrong plane
+         * config, no direct scanout, driver refusal). Upstream's contract is
+         * that the caller falls back to a normal flip — dropping the frame
+         * instead would trade a torn frame for a stutter, which is worse. */
+        state.tearing_page_flip = false;
+        ok = wlr_output_commit_state(so->output, &state);
+    }
+    wlr_output_state_finish(&state);
+    return ok;
 }

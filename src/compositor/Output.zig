@@ -216,7 +216,14 @@ fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
 
     const scene_output = wlr.wlr_scene_get_scene_output(server.scene, output.wlr_output) orelse return;
     const commit_start = compat.monotonicNow();
-    _ = wlr.wlr_scene_output_commit(scene_output, null);
+    // Honour wp_tearing_control_v1. Without this the hint is negotiated and
+    // then ignored: a fullscreen game with vsync off still waits for vblank, so
+    // a frame finishing a hair past the deadline eats a whole extra refresh.
+    // Measured on this panel (165 Hz, no VRR, direct scanout active): a clean
+    // bimodal 1:422 / 2:463 vblanks-per-flip split — 111 fps out of ~164 fps of
+    // real capability. tearingWanted() is false unless a fullscreen client
+    // explicitly opted in, so the default path is unchanged.
+    _ = wlr.miozu_scene_output_commit_tearing(scene_output, server.tearingWanted());
     server.perf.commit_time_sum_us += @intCast(@max(0, @divTrunc(compat.monotonicNow() - commit_start, 1000)));
 
     // Fire wl_surface.frame callbacks so Wayland clients know the frame
