@@ -95,6 +95,37 @@ pub fn paneFrame(mode: Config.PaneBorder, multi_pane: bool, raw: Rect, area: Rec
     };
 }
 
+pub const Axis = enum { vertical, horizontal };
+
+/// Whether a separator segment borders the focused pane.
+///
+/// `at` is the separator's fixed coordinate (its column when vertical, its row
+/// when horizontal); `span_start`/`span_len` describe its extent along the
+/// other axis.
+///
+/// A boundary counts as active when the focused pane lies on EITHER side of it:
+/// `at` is the cell just left/above the focused rect, or the focused rect's own
+/// last column/row. Both are needed — colouring only the owner's side made the
+/// highlight depend on which pane of a pair you focused, since the left/top one
+/// always draws the shared line. The span overlap keeps a distant separator on
+/// the same column from lighting up in a multi-row layout.
+pub fn touchesActive(active: ?Rect, axis: Axis, at: u16, span_start: u16, span_len: u16) bool {
+    const a = active orelse return false;
+    const span_end = span_start +| span_len;
+    return switch (axis) {
+        .vertical => blk: {
+            if (!(span_start < a.y +| a.height and a.y < span_end)) break :blk false;
+            // `a.x > 0` guards the saturating subtraction: a pane flush to the
+            // left edge has no boundary to its left to light up.
+            break :blk (a.x > 0 and at == a.x - 1) or at == a.x +| a.width -| 1;
+        },
+        .horizontal => blk: {
+            if (!(span_start < a.x +| a.width and a.x < span_end)) break :blk false;
+            break :blk (a.y > 0 and at == a.y - 1) or at == a.y +| a.height -| 1;
+        },
+    };
+}
+
 /// Shrink `rect` by a per-side frame, saturating so a rect too small to hold
 /// its own separator collapses to zero rather than wrapping around.
 pub fn insetByFrame(rect: Rect, f: PaneFrame) Rect {
@@ -250,6 +281,12 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
         };
     }
 
+    // The focused pane's rect, so a separator can ask whether it touches it.
+    const active_rect: ?Rect = if (ws.active_index < rects.len)
+        Compositor.insetRect(rects[ws.active_index], g)
+    else
+        null;
+
     // Stamp each pane's grid into its layout rect
     for (pane_ids, 0..) |pane_id, i| {
         if (i >= rects.len) break;
@@ -264,17 +301,30 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
         // focus change only recolours the chrome — it never reflows geometry.
         self.screen.stamp(&pane.grid, inset.y, inset.x, inset.height, inset.width);
 
-        const color = if (is_active) border_active else border_inactive;
         switch (self.pane_border) {
             .none => {},
-            .box => self.drawPaneBorder(rect, color),
-            // Each boundary belongs to the pane on its left/top, so it is drawn
-            // exactly once. Colouring it by that owner means the active pane
-            // highlights the edges it owns; a boundary owned by an unfocused
-            // neighbour stays dim, which reads as a divider rather than a ring.
+            .box => self.drawPaneBorder(rect, if (is_active) border_active else border_inactive),
+            // Each boundary is drawn once, by the pane on its left or top — but
+            // it is coloured by whether it TOUCHES the focused pane, not by who
+            // draws it. Ownership is layout bookkeeping; highlighting by it made
+            // the cue depend on which side of a pair you happened to focus (the
+            // right pane of two left its divider dim, because the left one drew
+            // it). "Active wins" is what tmux, zellij and kitty all settle on.
             .line => {
-                if (frame.right > 0) self.drawVLine(rect.x +| rect.width -| 1, rect.y, rect.height, color);
-                if (frame.bottom > 0) self.drawHLine(rect.y +| rect.height -| 1, rect.x, rect.width, color);
+                if (frame.right > 0) {
+                    const x = rect.x +| rect.width -| 1;
+                    self.drawVLine(x, rect.y, rect.height, if (touchesActive(active_rect, .vertical, x, rect.y, rect.height))
+                        border_active
+                    else
+                        border_inactive);
+                }
+                if (frame.bottom > 0) {
+                    const y = rect.y +| rect.height -| 1;
+                    self.drawHLine(y, rect.x, rect.width, if (touchesActive(active_rect, .horizontal, y, rect.x, rect.width))
+                        border_active
+                    else
+                        border_inactive);
+                }
             },
         }
     }
@@ -660,4 +710,52 @@ test "TuiRenderer: drawStatusBar" {
     try std.testing.expectEqual(@as(u21, '['), screen.cells[row_start + 1].char);
     try std.testing.expectEqual(@as(u21, '1'), screen.cells[row_start + 2].char);
     try std.testing.expectEqual(@as(u21, ']'), screen.cells[row_start + 3].char);
+}
+
+test "TuiRenderer: a divider highlights from EITHER side of the focused pane" {
+    // Two panes side by side in an 80-wide area. The left owns the boundary at
+    // column 39; the right begins at 40.
+    const left = Rect{ .x = 0, .y = 0, .width = 40, .height = 24 };
+    const right = Rect{ .x = 40, .y = 0, .width = 40, .height = 24 };
+    const boundary: u16 = 39; // left.x + left.width - 1
+
+    // Focus the OWNER: highlighted, as before.
+    try std.testing.expect(touchesActive(left, .vertical, boundary, left.y, left.height));
+
+    // Focus the NEIGHBOUR: still highlighted. This is the regression — the
+    // divider went dim whenever the right pane of a pair held focus, because
+    // the left pane drew it.
+    try std.testing.expect(touchesActive(right, .vertical, boundary, left.y, left.height));
+
+    // Nothing focused at all.
+    try std.testing.expect(!touchesActive(null, .vertical, boundary, left.y, left.height));
+}
+
+test "TuiRenderer: a divider the focused pane does not touch stays dim" {
+    const area_h: u16 = 24;
+    // Stacked right column: top [40..80)x[0..12), bottom x[12..24).
+    const top = Rect{ .x = 40, .y = 0, .width = 40, .height = 12 };
+
+    // The horizontal divider under `top` is at row 11 and touches it.
+    try std.testing.expect(touchesActive(top, .horizontal, 11, top.x, top.width));
+
+    // A vertical divider on the far side of the screen shares no columns with
+    // it, so it must not light up.
+    try std.testing.expect(!touchesActive(top, .vertical, 5, 0, area_h));
+
+    // Same column, but a row span that does not overlap the focused rect.
+    try std.testing.expect(!touchesActive(top, .vertical, 39, 12, 12));
+}
+
+test "TuiRenderer: a pane flush to an edge has no boundary beyond it" {
+    // x = 0: the saturating `a.x - 1` must not claim column 0 as "the boundary
+    // to my left" — there is nothing there.
+    const flush = Rect{ .x = 0, .y = 0, .width = 40, .height = 24 };
+    try std.testing.expect(!touchesActive(flush, .vertical, 0, 0, 24));
+    // Its own right edge still counts.
+    try std.testing.expect(touchesActive(flush, .vertical, 39, 0, 24));
+
+    const top_flush = Rect{ .x = 0, .y = 0, .width = 80, .height = 12 };
+    try std.testing.expect(!touchesActive(top_flush, .horizontal, 0, 0, 80));
+    try std.testing.expect(touchesActive(top_flush, .horizontal, 11, 0, 80));
 }

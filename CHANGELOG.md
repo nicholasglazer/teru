@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.14.5 — 2026-08-16
+
+### Fixed
+
+- **`tui_pane_border = line` highlighted the divider from only one side.** The
+  boundary was coloured by the pane that *draws* it — always the one on its
+  left or top — so focusing the right pane of a pair left the divider dim, and
+  the highlight tracked layout bookkeeping instead of focus. Since the point of
+  the highlight is to answer "where am I", that made it useless exactly half
+  the time.
+
+  A boundary is now active when the focused pane is on **either** side of it,
+  which is what tmux, zellij and kitty all converge on. A span check keeps a
+  distant separator sharing the same column from lighting up in a multi-row
+  layout, and a pane flush against the screen edge no longer claims the cell
+  beyond it.
+
 ## 0.14.4 — 2026-08-16
 
 ### Fixed
