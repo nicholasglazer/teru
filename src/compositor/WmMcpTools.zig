@@ -1357,6 +1357,33 @@ fn toolScroll(self: *WmMcpServer, x: i32, y: i32, dy: i32, buf: []u8, id: ?[]con
     wlr.wlr_cursor_warp_closest(srv.cursor, null, @floatFromInt(x), @floatFromInt(y));
     srv.processCursorMotion(ms_now);
 
+    // A native terminal pane has no wl_surface behind its scene buffer, so the
+    // seat notify below has nowhere to land: this tool was a guaranteed no-op
+    // over teruwm's own panes while still answering ok. Mirror the terminal
+    // branch of handleCursorAxis, which is the only path the wheel ever reaches
+    // them by.
+    if (srv.focused_terminal) |tp| {
+        const max_offset: u32 = @intCast(tp.pane.scrollback.total_lines);
+        if (max_offset > 0) {
+            const cell_h: u32 = if (srv.font_atlas) |fa| fa.cell_height else 16;
+            // Same convention as the wheel: a physical scroll-down reveals
+            // newer output, flipped by touchpad_scroll_invert.
+            const sign: i64 = if (srv.wm_config.touchpad_scroll_invert) 1 else -1;
+            // dy is in libinput axis units where ~15 is one detent, and a
+            // detent moves wheel_scroll_lines lines. Scaled through i64 so a
+            // small dy doesn't truncate to zero pixels.
+            const lines_milli: i64 = @divTrunc(@as(i64, dy) * @as(i64, srv.wm_config.wheel_scroll_lines) * 1000, 15);
+            const px: i64 = @divTrunc(lines_milli * @as(i64, cell_h), 1000) * sign;
+            const pixel_delta: i32 = @intCast(std.math.clamp(px, std.math.minInt(i32), std.math.maxInt(i32)));
+
+            if (pixel_delta != 0 and tp.pane.scrollBy(pixel_delta, cell_h, max_offset)) {
+                tp.pane.grid.markAllDirty();
+                srv.scheduleRender();
+            }
+            return okText(buf, id, "{{\\\"x\\\":{d},\\\"y\\\":{d},\\\"dy\\\":{d},\\\"route\\\":\\\"pane\\\",\\\"scroll_offset\\\":{d}}}", .{ x, y, dy, tp.pane.scroll_offset });
+        }
+    }
+
     // Send axis event. wlroots: orientation 0 = vertical, source 0 = wheel.
     wlr.wlr_seat_pointer_notify_axis(
         srv.seat,

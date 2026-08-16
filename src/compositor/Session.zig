@@ -225,7 +225,9 @@ fn getChildCmd(pane: *const Pane, buf: []u8) []const u8 {
     return pane.foregroundCmdline(buf);
 }
 
-fn expandTilde(path: []const u8, buf: []u8) ?[]const u8 {
+/// Expand a leading `~` to $HOME. Shared with Server.spawnTerminal so a
+/// per-workspace `cwd` resolves exactly the way a session-restore `cwd` does.
+pub fn expandTilde(path: []const u8, buf: []u8) ?[]const u8 {
     if (path.len == 0) return null;
     if (path[0] == '~') {
         const home = teru.compat.getenv("HOME") orelse return null;

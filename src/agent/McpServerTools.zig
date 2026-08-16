@@ -269,6 +269,54 @@ fn toolListPanes(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
     return buf[0..pos];
 }
 
+/// Append `src` to `out[pos..]` as plain text, dropping VT escape sequences.
+/// Scrollback stores each line as raw VT bytes — SGR colour runs included — so
+/// copying them verbatim would put control bytes in a response documented as
+/// text. Returns the new write position; stops cleanly when `out` fills.
+fn appendPlainText(out: []u8, pos: usize, src: []const u8) usize {
+    var p = pos;
+    var i: usize = 0;
+    while (i < src.len and p < out.len) {
+        const c = src[i];
+        if (c == 0x1b) {
+            i += 1;
+            if (i >= src.len) break;
+            switch (src[i]) {
+                // CSI: parameter bytes until a final byte in 0x40..0x7E.
+                '[' => {
+                    i += 1;
+                    while (i < src.len and (src[i] < 0x40 or src[i] > 0x7e)) i += 1;
+                    if (i < src.len) i += 1;
+                },
+                // OSC: runs to BEL or ST (ESC \).
+                ']' => {
+                    i += 1;
+                    while (i < src.len) {
+                        if (src[i] == 0x07) {
+                            i += 1;
+                            break;
+                        }
+                        if (src[i] == 0x1b and i + 1 < src.len and src[i + 1] == '\\') {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                },
+                // Any other two-byte escape.
+                else => i += 1,
+            }
+            continue;
+        }
+        if (c >= 0x20 and c < 0x7f) {
+            out[p] = c;
+            p += 1;
+        }
+        i += 1;
+    }
+    return p;
+}
+
 fn toolReadOutput(self: *McpServer, pane_id: u64, lines: u32, buf: []u8, id: ?[]const u8) []const u8 {
 
     const pane = self.multiplexer.getPaneById(pane_id) orelse
@@ -280,7 +328,32 @@ fn toolReadOutput(self: *McpServer, pane_id: u64, lines: u32, buf: []u8, id: ?[]
 
     const grid = &pane.grid;
     const total_rows: u32 = grid.rows;
-    const start_row: u32 = if (total_rows > lines) total_rows - lines else 0;
+
+    // Anything beyond the visible grid comes from scrollback. The tool is
+    // documented as reading "the last N lines of scrollback", but until 0.14.1
+    // it only ever walked the grid — so `{"lines":500}` against a pane holding
+    // 10 000 lines of build output answered with the ~24 on-screen rows and
+    // reported success. The default of 50 already exceeds a typical grid, so
+    // essentially every call under-delivered.
+    const from_grid: u32 = @min(lines, total_rows);
+    if (grid.scrollback) |sb| {
+        const have: u32 = @intCast(@min(sb.lineCount(), @as(usize, std.math.maxInt(u32))));
+        const want: u32 = @min(lines - from_grid, have);
+        // getLineByOffset counts back from the newest, so walk down to 0 to
+        // emit oldest-first and keep the transcript in reading order.
+        var k: u32 = want;
+        while (k > 0) {
+            k -= 1;
+            const vt = sb.getLineByOffset(k) orelse continue;
+            text_pos = appendPlainText(&text_buf, text_pos, vt);
+            if (text_pos < text_buf.len) {
+                text_buf[text_pos] = '\n';
+                text_pos += 1;
+            }
+        }
+    }
+
+    const start_row: u32 = total_rows - from_grid;
 
     var row: u32 = start_row;
     while (row < total_rows) : (row += 1) {
@@ -1395,4 +1468,39 @@ test "jsonEscapeString quotes and backslash" {
 
     const result3 = tools.jsonEscapeString("{\"key\":\"val\"}", &buf);
     try t.expectEqualStrings("{\\\"key\\\":\\\"val\\\"}", result3);
+}
+
+test "appendPlainText strips VT escapes from scrollback lines" {
+    var out: [128]u8 = undefined;
+
+    // Scrollback stores raw per-line VT bytes, so an SGR colour run must not
+    // reach a response documented as text.
+    const n1 = appendPlainText(&out, 0, "\x1b[0m\x1b[31merror:\x1b[0m build failed");
+    try t.expectEqualStrings("error: build failed", out[0..n1]);
+
+    // OSC terminated by BEL and by ST (ESC backslash).
+    const n2 = appendPlainText(&out, 0, "\x1b]0;title\x07after");
+    try t.expectEqualStrings("after", out[0..n2]);
+    const n3 = appendPlainText(&out, 0, "\x1b]0;title\x1b\\after");
+    try t.expectEqualStrings("after", out[0..n3]);
+
+    // Plain text is untouched, and appending continues from `pos`.
+    const n4 = appendPlainText(&out, 0, "plain");
+    const n5 = appendPlainText(&out, n4, "-more");
+    try t.expectEqualStrings("plain-more", out[0..n5]);
+}
+
+test "appendPlainText never overruns a full buffer" {
+    var tiny: [4]u8 = undefined;
+    const n = appendPlainText(&tiny, 0, "abcdefghij");
+    try t.expectEqual(@as(usize, 4), n);
+    try t.expectEqualStrings("abcd", tiny[0..n]);
+
+    // Already full: nothing is written, position is unchanged.
+    try t.expectEqual(@as(usize, 4), appendPlainText(&tiny, 4, "xyz"));
+
+    // A truncated escape at the very end must not read past the input.
+    var out: [16]u8 = undefined;
+    try t.expectEqual(@as(usize, 0), appendPlainText(&out, 0, "\x1b"));
+    try t.expectEqual(@as(usize, 0), appendPlainText(&out, 0, "\x1b[31"));
 }

@@ -1472,6 +1472,23 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                     config.persist_session = new_config.persist_session;
                     config.show_status_bar = new_config.show_status_bar;
 
+                    // Newly created panes pick up the new history depth.
+                    // Existing panes keep theirs: a Scrollback's max_lines is
+                    // fixed when the pane is built.
+                    mux.spawn_config.scrollback_lines = new_config.scrollback_lines;
+
+                    // font_size needs the atlas rasterised again, which
+                    // applyFontZoom already does — `.reset` targets
+                    // config.font_size, so assign that first. Without this the
+                    // key was accepted by teru_set_config, written to
+                    // teru.conf, reloaded right here, and then dropped: the
+                    // tool answered "set font_size = 20" and nothing resized.
+                    const font_size_changed = config.font_size != new_config.font_size;
+                    config.font_size = new_config.font_size;
+                    if (font_size_changed) {
+                        _ = applyFontZoom(.reset, allocator, &win, &config, &mux, &atlas, &renderer, &font_size, padding, &status_bar_h, &grid_cols, &grid_rows, &zoom_pending_resize, &zoom_timestamp);
+                    }
+
                     for (mux.panes.items) |*pane| pane.grid.dirty = true;
                     mux.notify("Config reloaded");
 

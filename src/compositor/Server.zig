@@ -1485,8 +1485,22 @@ pub fn focusView(self: *Server, view: *XdgView) void {
 
 /// Spawn an embedded terminal pane on the given workspace, sized to fill the output.
 pub fn spawnTerminal(self: *Server, ws: u8) void {
+    // Per-workspace cwd from `[workspace.N] cwd = …`. docs/CONFIGURATION.md
+    // promises it is "inherited by panes spawned on that workspace via
+    // $mod+Enter / spawn:teru", but the parsed value was read nowhere before
+    // 0.14.1 — every new shell started in the compositor's own cwd instead.
+    // Tilde-expanded through the same helper session restore uses, so both
+    // paths resolve `~/code` identically.
+    var spawn_config = self.spawn_config;
+    var cwd_buf: [512]u8 = undefined;
+    if (ws < self.wm_config.workspace_cwd.len) {
+        if (self.wm_config.workspace_cwd[ws]) |cwd| {
+            if (Session.expandTilde(cwd, &cwd_buf)) |expanded| spawn_config.cwd = expanded;
+        }
+    }
+
     // Create at default size — arrangeworkspace will resize to fit the layout
-    const tp = TerminalPane.create(self, ws, 24, 80) orelse {
+    const tp = TerminalPane.createWithSpawn(self, ws, 24, 80, spawn_config) orelse {
         std.log.scoped(.compositor).err("failed to spawn terminal pane", .{});
         return;
     };
