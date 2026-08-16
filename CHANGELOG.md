@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.14.1 — 2026-08-16
+
+Nine fixes, all one shape: a tool or config key that reported success while
+doing something other than what was asked. Found by auditing the 0.14.0
+surface after `teruwm_press` was caught discarding its `alt` argument — 16
+defects confirmed, 2 refuted, the nine highest-impact fixed here.
+
+An agent driving teru could not tell any of these had happened. That is what
+makes them worth a patch release rather than a backlog entry.
+
+### Fixed — MCP tools that lied about what they did
+
+- **`teruwm_press` discarded `alt`.** The schema advertises "Mods supported:
+  ctrl, shift, alt, super"; the PTY route dropped it, so
+  `{"key":"Return","alt":true}` typed a newline instead of splitting the pane
+  and answered `route:"pty"`, success. Alt is now the ESC prefix — the xterm
+  "meta sends escape" convention, and exactly what teru's own `TuiInput`
+  decodes back into an Alt binding.
+
+- **`teruwm_press` dropped a lone printable character.** `{"key":"a"}`
+  produced no bytes and fell through to the seat path, which has nowhere to
+  deliver for a native pane. A silent no-op, despite the schema documenting
+  "single ASCII char".
+
+- **`teruwm_press` leaked Super into the shell.** The physical path
+  deliberately swallows a Logo-held key on a focused terminal — an unbound
+  `$mod+Q` would otherwise leak its letter, since `xkb_state_key_get_utf8`
+  still yields `q` — but the MCP route bypassed that guard entirely. Now
+  swallowed, and reported as `route:"swallowed"` rather than claiming a write.
+
+- **`teruwm_focus_window` did nothing across workspaces.** `setFocus` mutates
+  the target workspace, but `updateFocusedTerminal` re-derives focus from the
+  *active* one — so focus snapped back and the tool still answered "focused
+  window N". An agent that read `teruwm_list_windows`, saw a node on another
+  workspace and focused it then drove input into the wrong pane.
+
+- **`teru_read_output` ignored the scrollback it is named for.** The schema and
+  `docs/MCP-API.md` promise "the last N lines of scrollback"; the handler
+  walked only the visible grid, so `{"lines":500}` against 10 000 lines of
+  build output returned the ~24 on-screen rows. The default of 50 already
+  exceeds a typical grid, so essentially every call under-delivered.
+
+- **`teru_broadcast` corrupted every payload.** It wrote raw JSON bytes while
+  `teru_send_input` unescaped them, so the two disagreed on what a JSON string
+  means: `{"text":"make test\n"}` executed via one and typed a literal
+  backslash-n via the other, sitting unrun on every prompt.
+
+- **`teruwm_scroll` was a guaranteed no-op over native panes.** They have no
+  `wl_surface`, so the seat axis event had nowhere to land — while the tool
+  answered ok. It now drives the same path the real wheel uses and returns the
+  resulting `scroll_offset`.
+
+### Fixed — config keys that did nothing
+
+- **`[workspace.N] cwd`** was parsed and never read. Panes spawned on that
+  workspace started in the compositor's own directory, not the configured one.
+
+- **`teru_set_config` never applied `font_size` or `scrollback_lines`**, though
+  both are in its allowlist and it advertises "triggers hot-reload". The reload
+  copied 13 other fields and dropped these two.
+
+### Fixed — rendering
+
+- **Pane rects too small for their own frame reported the wrong size.**
+  `insetRect` clamps to 0, but the resize sites fell back to the full extent, so
+  a 2-cell-tall pane in a crowded master-stack resized its shell to 2 rows and
+  then stamped none — the pane rendered empty while its shell believed it had
+  room. This is the agreement 0.14.0 claimed but did not quite have.
+
+### Known remaining
+
+Eight lower-severity findings from the same audit are unfixed, mostly
+documented-but-unimplemented config keys (`bar_left`/`bar_center`/`bar_right`,
+`alt_workspace_switch`, `cursor_size`) where the choice between implementing
+the feature and deleting the key is a product decision, not a bug fix. Also:
+`teruwm_set_name` truncates at 31 characters while echoing the full name back,
+and `teruwm_spawn_terminal` reports success even when pane creation fails.
+
 ## 0.14.0 — 2026-08-16
 
 Two silent-failure fixes in teruwm — a Wayland socket that stopped resolving
