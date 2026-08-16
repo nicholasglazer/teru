@@ -577,6 +577,16 @@ fn toolFocusWindow(self: *WmMcpServer, node_id: u64, buf: []u8, id: ?[]const u8)
         const ws_idx = srv.nodes.workspace[slot];
         if (ws_idx >= 10) return jsonRpcError(buf, id, -32602, "Window is hidden/scratchpad");
         const workspace = &srv.layout_engine.workspaces[ws_idx];
+
+        // A node on another workspace cannot take focus while that workspace is
+        // hidden. setFocus mutates workspaces[ws_idx], but updateFocusedTerminal
+        // re-derives focus from the ACTIVE workspace — so the call landed focus
+        // right back where it started and still answered "focused window N".
+        // focusWorkspace is the chokepoint that also recomputes visibility and
+        // emits workspace_switched. Guarded rather than called unconditionally:
+        // it drops fullscreen every time, which a same-workspace focus must not.
+        if (ws_idx != srv.layout_engine.active_workspace) srv.focusWorkspace(ws_idx);
+
         // Funnel through the single focus normalize point (A1): sets
         // active_node + syncs active_index when tiled.
         workspace.setFocus(node_id);
@@ -1221,6 +1231,18 @@ fn toolPress(self: *WmMcpServer, key: []const u8, ctrl: bool, shift: bool, alt: 
     // ServerInput.handleKeyEvent so real keyboard + MCP feel identical
     // on native panes.
     if (srv.focused_terminal) |tp| {
+        // Super is a window-manager modifier, never terminal input. The
+        // physical path swallows it (ServerInput.zig: "an unbound combo like
+        // $mod+Q would leak its letter into the shell, since
+        // xkb_state_key_get_utf8 still yields 'q'"), so we must too — this
+        // branch would otherwise write the bare key and report success, the
+        // same lie the alt bug told. Neither route dispatches keybinds anyway;
+        // wlr_seat_keyboard_notify_key goes to the focused client, not to
+        // handleKey. Use teruwm_test_key to invoke a compositor action.
+        if (sup) {
+            return okText(buf, id, "{{\\\"key\\\":\\\"{s}\\\",\\\"keycode\\\":{d},\\\"route\\\":\\\"swallowed\\\"}}", .{ key, keycode });
+        }
+
         // Longest sequence is a 4-byte CSI plus the 1-byte Alt/ESC prefix.
         var key_buf: [8]u8 = undefined;
         const bytes = ptyBytesForKeyname(key, ctrl, shift, alt, &key_buf);

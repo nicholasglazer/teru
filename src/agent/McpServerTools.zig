@@ -469,6 +469,15 @@ fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, command: ?[
 
 fn toolBroadcast(self: *McpServer, workspace: u8, text: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
 
+    // Unescape exactly as toolSendInput does. Without this the two tools
+    // disagree on what a JSON string means: `{"text":"make test\n"}` executed
+    // via teru_send_input but typed a literal backslash-n via broadcast, so the
+    // command sat unrun on every prompt while the reply said it was sent.
+    var unesc: [4096]u8 = undefined;
+    if (text.len > unesc.len)
+        return tools.jsonRpcError(buf, id, -32602, "text too long (max 4096 bytes per call)");
+    const unesc_text = tools.unescapeJson(text, &unesc);
+
     // Get pane IDs in the workspace from the layout engine
     const ws = &self.multiplexer.layout_engine.workspaces[workspace];
     var sent: u32 = 0;
@@ -478,7 +487,7 @@ fn toolBroadcast(self: *McpServer, workspace: u8, text: []const u8, buf: []u8, i
         if (self.multiplexer.getPaneById(node_id)) |pane| {
             // Best-effort: a pane mid-teardown can legitimately reject input.
             // Keep going, but surface the count so a silent drop is visible.
-            _ = pane.ptyWrite(text) catch {
+            _ = pane.ptyWrite(unesc_text) catch {
                 failed += 1;
                 continue;
             };

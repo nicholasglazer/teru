@@ -163,8 +163,13 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
         if (ri >= rects.len) break;
         const rect = Compositor.insetRect(rects[ri], g);
         // Content area: minus the frame on both sides, when there is one.
-        const content_rows = if (rect.height > 2 * b) rect.height - 2 * b else rect.height;
-        const content_cols = if (rect.width > 2 * b) rect.width - 2 * b else rect.width;
+        // Saturating, to match insetRect — which clamps to 0 rather than
+        // falling back to the full extent. A rect too small to hold its own
+        // frame (2 cells tall in a crowded master-stack) otherwise resizes the
+        // shell to 2 rows while the stamp draws 0, so the pane renders empty
+        // while its shell believes it has room.
+        const content_rows = rect.height -| 2 * b;
+        const content_cols = rect.width -| 2 * b;
 
         // Only send resize if dimensions changed
         var needs_resize = true;
@@ -195,8 +200,8 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
         const rect = Compositor.insetRect(rects[ci], g);
         self.last_pane_sizes[ci] = .{
             .id = pane_id,
-            .rows = if (rect.height > 2 * b) rect.height - 2 * b else rect.height,
-            .cols = if (rect.width > 2 * b) rect.width - 2 * b else rect.width,
+            .rows = rect.height -| 2 * b,
+            .cols = rect.width -| 2 * b,
         };
     }
 
@@ -518,6 +523,25 @@ test "TuiRenderer: pane content reclaims both frame cells when borders are off" 
     const bare = frameInset(true, false);
     try std.testing.expectEqual(rect.height, rect.height - 2 * bare);
     try std.testing.expectEqual(rect.width, rect.width - 2 * bare);
+}
+
+test "TuiRenderer: a rect too small for its frame reports zero content, not full" {
+    // A crowded master-stack hands out 2-cell-tall rects. insetRect clamps such
+    // a rect to height 0, so the resize must agree — reporting the full height
+    // here resizes the shell to rows nothing will ever draw.
+    const b = frameInset(true, true);
+    const tiny = Rect{ .x = 0, .y = 0, .width = 2, .height = 2 };
+
+    try std.testing.expectEqual(@as(u16, 0), tiny.height -| 2 * b);
+    try std.testing.expectEqual(@as(u16, 0), tiny.width -| 2 * b);
+    // …which is exactly what the stamp will use.
+    const inset = Compositor.insetRect(tiny, b);
+    try std.testing.expectEqual(inset.height, tiny.height -| 2 * b);
+    try std.testing.expectEqual(inset.width, tiny.width -| 2 * b);
+
+    // Borderless panes keep every cell at the same size.
+    const bare = frameInset(true, false);
+    try std.testing.expectEqual(tiny.height, tiny.height -| 2 * bare);
 }
 
 test "TuiRenderer: pane_border defaults on" {
