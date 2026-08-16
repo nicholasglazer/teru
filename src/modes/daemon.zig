@@ -241,7 +241,10 @@ pub fn runSessionAttach(session_name: []const u8) !void {
     defer _ = std.c.fcntl(0, posix.F.SETFL, stdin_flags);
 
     var in_buf: [4096]u8 = undefined;
-    var out_buf: [4096]u8 = undefined;
+    // Must be able to hold the largest message the daemon can send, because
+    // recvMessage rejects an oversized payload AFTER consuming its header —
+    // which desyncs the stream permanently rather than dropping one message.
+    var out_buf: [daemon_proto.max_payload]u8 = undefined;
     const POLLIN: i16 = 0x001;
     const POLLHUP: i16 = 0x010;
 

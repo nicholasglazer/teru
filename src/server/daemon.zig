@@ -369,12 +369,17 @@ fn sendPaneGridSync(self: *Daemon, pane: *Pane) void {
     // blows past that, so send it in pieces. Splitting at an arbitrary byte —
     // even mid-escape-sequence — is safe: the receiving end is a byte-at-a-time
     // state machine that carries its position across reads.
-    const chunk_max = proto.max_payload - 8; // 8 = the pane_id prefix
+    // Deliberately far below proto.max_payload. recvMessage rejects a payload
+    // larger than the receiver's buffer *after* consuming its header, which
+    // desyncs the stream for good rather than dropping one message — so the
+    // safe size is the smallest buffer any receiver might have, not the
+    // largest the protocol allows.
+    const chunk_max = 4096 - 8; // 8 = the pane_id prefix
+    var msg_buf: [8 + chunk_max]u8 = undefined;
+    std.mem.writeInt(u64, msg_buf[0..8], pane.id, .little);
     var sent: usize = 0;
     while (sent < n) {
         const take = @min(chunk_max, n - sent);
-        var msg_buf: [proto.max_payload]u8 = undefined;
-        std.mem.writeInt(u64, msg_buf[0..8], pane.id, .little);
         @memcpy(msg_buf[8..][0..take], snap[sent..][0..take]);
         if (!proto.sendMessage(cfd, .output, msg_buf[0 .. 8 + take])) return;
         sent += take;

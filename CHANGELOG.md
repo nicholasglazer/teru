@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.14.4 — 2026-08-16
+
+### Fixed
+
+- **0.14.3's grid re-sync could desync the client stream.** Its chunks were
+  sized to `proto.max_payload` (64KB), but the raw session-attach path reads
+  into a 4KB buffer — and `recvMessage` rejects an oversized payload *after*
+  consuming its header, so the stream desyncs permanently rather than dropping
+  a single message.
+
+  Chunks are now sized to the smallest buffer any receiver might have, not the
+  largest the protocol permits, and that receive buffer is raised to
+  `max_payload` so the two can never disagree again.
+
+  Only 0.14.3 was affected — the re-sync sent one small ASCII message before
+  that.
+
 ## 0.14.3 — 2026-08-16
 
 ### Fixed
