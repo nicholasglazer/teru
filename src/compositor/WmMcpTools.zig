@@ -1221,7 +1221,9 @@ fn toolPress(self: *WmMcpServer, key: []const u8, ctrl: bool, shift: bool, alt: 
     // ServerInput.handleKeyEvent so real keyboard + MCP feel identical
     // on native panes.
     if (srv.focused_terminal) |tp| {
-        const bytes = ptyBytesForKeyname(key, ctrl, shift, alt);
+        // Longest sequence is a 4-byte CSI plus the 1-byte Alt/ESC prefix.
+        var key_buf: [8]u8 = undefined;
+        const bytes = ptyBytesForKeyname(key, ctrl, shift, alt, &key_buf);
         if (bytes.len > 0) {
             tp.writeInput(bytes);
             return okText(buf, id, "{{\\\"key\\\":\\\"{s}\\\",\\\"keycode\\\":{d},\\\"route\\\":\\\"pty\\\"}}", .{key, keycode});
@@ -1251,13 +1253,47 @@ fn toolPress(self: *WmMcpServer, key: []const u8, ctrl: bool, shift: bool, alt: 
     return okText(buf, id, "{{\\\"key\\\":\\\"{s}\\\",\\\"keycode\\\":{d}}}", .{key, keycode});
 }
 
-/// Map a named key ("Return", "Escape", "Tab", arrows…) to the byte
-/// sequence a PTY-attached app expects. Ctrl prefix wraps
-/// printable letters with Ctrl (a → 0x01). Returns empty slice when
-/// the key is not mappable here — caller falls back to seat dispatch.
-fn ptyBytesForKeyname(key: []const u8, ctrl: bool, shift: bool, alt: bool) []const u8 {
-    _ = shift;
-    _ = alt;
+/// Map a named key ("Return", "Escape", "Tab", arrows…) or a single printable
+/// character to the bytes a PTY-attached app expects, written into `out`.
+/// Returns the filled slice; empty means not mappable here, and the caller
+/// falls back to seat dispatch.
+///
+/// Alt is the ESC prefix — the xterm "meta sends escape" convention. A real
+/// Alt+X reaches a PTY as `0x1b 'x'`, and that is exactly the encoding teru's
+/// own TuiInput decodes back into an Alt binding. Until 0.14.1 this discarded
+/// `alt` outright, so every Alt-modified press arrived as the bare key while
+/// the response still reported success: `teruwm_press {"key":"Return","alt":true}`
+/// typed a newline instead of splitting the pane, and no caller could tell.
+fn ptyBytesForKeyname(key: []const u8, ctrl: bool, shift: bool, alt: bool, out: []u8) []const u8 {
+    var n: usize = 0;
+    if (alt) {
+        if (out.len == 0) return out[0..0];
+        out[0] = 0x1b;
+        n = 1;
+    }
+
+    if (namedKeyBytes(key, ctrl)) |base| {
+        if (n + base.len > out.len) return out[0..0];
+        @memcpy(out[n..][0..base.len], base);
+        return out[0 .. n + base.len];
+    }
+
+    // A lone printable character. Without this, `{"key":"a"}` produced nothing
+    // and fell through to the seat path — which has nowhere to deliver for a
+    // native pane, since there is no wl_surface behind its scene buffer. The
+    // press was a silent no-op even though the schema advertises "single ASCII
+    // char". Shift uppercases, matching what the key would actually produce.
+    if (key.len == 1 and key[0] >= 0x20 and key[0] < 0x7f) {
+        if (n + 1 > out.len) return out[0..0];
+        out[n] = if (shift) std.ascii.toUpper(key[0]) else key[0];
+        return out[0 .. n + 1];
+    }
+
+    return out[0..0];
+}
+
+/// The fixed sequences, independent of Alt. Null when `key` names none of them.
+fn namedKeyBytes(key: []const u8, ctrl: bool) ?[]const u8 {
     if (std.mem.eql(u8, key, "Return") or std.mem.eql(u8, key, "Enter")) return "\r";
     if (std.mem.eql(u8, key, "BackSpace") or std.mem.eql(u8, key, "Backspace")) return "\x7f";
     if (std.mem.eql(u8, key, "Tab")) return "\t";
@@ -1278,7 +1314,7 @@ fn ptyBytesForKeyname(key: []const u8, ctrl: bool, shift: bool, alt: bool) []con
             return ctrlLetterSlice(c);
         }
     }
-    return "";
+    return null;
 }
 
 const ctrl_letters: [26][1]u8 = blk: {
@@ -1459,4 +1495,44 @@ test "saturating narrowers never panic on hostile JSON ints (ReleaseSafe abort g
     try std.testing.expectEqual(@as(i32, 0), satI32(0));
     try std.testing.expectEqual(std.math.maxInt(u32), satU32(99_999_999_999));
     try std.testing.expectEqual(@as(u32, 0), satU32(-7));
+}
+
+test "ptyBytesForKeyname: alt is the ESC prefix, not discarded" {
+    var buf: [8]u8 = undefined;
+
+    // The regression this test exists for: alt:true used to be thrown away, so
+    // Alt+Enter reached the pane as a bare CR and merely typed a newline.
+    try std.testing.expectEqualSlices(u8, "\r", ptyBytesForKeyname("Return", false, false, false, &buf));
+    try std.testing.expectEqualSlices(u8, "\x1b\r", ptyBytesForKeyname("Return", false, false, true, &buf));
+
+    // Alt composes with the multi-byte CSI sequences too.
+    try std.testing.expectEqualSlices(u8, "\x1b[A", ptyBytesForKeyname("Up", false, false, false, &buf));
+    try std.testing.expectEqualSlices(u8, "\x1b\x1b[A", ptyBytesForKeyname("Up", false, false, true, &buf));
+}
+
+test "ptyBytesForKeyname: a lone printable char reaches the PTY" {
+    var buf: [8]u8 = undefined;
+
+    // Previously returned empty, fell through to the seat path, and was dropped
+    // — a native pane has no wl_surface to deliver to.
+    try std.testing.expectEqualSlices(u8, "a", ptyBytesForKeyname("a", false, false, false, &buf));
+    try std.testing.expectEqualSlices(u8, "A", ptyBytesForKeyname("a", false, true, false, &buf));
+    try std.testing.expectEqualSlices(u8, "\x1ba", ptyBytesForKeyname("a", false, false, true, &buf));
+
+    // Ctrl still wins over the printable path.
+    try std.testing.expectEqualSlices(u8, "\x01", ptyBytesForKeyname("a", true, false, false, &buf));
+    try std.testing.expectEqualSlices(u8, "\x1b\x01", ptyBytesForKeyname("a", true, false, true, &buf));
+}
+
+test "ptyBytesForKeyname: unmappable keys yield nothing, even with alt" {
+    var buf: [8]u8 = undefined;
+
+    // An unknown name must not emit a lone ESC — that would inject a stray
+    // escape into the pane instead of falling through to seat dispatch.
+    try std.testing.expectEqual(@as(usize, 0), ptyBytesForKeyname("F1", false, false, true, &buf).len);
+    try std.testing.expectEqual(@as(usize, 0), ptyBytesForKeyname("", false, false, true, &buf).len);
+
+    // A too-small buffer degrades to "not mappable" rather than truncating.
+    var tiny: [1]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), ptyBytesForKeyname("Up", false, false, true, &tiny).len);
 }
