@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.14.0 — 2026-08-16
+
+Two silent-failure fixes in teruwm — a Wayland socket that stopped resolving
+and a tearing hint that was negotiated but never applied — plus a way to drop
+the pane frame in the nested multiplexer.
+
+### Added
+
+- **`tui_pane_border`** for the nested multiplexer (`teru -n`, typically over
+  SSH). The TUI framed every pane unconditionally, spending one cell per side
+  with no way to opt out. Set it to `false` and panes touch edge-to-edge, the
+  tmux `pane-border-status off` look, with the cursor marking the active pane.
+
+  Worth knowing why there is no middle setting: the TUI writes characters into
+  the host terminal's grid and never sees a pixel, so spacing quantises to whole
+  cells — and a cell is about twice as tall as it is wide. A one-cell inset
+  costs ~19px vertically but only ~9px horizontally. That lopsidedness is
+  inherent to the medium; the only way to shrink it is to remove it. For
+  pixel-accurate uniform gaps, use teruwm's `gap` instead.
+
+- `tui_pane_gap` and `tui_nested_bar` are now documented. Both already worked;
+  neither appeared in `docs/CONFIGURATION.md`.
+
+### Fixed
+
+- **teruwm now recovers a Wayland socket that was unlinked from disk.**
+  `wl_display_add_socket_auto` binds `$XDG_RUNTIME_DIR/wayland-N` and flocks
+  `wayland-N.lock`; libwayland unlinks both *by name* on `wl_display_destroy`.
+  A second compositor that grabbed the freed name and later exited cleanly left
+  the real session listening on an fd whose path no longer existed.
+
+  The failure was silent and total: connected clients kept rendering, so the
+  session looked healthy, while every new client died with `ENOENT` inside
+  `connect()` — no browser, no new terminal, no `wl-paste`, no screenshot
+  tooling — and nothing was logged. A 15s timer now `access(2)`s the path and
+  repairs it, binding a replacement and symlinking the original name onto it
+  (`connect(2)` follows symlinks), because libwayland offers no way to reclaim
+  the original name while our own lock is still held.
+
+- **`wp_tearing_control_v1` is actually applied.** teruwm advertised the
+  protocol, so clients negotiated tearing and then never received it — wlroots
+  only parses the protocol; the compositor must set
+  `wlr_output_state.tearing_page_flip`. On a 165 Hz panel with no VRR this
+  showed up as a cleanly bimodal 1:422 / 2:463 vblanks-per-flip split: 111 fps
+  against ~164 fps of real capability. The composited desktop path is unchanged
+  — the hint is only honoured when a fullscreen client opts in.
+
 ## 0.13.0 — 2026-08-13
 
 A Doom-style **leader / which-key** across every front-end, a long batch of
