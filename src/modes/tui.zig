@@ -158,6 +158,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
     var leader_tree: LeaderDefs.Tree = .{};
     if (config_opt) |*config| {
         renderer.pane_gap = config.tui_pane_gap;
+        renderer.pane_border = config.tui_pane_border;
         // nested_bar: config OR the TERU_NESTED_BAR env (env still works).
         if (config.tui_nested_bar) tui_input.nested_bar = true;
         // Config-driven leader tree ([leader] sections) — overrides MuxLeader's

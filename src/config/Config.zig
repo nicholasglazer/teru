@@ -197,6 +197,13 @@ bar_right: ?[]const u8 = null, // format string (null = dimensions)
 // hardcoded; the TUI client now loads teru.conf and honours them.
 tui_pane_gap: u16 = 0, // gap (in text cells) between panes in the nested multiplexer
 tui_nested_bar: bool = false, // show the inner status bar when nested (else TERU_NESTED_BAR env)
+// Box frame around each pane when more than one is visible. On (default) every
+// pane spends 1 cell per side on its ring. Off = panes touch edge-to-edge, the
+// tmux `pane-border-status off` look, and the active pane is identified by the
+// cursor alone. There is no middle setting: the TUI addresses character cells,
+// not pixels, so the smallest non-zero inset is one whole cell — which is about
+// twice as tall as it is wide, hence the vertical/horizontal asymmetry.
+tui_pane_border: bool = true,
 
 // Per-workspace config (10 workspaces, 1-indexed in config, 0-indexed in array)
 workspace_layouts: [10]?LayoutEngine.Layout = @splat(null),
@@ -620,6 +627,8 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         self.tui_pane_gap = std.fmt.parseInt(u16, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "tui_nested_bar")) {
         self.tui_nested_bar = parseBool(value) orelse return;
+    } else if (std.mem.eql(u8, key, "tui_pane_border")) {
+        self.tui_pane_border = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "bar_left")) {
         self.setString(allocator, &self.bar_left, value);
     } else if (std.mem.eql(u8, key, "bar_center")) {
@@ -934,6 +943,15 @@ test "parse tui_pane_gap and tui_nested_bar (nested multiplexer config)" {
     config.parse(allocator, content);
     try std.testing.expectEqual(@as(u16, 4), config.tui_pane_gap);
     try std.testing.expectEqual(true, config.tui_nested_bar);
+    // Unset key keeps the frame — turning it off must be opt-in.
+    try std.testing.expectEqual(true, config.tui_pane_border);
+}
+
+test "parse tui_pane_border = false (tmux-style edge-to-edge panes)" {
+    const allocator = std.testing.allocator;
+    var config = Config{ .allocator = allocator };
+    config.parse(allocator, "tui_pane_border = false\n");
+    try std.testing.expectEqual(false, config.tui_pane_border);
 }
 
 test "missing config file returns defaults" {

@@ -457,6 +457,48 @@ bar_right = {session}
 
 ---
 
+### Nested Multiplexer (`teru -n` over SSH)
+
+These apply to the TUI client — the multiplexer you get from `teru -n <session>`,
+typically inside another terminal or over SSH. They are read from the *client's*
+`teru.conf`, which for an SSH session means the config on the **remote** host.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `tui_pane_gap` | integer | `0` | Blank cells between panes and around the tiling area. Applied as a half-gap on each side, so edge and inter-pane spacing both equal `2 × tui_pane_gap` |
+| `tui_pane_border` | boolean | `true` | Draw a box frame around each pane when more than one is visible |
+| `tui_nested_bar` | boolean | `false` | Show the inner status bar even when nested (also settable via the `TERU_NESTED_BAR` env var) |
+
+#### Spacing is measured in cells, not pixels
+
+The TUI writes characters into the host terminal's grid — it never sees a pixel,
+and the host decides how big a cell is. So spacing quantises to whole cells, and
+a cell is roughly twice as tall as it is wide. A one-cell inset therefore costs
+about 19px vertically but only 9px horizontally. That asymmetry is inherent to
+the medium, not a misconfiguration, and no setting can even it out.
+
+That leaves exactly two useful looks:
+
+```conf
+# Framed (default) — each pane spends 1 cell per side on its ring.
+tui_pane_border = true
+
+# Edge-to-edge, the tmux `pane-border-status off` look. Panes touch; the
+# cursor is the only cue to which one is active.
+tui_pane_border = false
+```
+
+`tui_pane_gap` *adds* space rather than removing it, so leave it at `0` for the
+tightest layout. A single pane is never framed regardless of these settings — it
+always fills the screen.
+
+For pixel-accurate uniform gaps, you want the compositor instead: teruwm's `gap`
+is measured in real pixels and applied as a half-gap on every side, so two
+adjacent windows contribute `gap/2` each. See
+[teruwm Compositor Config](#teruwm-compositor-config).
+
+---
+
 ## Config File Location
 
 teru looks for `~/.config/teru/teru.conf`. If the file does not exist, all defaults are used.
