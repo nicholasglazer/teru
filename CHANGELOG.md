@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.14.6 — 2026-08-16
+
+### Added
+
+- **teruwm forwards mouse buttons to programs running in its own panes.** The
+  wheel had been forwarded since the alternate-scroll work; buttons never were.
+  A native pane has no `wl_surface`, so the seat button notify reaches nothing —
+  the PTY write is the only route a click has into a program in a teruwm pane.
+  Until now every click was consumed by drag-select, so **no click ever arrived**
+  in vim, htop, `less +mouse`, claude, or a nested `teru -n` over SSH — whose
+  click-to-focus was fully implemented and simply never fed.
+
+  Press, release and drag-motion are all reported, in SGR or legacy X10 framing
+  per the app's own request. Motion is sent only in modes 1002/1003, which ask
+  for it; plain 1000 stays quiet so a drag does not become a flood of reports
+  the app never wanted.
+
+  **Hold Shift to override** and drag-select instead — the same escape hatch
+  xterm, kitty and gnome-terminal use. Without it an app with tracking on would
+  own every click and its output could never be selected.
+
+  Release and motion route the same way the press did, tracked on the server.
+  Otherwise an app gets a press whose end it never sees, or a selection starts
+  under a click the app already took. A pane closed mid-drag clears the flag
+  with it.
+
 ## 0.14.5 — 2026-08-16
 
 ### Fixed

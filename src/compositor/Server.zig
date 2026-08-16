@@ -162,6 +162,11 @@ last_xcursor_name: []const u8 = "",
 // progress so motion events continue updating the pane's Selection
 // even if the cursor wanders outside the pane bounds.
 drag_terminal: ?*TerminalPane = null,
+/// True when the in-progress terminal drag was handed to the pane's program
+/// (mouse tracking on, Shift not held) rather than to drag-select. Release and
+/// motion must route the same way the press did, or an app gets a press it
+/// never sees the end of — or a selection starts under a click the app took.
+drag_reports_to_app: bool = false,
 // ── Pointer-latency instrumentation (diagnostic, 2026-08-11) ──────
 // libinput stamps every motion event with a CLOCK_MONOTONIC ms time.
 // Comparing that stamp against the wall clock at the moment we run the

@@ -146,6 +146,11 @@ pub fn clearFocusRefs(server: *Server, node_id: u64) void {
     // through clearFocusRefs).
     if (server.drag_terminal) |d| if (d.node_id == node_id) {
         server.drag_terminal = null;
+        // Clear the routing flag with it. A pane closed mid-drag would
+        // otherwise leave it set, and the NEXT press on any pane would be
+        // treated as app-owned — reporting to a program that never saw a
+        // press, and silently disabling drag-select.
+        server.drag_reports_to_app = false;
     };
 }
 

@@ -438,6 +438,12 @@ fn endGrab(server: *Server, button: u32, state: u32, time: u32) void {
     // Finalize any in-progress terminal drag-select. Selection stays
     // painted (user can copy / refine); mouse_down toggles off.
     if (server.drag_terminal) |tp| {
+        if (server.drag_reports_to_app) {
+            // The app took the press, so it must see the release — otherwise it
+            // is left believing the button is still down.
+            forwardMouseReleaseToApp(server, tp, button, wlr.miozu_cursor_x(server.cursor), wlr.miozu_cursor_y(server.cursor));
+            return;
+        }
         terminalMouseRelease(server, tp);
         // The release closes the terminal's exclusive grab — it belongs to
         // the pane, not to any client. Forwarding it let the window
@@ -462,6 +468,96 @@ fn readSuperHeld(server: *Server, override: ?bool) bool {
     const keyboard = wlr.miozu_seat_get_keyboard(server.seat) orelse return false;
     const xkb_st = wlr.miozu_keyboard_xkb_state(keyboard) orelse return false;
     return wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_LOGO, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
+}
+
+/// Read whether Shift is currently held, from live xkb state.
+///
+/// Shift is the escape hatch from app mouse capture: while an app has tracking
+/// on it owns every click, so without this there is no way to drag-select its
+/// output. xterm, kitty and gnome-terminal all use Shift for exactly this.
+fn readShiftHeld(server: *Server) bool {
+    const keyboard = wlr.miozu_seat_get_keyboard(server.seat) orelse return false;
+    const xkb_st = wlr.miozu_keyboard_xkb_state(keyboard) orelse return false;
+    return wlr.xkb_state_mod_name_is_active(xkb_st, wlr.XKB_MOD_NAME_SHIFT, wlr.XKB_STATE_MODS_EFFECTIVE) > 0;
+}
+
+/// Does this press belong to the pane's program rather than to drag-select?
+///
+/// Pure so the policy is testable without a seat or a live keyboard — the
+/// headless backend has no input devices at all, so `readShiftHeld` can only
+/// ever answer false there.
+///
+/// Shift always wins: while an app holds mouse tracking it owns every click,
+/// and without an override there would be no way to select its output at all.
+pub fn shouldForwardMouse(tracking: teru.VtParser.MouseMode, shift_held: bool, button: u32) bool {
+    if (tracking == .none) return false; // no app asked for the mouse
+    if (shift_held) return false; // user is overriding to select
+    return reportButtonFor(button) != null; // only buttons xterm can encode
+}
+
+/// Map a linux input-event button code to an xterm report button.
+fn reportButtonFor(button: u32) ?u8 {
+    return switch (button) {
+        272 => mouse_report.BTN_LEFT,
+        273 => mouse_report.BTN_RIGHT,
+        274 => mouse_report.BTN_MIDDLE,
+        else => null,
+    };
+}
+
+/// Hand a button press to the pane's program as a mouse report, the way the
+/// wheel already is. Returns true when the app took it — the caller must then
+/// NOT start a drag-select.
+///
+/// Native panes have no wl_surface, so the seat button notify reaches nothing:
+/// this PTY write is the only route a click has into a program running in a
+/// teruwm pane. Until this existed, no click ever arrived — not in vim, htop,
+/// `less +mouse`, claude, nor a nested `teru -n` over SSH, whose click-to-focus
+/// was fully implemented and simply never fed.
+fn forwardMouseButtonToApp(server: *Server, tp: anytype, button: u32, cx: f64, cy: f64) bool {
+    if (!shouldForwardMouse(tp.pane.vt.mouse_tracking, readShiftHeld(server), button)) return false;
+    const btn = reportButtonFor(button) orelse return false;
+
+    const rc = paneLocalCell(tp, cx, cy);
+    var buf: [32]u8 = undefined;
+    if (mouse_report.encodePress(tp.pane.vt.mouse_sgr, btn, rc.col, rc.row, &buf)) |seq| {
+        _ = tp.pane.ptyWrite(seq) catch {};
+    }
+
+    // Claim the drag so the release comes back here rather than leaking to a
+    // client underneath, exactly as the drag-select path does.
+    tp.mouse.mouse_down = true;
+    server.drag_terminal = tp;
+    server.drag_reports_to_app = true;
+    return true;
+}
+
+/// The matching release. Silent when the press was not forwarded.
+fn forwardMouseReleaseToApp(server: *Server, tp: anytype, button: u32, cx: f64, cy: f64) void {
+    const btn = reportButtonFor(button) orelse mouse_report.BTN_LEFT;
+    const rc = paneLocalCell(tp, cx, cy);
+    var buf: [32]u8 = undefined;
+    if (mouse_report.encodeRelease(tp.pane.vt.mouse_sgr, btn, rc.col, rc.row, &buf)) |seq| {
+        _ = tp.pane.ptyWrite(seq) catch {};
+    }
+    tp.mouse.mouse_down = false;
+    server.drag_terminal = null;
+    server.drag_reports_to_app = false;
+}
+
+/// Motion while the app holds the button. Only modes 1002/1003 asked for it;
+/// plain 1000 reports presses and releases alone, so staying quiet there keeps
+/// a vim visual-drag from becoming a flood of reports it never requested.
+fn forwardMouseMotionToApp(tp: anytype, cx: f64, cy: f64) void {
+    switch (tp.pane.vt.mouse_tracking) {
+        .button_event, .any_event => {},
+        .none, .normal => return,
+    }
+    const rc = paneLocalCell(tp, cx, cy);
+    var buf: [32]u8 = undefined;
+    if (mouse_report.encodeMotion(tp.pane.vt.mouse_sgr, tp.mouse.mouse_down, rc.col, rc.row, &buf)) |seq| {
+        _ = tp.pane.ptyWrite(seq) catch {};
+    }
 }
 
 /// Read whether Alt (Mod1) is currently held, from live xkb state.
@@ -593,14 +689,14 @@ fn forwardAndFocus(server: *Server, button: u32, state: u32, time: u32, super_he
                     .terminal => {
                         claimed_by_pane = true;
                         focusTerminalByNode(server, nid);
-                        // Left-click over a native terminal starts
-                        // drag-select bookkeeping. Without this path
-                        // (since the pane has no wl_surface) the seat
-                        // button notify below has no effect on the
-                        // pane, so selection never engaged.
-                        if (button == 272) { // BTN_LEFT
-                            if (server.terminalPaneById(nid)) |tp| {
-                                terminalMousePress(server, tp, cx, cy);
+                        // A click over a native terminal goes to the pane's
+                        // program when it has mouse tracking on, otherwise it
+                        // starts drag-select bookkeeping. Either way it must be
+                        // handled here: the pane has no wl_surface, so the seat
+                        // button notify below reaches nothing.
+                        if (server.terminalPaneById(nid)) |tp| {
+                            if (!forwardMouseButtonToApp(server, tp, button, cx, cy)) {
+                                if (button == 272) terminalMousePress(server, tp, cx, cy); // BTN_LEFT
                             }
                         }
                     },
@@ -835,6 +931,7 @@ fn terminalMouseMotion(server: *Server, tp: anytype, cx: f64, cy: f64) void {
 fn terminalMouseRelease(server: *Server, tp: anytype) void {
     tp.mouse.mouse_down = false;
     server.drag_terminal = null;
+    server.drag_reports_to_app = false; // already false on this path; keep the two in lockstep
     // Copy-on-select: finishing a real drag (not a bare click) auto-copies the
     // selection to the clipboard, no Ctrl+Shift+C needed — matches standalone
     // teru's copy_on_select. copySelection publishes to the seat + mirrors
@@ -1079,7 +1176,11 @@ pub fn processCursorMotion(server: *Server, time: u32) void {
     // teruwm's simpler variant just clamps to grid bounds inside
     // paneLocalCell).
     if (server.drag_terminal) |tp| {
-        terminalMouseMotion(server, tp, cx, cy);
+        if (server.drag_reports_to_app) {
+            forwardMouseMotionToApp(tp, cx, cy);
+        } else {
+            terminalMouseMotion(server, tp, cx, cy);
+        }
         // A drag-select is an EXCLUSIVE pointer grab — same contract as
         // wl_pointer's implicit grab. Falling through to the client
         // dispatch path below leaked EVERY motion tick to whatever client
@@ -1417,4 +1518,44 @@ test "zoomStepsForDiscrete: v120 units → one step per notch" {
     try t.expectEqual(@as(u32, 1), zoomStepsForDiscrete(60)); // hi-res sub-notch → at least 1
     // Regression: the old @abs(discrete) returned 120 here (runaway zoom).
     try t.expect(zoomStepsForDiscrete(120) != 120);
+}
+
+test "reportButtonFor maps the linux button codes teruwm receives" {
+    // libinput/evdev codes → xterm report buttons. Anything else (side/extra
+    // buttons) has no xterm encoding, so it must not be forwarded at all.
+    try std.testing.expectEqual(@as(?u8, mouse_report.BTN_LEFT), reportButtonFor(272));
+    try std.testing.expectEqual(@as(?u8, mouse_report.BTN_RIGHT), reportButtonFor(273));
+    try std.testing.expectEqual(@as(?u8, mouse_report.BTN_MIDDLE), reportButtonFor(274));
+    try std.testing.expectEqual(@as(?u8, null), reportButtonFor(275)); // BTN_SIDE
+    try std.testing.expectEqual(@as(?u8, null), reportButtonFor(0));
+}
+
+test "shouldForwardMouse: only when an app asked and Shift is not overriding" {
+    const M = teru.VtParser.MouseMode;
+    const LEFT: u32 = 272;
+
+    // No tracking: the click is teruwm's, for drag-select.
+    try std.testing.expect(!shouldForwardMouse(M.none, false, LEFT));
+    try std.testing.expect(!shouldForwardMouse(M.none, true, LEFT));
+
+    // Tracking on: the app owns it, in every reporting mode.
+    try std.testing.expect(shouldForwardMouse(M.normal, false, LEFT));
+    try std.testing.expect(shouldForwardMouse(M.button_event, false, LEFT));
+    try std.testing.expect(shouldForwardMouse(M.any_event, false, LEFT));
+
+    // Shift always wins — otherwise an app with tracking on could never have
+    // its output selected, since it would swallow every press.
+    try std.testing.expect(!shouldForwardMouse(M.normal, true, LEFT));
+    try std.testing.expect(!shouldForwardMouse(M.button_event, true, LEFT));
+    try std.testing.expect(!shouldForwardMouse(M.any_event, true, LEFT));
+}
+
+test "shouldForwardMouse: buttons xterm cannot encode are never forwarded" {
+    const M = teru.VtParser.MouseMode;
+    // Right and middle are encodable; side/extra are not, and must fall through
+    // to teruwm rather than emit a bogus report.
+    try std.testing.expect(shouldForwardMouse(M.normal, false, 273)); // BTN_RIGHT
+    try std.testing.expect(shouldForwardMouse(M.normal, false, 274)); // BTN_MIDDLE
+    try std.testing.expect(!shouldForwardMouse(M.normal, false, 275)); // BTN_SIDE
+    try std.testing.expect(!shouldForwardMouse(M.normal, false, 276)); // BTN_EXTRA
 }
