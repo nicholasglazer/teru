@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.14.7 — 2026-08-17
+
+### Fixed
+
+- **A layout you chose was discarded the next time a pane opened or closed.**
+  Cycling to `grid` with four panes and then closing one silently returned you
+  to `master-stack`, because `autoSelectLayout` re-ran on every pane change and
+  maps 2–4 panes to master-stack.
+
+  A `layout_pinned` flag already existed to stop exactly this, and
+  `resetLayout` set it — but `cycleLayout` *cleared* it, which had the
+  intent backwards. Cycling is the strongest statement of intent there is about
+  a layout, so it now pins. Clearing was never needed for cycling to work
+  either: the pin only gates auto-select inside `addNode`/`removeNode`, and
+  cycling assigns the layout directly.
+
+  A workspace nobody has touched still adapts as before — monocle for one pane,
+  master-stack for two to four, grid beyond — so the convenient default
+  survives, and only stops the moment you express a preference.
+
 ## 0.14.6 — 2026-08-16
 
 ### Added

@@ -41,9 +41,10 @@ layout_index: u8 = 0,
 // re-run autoSelectLayout — a template (`layout = grid`) or a state_sync from
 // the daemon set the layout deliberately, and pane churn would otherwise stomp
 // it (e.g. autoSelect returns master_stack for 2-4 panes, silently turning a
-// declared `grid` into master-stack). Cleared by cycleLayout so an explicit
-// user layout-cycle still wins. Preferred over setLayouts(&.{single}), which
-// would set layout_count==1 and disable the layout-cycle keybind entirely.
+// declared `grid` into master-stack). SET by cycleLayout and resetLayout too:
+// a deliberate user choice is exactly what must survive pane churn. Preferred
+// over setLayouts(&.{single}), which would set layout_count==1 and disable the
+// layout-cycle keybind entirely.
 layout_pinned: bool = false,
 
 // Marked master pane — Alt+Shift+M sets, Alt+M focuses
@@ -90,8 +91,15 @@ pub fn setLayouts(self: *Workspace, list: []const Layout) void {
 /// Cycle to the next layout in the workspace's layout list.
 /// If no list is configured, cycles through all layouts.
 pub fn cycleLayout(self: *Workspace) void {
-    // Explicit user cycle overrides the template/state_sync pin from here on.
-    self.layout_pinned = false;
+    // Cycling is the strongest statement of intent there is about a layout, so
+    // it PINS. This used to clear the pin, which read as "let auto-select take
+    // over again" and meant the choice survived only until the next pane came
+    // or went: pick `grid` with four panes, close one, and autoSelectLayout
+    // silently returned master_stack for three. Clearing was never needed for
+    // cycling to work either — the pin only gates auto-select in
+    // add/removeNode; the assignment below sets the layout regardless.
+    // `resetLayout` already pinned for exactly this reason.
+    self.layout_pinned = true;
     if (self.layout_count > 1) {
         self.layout_index = (self.layout_index + 1) % self.layout_count;
         self.layout = self.layouts[self.layout_index];
@@ -1153,4 +1161,51 @@ test "cycleLayout — single layout list is no-op" {
     try t.expectEqual(Layout.spiral, ws.layout);
     ws.cycleLayout();
     try t.expectEqual(Layout.spiral, ws.layout);
+}
+
+test "cycleLayout survives pane churn — the layout is the user's, not autoSelect's" {
+    const a = t.allocator;
+    var ws = testWorkspace();
+    defer ws.deinit(a);
+
+    // Four panes: autoSelect would say master_stack (2-4 → master_stack).
+    for (1..5) |i| try ws.addNode(a, @intCast(i));
+    try t.expectEqual(Layout.master_stack, ws.layout);
+
+    // Cycle to grid deliberately.
+    ws.cycleLayout();
+    try t.expectEqual(Layout.grid, ws.layout);
+
+    // Close one. Three panes still maps to master_stack in autoSelectLayout, so
+    // without the pin the explicit choice is silently stomped — the reported
+    // bug. The layout must stay exactly where the user put it.
+    ws.removeNode(4);
+    try t.expectEqual(@as(usize, 3), ws.node_ids.items.len);
+    try t.expectEqual(Layout.grid, ws.layout);
+
+    // Opening one again must not stomp it either.
+    try ws.addNode(a, 9);
+    try t.expectEqual(Layout.grid, ws.layout);
+
+    // Down to a single pane: still the user's choice, not monocle.
+    ws.removeNode(9);
+    ws.removeNode(3);
+    ws.removeNode(2);
+    try t.expectEqual(@as(usize, 1), ws.node_ids.items.len);
+    try t.expectEqual(Layout.grid, ws.layout);
+}
+
+test "autoSelect still adapts for a workspace the user never touched" {
+    const a = t.allocator;
+    var ws = testWorkspace();
+    defer ws.deinit(a);
+
+    // Untouched workspaces keep the convenient default: the layout follows the
+    // pane count until the moment someone expresses a preference.
+    try ws.addNode(a, 1);
+    try t.expectEqual(Layout.monocle, ws.layout);
+    try ws.addNode(a, 2);
+    try t.expectEqual(Layout.master_stack, ws.layout);
+    for (3..6) |i| try ws.addNode(a, @intCast(i));
+    try t.expectEqual(Layout.grid, ws.layout);
 }
