@@ -184,10 +184,17 @@ fn compositeOutput(server: *Server, pixels: []u32, out_w: u32, out_h: u32) void 
     }
 
     if (server.bar) |b| {
-        if (b.top.enabled) {
+        // The launcher borrows a bar's buffer for its pixels and force-shows
+        // that node even when the bar itself is hidden (Server.renderLauncherBar)
+        // — mirror the borrow here, or a screenshot taken while the palette is
+        // open over hidden bars disagrees with what is on screen. Same target
+        // selection: bottom if enabled, else top.
+        const launcher_on_top = server.launcher.active and !b.bottom.enabled;
+        const launcher_on_bottom = server.launcher.active and b.bottom.enabled;
+        if (b.top.enabled or launcher_on_top) {
             blitRect(pixels, out_w, out_h, b.top.renderer.framebuffer, b.output_width, b.bar_height, 0, 0);
         }
-        if (b.bottom.enabled) {
+        if (b.bottom.enabled or launcher_on_bottom) {
             blitRect(pixels, out_w, out_h, b.bottom.renderer.framebuffer, b.output_width, b.bar_height, 0, @intCast(out_h - b.bar_height));
         }
     }

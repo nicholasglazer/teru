@@ -1628,6 +1628,13 @@ pub fn pollTerminals(self: *Server) bool {
 // ── Launcher bar rendering ─────────────────────────────────────
 
 pub fn renderLauncherBar(self: *Server) void {
+    // No bar means nowhere to draw the palette. Never leave it active anyway:
+    // an active launcher swallows every keystroke, and one with no pixels is
+    // an invisible modal — the whole session reads as "keyboard dead".
+    if (self.bar == null and self.launcher.active) {
+        self.launcher.deactivate();
+        return;
+    }
     if (self.bar) |b| {
         if (self.launcher.active) {
             // Render the command palette into the BOTTOM bar (consistent with the
@@ -1635,7 +1642,23 @@ pub fn renderLauncherBar(self: *Server) void {
             const inst = if (b.bottom.enabled) &b.bottom else &b.top;
             self.launcher.render(&inst.renderer);
             wlr.wlr_scene_buffer_set_buffer_with_damage(inst.scene_buffer, inst.pixel_buffer, null);
+            // The launcher borrows a bar's buffer for its pixels, so while it is
+            // active that node MUST be shown regardless of the bar's own hidden
+            // state — and raised, since hidden bars mean the tiling was arranged
+            // over the bar's screen area and a pane would otherwise cover it.
+            // Without this, activating the launcher with both bars hidden
+            // (Mod+Shift+B twice) produced an INVISIBLE modal: the palette
+            // swallowed every keystroke into its filter while painting into a
+            // disabled scene node, and the session read as "all hotkeys dead"
+            // until the user happened to mash Escape or Enter.
+            if (wlr.miozu_scene_buffer_node(inst.scene_buffer)) |node| {
+                wlr.wlr_scene_node_set_enabled(node, true);
+                wlr.wlr_scene_node_raise_to_top(node);
+            }
         } else {
+            // Restore each bar's configured visibility first — the launcher may
+            // have force-shown a hidden bar's node above.
+            b.updateVisibility();
             _ = b.render(self); // restore normal bar
         }
     }

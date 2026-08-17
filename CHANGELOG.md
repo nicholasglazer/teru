@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.14.8 — 2026-08-17
+
+### Fixed
+
+- **With both bars hidden, opening the command palette froze the keyboard.**
+  The launcher has no surface of its own — it borrows a bar's pixel buffer
+  (bottom, else top). With both bars hidden that buffer's scene node is
+  disabled, so the palette activated, swallowed every keystroke into its
+  filter, and drew nothing. The whole session read as "all hotkeys dead" until
+  the user happened to press Escape or Enter, the only two keys that dismiss
+  it. Easy to hit: `mod+d`, or double-tapping `Super+Space` from leader mode.
+
+  The borrowed node is now force-shown and raised while the palette is active
+  (hidden bars mean a pane was arranged over that screen area and would
+  otherwise cover it), and every dismiss path restores the bars' configured
+  visibility. The launcher also refuses to stay active if there is no bar at
+  all — an invisible modal is never acceptable.
+
+  Two secondary bugs fell out of verifying this: the `launcher_toggle` dismiss
+  path bypassed the shared cleanup and left a ghost palette on screen, and the
+  native screenshot composite skipped hidden bars even while the palette was
+  borrowing one — so a capture taken with the palette open disagreed with the
+  screen.
+
+  The leader (which-key) was checked for the same class of bug and is immune
+  by design: its panel is bar-independent, and any unbound key dismisses it.
+
 ## 0.14.7 — 2026-08-17
 
 ### Fixed

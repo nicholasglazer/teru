@@ -859,10 +859,13 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
                 // bar.render() signature-skips when nothing the bar
                 // cares about has changed — force it since the pixels
                 // we need to overwrite are the launcher's leftovers.
-                if (server.bar) |b| {
-                    b.dirty = true;
-                    _ = b.render(server);
-                }
+                if (server.bar) |b| b.dirty = true;
+                // Route through the ONE cleanup path. renderLauncherBar's
+                // inactive branch also restores each bar's configured
+                // visibility — the launcher force-shows the node it borrowed,
+                // and with both bars hidden this hand-rolled render left that
+                // node enabled: a ghost palette that never went away.
+                server.renderLauncherBar();
             } else {
                 // Unified palette: leader commands (first) + $PATH apps.
                 server.launcher.seedCommands(server.leader.root);
