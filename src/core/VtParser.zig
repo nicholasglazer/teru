@@ -386,7 +386,13 @@ fn handleGround(self: *VtParser, byte: u8) void {
             const tw: u16 = self.grid.tab_width;
             const lm: u16 = @intCast(self.grid.getLeftMargin());
             const rm: u16 = @intCast(self.grid.getRightMargin());
-            const next = if (tw > 0) (self.grid.cursor_col / tw + 1) * tw else self.grid.cursor_col + 1;
+            // Widen: at a large (unclamped-resize) width `(cursor_col/tw + 1)*tw`
+        // overflows u16 before the @min clamp below can rein it in. u32 holds
+        // any u16-derived tab stop; @min narrows it back.
+        const next: u32 = if (tw > 0)
+            (@as(u32, self.grid.cursor_col) / tw + 1) * tw
+        else
+            @as(u32, self.grid.cursor_col) + 1;
             const limit = if (self.grid.cursor_col >= lm and self.grid.cursor_col < rm) rm -| 1 else self.grid.cols -| 1;
             self.grid.cursor_col = @min(next, limit);
         },
@@ -1054,9 +1060,14 @@ fn dispatchCsi(self: *VtParser, final: u8) void {
                 self.sendResponse("\x1b[0n");
             } else if (p == 6) {
                 var buf: [32]u8 = undefined;
+                // Widen before +1: cursor_col reaches cols (deferred wrap), and
+                // an unclamped client resize can push cols to u16 max, so a u16
+                // `cursor_col + 1` traps in ReleaseSafe and aborts the daemon on
+                // an app's cursor-position query. The DSR value is 1-based, so
+                // u32 is always enough.
                 const msg = std.fmt.bufPrint(&buf, "\x1b[{d};{d}R", .{
-                    self.grid.cursor_row + 1,
-                    self.grid.cursor_col + 1,
+                    @as(u32, self.grid.cursor_row) + 1,
+                    @as(u32, self.grid.cursor_col) + 1,
                 }) catch return;
                 self.sendResponse(msg);
             }
@@ -1219,9 +1230,14 @@ fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
             } else if (p == 6) {
                 // Cursor position report: ESC[row;colR
                 var buf: [32]u8 = undefined;
+                // Widen before +1: cursor_col reaches cols (deferred wrap), and
+                // an unclamped client resize can push cols to u16 max, so a u16
+                // `cursor_col + 1` traps in ReleaseSafe and aborts the daemon on
+                // an app's cursor-position query. The DSR value is 1-based, so
+                // u32 is always enough.
                 const msg = std.fmt.bufPrint(&buf, "\x1b[{d};{d}R", .{
-                    self.grid.cursor_row + 1,
-                    self.grid.cursor_col + 1,
+                    @as(u32, self.grid.cursor_row) + 1,
+                    @as(u32, self.grid.cursor_col) + 1,
                 }) catch return;
                 self.sendResponse(msg);
             }
@@ -1429,7 +1445,7 @@ pub fn dumpReplaySnapshot(self: *const VtParser, buf: []u8) usize {
     var tmp: [32]u8 = undefined;
 
     // Scroll region (emitted before cursor restore — DECSTBM homes it).
-    if (grid.scroll_top != 0 or grid.scroll_bottom != grid.rows - 1) {
+    if (grid.scroll_top != 0 or grid.scroll_bottom != grid.rows -| 1) {
         const s = std.fmt.bufPrint(&tmp, "\x1b[{d};{d}r", .{
             @as(u32, grid.scroll_top) + 1,
             @as(u32, grid.scroll_bottom) + 1,
@@ -2912,4 +2928,36 @@ test "dumpReplaySnapshot: narrow non-ASCII survives the round trip" {
     while (it.nextCodepoint()) |cp| : (col += 1) {
         try std.testing.expectEqual(cp, gb.cellAtConst(0, col).char);
     }
+}
+
+test "no integer-overflow panic at an extreme terminal width (daemon uncrashable-by-input)" {
+    // Regression: a client resize with no upper clamp could set cols to u16 max.
+    // A row filled to the last column parks cursor_col at cols via deferred
+    // wrap, and then the cursor-position report / tab / erase / snapshot all did
+    // checked u16 `cursor_col + 1`, which aborts the whole daemon in ReleaseSafe.
+    // decodeResize now clamps, but the arithmetic is also widened so a grid that
+    // reaches a large width by any path stays safe. Use the pre-clamp maximum to
+    // prove the arithmetic itself no longer traps.
+    const a = std.testing.allocator;
+    const w: u16 = 65535;
+    var grid = try Grid.init(a, 1, w);
+    defer grid.deinit(a);
+    var pa = VtParser.init(a, &grid);
+
+    // Fill the single row: after the last column the cursor parks at col == w.
+    var i: u16 = 0;
+    while (i < w) : (i += 1) pa.feed("x");
+    try std.testing.expectEqual(w, grid.cursor_col);
+
+    // Each of these used to panic with cursor_col == 65535.
+    pa.feed("\x1b[6n"); // DSR cursor-position report
+    pa.feed("\x1b[?6n"); // DEC-private DSR
+    pa.feed("\t"); // TAB — tab-stop arithmetic
+    pa.feed("\x1b[1K"); // EL mode 1 — clearLine start-to-cursor
+
+    var sbuf: [replaySnapshotBufSize(1, 128)]u8 = undefined;
+    _ = pa.dumpReplaySnapshot(&sbuf); // trailer scroll-region + cursor CUP
+
+    // Survived — the daemon would have aborted before any of these returned.
+    try std.testing.expect(true);
 }

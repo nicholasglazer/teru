@@ -983,7 +983,9 @@ fn toolScroll(self: *McpServer, pane_id: u64, direction: []const u8, lines: u32,
             @as(u32, @intCast(sb.lineCount()))
         else
             0;
-        pane.scroll_offset = @min(pane.scroll_offset + lines, max_offset);
+        // Widen before the add: both are u32 and a large `lines` (the schema
+        // permits any int) overflows u32 before @min clamps it. u64 holds it.
+        pane.scroll_offset = @intCast(@min(@as(u64, pane.scroll_offset) + lines, max_offset));
     } else if (std.mem.eql(u8, direction, "down")) {
         pane.scroll_offset -|= lines;
     } else if (std.mem.eql(u8, direction, "bottom")) {

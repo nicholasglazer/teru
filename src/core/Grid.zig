@@ -775,8 +775,10 @@ pub fn clearLine(self: *Grid, row: u16, mode: u8) void {
             for (self.cells[start..row_start + w]) |*c| c.* = Cell.blank();
         },
         1 => {
-            // Start of line to cursor (inclusive)
-            const end = row_start + @as(usize, @min(self.cursor_col + 1, self.cols));
+            // Start of line to cursor (inclusive). Widen before +1: cursor_col
+            // can equal cols after a deferred wrap, and at a large width the u16
+            // `cursor_col + 1` traps before @min clamps it.
+            const end = row_start + @min(@as(usize, self.cursor_col) + 1, @as(usize, self.cols));
             for (self.cells[row_start..end]) |*c| c.* = Cell.blank();
         },
         2 => {

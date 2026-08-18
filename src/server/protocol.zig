@@ -235,11 +235,19 @@ pub fn encodeResize(rows: u16, cols: u16) [4]u8 {
 }
 
 /// Decode a resize payload.
+/// Upper bound on a client-requested terminal dimension. No real terminal is
+/// thousands of cells across, and letting a dimension approach u16 max both
+/// invites coordinate-arithmetic overflow (cursor_col + 1, tab stops, the DSR
+/// report) and sizes the replay-snapshot buffer at gigabytes. The daemon must
+/// be uncrashable by client input, so a hostile or buggy resize is clamped
+/// here, at the one point every resize decode passes through.
+pub const max_dimension: u16 = 10_000;
+
 pub fn decodeResize(payload: []const u8) ?struct { rows: u16, cols: u16 } {
     if (payload.len < 4) return null;
     const rows = std.mem.littleToNative(u16, std.mem.bytesToValue(u16, payload[0..2]));
     const cols = std.mem.littleToNative(u16, std.mem.bytesToValue(u16, payload[2..4]));
-    return .{ .rows = rows, .cols = cols };
+    return .{ .rows = @min(rows, max_dimension), .cols = @min(cols, max_dimension) };
 }
 
 // ── Internal helpers ──────────────────────────────────────────────
@@ -551,4 +559,20 @@ test "Command.fromByte: valid and invalid" {
     try std.testing.expect(Command.fromByte(22) == null);
     try std.testing.expect(Command.fromByte(128) == null);
     try std.testing.expect(Command.fromByte(255) == null);
+}
+
+test "decodeResize clamps a hostile dimension to max_dimension" {
+    // A client (or a buggy/hostile one) can put any u16 in a resize payload.
+    // Left unclamped, cols=65535 propagates into grid coordinate arithmetic and
+    // aborts the daemon. Clamp at the decode chokepoint.
+    const huge = encodeResize(65535, 65535);
+    const d = decodeResize(&huge).?;
+    try std.testing.expectEqual(max_dimension, d.rows);
+    try std.testing.expectEqual(max_dimension, d.cols);
+
+    // Ordinary sizes pass through untouched.
+    const normal = encodeResize(24, 80);
+    const n = decodeResize(&normal).?;
+    try std.testing.expectEqual(@as(u16, 24), n.rows);
+    try std.testing.expectEqual(@as(u16, 80), n.cols);
 }

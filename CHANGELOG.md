@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.14.9 — 2026-08-18
+
+### Fixed
+
+- **The session daemon could abort with `panic: integer overflow`, killing
+  every pane in the session.** Observed three times on the persistent server
+  daemon (SIGABRT core dumps); systemd restarted it into fresh template panes,
+  so the session came back empty.
+
+  Root cause: coordinate arithmetic that traps in a ReleaseSafe build. A client
+  resize carried a raw `u16` with no upper bound, so a dimension could approach
+  65535; a row filled to the last column parks the cursor at `col == cols` via
+  the deferred-wrap; and then several sites did a checked `u16` `cursor_col + 1`
+  — the cursor-position report (`ESC[6n`), the DEC-private variant, a tab stop,
+  erase-to-cursor, and the replay-snapshot trailer. Any one aborted the whole
+  daemon. The `teru_scroll` MCP tool had the same shape on `scroll_offset + lines`.
+
+  Fixed on two fronts: every such expression is widened before the add (the
+  1-based result is always u32-representable) or made saturating, and
+  `decodeResize` now clamps each dimension to a sane maximum at the one point
+  every resize passes through — a terminal thousands of cells across is never
+  real, and the daemon must be uncrashable by client input.
+
+  Proven by a regression test that fills a 65535-wide row and fires each path:
+  it aborts with exactly the production panic on the pre-fix source and passes
+  after. Found via a fuzz harness (attach + resize storms over heavy coloured
+  output) that reproduced the same `integer overflow` in the snapshot path,
+  cross-checked by a nine-agent overflow audit of the daemon-reachable code.
+
 ## 0.14.8 — 2026-08-17
 
 ### Fixed
