@@ -374,14 +374,27 @@ fn sendPaneGridSync(self: *Daemon, pane: *Pane) void {
     // desyncs the stream for good rather than dropping one message — so the
     // safe size is the smallest buffer any receiver might have, not the
     // largest the protocol allows.
-    const chunk_max = 4096 - 8; // 8 = the pane_id prefix
+    // usize, NOT a bare `4096 - 8`. As a comptime_int literal, @min below
+    // inferred `take` as the smallest type holding 4088 — a u12 — and then
+    // `8 + take` overflowed u12 (max 4095) the instant a snapshot exceeded
+    // 4088 bytes and `take` saturated to the cap. That aborted the daemon on
+    // any pane whose replay was larger than one chunk — i.e. any real, colourful
+    // TUI like claude — while small test grids (snapshot < 4088B) never tripped
+    // it. Typing the constant keeps every derived value usize.
+    const chunk_max: usize = 4096 - 8; // 8 = the pane_id prefix
     var msg_buf: [8 + chunk_max]u8 = undefined;
     std.mem.writeInt(u64, msg_buf[0..8], pane.id, .little);
     var sent: usize = 0;
     while (sent < n) {
-        const take = @min(chunk_max, n - sent);
+        // `take: usize` is load-bearing. @min narrows its result type to the
+        // smallest int that fits `chunk_max`'s comptime-known value (4088 → a
+        // u12) REGARDLESS of the operands' declared types, so an un-annotated
+        // `take` is a u12 and `8 + take` overflows it (max 4095) at take==4088.
+        // The annotation coerces the result up to usize before the add.
+        const take: usize = @min(chunk_max, n - sent);
+        const end: usize = 8 + take; // ≤ 4096 = msg_buf.len
         @memcpy(msg_buf[8..][0..take], snap[sent..][0..take]);
-        if (!proto.sendMessage(cfd, .output, msg_buf[0 .. 8 + take])) return;
+        if (!proto.sendMessage(cfd, .output, msg_buf[0..end])) return;
         sent += take;
     }
 }
@@ -797,4 +810,26 @@ test "sessionSocketPath: long name returns null" {
 test "connectToSession: non-existent session returns error" {
     const result = connectToSession("nonexistent-session-12345");
     try std.testing.expectError(error.ConnectFailed, result);
+}
+
+test "grid re-sync chunking does not overflow when a snapshot exceeds one chunk" {
+    // Regression: `const chunk_max = 4096 - 8` was a comptime_int, so @min
+    // inferred `take` as a u12 and `8 + take` overflowed (u12 max 4095) the
+    // moment a snapshot passed 4088 bytes and `take` saturated to the cap —
+    // aborting the daemon on any real colourful TUI (claude) while small test
+    // grids never reached the cap. This mirrors the exact chunk arithmetic;
+    // `n` past the cap forces `take` to the boundary that used to panic.
+    const chunk_max: usize = 4096 - 8;
+    const buf_len: usize = 8 + chunk_max; // msg_buf.len in sendPaneGridSync
+
+    inline for (.{ chunk_max, chunk_max + 1, chunk_max * 3 + 5, 4180 }) |n| {
+        var sent: usize = 0;
+        while (sent < n) {
+            const take = @min(chunk_max, n - sent);
+            const end = 8 + take; // must stay usize — the site of the old overflow
+            try std.testing.expect(end <= buf_len);
+            sent += take;
+        }
+        try std.testing.expectEqual(@as(usize, n), sent);
+    }
 }

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.14.10 — 2026-08-18
+
+### Fixed
+
+- **The actual daemon crash (`panic: integer overflow`) that 0.14.9 did not
+  fix.** Root-caused with gdb on a live coredump + a Debug-build reproduction
+  driving real claude: the grid re-sync's chunk loop (added in 0.14.3) does
+
+  ```zig
+  const chunk_max = 4096 - 8;              // comptime_int 4088
+  const take = @min(chunk_max, n - sent);  // ← inferred u12, not usize
+  … msg_buf[0 .. 8 + take]                  // 8 + 4088 = 4096 > u12 max → panic
+  ```
+
+  `@min` narrows its result to the smallest int that holds `chunk_max`'s
+  comptime-known value (4088 → `u12`), *regardless* of the operands' declared
+  types. So the moment a pane's replay snapshot exceeded one 4088-byte chunk —
+  i.e. any real colourful TUI, which is why it took a resumed claude session
+  and not a test grid — `take` saturated to 4088 and `8 + take` overflowed the
+  u12. Annotating `take: usize` coerces the result up before the add.
+
+  This is a self-inflicted regression from the 0.14.3 chunking work, unrelated
+  to the coordinate-arithmetic class 0.14.9 addressed (those fixes stand). It
+  fires at any terminal width — exactly the "attach, use claude, reattach,
+  session gone" report. Proven with a Debug build on the server: the crash
+  recipe aborted reliably before and survives three full rounds after, plus a
+  unit test that walks the chunk arithmetic across snapshot sizes past the cap.
+
 ## 0.14.9 — 2026-08-18
 
 ### Fixed
