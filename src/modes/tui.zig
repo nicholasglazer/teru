@@ -167,9 +167,12 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
     }
 
     // Enter alt screen, hide cursor, enable SGR mouse
-    const enter_tui = "\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h";
+    // ?1002h (not 1000): button-event tracking reports drag-motion while a
+    // button is held, which the mouse selection needs. teruwm forwards motion
+    // only in 1002/1003. ?1006h = SGR coordinates (no 223-column cap).
+    const enter_tui = "\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H\x1b[?1002h\x1b[?1006h";
     _ = std.c.write(1, enter_tui.ptr, enter_tui.len);
-    const leave_tui = "\x1b[?1000l\x1b[?1006l\x1b[?25h\x1b[?1049l";
+    const leave_tui = "\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?25h\x1b[?1049l";
     defer _ = std.c.write(1, leave_tui.ptr, leave_tui.len);
 
     // Nested: announce to the outer teru that it should forward Alt+key to this
@@ -213,6 +216,13 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
 
     // Main poll loop
     var in_buf: [4096]u8 = undefined;
+    // Mouse text selection over the remote panes. One selection at a time; it
+    // lives here (not per-pane) because a drag belongs to whichever pane it
+    // started in. `dragging` gates motion + release handling.
+    const Selection = @import("../core/Selection.zig");
+    var selection: Selection = .{};
+    var sel_pane_id: u64 = 0;
+    var dragging: bool = false;
     const POLLIN: i16 = 0x001;
     const POLLHUP: i16 = 0x010;
     const POLLERR: i16 = 0x008;
@@ -241,31 +251,59 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
         if (fds[0].revents & POLLIN != 0) {
             const n = posix.read(0, &in_buf) catch break;
             if (n == 0) break;
+            // Fresh mouse queue per read: feed() appends events, and last_mouse
+            // reflects only this read (the keyboard-vs-mouse check below reads it).
+            tui_input.mouse_count = 0;
+            tui_input.last_mouse = null;
             if (tui_input.feed(in_buf[0..n], sock)) {
                 common.out("[teru] Detached\r\n");
                 return;
+            }
+            // Typing jumps back to the live bottom — a mouse event (wheel/drag)
+            // leaves last_mouse set and is handled below; anything else is a
+            // keystroke, and a shell you're typing into should show your input.
+            if (tui_input.last_mouse == null) {
+                if (mux.getActivePane()) |pane| {
+                    if (pane.scroll_offset != 0) {
+                        pane.scroll_offset = 0;
+                        needs_render = true;
+                    }
+                }
             }
             // Leader/which-key state changed (opened, descended, dismissed) →
             // repaint locally even without daemon output. screen.clear() each
             // frame erases the band cleanly on dismiss.
             if (tui_input.consumeRenderDirty()) needs_render = true;
             // Mouse events from TuiInput
-            if (tui_input.last_mouse) |mouse| {
-                tui_input.last_mouse = null;
-                if (!mouse.release and mouse.button == 0) {
-                    // Left click → focus pane under cursor. This MUST mirror
-                    // TuiRenderer's geometry exactly — same gapped screen_rect AND the
-                    // same per-rect post-inset by g — or the hit-test lives in a
-                    // different coordinate space than what's drawn, and clicks near
-                    // pane edges / in the gaps focus the wrong pane.
+            // Drain the whole mouse queue in order — a batched read can carry a
+            // full press → drag → release gesture, and each event must run.
+            for (tui_input.mouse_events[0..tui_input.mouse_count]) |mouse| {
+                // Release ends a drag and copies the selection, wherever the
+                // cursor happens to be (it may have left the pane), so handle it
+                // before the hit-test.
+                if (mouse.release) {
+                    if (dragging) {
+                        dragging = false;
+                        selection.finish();
+                        const has_range = selection.active and
+                            (selection.start_row != selection.end_row or selection.start_col != selection.end_col);
+                        if (has_range) {
+                            if (mux.getPaneById(sel_pane_id)) |pane| {
+                                copySelectionOsc52(&selection, pane);
+                            }
+                        }
+                        needs_render = true;
+                    }
+                } else {
+                    // Resolve which pane is under the cursor and the cell within
+                    // its content area. Geometry MUST mirror TuiRenderer exactly —
+                    // same gap, frame inset, and bar row — or clicks near pane
+                    // edges / in the gaps land in the wrong coordinate space.
                     const active_ws = &mux.layout_engine.workspaces[mux.active_workspace];
                     const pane_ids = active_ws.node_ids.items;
                     const LE_Rect = @import("../tiling/LayoutEngine.zig").Rect;
                     const multi_pane = pane_ids.len > 1;
                     const g: u16 = if (multi_pane) renderer.pane_gap else 0;
-                    // Mirror TuiRenderer.content_height EXACTLY: the bar (and its
-                    // reserved row) shows when not nested OR when the nested-bar opt-in
-                    // is set; only a bar-less nested session gives that row to the panes.
                     const show_bar = !tui_input.isNested() or tui_input.isNestedBar();
                     const content_h = if (show_bar)
                         (if (screen.height > 1) screen.height - 1 else screen.height)
@@ -277,28 +315,63 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
                         defer allocator.free(rs);
                         for (rs, 0..) |raw_rect, idx| {
                             const rect = Compositor.insetRect(raw_rect, g);
-                            if (mouse.col >= rect.x and mouse.col < rect.x + rect.width and
-                                mouse.row >= rect.y and mouse.row < rect.y + rect.height)
-                            {
-                                if (idx < pane_ids.len) {
-                                    // Absolute focus: tell the daemon exactly which
-                                    // pane to focus by id. No relative focus_next/prev
-                                    // stepping from a (possibly stale) local index —
-                                    // that wrapped to a neighbour. No optimistic local
-                                    // write either: the daemon's confirming state_sync
-                                    // drives the highlight, keeping the rendered focus
-                                    // and the daemon's input target identical.
-                                    var cmd_buf: [9]u8 = undefined;
-                                    cmd_buf[0] = @intFromEnum(daemon_proto.Command.focus_pane);
-                                    std.mem.writeInt(u64, cmd_buf[1..9], pane_ids[idx], .little);
-                                    _ = daemon_proto.sendMessage(sock, .command, &cmd_buf);
+                            if (idx >= pane_ids.len) break;
+                            if (!(mouse.col >= rect.x and mouse.col < rect.x + rect.width and
+                                mouse.row >= rect.y and mouse.row < rect.y + rect.height)) continue;
+                            const pid = pane_ids[idx];
+                            const frame = TuiRenderer.paneFrame(renderer.pane_border, multi_pane, rs[idx], sr);
+                            const inset = TuiRenderer.insetByFrame(rect, frame);
+                            // Cursor cell within the pane's content area, clamped.
+                            const lcol: u16 = @min(mouse.col -| inset.x, inset.width -| 1);
+                            const lrow: u16 = @min(mouse.row -| inset.y, inset.height -| 1);
+                            const pane = mux.getPaneById(pid);
+                            const so: u32 = if (pane) |p| p.scroll_offset else 0;
+                            const sbl: u32 = if (pane) |p| (if (p.grid.scrollback) |sb| @intCast(sb.lineCount()) else 0) else 0;
+
+                            if (mouse.button == 64 or mouse.button == 65) {
+                                // Wheel: scroll this pane's own scrollback. 64 = up
+                                // = toward older history (positive delta). cell_height
+                                // is 1 in the cell grid, so delta is lines directly.
+                                if (pane) |p| {
+                                    const step: i32 = if (mouse.button == 64) 3 else -3;
+                                    if (p.scrollBy(step, 1, sbl)) needs_render = true;
                                 }
-                                break;
+                            } else if (mouse.button == 0) {
+                                // Left press → focus + start a selection anchored
+                                // at this cell. A bare click leaves start==end, so
+                                // it just clears the previous selection.
+                                var cmd_buf: [9]u8 = undefined;
+                                cmd_buf[0] = @intFromEnum(daemon_proto.Command.focus_pane);
+                                std.mem.writeInt(u64, cmd_buf[1..9], pid, .little);
+                                _ = daemon_proto.sendMessage(sock, .command, &cmd_buf);
+                                selection.begin(lrow, lcol, so, sbl);
+                                sel_pane_id = pid;
+                                dragging = true;
+                                needs_render = true;
+                            } else if (mouse.button == 32 and dragging and pid == sel_pane_id) {
+                                // Left-drag motion → extend the selection. Near the
+                                // top/bottom edge, autoscroll so a drag can run past
+                                // the viewport, exactly like a desktop terminal.
+                                if (pane) |p| {
+                                    if (lrow == 0 and p.scroll_offset < sbl) {
+                                        _ = p.scrollBy(2, 1, sbl);
+                                    } else if (lrow + 1 >= inset.height and p.scroll_offset > 0) {
+                                        _ = p.scrollBy(-2, 1, sbl);
+                                    }
+                                    const so2: u32 = p.scroll_offset;
+                                    selection.update(lrow, lcol, so2, sbl);
+                                }
+                                needs_render = true;
                             }
+                            break;
                         }
                     }
                 }
             }
+
+            // Hand the live selection to the renderer for highlight painting.
+            renderer.selection = if (selection.active) &selection else null;
+            renderer.selection_pane_id = sel_pane_id;
         }
 
         // daemon → render
@@ -311,7 +384,20 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
                         if (daemon_proto.decodePanePayload(payload)) |pp| {
                             if (mux.getPaneById(pp.pane_id)) |pane| {
                                 if (pp.data.len > 0) {
+                                    // Pin the scroll position across new output: if
+                                    // scrolled into history, grow scroll_offset by the
+                                    // number of lines that just scrolled off, so the
+                                    // same content stays put instead of the view
+                                    // snapping to the live bottom while claude streams.
+                                    const before: u32 = if (pane.scroll_offset > 0)
+                                        (if (pane.grid.scrollback) |sb| @intCast(sb.lineCount()) else 0)
+                                    else
+                                        0;
                                     pane.vt.feed(pp.data);
+                                    if (pane.scroll_offset > 0) {
+                                        const after: u32 = if (pane.grid.scrollback) |sb| @intCast(sb.lineCount()) else 0;
+                                        if (after > before) pane.scroll_offset = @min(pane.scroll_offset + (after - before), after);
+                                    }
                                     pane.grid.dirty = true;
                                     needs_render = true;
                                 }
@@ -369,4 +455,28 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
             renderer.renderWithOpts(&mux, 1, .{ .nested = tui_input.isNested(), .nested_bar = tui_input.isNestedBar(), .prefix_active = tui_input.isPrefixActive(), .leader = &tui_input.leader });
         }
     }
+}
+
+/// Copy the selection to the SYSTEM clipboard via OSC 52. The bytes travel to
+/// whatever terminal hosts this session (teruwm, or any OSC-52-aware emulator),
+/// which writes them to the real clipboard — the only clipboard path that
+/// crosses the SSH boundary, since the daemon's own clipboard lives on the
+/// server. Silently no-ops on an empty selection or an over-long copy.
+fn copySelectionOsc52(selection: *const @import("../core/Selection.zig"), pane: anytype) void {
+    var text_buf: [64 * 1024]u8 = undefined;
+    const n = selection.getText(&pane.grid, pane.grid.scrollback, &text_buf);
+    if (n == 0) return;
+
+    const Enc = std.base64.standard.Encoder;
+    const enc_len = Enc.calcSize(n);
+    // OSC 52 has no universal length cap, but keep it bounded so a runaway
+    // selection can't blow the stack buffer; 48 KB of text is already huge.
+    if (enc_len > 64 * 1024) return;
+    var b64: [64 * 1024]u8 = undefined;
+    const encoded = Enc.encode(b64[0..enc_len], text_buf[0..n]);
+
+    // ESC ] 52 ; c ; <base64> ESC \
+    _ = std.c.write(1, "\x1b]52;c;", 7);
+    _ = std.c.write(1, encoded.ptr, encoded.len);
+    _ = std.c.write(1, "\x1b\\", 2);
 }

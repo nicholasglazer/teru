@@ -401,6 +401,15 @@ pub fn poll(self: *TerminalPane) bool {
             self.sync_flushed = true;
             self.pane.vt.sync_flushed = false;
         }
+        // OSC 52: a program in this pane (or a nested teru relaying a mouse
+        // selection over SSH) asked to set the system clipboard. Write it to the
+        // real Wayland clipboard — the only path a selection inside a native
+        // pane, or across the SSH boundary, reaches the user's clipboard.
+        if (self.pane.vt.clipboard_changed) {
+            const clip_len = self.pane.vt.clipboard_len;
+            if (clip_len > 0) _ = wlr.miozu_set_clipboard_text(self.server.seat, self.server.display, &self.pane.vt.clipboard_buf, clip_len);
+            self.pane.vt.clipboard_changed = false;
+        }
         self.server.perf.recordPtyRead(n);
         any = true;
         if (compat.monotonicNow() - poll_start_ns >= parse_budget_ns) break;

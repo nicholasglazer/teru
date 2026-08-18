@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.15.0 — 2026-08-18
+
+### Added
+
+- **Mouse select and scroll in the nested multiplexer (`teru -n`, i.e. over
+  SSH), with no Shift.** The remote session now behaves like a normal terminal:
+
+  - **Wheel** scrolls the focused pane's scrollback. New output pins the view
+    (a streaming claude no longer yanks you to the bottom); typing jumps back to
+    live.
+  - **Drag** selects text — press to anchor, drag to extend, release to copy. A
+    drag past the top/bottom edge autoscrolls so a selection can run beyond the
+    viewport.
+  - **Copy** goes to the real system clipboard via OSC 52, which is the only
+    path that crosses the SSH boundary (the daemon's own clipboard lives on the
+    server). teruwm now honours OSC 52 writes and relays them to the Wayland
+    clipboard; the read (`?`) form is refused so nothing can exfiltrate what you
+    copied, and payloads are size-capped and control-stripped.
+
+  This required teaching the TUI's cell renderer to composite a scrolled-back
+  view (reconstructing scrollback lines from their stored VT bytes) and to paint
+  the selection highlight — capabilities it never had; it only ever stamped the
+  live grid. The client also switches to mouse mode 1002 so it receives
+  drag-motion, and its mouse-event handling became a queue so a batched
+  press → drag → release over SSH keeps every event.
+
+  No Shift needed because the nested teru now handles the mouse *itself* —
+  exactly how a full-screen app like claude does it locally. Shift-drag still
+  works as teruwm's own fallback selection.
+
+### Notes
+
+- The TUI-client mouse work is in the `teru` binary (the SSH session's client);
+  reconnect to pick it up. The OSC 52 clipboard relay is a teruwm change and
+  needs a compositor restart (`Mod+'`).
+
 ## 0.14.10 — 2026-08-18
 
 ### Fixed

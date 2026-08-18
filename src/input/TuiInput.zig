@@ -41,6 +41,10 @@ const State = enum {
 
 const Self = @This();
 
+/// A queued pointer event (press/drag/release) awaiting the caller's layout-aware
+/// dispatch. Button follows SGR: 0 = left, 32 = left-drag-motion, 64/65 = wheel.
+pub const MouseEvent = struct { col: u16, row: u16, button: u8, release: bool };
+
 state: State = .ground,
 /// Buffer for accumulating CSI parameters
 csi_buf: [32]u8 = undefined,
@@ -57,8 +61,17 @@ nested: bool = false,
 /// no outer bar, so the multiplexer ends up with no panel at all. Setting
 /// `TERU_NESTED_BAR=1` keeps the inner bar visible even when nested.
 nested_bar: bool = false,
-/// Last mouse event (set by feed(), consumed by caller)
-last_mouse: ?struct { col: u16, row: u16, button: u8, release: bool } = null,
+/// Mouse events collected during one feed(), drained by the caller (which owns
+/// the layout rects needed to resolve them). A QUEUE, not a single slot: a
+/// press → drag → release sequence — or several drag-motion reports — can all
+/// arrive in one batched read over SSH, and a single slot would collapse them,
+/// losing the press (no selection anchor) or the release (no copy). Overflow
+/// drops the oldest-unseen tail, which at 32 events only bites a frantic drag.
+mouse_events: [32]MouseEvent = undefined,
+mouse_count: usize = 0,
+/// Most recent queued event this feed; null when the read carried no mouse
+/// event (the keyboard-vs-mouse check reads it).
+last_mouse: ?MouseEvent = null,
 /// Prefix key state.
 prefix_active: bool = false,
 prefix_timestamp: i64 = 0,
@@ -288,16 +301,16 @@ pub fn feed(self: *Self, bytes: []const u8, daemon_fd: std.posix.fd_t) bool {
                             _ = daemon_proto.sendMessage(daemon_fd, .active_input, csi_fwd[0 .. 3 + plen]);
                         },
                         .mouse_click => |mc| {
-                            // Store for the caller to handle (it needs layout rects).
-                            // Record PRESS events only: a press+release pair can arrive
-                            // in ONE feed() (a fast click, or byte-batching over SSH), and
-                            // because last_mouse is a single slot the release would clobber
-                            // the press before the caller reads it — losing the click
-                            // (focus never moved). Releases drive nothing in the TUI client
-                            // today (focus happens on press), so drop them here.
-                            if (!mc.release) {
-                                self.last_mouse = .{ .col = mc.col, .row = mc.row, .button = mc.button, .release = mc.release };
+                            // Queue every event — press, drag-motion, release — so
+                            // the caller can drive a full selection gesture. Press
+                            // anchors, motion extends, release copies; dropping any
+                            // of them breaks selection or leaves a drag stuck.
+                            const ev = MouseEvent{ .col = mc.col, .row = mc.row, .button = mc.button, .release = mc.release };
+                            if (self.mouse_count < self.mouse_events.len) {
+                                self.mouse_events[self.mouse_count] = ev;
+                                self.mouse_count += 1;
                             }
+                            self.last_mouse = ev;
                         },
                         else => self.dispatchAction(action, daemon_fd),
                     }
@@ -743,23 +756,29 @@ test "TuiInput: nested input still handles Alt (outer forwards it via OSC 9998)"
     try std.testing.expectEqual(Action{ .command = .cycle_layout }, input.handleAltKey(' '));
 }
 
-test "TuiInput: batched mouse press+release in one feed keeps the press" {
-    // Regression: a left click delivered as press THEN release in a single feed()
-    // (fast click / SSH byte-batching) must still surface a PRESS to the caller —
-    // the release must not clobber the press in the single last_mouse slot, or the
-    // click is silently lost and focus never moves.
+test "TuiInput: batched mouse events in one feed are all queued in order" {
+    // A press → release (fast click), or a full press → drag → release gesture,
+    // can arrive in a single feed() over SSH byte-batching. The queue must keep
+    // EVERY event in order: the press anchors a selection, drag extends it, and
+    // release copies — dropping any of them breaks selection or focus.
     var input = init();
     var fds: [2]std.posix.fd_t = undefined;
     if (std.c.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) return;
     defer _ = std.posix.system.close(fds[0]);
     defer _ = std.posix.system.close(fds[1]);
 
-    // ESC[<0;50;20M  (press)  immediately followed by  ESC[<0;50;20m  (release)
-    _ = input.feed("\x1b[<0;50;20M\x1b[<0;50;20m", fds[0]);
+    // press(0) → drag(32) → release, all in one read.
+    _ = input.feed("\x1b[<0;50;20M\x1b[<32;60;20M\x1b[<0;60;20m", fds[0]);
 
-    try std.testing.expect(input.last_mouse != null);
-    try std.testing.expect(!input.last_mouse.?.release); // it's the PRESS, not the release
-    try std.testing.expectEqual(@as(u16, 49), input.last_mouse.?.col); // 50 → 0-indexed 49
-    try std.testing.expectEqual(@as(u16, 19), input.last_mouse.?.row);
-    try std.testing.expectEqual(@as(u8, 0), input.last_mouse.?.button);
+    try std.testing.expectEqual(@as(usize, 3), input.mouse_count);
+    // press
+    try std.testing.expect(!input.mouse_events[0].release);
+    try std.testing.expectEqual(@as(u8, 0), input.mouse_events[0].button);
+    try std.testing.expectEqual(@as(u16, 49), input.mouse_events[0].col);
+    try std.testing.expectEqual(@as(u16, 19), input.mouse_events[0].row);
+    // drag-motion
+    try std.testing.expectEqual(@as(u8, 32), input.mouse_events[1].button);
+    try std.testing.expectEqual(@as(u16, 59), input.mouse_events[1].col);
+    // release
+    try std.testing.expect(input.mouse_events[2].release);
 }

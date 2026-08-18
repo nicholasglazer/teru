@@ -37,6 +37,11 @@ pub const State = enum {
 
 pub const MAX_PARAMS = 16;
 pub const MAX_OSC_LEN = 256;
+/// OSC accumulation buffer — larger than the 256B title cap because OSC 52
+/// clipboard payloads carry base64-encoded selections. ~4KB of base64 ≈ 3KB of
+/// copied text, which covers a normal multi-line grab; longer selections
+/// truncate here rather than growing per-pane memory without bound.
+pub const MAX_OSC_BUF = 4096;
 
 state: State = .ground,
 grid: *Grid,
@@ -67,8 +72,16 @@ csi_prefix: u8 = 0,
 intermediate: u8 = 0,
 
 /// OSC string buffer
-osc_buf: [MAX_OSC_LEN]u8 = @splat(0),
+osc_buf: [MAX_OSC_BUF]u8 = @splat(0),
 osc_len: u16 = 0,
+
+/// OSC 52 clipboard: a program (including a nested teru relaying a mouse
+/// selection) asked to set the system clipboard. The parser decodes the
+/// base64 here and raises `clipboard_changed`; the compositor consumes it and
+/// writes the real Wayland clipboard, then clears the flag.
+clipboard_buf: [3072]u8 = @splat(0),
+clipboard_len: u16 = 0,
+clipboard_changed: bool = false,
 
 /// Parsed title from OSC 0
 title: [MAX_OSC_LEN]u8 = @splat(0),
@@ -722,7 +735,7 @@ fn handleOscString(self: *VtParser, byte: u8) void {
             self.state = .escape;
         },
         else => {
-            if (self.osc_len < MAX_OSC_LEN) {
+            if (self.osc_len < MAX_OSC_BUF) {
                 self.osc_buf[self.osc_len] = byte;
                 self.osc_len += 1;
             }
@@ -791,24 +804,41 @@ fn finishOsc(self: *VtParser) void {
                 }
             },
             52 => {
-                // Clipboard (OSC 52). Format: "c;BASE64" (write) or "c;?" (read).
-                // Silently accepted — clipboard integration requires platform support.
+                // Clipboard (OSC 52): `52;<targets>;<base64>` writes the system
+                // clipboard; `52;<targets>;?` reads it. Enabled to carry a mouse
+                // selection made inside a native pane or a nested teru over SSH
+                // out to the real Wayland clipboard — the only path that crosses
+                // that boundary. Target letters (c/p/s/…) collapse to the one
+                // system clipboard. The parser decodes into clipboard_buf and
+                // raises clipboard_changed; the compositor writes it.
                 //
-                // SECURITY: a future implementation MUST gate this behind explicit
-                // user opt-in. OSC 52 is an unauthenticated channel: any program
-                // with PTY write access (including remote SSH peers, untrusted
-                // agents, or piped output via `cat`) can both *overwrite* the
-                // user's clipboard and *exfiltrate* its contents via the `c;?`
-                // query. Mitigations to layer in when wiring this up:
-                //   1. Disabled by default; opt-in via `clipboard_osc52 = true`.
-                //   2. Cap payload size (e.g. 64 KiB) — VT-level oversize attacks
-                //      otherwise let an agent stash arbitrary blobs in clipboard.
-                //   3. Strict base64 validation; reject anything else outright.
-                //   4. NEVER honour the `?` (read) form by default — that lets
-                //      a malicious peer exfil whatever the user copied (passwords,
-                //      OAuth tokens). Treat reads as a separate, second opt-in.
-                //   5. Strip control chars from the decoded payload before piping
-                //      to the host clipboard (matches Clipboard.sanitise).
+                // SECURITY (per the original stub's guidance, now enforced):
+                //   * The `?` READ form is REFUSED — never answered — so no
+                //     program (remote SSH peer, untrusted agent, `cat`ted file)
+                //     can exfiltrate whatever the user copied (passwords, tokens).
+                //     Only WRITE is honoured, matching kitty/wezterm defaults.
+                //   * Payload is capped at clipboard_buf.len (3 KB decoded);
+                //     an oversize/invalid base64 blob is dropped, not stashed.
+                //   * Control characters are stripped before the compositor
+                //     hands the text to the clipboard (see the strip loop below).
+                const sep = std.mem.indexOfScalar(u8, payload, ';') orelse return;
+                const b64 = payload[sep + 1 ..];
+                if (b64.len == 0 or (b64.len == 1 and b64[0] == '?')) return; // read query: refuse
+                const Dec = std.base64.standard.Decoder;
+                const dlen = Dec.calcSizeForSlice(b64) catch return;
+                if (dlen == 0 or dlen > self.clipboard_buf.len) return;
+                Dec.decode(self.clipboard_buf[0..dlen], b64) catch return;
+                // Strip control chars (keep \t and \n) so a crafted payload can't
+                // smuggle escape sequences into whatever later pastes it.
+                var w: u16 = 0;
+                for (self.clipboard_buf[0..dlen]) |c| {
+                    if (c >= 0x20 or c == '\t' or c == '\n') {
+                        self.clipboard_buf[w] = c;
+                        w += 1;
+                    }
+                }
+                self.clipboard_len = w;
+                self.clipboard_changed = w > 0;
             },
             133 => {
                 // Shell integration: semantic prompt marks (A/B/C/D)

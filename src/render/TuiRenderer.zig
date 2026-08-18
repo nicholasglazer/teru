@@ -19,6 +19,9 @@ const Compositor = @import("Compositor.zig");
 const daemon_proto = @import("../server/protocol.zig");
 const LeaderKey = @import("../config/LeaderKey.zig");
 const Config = @import("../config/Config.zig");
+const VtParser = @import("../core/VtParser.zig");
+const Pane = @import("../core/Pane.zig");
+const Selection = @import("../core/Selection.zig");
 
 const Self = @This();
 
@@ -37,6 +40,11 @@ pane_border: Config.PaneBorder = .box,
 /// Track last-sent pane sizes to avoid redundant resizes
 last_pane_sizes: [64]PaneSize = @splat(.{}),
 last_pane_count: usize = 0,
+/// Active mouse selection and the pane it belongs to, set by the TUI loop
+/// before each render. Only one pane is ever selecting at a time. Null = no
+/// selection; the renderer paints the plain scrolled view.
+selection: ?*const Selection = null,
+selection_pane_id: u64 = 0,
 
 const PaneSize = struct { id: u64 = 0, rows: u16 = 0, cols: u16 = 0 };
 
@@ -299,7 +307,11 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
 
         // The inset is identical whether or not this pane is focused, so a
         // focus change only recolours the chrome — it never reflows geometry.
-        self.screen.stamp(&pane.grid, inset.y, inset.x, inset.height, inset.width);
+        const sel: ?*const Selection = if (self.selection) |s|
+            (if (pane_id == self.selection_pane_id) s else null)
+        else
+            null;
+        self.stampPaneView(pane, inset, sel);
 
         switch (self.pane_border) {
             .none => {},
@@ -354,7 +366,86 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
     }
 }
 
-/// Draw a Unicode box border around a rect.
+/// Stamp a pane's viewport into `inset`, accounting for scrollback position and
+/// painting the selection highlight. When `pane.scroll_offset == 0` and there's
+/// no selection this is the plain fast path (stamp the live grid). Otherwise it
+/// composites the viewport row by row: rows below the scroll point come from the
+/// live grid; rows above it are reconstructed from scrollback deltas.
+///
+/// The virtual line for viewport row r is `r - scroll_offset`: ≥0 indexes the
+/// grid, <0 indexes scrollback at offset `-(virt) - 1` (0 = newest). This is the
+/// cell-grid analogue of Ui.renderScrollOverlay (the pixel path) — same mapping,
+/// same getLineByOffset source, so scrolled content matches what teruwm shows.
+fn stampPaneView(self: *Self, pane: *Pane, inset: Rect, sel: ?*const Selection) void {
+    const so = pane.scroll_offset;
+    if (so == 0 and sel == null) {
+        self.screen.stamp(&pane.grid, inset.y, inset.x, inset.height, inset.width);
+        return;
+    }
+
+    const sb = pane.grid.scrollback;
+    const sb_lines: u32 = if (sb) |s| @intCast(s.lineCount()) else 0;
+
+    // A 1-row scratch grid+parser reconstructs each scrollback line's cells by
+    // replaying its stored VT bytes. Created only while scrolled; a failure
+    // degrades to the live-grid stamp rather than crashing.
+    var scratch: ?Grid = if (so > 0 and sb != null)
+        (Grid.init(self.allocator, 1, pane.grid.cols) catch null)
+    else
+        null;
+    defer if (scratch) |*g| g.deinit(self.allocator);
+    var parser: ?VtParser = if (scratch) |*g| VtParser.init(self.allocator, g) else null;
+
+    var r: u16 = 0;
+    while (r < inset.height) : (r += 1) {
+        const screen_row = inset.y + r;
+        const virt: i32 = @as(i32, @intCast(r)) - @as(i32, @intCast(so));
+        // `r` IS the Selection "screen row" (viewport row from the top);
+        // isSelected does the scroll_offset/sb_lines → absolute conversion.
+        if (virt >= 0) {
+            const grow: u16 = @intCast(virt);
+            if (grow >= pane.grid.rows) {
+                self.screen.blankRow(screen_row, inset.x, inset.width);
+                continue;
+            }
+            self.stampRowMaybeSel(&pane.grid, grow, screen_row, inset.x, inset.width, sel, r, so, sb_lines);
+        } else if (scratch != null and parser != null) {
+            const off: u32 = @intCast(-virt - 1); // 0 = newest scrollback line
+            if (off >= sb_lines) {
+                self.screen.blankRow(screen_row, inset.x, inset.width);
+                continue;
+            }
+            const bytes = sb.?.getLineByOffset(off) orelse {
+                self.screen.blankRow(screen_row, inset.x, inset.width);
+                continue;
+            };
+            // Reset the scratch row (home, clear line, clean pen), then replay
+            // the line so its SGR/unicode reconstruct exactly.
+            parser.?.feed("\x1b[H\x1b[2K\x1b[0m");
+            parser.?.feed(bytes);
+            self.stampRowMaybeSel(&scratch.?, 0, screen_row, inset.x, inset.width, sel, r, so, sb_lines);
+        } else {
+            self.screen.blankRow(screen_row, inset.x, inset.width);
+        }
+    }
+}
+
+/// Stamp one source row. No selection → one fast whole-row copy. With a
+/// selection active, go cell-by-cell inverting selected cells (one isSelected
+/// call per cell is negligible at TUI scale, and only runs while a drag is live).
+fn stampRowMaybeSel(self: *Self, grid: *const Grid, src_row: u16, screen_row: u16, screen_col: u16, cols: u16, sel: ?*const Selection, view_row: u16, so: u32, sb_lines: u32) void {
+    const s = sel orelse {
+        self.screen.stampRow(grid, src_row, screen_row, screen_col, cols, false);
+        return;
+    };
+    const n = @min(@as(usize, cols), @as(usize, grid.cols));
+    var col: usize = 0;
+    while (col < n) : (col += 1) {
+        const inv = s.isSelected(view_row, @intCast(col), so, sb_lines);
+        self.screen.stampRow(grid, src_row, screen_row, @intCast(@as(usize, screen_col) + col), 1, inv);
+    }
+}
+
 /// One vertical separator column, `height` cells tall from `y`.
 fn drawVLine(self: *Self, x: u16, y: u16, height: u16, color: Color) void {
     var r = y;

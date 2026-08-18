@@ -69,6 +69,43 @@ pub fn clear(self: *Self) void {
 
 /// Stamp a Grid's visible cells into the screen at the given position.
 /// `offset_row` and `offset_col` are character positions in the screen.
+/// Stamp a single source row of `grid` into one screen row. Used by the
+/// scroll-aware pane renderer, which composites a viewport out of grid rows and
+/// reconstructed scrollback rows one row at a time. `invert` flips fg/bg so a
+/// selected row reads as highlighted without needing a theme colour here.
+pub fn stampRow(self: *Self, grid: *const Grid, src_row: u16, screen_row: u16, screen_col: u16, cols: u16, invert: bool) void {
+    if (screen_row >= self.height or src_row >= grid.rows) return;
+    const w: usize = self.width;
+    const n = @min(@as(usize, cols), @as(usize, grid.cols));
+    for (0..n) |col| {
+        const sc = @as(usize, screen_col) + col;
+        if (sc >= w) break;
+        const cell = grid.cellAtConst(src_row, @intCast(col));
+        var attrs = cell.attrs;
+        if (invert) attrs.inverse = !attrs.inverse;
+        self.cells[@as(usize, screen_row) * w + sc] = .{
+            .char = cell.char,
+            .fg = cell.fg,
+            .bg = cell.bg,
+            .attrs = attrs,
+        };
+    }
+}
+
+/// Blank a run of `cols` cells on one screen row (a viewport row with no
+/// backing grid or scrollback line — e.g. scrolled so far the live grid fell
+/// off the bottom).
+pub fn blankRow(self: *Self, screen_row: u16, screen_col: u16, cols: u16) void {
+    if (screen_row >= self.height) return;
+    const w: usize = self.width;
+    const n = @min(@as(usize, cols), w -| screen_col);
+    for (0..n) |col| {
+        const sc = @as(usize, screen_col) + col;
+        if (sc >= w) break;
+        self.cells[@as(usize, screen_row) * w + sc] = .{};
+    }
+}
+
 pub fn stamp(self: *Self, grid: *const Grid, offset_row: u16, offset_col: u16, stamp_rows: u16, stamp_cols: u16) void {
     const w: usize = self.width;
     const gr = grid.rows;
