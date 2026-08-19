@@ -315,7 +315,11 @@ pub fn renderWithOpts(self: *Self, mux: *Multiplexer, stdout_fd: i32, opts: Rend
 
         switch (self.pane_border) {
             .none => {},
-            .box => self.drawPaneBorder(rect, if (is_active) border_active else border_inactive),
+            // Only frame a pane that was actually inset for a frame. A lone pane
+            // gets no frame inset (paneFrame returns 0), so drawing a box over it
+            // would overwrite its own edge cells — the "first column clipped"
+            // look. Gate on the frame so box matches line's already-guarded case.
+            .box => if (frame.left > 0) self.drawPaneBorder(rect, if (is_active) border_active else border_inactive),
             // Each boundary is drawn once, by the pane on its left or top — but
             // it is coloured by whether it TOUCHES the focused pane, not by who
             // draws it. Ownership is layout bookkeeping; highlighting by it made
@@ -438,11 +442,21 @@ fn stampRowMaybeSel(self: *Self, grid: *const Grid, src_row: u16, screen_row: u1
         self.screen.stampRow(grid, src_row, screen_row, screen_col, cols, false);
         return;
     };
+    // Fast whole-row copy unless this row is actually within the selection's
+    // row span — otherwise a drag repaints every cell of every row per motion
+    // event (the lag). Selection stores absolute rows; map this viewport row.
+    const abs = Selection.screenToAbsolute(view_row, so, sb_lines);
+    const lo = @min(s.start_row, s.end_row);
+    const hi = @max(s.start_row, s.end_row);
+    if (abs < lo or abs > hi) {
+        self.screen.stampRow(grid, src_row, screen_row, screen_col, cols, false);
+        return;
+    }
     const n = @min(@as(usize, cols), @as(usize, grid.cols));
     var col: usize = 0;
     while (col < n) : (col += 1) {
         const inv = s.isSelected(view_row, @intCast(col), so, sb_lines);
-        self.screen.stampRow(grid, src_row, screen_row, @intCast(@as(usize, screen_col) + col), 1, inv);
+        self.screen.stampCell(grid, src_row, @intCast(col), screen_row, @intCast(@as(usize, screen_col) + col), inv);
     }
 }
 

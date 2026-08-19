@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.15.1 — 2026-08-19
+
+### Fixed
+
+- **Selection painted garbage** — every cell of a selected row showed the row's
+  *first* character repeated across the whole width. The per-cell highlight path
+  reused a whole-row stamp with `cols = 1`, which always copies grid column 0.
+  Added `TuiScreen.stampCell` (one specific source cell → one screen cell) and
+  the highlight now reads each column correctly.
+- **Selection lag** — a drag repainted every cell of every row per motion event.
+  Rows outside the selection's row span now take the fast whole-row copy; only
+  rows the selection actually touches go cell-by-cell.
+- **`teruwm_scroll` (and the wheel over a nested teru) did nothing.** For a
+  mouse-tracking pane teruwm has no scrollback of its own, so scrolling it was a
+  no-op; the wheel has to be *forwarded* to the app. `teruwm_scroll` now
+  forwards button-64/65 reports to a tracking pane exactly as the physical wheel
+  does — so a wheel over the SSH session scrolls the nested teru's history.
+- **A lone pane drew a box border over its own edge** (first column clipped).
+  `box` now only frames a pane that was actually inset for a frame, matching the
+  already-guarded `line` case.
+
 ## 0.15.0 — 2026-08-18
 
 ### Added

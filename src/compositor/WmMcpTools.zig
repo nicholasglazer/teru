@@ -1349,6 +1349,23 @@ fn ctrlLetterSlice(c: u8) []const u8 {
     return ctrl_letters[@as(usize, c - 'a')][0..1];
 }
 
+/// Pane-local cell under output-global (x, y). Mirrors ServerCursor.paneLocalCell
+/// (private there); a wheel report wants the cell so an app scrolls the region
+/// under the cursor rather than a fixed corner.
+fn mcpPaneCell(srv: anytype, tp: anytype, x: i32, y: i32) struct { row: u16, col: u16 } {
+    const slot = srv.nodes.findById(tp.node_id) orelse return .{ .row = 0, .col = 0 };
+    const pane_x: i32 = srv.nodes.pos_x[slot];
+    const pane_y: i32 = srv.nodes.pos_y[slot];
+    const pad: i32 = @intCast(tp.renderer.padding);
+    const cw: i32 = @intCast(tp.renderer.cell_width);
+    const ch: i32 = @intCast(tp.renderer.cell_height);
+    const max_col: i32 = @as(i32, @intCast(tp.pane.grid.cols)) - 1;
+    const max_row: i32 = @as(i32, @intCast(tp.pane.grid.rows)) - 1;
+    const col: u16 = @intCast(@max(0, @min(@divTrunc(@max(0, x - pane_x - pad), @max(1, cw)), max_col)));
+    const row: u16 = @intCast(@max(0, @min(@divTrunc(@max(0, y - pane_y - pad), @max(1, ch)), max_row)));
+    return .{ .row = row, .col = col };
+}
+
 fn toolScroll(self: *WmMcpServer, x: i32, y: i32, dy: i32, buf: []u8, id: ?[]const u8) []const u8 {
     const srv = self.server;
     const ms_now = monotonicMs();
@@ -1363,6 +1380,19 @@ fn toolScroll(self: *WmMcpServer, x: i32, y: i32, dy: i32, buf: []u8, id: ?[]con
     // branch of handleCursorAxis, which is the only path the wheel ever reaches
     // them by.
     if (srv.focused_terminal) |tp| {
+        // A mouse-tracking program in the pane (vim, htop, or a nested teru
+        // relaying its own scroll) owns the wheel: forward button-64/65 reports
+        // exactly as the physical wheel does. teruwm's own scrollback is empty
+        // for a full-screen app, so scrolling it here would be a no-op — the
+        // report is the only thing that reaches the app.
+        if (tp.pane.vt.mouse_tracking != .none) {
+            const rc = mcpPaneCell(srv, tp, x, y);
+            const up = dy < 0; // dy<0 = scroll up = toward older content
+            const notches: u32 = @intCast(@max(@as(i64, 1), @divTrunc(@as(i64, @intCast(@abs(dy))), 15)));
+            var i: u32 = 0;
+            while (i < notches) : (i += 1) _ = teru.mouse_report.forwardWheel(&tp.pane, up, rc.col, rc.row);
+            return okText(buf, id, "{{\\\"x\\\":{d},\\\"y\\\":{d},\\\"dy\\\":{d},\\\"route\\\":\\\"app\\\"}}", .{ x, y, dy });
+        }
         const max_offset: u32 = @intCast(tp.pane.scrollback.total_lines);
         if (max_offset > 0) {
             const cell_h: u32 = if (srv.font_atlas) |fa| fa.cell_height else 16;

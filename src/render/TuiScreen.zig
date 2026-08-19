@@ -92,6 +92,24 @@ pub fn stampRow(self: *Self, grid: *const Grid, src_row: u16, screen_row: u16, s
     }
 }
 
+/// Stamp ONE source cell (`grid[src_row][src_col]`) into one screen position,
+/// optionally inverting fg/bg (selection highlight). Used by the per-cell
+/// selection path — a whole-row stamp always reads column 0, so a selected row
+/// has to place each cell at its own source column.
+pub fn stampCell(self: *Self, grid: *const Grid, src_row: u16, src_col: u16, screen_row: u16, screen_col: u16, invert: bool) void {
+    if (screen_row >= self.height or screen_col >= self.width) return;
+    if (src_row >= grid.rows or src_col >= grid.cols) return;
+    const cell = grid.cellAtConst(src_row, src_col);
+    var attrs = cell.attrs;
+    if (invert) attrs.inverse = !attrs.inverse;
+    self.cells[@as(usize, screen_row) * self.width + screen_col] = .{
+        .char = cell.char,
+        .fg = cell.fg,
+        .bg = cell.bg,
+        .attrs = attrs,
+    };
+}
+
 /// Blank a run of `cols` cells on one screen row (a viewport row with no
 /// backing grid or scrollback line — e.g. scrolled so far the live grid fell
 /// off the bottom).
