@@ -321,8 +321,9 @@ fn tryAcceptClient(self: *Daemon) void {
     // Send current state to newly connected client
     self.sendStateSync();
 
-    // Send recent grid content for all panes so client can render immediately
-    self.sendGridSync();
+    // Send scrollback history + recent grid content for all panes so the
+    // client can render immediately AND scroll back through pre-attach output.
+    self.sendGridSync(true);
 }
 
 /// Replay ONE pane's visible grid to the client as a self-contained snapshot:
@@ -348,8 +349,19 @@ fn tryAcceptClient(self: *Daemon) void {
 /// dashes and accented letters all became blanks, and colour vanished — so a
 /// TUI redrew as monochrome rubble until the app happened to repaint. Ink-based
 /// apps (claude) swallow same-size SIGWINCH, so that repaint may never come.
-fn sendPaneGridSync(self: *Daemon, pane: *Pane) void {
-    const cfd = self.client_fd orelse return;
+fn sendPaneGridSync(self: *Daemon, pane: *Pane, include_scrollback: bool) void {
+    _ = self.client_fd orelse return;
+
+    // On attach, prepend the daemon's scrollback history so the client can
+    // scroll back through content that predates the connection. The client
+    // rebuilds its own scrollback purely by feeding `.output` and letting the
+    // VT parser scroll lines off — before this it only ever saw the visible
+    // snapshot, so a reattached session had an EMPTY client-side scrollback
+    // and scrolling up showed nothing above the current screen. Skipped on
+    // resize re-syncs: the client already holds the history, and re-sending
+    // would duplicate it. See ServerRestart.zig's v3 reader for the same
+    // scrollback→pad→snapshot ordering.
+    if (include_scrollback) self.sendPaneScrollback(pane);
 
     // Worst case is ~80B/cell (attr reset + truecolor fg/bg + UTF-8), far past
     // any sane stack buffer on a large grid, so this one is heap-allocated.
@@ -364,45 +376,76 @@ fn sendPaneGridSync(self: *Daemon, pane: *Pane) void {
     defer self.allocator.free(snap);
 
     const n = pane.vt.dumpReplaySnapshot(snap);
+    _ = self.sendPaneOutput(pane.id, snap[0..n]);
+}
 
-    // One .output message caps at proto.max_payload, and a colourful snapshot
-    // blows past that, so send it in pieces. Splitting at an arbitrary byte —
-    // even mid-escape-sequence — is safe: the receiving end is a byte-at-a-time
-    // state machine that carries its position across reads.
-    // Deliberately far below proto.max_payload. recvMessage rejects a payload
-    // larger than the receiver's buffer *after* consuming its header, which
-    // desyncs the stream for good rather than dropping one message — so the
-    // safe size is the smallest buffer any receiver might have, not the
-    // largest the protocol allows.
-    // usize, NOT a bare `4096 - 8`. As a comptime_int literal, @min below
-    // inferred `take` as the smallest type holding 4088 — a u12 — and then
-    // `8 + take` overflowed u12 (max 4095) the instant a snapshot exceeded
-    // 4088 bytes and `take` saturated to the cap. That aborted the daemon on
-    // any pane whose replay was larger than one chunk — i.e. any real, colourful
-    // TUI like claude — while small test grids (snapshot < 4088B) never tripped
-    // it. Typing the constant keeps every derived value usize.
+/// Stream a pane's scrollback history to the client as `.output`, followed by
+/// `rows` newlines of padding. The padding pushes the last `rows` history
+/// lines — still sitting on the client's visible grid at the end of the
+/// stream — into its scrollback BEFORE the visible snapshot's ED2 (`\x1b[2J`)
+/// clears them, so no recent history is lost at the scrollback/screen
+/// boundary. This mirrors the teruwm hot-restart reader (ServerRestart.zig).
+fn sendPaneScrollback(self: *Daemon, pane: *Pane) void {
+    // 1 MiB ≈ thousands of lines; bounds the transfer and replay cost while
+    // preserving the recent history a user actually scrolls back through.
+    // dumpReplayStream drops the OLDEST lines first when the budget is hit.
+    const sb_cap: usize = 1024 * 1024;
+    const sbbuf = self.allocator.alloc(u8, sb_cap) catch return;
+    defer self.allocator.free(sbbuf);
+
+    // Cap at the client's scrollback capacity (10k lines, Pane.initRemote) —
+    // sending more than the client can hold just wastes bandwidth.
+    const sb_n = pane.scrollback.dumpReplayStream(sbbuf, 10_000);
+    if (sb_n == 0) return;
+    if (!self.sendPaneOutput(pane.id, sbbuf[0..sb_n])) return;
+
+    var nlpad: [256]u8 = undefined;
+    const pad = @min(@as(usize, pane.grid.rows), nlpad.len);
+    @memset(nlpad[0..pad], '\n');
+    _ = self.sendPaneOutput(pane.id, nlpad[0..pad]);
+}
+
+/// Send raw VT bytes to the client, tagged with a pane id, split into chunks
+/// that stay under the receiver's buffer. Returns false if a socket write
+/// failed (caller should stop). Splitting at an arbitrary byte — even
+/// mid-escape-sequence — is safe: the client is a byte-at-a-time state machine
+/// that carries its parser position across reads.
+///
+/// The 4096 cap is deliberately far below proto.max_payload. recvMessage
+/// rejects a payload larger than the receiver's buffer *after* consuming its
+/// header, which desyncs the stream for good rather than dropping one message —
+/// so the safe size is the smallest buffer any receiver might have, not the
+/// largest the protocol allows.
+fn sendPaneOutput(self: *Daemon, pane_id: u64, bytes: []const u8) bool {
+    const cfd = self.client_fd orelse return false;
+
+    // `chunk_max: usize` is load-bearing. As a comptime_int literal, @min below
+    // would infer `take` as the smallest int holding 4088 — a u12 — REGARDLESS
+    // of the operands' declared types, and `8 + take` then overflowed u12
+    // (max 4095) the instant a payload exceeded 4088 bytes. That aborted the
+    // daemon on any pane whose replay was larger than one chunk (any real,
+    // colourful TUI like claude) while small test grids never tripped it.
+    // Typing the constant keeps every derived value usize.
     const chunk_max: usize = 4096 - 8; // 8 = the pane_id prefix
     var msg_buf: [8 + chunk_max]u8 = undefined;
-    std.mem.writeInt(u64, msg_buf[0..8], pane.id, .little);
+    std.mem.writeInt(u64, msg_buf[0..8], pane_id, .little);
     var sent: usize = 0;
-    while (sent < n) {
-        // `take: usize` is load-bearing. @min narrows its result type to the
-        // smallest int that fits `chunk_max`'s comptime-known value (4088 → a
-        // u12) REGARDLESS of the operands' declared types, so an un-annotated
-        // `take` is a u12 and `8 + take` overflows it (max 4095) at take==4088.
-        // The annotation coerces the result up to usize before the add.
-        const take: usize = @min(chunk_max, n - sent);
+    while (sent < bytes.len) {
+        const take: usize = @min(chunk_max, bytes.len - sent);
         const end: usize = 8 + take; // ≤ 4096 = msg_buf.len
-        @memcpy(msg_buf[8..][0..take], snap[sent..][0..take]);
-        if (!proto.sendMessage(cfd, .output, msg_buf[0..end])) return;
+        @memcpy(msg_buf[8..][0..take], bytes[sent..][0..take]);
+        if (!proto.sendMessage(cfd, .output, msg_buf[0..end])) return false;
         sent += take;
     }
+    return true;
 }
 
 /// Replay every pane's grid to the client (on attach / full re-sync).
-fn sendGridSync(self: *Daemon) void {
+/// `include_scrollback` streams each pane's history first — true on the
+/// initial attach, false on resize re-syncs (the client already has it).
+fn sendGridSync(self: *Daemon, include_scrollback: bool) void {
     if (self.client_fd == null) return;
-    for (self.mux.panes.items) |*pane| self.sendPaneGridSync(pane);
+    for (self.mux.panes.items) |*pane| self.sendPaneGridSync(pane, include_scrollback);
 }
 
 fn handleClientData(self: *Daemon, recv_buf: []u8) void {
@@ -446,7 +489,9 @@ fn handleClientData(self: *Daemon, recv_buf: []u8) void {
                                     // Re-send this pane's grid at the new size so the
                                     // client replaces its pre-resize snapshot (which was
                                     // at the wrong geometry) — kills the duplicate prompt.
-                                    self.sendPaneGridSync(pane);
+                                    // No scrollback: the client already holds it from
+                                    // attach; re-sending would duplicate the history.
+                                    self.sendPaneGridSync(pane, false);
                                 }
                             }
                         }
@@ -455,7 +500,8 @@ fn handleClientData(self: *Daemon, recv_buf: []u8) void {
             } else if (proto.decodeResize(payload)) |sz| {
                 self.resizeAllPanes(sz.rows, sz.cols);
                 // Full re-sync after a whole-screen resize, same rationale.
-                self.sendGridSync();
+                // No scrollback re-send: the client keeps its attach-time copy.
+                self.sendGridSync(false);
             }
         },
         .detach => {
@@ -820,7 +866,7 @@ test "grid re-sync chunking does not overflow when a snapshot exceeds one chunk"
     // grids never reached the cap. This mirrors the exact chunk arithmetic;
     // `n` past the cap forces `take` to the boundary that used to panic.
     const chunk_max: usize = 4096 - 8;
-    const buf_len: usize = 8 + chunk_max; // msg_buf.len in sendPaneGridSync
+    const buf_len: usize = 8 + chunk_max; // msg_buf.len in sendPaneOutput
 
     inline for (.{ chunk_max, chunk_max + 1, chunk_max * 3 + 5, 4180 }) |n| {
         var sent: usize = 0;

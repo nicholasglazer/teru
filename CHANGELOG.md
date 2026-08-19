@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.15.2 — 2026-08-19
+
+### Fixed
+
+- **Scrolling a reattached SSH session showed nothing above the current screen.**
+  The 0.15.0 wheel scroll only ever worked on output produced *while attached*:
+  the nested `teru -n` client rebuilds its scrollback by feeding daemon `.output`
+  through its VT parser and letting lines scroll off, but on attach the daemon
+  sent only the visible-grid snapshot — so the client's scrollback started
+  **empty** on every reattach and there was nothing to scroll into. The daemon
+  now streams each pane's scrollback history (`dumpReplayStream`) plus `rows`
+  newlines of padding *before* the visible snapshot, so the client repopulates
+  its scrollback with pre-attach content — the same `scrollback → pad → snapshot`
+  ordering the teruwm hot-restart already uses. History transfers only on the
+  initial attach, not on resize re-syncs (the client already holds it). New
+  regression test: `tests/scrollback_attach_e2e.py`.
+
 ## 0.15.1 — 2026-08-19
 
 ### Fixed
