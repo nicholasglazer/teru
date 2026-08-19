@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.15.3 — 2026-08-19
+
+### Fixed
+
+- **A fullscreen window kept a border when another window shared its
+  workspace.** Making a window fullscreen (`Mod`-leader `f`, or a client's own
+  request — e.g. a browser video) pinned it to the whole output and hid the
+  others, but never cleared its border, so the tile border painted a frame
+  around the full-output window. It only showed with 2+ windows in the
+  workspace (a lone window's border is already suppressed by smart-borders) —
+  exactly the reported case. Two mechanisms, both now fullscreen-aware:
+  `enterFullscreen` zeroes the target's scene-rect border (wayland/xwayland
+  surfaces), and a terminal pane's `shouldDrawBorder` returns false while it is
+  the fullscreen node (terminal borders are painted into the grid, not
+  scene-rects). Border returns on exit. Verified live for both a native
+  terminal and a wayland client (foot).
+
 ## 0.15.2 — 2026-08-19
 
 ### Fixed

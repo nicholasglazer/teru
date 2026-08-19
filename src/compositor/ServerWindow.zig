@@ -156,9 +156,21 @@ pub fn enterFullscreen(self: *Server, target_id: u64) void {
         self.nodes.applyRect(slot, 0, 0, out_w, out_h);
     }
 
-    // The flat scene root has no fullscreen layer — raise the target so a
-    // shown scratchpad or stale float can't keep compositing above it.
-    if (self.nodes.findById(target_id)) |slot| Focus.raiseNode(self, slot);
+    if (self.nodes.findById(target_id)) |slot| {
+        // A fullscreen surface must not keep its tiled border rects — they'd
+        // paint a frame around the full-output window (the reported "I go
+        // fullscreen with another window in the workspace and still see a
+        // border" bug). Borders only exist when 2+ windows share a workspace
+        // (smart borders suppress a lone window's), which is exactly when this
+        // shows. arrangeWorkspace is the ONLY other place that zeroes them and
+        // no fullscreen path runs it — enterFullscreen applyRects directly —
+        // so clear them here. No-op for terminals (setBorder only touches
+        // wayland_surface rects).
+        self.nodes.setBorder(slot, 0, 0);
+        // The flat scene root has no fullscreen layer — raise the target so a
+        // shown scratchpad or stale float can't keep compositing above it.
+        Focus.raiseNode(self, slot);
+    }
 
     std.log.scoped(.compositor).info("fullscreen on node={d}", .{target_id});
 }

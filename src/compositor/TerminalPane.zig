@@ -841,6 +841,13 @@ pub fn render(self: *TerminalPane) void {
 /// (not in NodeRegistry) always keep their border so focus between a
 /// scratchpad and a lone tiled pane stays visible.
 fn shouldDrawBorder(self: *TerminalPane) bool {
+    // A fullscreen pane fills the whole output — never frame it, even though
+    // other windows still share its (now-hidden) workspace. Without this a
+    // fullscreen terminal with a second window in the workspace kept its 2px
+    // smart border — the terminal-side twin of the wayland-surface
+    // border-on-fullscreen bug (enterFullscreen zeroes scene-rect borders,
+    // but terminal borders are painted into the grid by this path).
+    if (self.server.fullscreen_node == self.node_id) return false;
     const slot = self.server.nodes.findById(self.node_id) orelse return true;
     const ws = self.server.nodes.workspace[slot];
     return self.server.nodes.countInWorkspace(ws) > 1;
