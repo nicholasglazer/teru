@@ -1533,18 +1533,39 @@ bool miozu_surface_wants_tearing(struct wlr_tearing_control_manager_v1 *mgr,
         == WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC;
 }
 
-/* wlr_scene_output_commit() with an optional tearing page-flip.
+/* wlr_scene_output_commit() with an optional tearing page-flip and optional
+ * variable refresh rate.
  *
- * When tearing is false this is a straight delegation, so the default path
- * stays byte-identical to before. When true we must open-code what
+ * When neither is wanted this is a straight delegation, so the default path
+ * stays byte-identical to before. Otherwise we must open-code what
  * wlr_scene_output_commit() does, because it gives no way to reach into the
  * wlr_output_state it builds internally. The early-out below mirrors upstream's
  * exactly — without it we would commit on every frame even with nothing to
- * present. */
-bool miozu_scene_output_commit_tearing(struct wlr_scene_output *so, bool tearing) {
-    if (!tearing) return wlr_scene_output_commit(so, NULL);
+ * present.
+ *
+ * On a PRIME laptop VRR is the one that actually lands. Tearing needs an async
+ * page flip, which the DRM backend only performs on a directly scanned-out
+ * client buffer — and a dGPU-rendered frame must be copied into the display
+ * GPU's memory before it can be scanned out, so direct scanout never happens
+ * and the async flip is refused every time. VRR carries no such requirement:
+ * it is a CRTC property that applies to ordinary composited flips. Measured on
+ * this eDP panel (2560x1600, vrr_capable=1, 60-165 Hz) without it, frame
+ * intervals are quantised to whole 6.06 ms vblanks — 77% land inside one, 22%
+ * miss by a hair and get charged a second — pinning a ~155 fps workload at
+ * 133 fps. */
+bool miozu_scene_output_commit_ex(struct wlr_scene_output *so, bool tearing,
+                                  bool vrr) {
+    struct wlr_output *output = so->output;
 
-    if (!so->output->needs_frame &&
+    /* Only ask for VRR where the backend can actually deliver it: a commit
+     * that requests it on hardware which refuses fails wholesale, taking the
+     * frame with it. */
+    bool want_vrr = vrr && output->adaptive_sync_supported;
+    bool vrr_on = output->adaptive_sync_status == WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED;
+
+    if (!tearing && want_vrr == vrr_on) return wlr_scene_output_commit(so, NULL);
+
+    if (!output->needs_frame &&
         !pixman_region32_not_empty(&so->pending_commit_damage)) {
         return true;
     }
@@ -1556,15 +1577,25 @@ bool miozu_scene_output_commit_tearing(struct wlr_scene_output *so, bool tearing
         return false;
     }
 
-    state.tearing_page_flip = true;
-    bool ok = wlr_output_commit_state(so->output, &state);
-    if (!ok) {
+    /* Toggling adaptive sync can require a modeset, so only write it on the
+     * frames where the desired state actually changed — entering or leaving
+     * fullscreen — never once per frame. */
+    if (want_vrr != vrr_on) {
+        wlr_output_state_set_adaptive_sync_enabled(&state, want_vrr);
+        if (!wlr_output_test_state(output, &state)) {
+            wlr_output_state_set_adaptive_sync_enabled(&state, vrr_on);
+        }
+    }
+
+    if (tearing) state.tearing_page_flip = true;
+    bool ok = wlr_output_commit_state(output, &state);
+    if (!ok && tearing) {
         /* The DRM backend rejects async flips it cannot perform (wrong plane
          * config, no direct scanout, driver refusal). Upstream's contract is
          * that the caller falls back to a normal flip — dropping the frame
          * instead would trade a torn frame for a stutter, which is worse. */
         state.tearing_page_flip = false;
-        ok = wlr_output_commit_state(so->output, &state);
+        ok = wlr_output_commit_state(output, &state);
     }
     wlr_output_state_finish(&state);
     return ok;

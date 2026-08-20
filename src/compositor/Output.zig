@@ -216,14 +216,23 @@ fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
 
     const scene_output = wlr.wlr_scene_get_scene_output(server.scene, output.wlr_output) orelse return;
     const commit_start = compat.monotonicNow();
-    // Honour wp_tearing_control_v1. Without this the hint is negotiated and
-    // then ignored: a fullscreen game with vsync off still waits for vblank, so
-    // a frame finishing a hair past the deadline eats a whole extra refresh.
-    // Measured on this panel (165 Hz, no VRR, direct scanout active): a clean
-    // bimodal 1:422 / 2:463 vblanks-per-flip split — 111 fps out of ~164 fps of
-    // real capability. tearingWanted() is false unless a fullscreen client
-    // explicitly opted in, so the default path is unchanged.
-    _ = wlr.miozu_scene_output_commit_tearing(scene_output, server.tearingWanted());
+    // Honour wp_tearing_control_v1, and run the panel at a variable refresh
+    // rate while a client is fullscreen. Both attack the same cost: without
+    // them a frame finishing a hair past the vblank deadline eats a whole extra
+    // refresh. Measured here on eDP-1 (2560x1600, 60-165 Hz): intervals are
+    // quantised to exact vblank multiples, 77% landing in one and 22% in two,
+    // which caps a ~155 fps workload at 133.
+    //
+    // The earlier claim in this comment that the panel had no VRR was wrong —
+    // it reports vrr_capable=1. That matters, because tearing alone cannot fix
+    // this machine: an async page flip requires direct scanout, and a frame
+    // rendered on the dGPU must be copied into the display GPU before it can be
+    // scanned out, so the async flip is refused every time. VRR applies to
+    // ordinary composited flips and therefore works where tearing does not.
+    //
+    // Both gates are false unless a client is fullscreen, so the default
+    // desktop path is unchanged.
+    _ = wlr.miozu_scene_output_commit_ex(scene_output, server.tearingWanted(), server.vrrWanted());
     server.perf.commit_time_sum_us += @intCast(@max(0, @divTrunc(compat.monotonicNow() - commit_start, 1000)));
 
     // Fire wl_surface.frame callbacks so Wayland clients know the frame

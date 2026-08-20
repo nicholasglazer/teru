@@ -1921,6 +1921,22 @@ pub fn tearingWanted(self: *Server) bool {
     return wlr.miozu_surface_wants_tearing(mgr, surface);
 }
 
+/// Whether the output should run at a variable refresh rate this frame.
+///
+/// Unlike tearing this needs no client opt-in, because VRR is invisible to the
+/// client: it does not change what the client presents, only when the panel
+/// picks it up. Without it every flip is pinned to a whole vblank, so a frame
+/// finishing a hair past the deadline waits out a second one — the exact cost
+/// tearing was meant to avoid, and the one it cannot avoid here (a dGPU frame
+/// is never directly scanned out, so the async flip is always refused).
+///
+/// Gated on fullscreen anyway: some panels flicker when the refresh rate swings
+/// while the screen is mostly static, which is the desktop's normal condition.
+/// A fullscreen client is exactly the case where frames arrive continuously.
+pub fn vrrWanted(self: *Server) bool {
+    return self.fullscreen_node != null;
+}
+
 pub fn applyFocusOpacity(self: *Server) void {
     Focus.applyFocusOpacity(self);
 }

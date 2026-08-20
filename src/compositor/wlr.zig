@@ -353,7 +353,7 @@ pub extern "wlroots-0.18" fn wlr_tearing_control_manager_v1_create(display: *wl_
 pub extern "c" fn miozu_surface_wants_tearing(mgr: ?*wlr_tearing_control_manager_v1, surface: ?*wlr_surface) callconv(.c) bool;
 // wlr_scene_output_commit() plus an optional tearing page-flip. tearing=false
 // delegates straight to upstream, so the normal path is unchanged.
-pub extern "c" fn miozu_scene_output_commit_tearing(scene_output: *wlr_scene_output, tearing: bool) callconv(.c) bool;
+pub extern "c" fn miozu_scene_output_commit_ex(scene_output: *wlr_scene_output, tearing: bool, vrr: bool) callconv(.c) bool;
 
 // wp_linux_drm_syncobj_v1: explicit GPU sync. The NVIDIA driver
 // implements no implicit sync on dmabufs — without this global its
