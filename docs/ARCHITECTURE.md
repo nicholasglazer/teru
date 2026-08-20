@@ -185,6 +185,63 @@ outside the grid loop but are bg-filled by `renderRange`. Consequence:
 inter-pane gaps are always exactly `wm_config.gap` — no visual
 asymmetry from rounding.
 
+### Presentation — vsync, tearing, and VRR
+
+A page flip normally lands only on a vblank tick. On a 165 Hz panel that is
+one every 6.06 ms, so a frame finishing a hair past the deadline is not shown
+late — it is shown a **whole refresh** late. Measured on eDP-1 (2560x1600,
+165 Hz) with a fullscreen game, flip intervals were quantised to exact vblank
+multiples with nothing in between:
+
+| interval | share |
+|---|---|
+| 1x vblank (6.06 ms) | 77.3% |
+| 2x vblank (12.12 ms) | 21.8% |
+| 3x+ | 0.9% |
+
+Mean 7.49 ms = 133 fps, from a workload that clears 165 fps three frames out of
+four. Neither CPU nor GPU was saturated (GPU 38-63% util, `GpuIdle` as the
+active clock-throttle reason).
+
+Two mechanisms attack this, and **which one applies depends on the machine**:
+
+- **`wp_tearing_control_v1`** (`Server.tearingWanted()`) — needs the client to
+  opt in via the protocol *and* a fullscreen node. It requests an async page
+  flip, which the DRM backend only performs on a **directly scanned-out client
+  buffer**.
+- **VRR / adaptive sync** (`Server.vrrWanted()`) — gated on a fullscreen node
+  only, since VRR is invisible to the client and needs no opt-in. It is a CRTC
+  property that applies to **ordinary composited flips**.
+
+On a hybrid-GPU (PRIME) laptop, tearing is dead code. `startt` pins scanout and
+render to the iGPU so the dGPU can suspend, so a dGPU-rendered frame must be
+copied into iGPU memory before scanout — direct scanout never happens and the
+async flip is refused every time. The tell is a primary plane whose fb is
+`allocated by = teruwm` with `modifier=0x0` (LINEAR), plus one
+`i915_gem_object_destroy` per frame. **VRR is the only mechanism that works
+there**, which covers every NVIDIA Optimus machine.
+
+Both are applied in `miozu_scene_output_commit_ex()`. When neither is wanted it
+delegates to `wlr_scene_output_commit()` unchanged, so the desktop path is
+byte-identical. Adaptive sync is written only on frames where the desired state
+*changes* — toggling it can force a modeset, so it must not be set per frame —
+and a `wlr_output_test_state()` probe drops the request rather than lose the
+frame if the driver refuses.
+
+VRR is gated on fullscreen rather than always-on because some panels flicker
+when the refresh rate swings while the screen is mostly static, which is the
+desktop's normal condition. Verify with:
+
+```bash
+modetest -M i915 -c | grep -A3 vrr_capable   # panel capability
+modetest -M i915 -p | grep -A3 VRR_ENABLED   # 1 only while fullscreen
+```
+
+To measure real presented frame rate — not what the app claims — count page
+flips: enable `drm:drm_vblank_event_delivered` in `/sys/kernel/tracing` and
+histogram the timestamp deltas. (`i915:intel_crtc_flip_done` never fires on
+this hardware.)
+
 ### Hot restart
 
 `teruwm_restart` MCP tool → sets `restart_pending = true` → next frame

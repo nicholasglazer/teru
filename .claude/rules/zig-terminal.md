@@ -1,6 +1,12 @@
 # Zig Terminal Development Rules (CRITICAL)
 
-Rules for developing teru, the AI-first terminal emulator in Zig 0.17.0-dev.813+.
+Rules for developing teru, the AI-first terminal emulator in Zig 0.17.0-dev
+(master). Verified building on **0.17.0-dev.1818+7051f8e73** (2026-08-20):
+compositor build clean, 629/629 tests pass, zero warnings.
+
+**Latest *stable* Zig is 0.16.0 (2026-04-13) and will NOT build this project** —
+`build.zig.zon` sets `.minimum_zig_version = "0.17.0-dev"`. Install
+`zig-master-bin`, not `zig`.
 
 ## Zig 0.17 API (MUST KNOW)
 
@@ -51,6 +57,38 @@ Every function that does file/network/timer I/O MUST accept `io: std.Io`. Thread
 - pollfd events/revents: raw `i16`
 - Build system: `b.createModule()` + `addExecutable(.{ .root_module = mod })`. `strip` is a `Module.CreateOptions` field; `lto` is set on the Compile step (`exe.lto = .full`).
 - `@cImport` still works but hand-declared C externs are preferred
+
+### Removed in 0.16 — do NOT reintroduce
+
+These are gone from std entirely. The codebase is currently clean of all of
+them (audited 2026-08-20, zero hits); this list exists so they don't creep back.
+
+| Removed | Use instead |
+|---|---|
+| `@Type()` | `@Int()`, `@Struct()`, `@Union()`, `@Enum()`, `@Tuple()`, `@Pointer()`, `@Fn()` |
+| `std.Thread.Mutex` | `std.Io.Mutex` |
+| `std.Thread.ResetEvent` | `std.Io.Event` |
+| `std.Thread.WaitGroup` | `std.Io.Group` |
+| `std.Thread.Pool` | (removed — no direct replacement) |
+| `std.process.Child` | `std.process.spawn(io, .{...})`; `Child.run` → `std.process.run`; `execv` → `replace` |
+| `std.heap.ThreadSafeAllocator` | pick an inherently thread-safe allocator (`ArenaAllocator` is now lock-free) |
+| `std.SegmentedList` | `std.ArrayList` |
+| `std.once` | explicit synchronization |
+| `fmt.Formatter` | `fmt.Alt` |
+| `Io.GenericReader` / `Io.AnyReader` | `std.Io.Reader` |
+| `fs.File.Mode` | `std.Io.File.Permissions` |
+| `fs.Dir.makeDir` | `std.Io.Dir.createDir` |
+| `fs.File.setEndPos` | `std.Io.File.setLength` |
+
+Two type-system rules that bite C interop:
+- **Pointers in packed structs/unions are forbidden** (ambiguous layout).
+- **`extern` enums/packed types need an explicit backing integer** — an implicit
+  one is now a compile error. Relevant to every hand-declared wlroots binding.
+
+**`page_allocator` nuance:** anti-pattern #12 below is about *small individual*
+allocations (`page_allocator.create(T)` = one mmap each). Using it as the
+*backing* allocator for an `ArenaAllocator` is correct and idiomatic — see
+`tools/bench.zig`. Don't "fix" that.
 
 ### std.heap (0.17 allocator landscape)
 

@@ -65,7 +65,8 @@ Download `teru-windows-x86_64.zip` from [Releases](https://github.com/nicholasgl
 
 ## Build from Source
 
-Requires **Zig 0.17 (master/dev)** — verified at `0.17.0-dev.813`. Building `teruwm` also
+Requires **Zig 0.17 (master/dev)** — verified at `0.17.0-dev.1818+7051f8e73`
+(2026-08-20). The latest *stable* Zig (0.16.0) will not build this. Building `teruwm` also
 needs the GCC-15 CRT workaround the Makefile applies automatically (`--libc`); prefer `make`
 over a bare `zig build`. Linux builds need system libraries.
 

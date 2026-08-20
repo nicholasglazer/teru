@@ -73,7 +73,7 @@ prompt: |
   - ALL new code MUST have inline tests using std.testing.allocator
   - Thread `io: std.Io` for any function that does I/O
   - Use compat.zig ONLY for: nanoTimestamp, getenv, forkExec, MemWriter
-  - Zig 0.16 API -- see CLAUDE.md for removed/changed std.posix functions
+  - Zig 0.17 API -- see CLAUDE.md for removed/changed std.posix functions
   - NEVER touch files in src/render/, src/agent/, or src/platform/
 
   ## Testing

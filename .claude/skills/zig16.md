@@ -1,9 +1,9 @@
 ---
 name: zig16
-description: Zig 0.16 API reference — native std.Io patterns, C interop, SIMD, collections, removed APIs, migration guide. Use when writing Zig 0.16 code or debugging compilation errors.
+description: Zig 0.17 API reference — native std.Io patterns, C interop, SIMD, collections, removed APIs, migration guide. Use when writing Zig 0.17 code or debugging compilation errors.
 ---
 
-# Zig 0.16 API Reference
+# Zig 0.17 API Reference
 
 ## std.Io — The Core Pattern
 
@@ -110,7 +110,7 @@ var sel = std.Io.Select(enum { pty, window, timer }).init;
 
 ## C Interop (No @cImport)
 
-Zig 0.16 in teru declares all C interfaces manually — no `@cImport`.
+Zig 0.17 in teru declares all C interfaces manually — no `@cImport`.
 
 ```zig
 // Opaque types for C pointers

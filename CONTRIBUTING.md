@@ -1,11 +1,12 @@
 # Contributing to teru
 
-Contributions welcome. teru is written in Zig 0.16.
+Contributions welcome. teru is written in Zig 0.17 (master/dev) — see
+`.minimum_zig_version` in `build.zig.zon`. A release Zig will not build it.
 
 ## Setup
 
 ```bash
-# 1. Install Zig 0.16
+# 1. Install Zig 0.17 (master/dev)
 #    https://ziglang.org/download/
 #    Arch: paru -S zig-master-bin
 
@@ -46,7 +47,7 @@ Every `.zig` module has inline `test` blocks. No separate test files. When addin
 - Follow existing patterns in the codebase
 - Use `std.testing.allocator` in tests (catches leaks automatically)
 - Prefer hand-declared C externs over `@cImport`
-- See `.claude/rules/zig-terminal.md` for Zig 0.16 API reference
+- See `.claude/rules/zig-terminal.md` for Zig 0.17 API reference
 
 ## Areas looking for help
 

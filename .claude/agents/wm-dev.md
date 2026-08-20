@@ -15,7 +15,7 @@ teruwm is a tiling Wayland compositor built on wlroots + libteru. It embeds term
 
 Read these before writing any code:
 - `CLAUDE.md` -- project overview and architecture
-- `.claude/rules/zig-terminal.md` -- Zig 0.16 dev rules
+- `.claude/rules/zig-terminal.md` -- Zig 0.17 dev rules
 - `.claude/rules/wm-compositor.md` -- compositor-specific rules
 - `.claude/skills/teruwm.md` -- MCP tools, diagnostics, key files
 

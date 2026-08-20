@@ -1,6 +1,6 @@
 ---
 name: teru
-description: Build, test, run, format, and inspect the teru terminal emulator (Zig 0.16). Use when working on teru or needing quick terminal project commands.
+description: Build, test, run, format, and inspect the teru terminal emulator (Zig 0.17). Use when working on teru or needing quick terminal project commands.
 ---
 
 # teru Terminal Skill
