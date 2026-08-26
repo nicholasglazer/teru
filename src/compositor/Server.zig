@@ -475,6 +475,23 @@ debounce_suppressed: u64 = 0,
 // fallback issues N×60 non-blocking reads/sec for every idle terminal.
 frames_since_pty_input: u32 = std.math.maxInt(u32),
 
+// ── Post-restart input probe ───────────────────────────────────
+// `start_ns` is the monotonic stamp main() takes before Server.initOnHeap —
+// the same t0 the "startup timing:" line is measured against. Set from
+// main.zig; 0 in unit tests / harnesses that build a Server directly, which
+// simply makes the probe's deltas meaningless rather than unsound.
+//
+// `input_probe_left` counts down the key EDGES ServerInput.handleKeyEvent
+// still logs. It answers the one question every startup measurement so far
+// has been unable to reach: after $mod+' the whole bring-up is 305 ms
+// (measured from the /run/user/1000 socket mtimes), yet the user sees ~10 s
+// of dead keyboard — so either the key never arrives (libinput/logind never
+// delivers it, or the event loop is not dispatching) or it arrives on time
+// and is routed somewhere useless. The stamp on the FIRST logged edge splits
+// those two worlds. Self-disarming: one integer compare once spent.
+start_ns: i64 = 0,
+input_probe_left: u8 = 40,
+
 // ── Listeners ──────────────────────────────────────────────────
 
 new_output: wlr.wl_listener = makeListener(Listeners.handleNewOutput),

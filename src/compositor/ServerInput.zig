@@ -91,6 +91,46 @@ pub const Keyboard = struct {
 
         kb.server.notifyActivity();
 
+        // ── Post-restart input probe ──────────────────────────────
+        // Placed at the TOP of the handler, above every swallow path, so it
+        // fires for a key even when that key is then discarded — which is the
+        // whole point. Logs the first `input_probe_left` edges with the
+        // milliseconds since main()'s t0 (the clock the "startup timing:"
+        // line uses) plus where the key is about to be routed.
+        //
+        // Reading it: the compositor is fully up ~305 ms after $mod+'. So a
+        // first edge at "+300..600ms" means keys reach us on time and the
+        // ~10 s deadness is DOWNSTREAM (routing / the pane app not
+        // repainting). A first edge at "+10000ms" while the user was
+        // hammering keys means the edges never arrived — libinput/logind
+        // device delivery, or an event loop that is not dispatching.
+        // Self-disarming; costs one integer compare once spent.
+        if (kb.server.input_probe_left > 0) {
+            kb.server.input_probe_left -= 1;
+            const dt_ms = @divTrunc(
+                teru.compat.monotonicNow() - kb.server.start_ns,
+                std.time.ns_per_ms,
+            );
+            const route: []const u8 = if (kb.server.cursor_mode == .area_select)
+                "area-select"
+            else if (kb.server.launcher.active)
+                "launcher"
+            else if (kb.server.leader.active)
+                "leader"
+            else if (kb.server.focused_terminal != null)
+                "pane"
+            else if (kb.server.focused_view != null)
+                "xdg"
+            else if (kb.server.focused_xwayland != null)
+                "xwayland"
+            else
+                "seat";
+            std.log.scoped(.input).info(
+                "key probe: +{d}ms keycode={d} state={d} route={s} keyboards={d}",
+                .{ dt_ms, keycode, key_state, route, kb.server.keyboards.items.len },
+            );
+        }
+
         // Track Right-Alt held state across press/release. Keyed on the Alt_R
         // KEYSYM (0xffea), not the evdev keycode — a virtual keyboard (wtype)
         // generates its own keymap with arbitrary keycodes, but the keysym is

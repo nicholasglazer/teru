@@ -108,6 +108,10 @@ pub fn main(init: std.process.Init) !void {
         std.log.scoped(.compositor).err("server init failed: {}", .{err});
         return err;
     };
+    // Baseline for the post-restart input probe (ServerInput.handleKeyEvent).
+    // Same t0 the "startup timing:" line below is measured against, so the
+    // probe's "+Nms" and the phase costs share one clock.
+    server.start_ns = @intCast(t0);
     // Defer order matters. LIFO unwind means the LAST defer registered
     // runs FIRST. Desired run order:
     //   1. shutting_down = true — gates handlers like Output.handleDestroy
@@ -171,6 +175,13 @@ pub fn main(init: std.process.Init) !void {
         std.log.scoped(.compositor).err("failed to start backend", .{});
         return error.BackendStartFailed;
     }
+    // Separate stamp: wlr_backend_start is where libinput does its
+    // libseat/logind TakeDevice per input device and where DRM scans
+    // connectors + modesets. The old single "socket+backend" bucket ended
+    // BEFORE this call, so it only ever measured wl_display_add_socket_auto
+    // (hence a constant 0 ms) and folded backend start into "restore" —
+    // which then contradicted restoreSession's own 21 ms self-report.
+    const t_backend = teru.compat.monotonicNow();
 
     // Set environment for child processes
     if (socket) |sock| {
@@ -192,8 +203,8 @@ pub fn main(init: std.process.Init) !void {
             }
         }.v;
         std.log.scoped(.compositor).info(
-            "startup timing: init {d}ms, config {d}ms, socket+backend {d}ms, restore {d}ms, total {d}ms",
-            .{ ms(t0, t_init), ms(t_init, t_config), ms(t_config, t_socket), ms(t_socket, t_done), ms(t0, t_done) },
+            "startup timing: init {d}ms, config {d}ms, socket {d}ms, backend {d}ms, restore {d}ms, total {d}ms",
+            .{ ms(t0, t_init), ms(t_init, t_config), ms(t_config, t_socket), ms(t_socket, t_backend), ms(t_backend, t_done), ms(t0, t_done) },
         );
         // Don't re-run autostart on hot-restart: the clients it would
         // spawn are still connected from the previous compositor.
