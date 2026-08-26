@@ -97,6 +97,12 @@ pub fn main(init: std.process.Init) !void {
     };
 
     // ── Initialize compositor server ────────────────────────────
+    // Startup phase timings. Everything from here to wl_display_run() happens
+    // before the compositor answers a single key, so a slow phase presents as
+    // "$mod+ does nothing for N seconds after $mod+'". restoreSession is
+    // already timed separately and measured 21ms, so the cost is elsewhere --
+    // this narrows it to a phase instead of a guess.
+    const t0 = teru.compat.monotonicNow();
     const server = Server.initOnHeap(display, event_loop, allocator) catch |err| {
         wlr.wl_display_destroy(display);
         std.log.scoped(.compositor).err("server init failed: {}", .{err});
@@ -148,7 +154,9 @@ pub fn main(init: std.process.Init) !void {
     defer server.shutting_down = true;
 
     // ── Apply config to server ──────────────────────────────────
+    const t_init = teru.compat.monotonicNow();
     server.applyConfig(&config, allocator, io);
+    const t_config = teru.compat.monotonicNow();
 
     // ── Add Wayland socket ──────────────────────────────────────
     const socket = wlr.wl_display_add_socket_auto(display);
@@ -158,6 +166,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // ── Start backend ───────────────────────────────────────────
+    const t_socket = teru.compat.monotonicNow();
     if (!wlr.wlr_backend_start(server.backend)) {
         std.log.scoped(.compositor).err("failed to start backend", .{});
         return error.BackendStartFailed;
@@ -176,6 +185,16 @@ pub fn main(init: std.process.Init) !void {
     // ── Restore session from restart ───────────────────────────
     if (restoring) {
         ServerRestart.restoreSession(server, allocator);
+        const t_done = teru.compat.monotonicNow();
+        const ms = struct {
+            fn v(a: i128, b: i128) i64 {
+                return @intCast(@divTrunc(b - a, std.time.ns_per_ms));
+            }
+        }.v;
+        std.log.scoped(.compositor).info(
+            "startup timing: init {d}ms, config {d}ms, socket+backend {d}ms, restore {d}ms, total {d}ms",
+            .{ ms(t0, t_init), ms(t_init, t_config), ms(t_config, t_socket), ms(t_socket, t_done), ms(t0, t_done) },
+        );
         // Don't re-run autostart on hot-restart: the clients it would
         // spawn are still connected from the previous compositor.
         server.autostart_fired = true;
