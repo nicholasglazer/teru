@@ -1,7 +1,7 @@
 # Zig Terminal Development Rules (CRITICAL)
 
 Rules for developing teru, the AI-first terminal emulator in Zig 0.17.0-dev
-(master). Verified building on **0.17.0-dev.1818+7051f8e73** (2026-08-20):
+(master). Verified building on **0.17.0-dev.1884+841dd0eb8** (2026-08-26):
 compositor build clean, 629/629 tests pass, zero warnings.
 
 **Latest *stable* Zig is 0.16.0 (2026-04-13) and will NOT build this project** —

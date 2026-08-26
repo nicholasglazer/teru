@@ -9,7 +9,10 @@ See also: [teru.sh](https://teru.sh), [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Pre-built Binaries
 
-Download from [GitHub Releases](https://github.com/nicholasglazer/teru/releases):
+Download from [GitHub Releases](https://github.com/nicholasglazer/teru/releases).
+**The newest published build is v0.11.0 (2026-06-10)** - the release pipeline was broken
+between then and 0.15.4, so there are no 0.12-0.15.3 binaries. For current code, build
+from source (below):
 
 | Platform | File | Notes |
 |----------|------|-------|
@@ -22,9 +25,11 @@ Download from [GitHub Releases](https://github.com/nicholasglazer/teru/releases)
 ## Arch Linux (AUR)
 
 ```bash
-paru -S teru        # stable release
-paru -S teru-git    # latest main branch
+paru -S teru        # latest tagged release
 ```
+
+There is no `teru-git` package, and no AUR package for `teruwm` - build the compositor
+from source (below).
 
 Optional clipboard support: `paru -S xclip` (X11) or `paru -S wl-clipboard` (Wayland).
 
@@ -37,6 +42,9 @@ brew install nicholasglazer/teru/teru
 ```
 
 Builds from source via Zig. No Gatekeeper warnings since the binary is built locally.
+
+**The tap is behind.** It pins 0.6.3, and its `depends_on "zig"` resolves to stable Zig
+(0.16.0), which will not build current teru. For 0.15.x on macOS, build from source below.
 
 ### Manual
 
@@ -55,7 +63,8 @@ scoop bucket add teru https://github.com/nicholasglazer/scoop-teru
 scoop install teru
 ```
 
-Scoop handles extraction and PATH setup automatically. No SmartScreen warnings.
+Scoop handles extraction and PATH setup automatically. No SmartScreen warnings. The bucket
+tracks GitHub Releases, so it installs whatever the newest published release is.
 
 ### Manual
 
@@ -65,10 +74,12 @@ Download `teru-windows-x86_64.zip` from [Releases](https://github.com/nicholasgl
 
 ## Build from Source
 
-Requires **Zig 0.17 (master/dev)** — verified at `0.17.0-dev.1818+7051f8e73`
-(2026-08-20). The latest *stable* Zig (0.16.0) will not build this. Building `teruwm` also
-needs the GCC-15 CRT workaround the Makefile applies automatically (`--libc`); prefer `make`
-over a bare `zig build`. Linux builds need system libraries.
+Requires **Zig 0.17 (master/dev)** — minimum `0.17.0-dev.1509` (enforced by
+`build.zig.zon`), verified at `0.17.0-dev.1884+841dd0eb8` (2026-08-26). The latest *stable*
+Zig (0.16.0) will not build this. On Arch, `extra/zig` is 0.16 and cannot be used; install
+`zig-master-bin` (which provides `zig-unstable`) instead. Building `teruwm` may need the
+GCC CRT workaround the Makefile applies automatically (`--libc`); prefer `make` over a bare
+`zig build`. Linux builds need system libraries.
 
 ### Linux dependencies
 
@@ -82,11 +93,11 @@ over a bare `zig build`. Linux builds need system libraries.
 git clone https://github.com/nicholasglazer/teru.git
 cd teru
 
-# Terminal binary → zig-out/bin/teru (≈6.6 MB ReleaseFast)
+# Terminal binary → zig-out/bin/teru (≈1.5 MB, stripped by build.zig)
 zig build -Doptimize=ReleaseFast
 sudo install -m755 zig-out/bin/teru /usr/local/bin/teru
 
-# Compositor binary → zig-out/bin/teruwm (≈5.6 MB). Linux + wlroots only.
+# Compositor binary → zig-out/bin/teruwm (≈1.4 MB, stripped). Linux + wlroots only.
 zig build -Doptimize=ReleaseFast -Dcompositor
 sudo install -m755 zig-out/bin/teruwm /usr/local/bin/teruwm
 ```

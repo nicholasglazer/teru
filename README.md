@@ -56,13 +56,13 @@ human with a keyboard for.
 ## Install
 
 ```bash
-# Arch Linux (AUR)
-paru -S teru                         # builds teru; teruwm is a separate -git package
+# Arch Linux (AUR) - terminal only; teruwm has no package, build from source below
+paru -S teru
 
-# macOS
+# macOS (tap is behind - 0.6.3; build from source for current)
 brew install nicholasglazer/teru/teru
 
-# Windows
+# Windows (bucket is behind - 0.11.0)
 scoop bucket add teru https://github.com/nicholasglazer/scoop-teru
 scoop install teru
 
