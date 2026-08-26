@@ -234,6 +234,13 @@ pub fn execRestart(server: *Server) void {
 /// app cooperation. Panes without a snapshot (old-writer blob, remote
 /// backend, alloc failure) get the TIOCSWINSZ jiggle instead.
 pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
+    // Phase timings. Restore runs entirely on the event loop, so every
+    // millisecond here is a millisecond the compositor answers no input --
+    // which is exactly how a slow restore presents to the user ("mod+ does
+    // nothing for ten seconds"). Logged once so the cost is visible instead
+    // of being guessed at.
+    const t_start = teru.compat.monotonicNow();
+    var t_panes: i128 = 0;
     var rpath_buf: [128:0]u8 = undefined;
     const rpath = restartStatePath(&rpath_buf);
     const file = std.c.fopen(rpath, "rb") orelse {
@@ -412,6 +419,8 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
     // (TerminalPane.resize → Grid.resize) resets the scroll region and
     // discards the alt-screen backup even at unchanged rows/cols. Feeding
     // first would let arrange wipe the just-restored state.
+    t_panes = teru.compat.monotonicNow();
+
     var any_jiggled = false;
     const has_v3 = pos + 5 <= blob.len and std.mem.eql(u8, blob[pos..][0..4], "TWMG") and blob[pos + 4] == 3;
     if (has_v3) {
@@ -470,6 +479,13 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
             .remote => {},
         };
     }
+
+    const t_end = teru.compat.monotonicNow();
+    std.log.scoped(.session).info("restore timing: panes {d}ms, replay {d}ms, total {d}ms", .{
+        @divTrunc(t_panes - t_start, std.time.ns_per_ms),
+        @divTrunc(t_end - t_panes, std.time.ns_per_ms),
+        @divTrunc(t_end - t_start, std.time.ns_per_ms),
+    });
 
     server.scheduleRender();
     if (server.bar) |b| _ = b.render(server);
