@@ -15,6 +15,7 @@
 //!   {cpu}               — CPU usage % from /proc/stat
 //!   {cputemp}           — CPU temperature °C from /sys/class/hwmon
 //!   {battery} / {bat}   — Battery % from /sys/class/power_supply
+//!   {runtime} / {eta}   — Estimated time to empty (or to full while charging)
 //!   {watts} / {power}   — Power draw (W): battery power_now; on AC with
 //!                         idle battery, RAPL psys platform draw or "AC"
 //!   {keymap} / {lang}   — Active keyboard layout (teruwm only)
@@ -39,6 +40,7 @@ pub const WidgetKind = enum {
     cpu,      // CPU usage % from /proc/stat (sampled across render calls)
     cputemp,  // CPU temperature °C from /sys/class/hwmon
     battery,  // Battery % from /sys/class/power_supply
+    runtime,  // Time to empty/full from energy_now / power_now
     watts,    // Power draw: BAT*/power_now; on AC-idle, RAPL psys or "AC" tag
     keymap,   // Active keyboard layout (compositor only — populated in BarData)
     perf,
@@ -133,6 +135,7 @@ fn parseToken(token: []const u8) Widget {
     if (std.mem.eql(u8, token, "cpu")) return .{ .kind = .cpu };
     if (std.mem.eql(u8, token, "cputemp")) return .{ .kind = .cputemp };
     if (std.mem.eql(u8, token, "battery") or std.mem.eql(u8, token, "bat")) return .{ .kind = .battery };
+    if (std.mem.eql(u8, token, "runtime") or std.mem.eql(u8, token, "eta")) return .{ .kind = .runtime };
     if (std.mem.eql(u8, token, "watts") or std.mem.eql(u8, token, "power")) return .{ .kind = .watts };
     if (std.mem.eql(u8, token, "keymap") or std.mem.eql(u8, token, "lang")) return .{ .kind = .keymap };
     if (std.mem.eql(u8, token, "perf")) return .{ .kind = .perf };
@@ -169,8 +172,10 @@ fn parseToken(token: []const u8) Widget {
 
 pub const default_top_left = "{workspaces}";
 pub const default_top_center = "{title}";
-// Top right: keyboard layout + battery % + live wattage + time
-pub const default_top_right = "{keymap} | {battery} {watts} | {clock}";
+// Top right: keyboard layout + battery % + time-left + live wattage + clock.
+// {runtime} renders nothing when the battery is idle on AC, so this collapses
+// back to the old layout by itself rather than showing a dead placeholder.
+pub const default_top_right = "{keymap} | {battery}{runtime} {watts} | {clock}";
 // Bottom left: system stats — CPU %, CPU temp, RAM
 pub const default_bottom_left = "CPU {cpu} {cputemp} | RAM {mem}";
 // Bottom center hosts the desktop-notification marquee. Empty until a

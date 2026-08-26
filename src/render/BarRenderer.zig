@@ -125,12 +125,14 @@ var cache_battery_charging: bool = false;
 var cache_battery_present: bool = false;
 var cache_watts: f32 = 0.0;
 var cache_watts_mode: WattsMode = .none;
+var cache_runtime_min: ?u32 = null;
 
 var cache_last_mem_ns: i128 = 0;
 var cache_last_cpu_ns: i128 = 0;
 var cache_last_temp_ns: i128 = 0;
 var cache_last_battery_ns: i128 = 0;
 var cache_last_watts_ns: i128 = 0;
+var cache_last_runtime_ns: i128 = 0;
 
 /// Whether the module-level cache has been populated at least once.
 var cache_valid: bool = false;
@@ -197,6 +199,16 @@ pub fn refreshCachedData(now_ns: i128) bool {
         if (mode != cache_watts_mode or !approxEq(w, cache_watts)) changed = true;
         cache_watts = w;
         cache_watts_mode = mode;
+    }
+
+    // Runtime estimate: same 10s cadence as watts — it is derived from the
+    // same instantaneous power_now reading, so refreshing it faster would
+    // only add jitter, not accuracy.
+    if (now_ns - cache_last_runtime_ns > 10 * ns_per_s) {
+        cache_last_runtime_ns = now_ns;
+        const rt = readRuntimeMinutes();
+        if (rt != cache_runtime_min) changed = true;
+        cache_runtime_min = rt;
     }
 
     cache_valid = true;
@@ -314,6 +326,9 @@ pub fn renderWidgets(
             .battery => {
                 x = renderBatteryWidget(cpu, x, y, cw, s, max_x, &data.thresholds);
             },
+            .runtime => {
+                x = renderRuntimeWidget(cpu, x, y, cw, s, max_x);
+            },
             .watts => {
                 x = renderWattsWidget(cpu, x, y, cw, s, max_x, &data.thresholds);
             },
@@ -413,6 +428,12 @@ pub fn measureWidgets(widgets: []BarWidget.Widget, data: *const BarData, cw: usi
             .cpu => 6 * cw,       // "99%  " worst case
             .cputemp => 6 * cw,   // "99C"
             .battery => 6 * cw,   // "100%"
+            .runtime => blk: {    // " 3h05m" / " 47m" / "" when on AC
+                if (!cache_valid) break :blk 7 * cw;
+                const m = cache_runtime_min orelse break :blk 0;
+                var b: [16]u8 = undefined;
+                break :blk runtimeText(&b, m).len * cw;
+            },
             .watts => blk: {      // "+12.3W" / "~12.3W" / " AC"
                 if (!cache_valid) break :blk 7 * cw;
                 var b: [16]u8 = undefined;
@@ -749,6 +770,87 @@ fn renderBatteryWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usi
 }
 
 const Battery = struct { percent: u8, charging: bool };
+
+// ── Runtime widget ──────────────────────────────────────────────
+// "Time left": energy remaining divided by the CURRENT draw. Both terms are
+// instantaneous, so the figure moves with load — that is deliberate. It
+// answers "how long at what I am doing right now", which is the question you
+// ask before starting something, not a long-run average that would be wrong
+// the moment the workload changes.
+//
+// Discharging -> time to empty. Charging -> time to full. On AC with the
+// battery idle (a charge threshold holding it, the common case here) there is
+// no flow and no meaningful answer, so the widget renders NOTHING rather than
+// a bogus "inf" or a stale last value.
+
+fn batPath(buf: []u8, idx: u8, comptime leaf: []const u8) ?[:0]const u8 {
+    return std.fmt.bufPrintSentinel(buf, "/sys/class/power_supply/BAT{d}/" ++ leaf, .{idx}, 0) catch null;
+}
+
+fn readRuntimeMinutes() ?u32 {
+    var i: u8 = 0;
+    while (i < 4) : (i += 1) {
+        const status = batteryStatus(i);
+        if (status != .charging and status != .discharging) continue;
+
+        var b1: [96]u8 = undefined;
+        var b2: [96]u8 = undefined;
+        var b3: [96]u8 = undefined;
+
+        // energy_* (uWh) over power_now (uW) is the direct form. Platforms
+        // exposing only charge_* (uAh) and current_now (uA) work unchanged:
+        // the voltage term cancels in the ratio, so it is never needed.
+        var level = if (batPath(&b1, i, "energy_now")) |q| readSysfsInt(q) else null;
+        var full = if (batPath(&b2, i, "energy_full")) |q| readSysfsInt(q) else null;
+        var rate = if (batPath(&b3, i, "power_now")) |q| readSysfsInt(q) else null;
+
+        if (level == null or rate == null) {
+            level = if (batPath(&b1, i, "charge_now")) |q| readSysfsInt(q) else null;
+            full = if (batPath(&b2, i, "charge_full")) |q| readSysfsInt(q) else null;
+            rate = if (batPath(&b3, i, "current_now")) |q| readSysfsInt(q) else null;
+        }
+
+        const have_level = level orelse continue;
+        const have_rate = rate orelse continue;
+        if (have_rate == 0) continue; // idle on AC — undefined, not infinite
+
+        var remaining: u64 = have_level;
+        if (status == .charging) {
+            const have_full = full orelse continue;
+            remaining = if (have_full > have_level) have_full - have_level else 0;
+        }
+
+        // Cap at 99h59m: a larger figure means the rate sample is garbage
+        // (a near-zero denominator right after resume), not a real estimate.
+        return @intCast(@min((remaining * 60) / have_rate, 99 * 60 + 59));
+    }
+    return null;
+}
+
+fn runtimeText(buf: []u8, minutes: u32) []const u8 {
+    const h = minutes / 60;
+    const m = minutes % 60;
+    if (h == 0) return std.fmt.bufPrint(buf, " {d}m", .{m}) catch "?";
+    return std.fmt.bufPrint(buf, " {d}h{d:0>2}m", .{ h, m }) catch "?";
+}
+
+fn renderRuntimeWidget(cpu: *SoftwareRenderer, start_x: usize, y: usize, cw: usize, s: anytype, max_x: usize) usize {
+    var x = start_x;
+    const mins = if (cache_valid) cache_runtime_min else readRuntimeMinutes();
+    const m = mins orelse return x; // nothing to say on AC — render nothing
+    var buf: [16]u8 = undefined;
+    const text = runtimeText(&buf, m);
+    // Coloured on MINUTES, not percent, and deliberately not from the battery
+    // thresholds: 30 minutes left is urgent whatever the gauge reads, and on a
+    // degraded pack the percentage and the time disagree badly.
+    const color = rampColor(m, 60, 30, true, s);
+    for (text) |ch| {
+        Ui.blitCharAt(cpu, ch, x, y, color);
+        x += cw;
+        if (x >= max_x) break;
+    }
+    return x;
+}
 
 fn readBattery() ?Battery {
     var i: u8 = 0;
