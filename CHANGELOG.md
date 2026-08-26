@@ -1,6 +1,84 @@
 # Changelog
 
-## 0.15.3 — 2026-08-19
+## 0.15.4 — 2026-08-26
+
+Variable refresh rate for fullscreen clients, a battery-runtime readout in the
+bar, four scratchpad fixes, and scrollback that survives a reattach.
+
+Rolls up the 0.15.2 and 0.15.3 version bumps, which were never tagged — the
+previous public release was 0.15.1.
+
+### Added
+
+- **Variable refresh rate while a client is fullscreen.** Frame delivery was
+  pinned to whole vblanks: on a 165 Hz panel every flip landed on a 6.06 ms
+  boundary, so a frame finishing a hair past the deadline was not shown late,
+  it was shown a whole refresh late. Measured in Overwatch: 77.3% of frames
+  took one vblank, 21.8% took two, nothing in between.
+
+  `wp_tearing_control_v1` cannot fix this on a hybrid-GPU laptop. An async page
+  flip requires direct scanout, and `startt` pins scanout and render to the
+  iGPU so the dGPU can suspend — so every dGPU frame is copied into iGPU memory
+  first and the async flip is refused every time. VRR carries no such
+  requirement: it is a CRTC property that applies to ordinary composited flips,
+  so it works where tearing cannot, on every Optimus machine.
+
+  Adaptive sync is written only on frames where the desired state changes,
+  since toggling it can force a modeset, and a `wlr_output_test_state()` probe
+  drops the request rather than lose the frame if the driver refuses. Gated on
+  fullscreen: VRR needs no client opt-in because it is invisible to the client,
+  but some panels flicker when the refresh rate swings while the screen is
+  mostly static — the desktop's normal condition. The desktop path is
+  byte-identical to before.
+
+  Verified in-game: 133.5 → 155.6 fps, mean frame 7.49 → 6.43 ms, the
+  two-vblank bucket 21.8% → 4%. The comment in `Output.zig` claiming this panel
+  had no VRR was simply wrong, and is corrected.
+
+- **`{runtime}` (alias `{eta}`) — time until the battery is empty or full.**
+  The bar showed charge percent and live wattage but not the number you
+  actually act on. On a degraded pack the two disagree badly: 84% of a 55 Wh
+  cell that has lost a third of its design capacity is not 84% of the runtime
+  it used to buy.
+
+  It divides `energy_now` by `power_now` — time to empty while discharging,
+  time to full while charging. Both terms are instantaneous, so the figure
+  tracks what you are doing right now rather than smoothing it away. It renders
+  **nothing** while the battery is idle on AC, since a charge threshold holding
+  the pack means zero flow and the answer is undefined rather than infinite, so
+  the default format collapses back to its previous layout instead of showing a
+  dead placeholder. Coloured on minutes rather than percent — yellow under 60,
+  red under 30 — because half an hour left is urgent whatever the gauge says.
+  Estimates cap at `99h59m`; anything larger is a near-zero denominator right
+  after resume, not a real reading. Falls back to `charge_now`/`current_now`
+  where there are no `energy_*` nodes.
+
+  It is now part of the default top-right bar, refreshed on the same 10s
+  cadence as `{watts}` since it reads the same `power_now` sample:
+
+  ```
+  {keymap} | {battery}{runtime} {watts} | {clock}
+  ```
+
+- **`mouse_debounce_ms` — an optional guard for a worn micro-switch.** A
+  failing switch opens for a moment mid-hold, so the kernel reports a RELEASE
+  and then a PRESS a few milliseconds later, and every client sees the hold
+  break: a game stops firing mid-burst, a drag-select drops, a slider lets go.
+  libinput has its own filter, but its release-side window is 12 ms and only
+  arms after it has already watched the button bounce once, so a badly worn
+  switch leaks straight through.
+
+  The setting holds a RELEASE; a PRESS for the same button inside that window
+  drops the pending release and is itself swallowed, so the client never learns
+  the hold broke. Presses are never delayed, so click latency is unchanged.
+  Only holds are guarded — a window wide enough to catch real chatter is also
+  wide enough to swallow the gap in a fast double-click and merge it into one
+  long press, so a release is held only when it ends a press that already
+  lasted `mouse_debounce_hold_ms` (default `150`). A tap's release goes
+  straight through and double-click spacing is untouched.
+
+  **Off by default.** This is a workaround for failing hardware, not something
+  a healthy mouse should pay latency for.
 
 ### Fixed
 
@@ -17,10 +95,6 @@
   scene-rects). Border returns on exit. Verified live for both a native
   terminal and a wayland client (foot).
 
-## 0.15.2 — 2026-08-19
-
-### Fixed
-
 - **Scrolling a reattached SSH session showed nothing above the current screen.**
   The 0.15.0 wheel scroll only ever worked on output produced *while attached*:
   the nested `teru -n` client rebuilds its scrollback by feeding daemon `.output`
@@ -33,6 +107,73 @@
   ordering the teruwm hot-restart already uses. History transfers only on the
   initial attach, not on resize re-syncs (the client already holds it). New
   regression test: `tests/scrollback_attach_e2e.py`.
+
+- **A scratchpad over a fullscreen game killed the keyboard for good.** Popping
+  the scratchpad over a fullscreen X11 game left the game with a working mouse
+  and a permanently dead keyboard, unrecoverable without restarting it.
+  `focusScratchpad` deactivated the X surface whenever a compositor-owned
+  overlay took the keyboard — and a fullscreen DX game under Wine/Proton
+  answers deactivation by minimising its own HWND, after which a minimised Wine
+  window declines every `WM_TAKE_FOCUS`. For an ICCCM Globally-Active client,
+  which is Wine's default, that is the only channel wlroots has, so focus could
+  never come back. The game also drops its fullscreen request on the way down,
+  taking VRR and direct scanout with it, so this presented as a framerate drop
+  as much as an input bug.
+
+  teruwm already draws this distinction for override-redirect popups, and a
+  scratchpad is the same class of overlay, so the surface is now *parked*: the
+  deactivation is deferred and delivered only once focus genuinely lands
+  somewhere that is not this scratchpad — which, in the common case of the
+  scratchpad closing again, is never.
+
+- **An open scratchpad did not survive `Mod+'` at all.** Restarting with the
+  scratchpad visible — the usual case, since you restart while using it —
+  brought it back as an ordinary tiled terminal, and the next `Mod+t` spawned a
+  *second* scratchpad beside it instead of finding the first.
+  `writeScratchpadNames` only persisted a pane's scratchpad tag while the pane
+  sat in the hidden workspace, and a shown scratchpad is on a real workspace by
+  definition, so its name was never written and the toggle's by-name lookup
+  found nothing. Only a scratchpad already hidden at save time round-tripped —
+  the case you hit least. The name is now saved for any pane carrying a tag,
+  and the restore side parks on either signal: the hidden workspace, or a name
+  present in the side file.
+
+- **A restored scratchpad came back tiled and full-screen.** Even once it
+  returned correctly hidden and correctly named, the first toggle showed it as
+  a flat, full-output terminal. The restore path rebuilt everything the 13-byte
+  pane record could carry — workspace, scratchpad tag, display name — but not
+  the two things it could not: the floating flag and the rect. It now sets both
+  through the same `rectForName`/`defaultRect` path the create side uses, so a
+  scratchpad that survives a restart is indistinguishable from a freshly
+  spawned one.
+
+- **A moved scratchpad snapped back to its default place on toggle.** Drag the
+  scratchpad somewhere, hide it, show it again — and it was back where the
+  config put it, because `show()` rebuilt the rect from `rectForName()` on
+  every single show. Your placement is now remembered as *fractions* of the
+  output, the same form the `[scratchpad.NAME]` rule already uses, so a
+  hand-placed scratchpad survives a resolution change or a move to a
+  different-sized monitor exactly as the rule-based path does, instead of being
+  pinned to stale pixels somewhere off-screen; the remembered rect is clamped
+  to the current output on the way back out. Until a scratchpad is moved for
+  the first time the config rule stays authoritative, so nothing changes for
+  anyone who never drags one.
+
+### Notes
+
+- **Startup, restore and key-edge timing logs are diagnostic scaffolding**, not
+  a supported interface. They exist for an unresolved "`Mod+…` does nothing for
+  ten seconds after `Mod+'`" investigation: the compositor now logs its startup
+  phases (init, config, socket, backend, restore), the restore split (pane
+  reconstruction vs snapshot and scrollback replay), and the first 40 key edges
+  with a millisecond offset from the same clock plus the route each edge took.
+  The key probe self-disarms after 40 edges — one integer compare thereafter.
+- `CONTRIBUTING` said "Zig 0.16" in three places; the project requires 0.17
+  master (`build.zig.zon` sets `minimum_zig_version = "0.17.0-dev"`) and a
+  release Zig cannot build it, so following that file got you a compiler that
+  does not work. `ARCHITECTURE` gains a "Presentation — vsync, tearing, and
+  VRR" section: the measured vblank-quantisation histogram, the rule for which
+  mechanism applies where, and the diagnostic recipes.
 
 ## 0.15.1 — 2026-08-19
 
