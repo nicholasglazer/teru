@@ -20,6 +20,7 @@ const TerminalPane = @import("TerminalPane.zig");
 const Node = @import("Node.zig");
 const wlr = @import("wlr.zig");
 const Reaper = @import("Reaper.zig");
+const Scratchpad = @import("ServerScratchpad.zig");
 
 extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
@@ -686,6 +687,13 @@ fn parkRestoredScratchpad(server: *Server, tp: *TerminalPane, active_ws: u8, nam
     }
     if (server.nodes.findById(nid)) |slot| {
         server.nodes.moveSlotToWorkspace(slot, Node.HIDDEN_WS);
+        // A scratchpad is a FLOATING pane. The create path sets this
+        // (ServerScratchpad.spawn) but the 13-byte pane record has no room for
+        // it, so without this line a restored scratchpad comes back correctly
+        // tagged and hidden yet still TILED — and the next toggle hands it to
+        // the tiling engine, which lays it out full-size. That is the "my
+        // scratchpads became flat full-screen terminals after $mod+'" bug.
+        server.nodes.floating[slot] = true;
         if (name) |nm| {
             if (nm.len > 0) {
                 server.nodes.setScratchpad(slot, nm);
@@ -698,6 +706,16 @@ fn parkRestoredScratchpad(server: *Server, tp: *TerminalPane, active_ws: u8, nam
                 } else |_| {}
             }
         }
+        // Geometry does not survive the pane record either. Re-derive it from
+        // the same [scratchpad.NAME] rule the create path uses, so a restored
+        // scratchpad reappears at its configured rect instead of whatever
+        // stale or zero box the restore left on the slot.
+        const rect = if (name) |nm|
+            Scratchpad.rectForName(server, nm)
+        else
+            Scratchpad.defaultRect(server);
+        tp.setPosition(rect.x, rect.y);
+        server.nodes.applyRect(slot, rect.x, rect.y, rect.w, rect.h);
     }
     if (server.getOrCreateHiddenTree()) |parked| tp.reparent(parked);
     tp.setVisible(false);
