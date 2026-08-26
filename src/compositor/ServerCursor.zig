@@ -32,6 +32,7 @@ const mouse_report = teru.mouse_report;
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
 const ServerDebounce = @import("ServerDebounce.zig");
+const Scratchpad = @import("ServerScratchpad.zig");
 const XdgView = @import("XdgView.zig");
 const Focus = @import("ServerFocus.zig");
 const ServerClipboard = @import("ServerClipboard.zig");
@@ -434,6 +435,11 @@ fn endGrab(server: *Server, button: u32, state: u32, time: u32) void {
                         server.nodes.width[slot],
                         server.nodes.height[slot],
                     );
+                    // If this was a scratchpad, the drag just became its
+                    // preferred placement. Without this, show() would rebuild
+                    // the rect from the config rule on the next toggle and
+                    // throw the move away (no-op for non-scratchpads).
+                    Scratchpad.rememberRect(server, slot);
                 }
             }
         }

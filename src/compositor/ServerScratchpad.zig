@@ -25,6 +25,47 @@ const max_auto_name_len = 32;
 
 pub const ScratchRect = struct { x: i32, y: i32, w: u32, h: u32 };
 
+/// Record a scratchpad's CURRENT geometry as the user's preferred placement,
+/// as fractions of the output. Called when an interactive move/resize drag
+/// ends (ServerCursor). From then on show() honours this instead of the
+/// [scratchpad.NAME] rule -- moving a scratchpad should move it, and having
+/// it snap home on the next toggle is not a feature.
+pub fn rememberRect(server: *Server, slot: u16) void {
+    if (slot >= NodeRegistry.max_nodes) return;
+    if (server.nodes.getScratchpad(slot).len == 0) return; // not a scratchpad
+    const dims = server.activeOutputDims();
+    const ow: f32 = @floatFromInt(@max(1, dims.w));
+    const oh: f32 = @floatFromInt(@max(1, dims.h));
+    server.nodes.scratch_frac[slot] = .{
+        @as(f32, @floatFromInt(server.nodes.pos_x[slot])) / ow,
+        @as(f32, @floatFromInt(server.nodes.pos_y[slot])) / oh,
+        @as(f32, @floatFromInt(server.nodes.width[slot])) / ow,
+        @as(f32, @floatFromInt(server.nodes.height[slot])) / oh,
+    };
+    server.nodes.scratch_frac_set[slot] = true;
+}
+
+/// The user's remembered placement, re-evaluated against the CURRENT output
+/// so it survives a resolution change exactly like the rule-based path does.
+fn rememberedRect(server: *const Server, slot: u16) ScratchRect {
+    const dims = server.activeOutputDims();
+    const ow: f32 = @floatFromInt(dims.w);
+    const oh: f32 = @floatFromInt(dims.h);
+    const f = server.nodes.scratch_frac[slot];
+    // Clamp to the output: a fraction captured on a wider monitor would
+    // otherwise place the window fully off-screen and strand it.
+    const w: u32 = @min(@max(1, @as(u32, @intFromFloat(@max(1.0, f[2] * ow)))), dims.w);
+    const h: u32 = @min(@max(1, @as(u32, @intFromFloat(@max(1.0, f[3] * oh)))), dims.h);
+    const max_x: i32 = @intCast(dims.w - w);
+    const max_y: i32 = @intCast(dims.h - h);
+    return .{
+        .x = @min(@max(0, @as(i32, @intFromFloat(f[0] * ow))), max_x),
+        .y = @min(@max(0, @as(i32, @intFromFloat(f[1] * oh))), max_y),
+        .w = w,
+        .h = h,
+    };
+}
+
 /// Scratchpad toggle semantics:
 ///   (a) no such scratchpad     → spawn a floating terminal, tag it, show it
 ///   (b) hidden (HIDDEN_WS)     → promote to active workspace
@@ -210,7 +251,14 @@ fn show(server: *Server, slot: u16, ws: u8) void {
     // Look up per-name rect: fraction-of-output-size, evaluated at
     // every show() so multi-monitor + resolution change Just Work.
     const name = server.nodes.getScratchpad(slot);
-    const rect = rectForName(server, name);
+    // A hand-placed scratchpad keeps where the user put it. Only fall back to
+    // the [scratchpad.NAME] rule while it has never been moved -- recomputing
+    // the rule on every show() is what made a moved scratchpad snap back to
+    // the default position on the next toggle.
+    const rect = if (server.nodes.scratch_frac_set[slot])
+        rememberedRect(server, slot)
+    else
+        rectForName(server, name);
     server.nodes.applyRect(slot, rect.x, rect.y, rect.w, rect.h);
 
     if (server.nodes.kind[slot] == .terminal) {

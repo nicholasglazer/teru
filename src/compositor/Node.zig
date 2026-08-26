@@ -106,6 +106,16 @@ by_id: std.AutoHashMapUnmanaged(u64, u16) = .empty,
 scratchpad_name: [max_nodes][max_scratchpad_name]u8 = @splat(@splat(0)),
 scratchpad_name_len: [max_nodes]u8 = @splat(0),
 
+/// A scratchpad the user has MOVED or RESIZED by hand, stored as fractions
+/// of the output it was placed on -- [x, y, w, h] -- not pixels. Fractions,
+/// because the per-name rule is a fraction too: that is what lets a
+/// scratchpad keep its place across a resolution change or a move to a
+/// different-sized monitor. Pixels would pin it off-screen.
+/// Only consulted when scratch_frac_set is true; until the user moves it,
+/// the [scratchpad.NAME] rule stays authoritative.
+scratch_frac: [max_nodes][4]f32 = @splat(@splat(0)),
+scratch_frac_set: [max_nodes]bool = @splat(false),
+
 // Bookkeeping
 count: u16 = 0,
 
