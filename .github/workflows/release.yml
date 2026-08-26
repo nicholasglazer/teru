@@ -8,6 +8,7 @@ jobs:
   build-linux:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - name: linux-x86_64
@@ -20,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.17.0-dev.813+2153f8143
+          version: master
       - name: Install deps
         run: sudo apt-get install -y libxcb1-dev libxcb-shm0-dev libxkbcommon-dev libwayland-dev
       - name: Build
@@ -43,7 +44,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.17.0-dev.813+2153f8143
+          version: master
       - name: Build (cross-compile, Win32 + ConPTY; no X11/Wayland)
         run: zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-gnu -Dx11=false -Dwayland=false
       - name: Package
@@ -59,6 +60,7 @@ jobs:
 
   build-macos:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - runner: macos-15
@@ -68,7 +70,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.17.0-dev.813+2153f8143
+          version: master
       - name: Build
         run: zig build -Doptimize=ReleaseSafe
       - name: Package
