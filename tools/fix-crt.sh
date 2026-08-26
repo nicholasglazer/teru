@@ -74,8 +74,10 @@ done
 
 # Copy GCC CRT files (used by some targets)
 for f in crtbegin.o crtbeginS.o crtend.o crtendS.o crtbeginT.o; do
-    src="/usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/$f"
-    [ -f "$src" ] && cp "$src" "$FIX_DIR/$f"
+    # Glob the GCC version: hardcoding it meant this loop silently copied
+    # nothing once Arch moved past 15.2.1.
+    src="$(ls -1d /usr/lib/gcc/x86_64-pc-linux-gnu/*/"$f" 2>/dev/null | tail -1)"
+    [ -n "$src" ] && [ -f "$src" ] && cp "$src" "$FIX_DIR/$f"
 done
 
 # Symlink system libraries into crt_fix_dir — Zig's linker resolves libc.so,
