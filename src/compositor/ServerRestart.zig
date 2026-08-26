@@ -371,11 +371,19 @@ pub fn restoreSession(server: *Server, allocator: std.mem.Allocator) void {
         };
         if (i < tps.len) tps[i] = tp;
 
-        // Re-park scratchpads (saved with HIDDEN_WS) instead of leaving them
-        // tiled on the active workspace. Runs before the post-loop
-        // arrangeworkspace(active_ws), so the un-tiled node is never laid out.
-        if (raw_ws == Node.HIDDEN_WS) {
-            parkRestoredScratchpad(server, tp, active_ws, scratchNameForIndex(scratch_names, i));
+        // Re-park scratchpads instead of leaving them tiled. Two ways in:
+        // HIDDEN_WS means it was parked when we saved, and a name in the side
+        // file means it was a scratchpad that happened to be VISIBLE. Both come
+        // back parked — one toggle away, with their shell and scrollback
+        // intact, which is what "my scratchpad is still there" means. Runs
+        // before the post-loop arrangeworkspace(), so the un-tiled node is
+        // never laid out.
+        const sp_name = scratchNameForIndex(scratch_names, i);
+        if (raw_ws == Node.HIDDEN_WS or sp_name != null) {
+            // `ws`, not active_ws: a parked pane was clamped to active_ws
+            // anyway, but a visible scratchpad sits on its own workspace and
+            // must be removed from THAT one or the node stays tiled there.
+            parkRestoredScratchpad(server, tp, ws, sp_name);
         }
 
         server.next_node_id += 1;
@@ -640,12 +648,18 @@ fn writeScratchpadNames(server: *Server) void {
     for (server.terminal_panes) |maybe_tp| {
         if (maybe_tp) |tp| {
             if (server.nodes.findById(tp.node_id)) |slot| {
-                if (server.nodes.workspace[slot] == Node.HIDDEN_WS) {
-                    const nm = server.nodes.getScratchpad(slot);
-                    if (nm.len > 0) {
-                        const line = std.fmt.bufPrint(buf[pos..], "{d} {s}\n", .{ idx, nm }) catch "";
-                        pos += line.len;
-                    }
+                // Any pane carrying a scratchpad tag, NOT just one parked in
+                // HIDDEN_WS. A scratchpad that is currently SHOWN lives on a
+                // real workspace, and gating on HIDDEN_WS here meant its name
+                // was never written — so restore could not recognise it, it
+                // came back as an ordinary tiled terminal, and the next toggle
+                // spawned a second scratchpad beside it. Restarting with the
+                // scratchpad open is the common case, so that was the usual
+                // outcome, not an edge case.
+                const nm = server.nodes.getScratchpad(slot);
+                if (nm.len > 0) {
+                    const line = std.fmt.bufPrint(buf[pos..], "{d} {s}\n", .{ idx, nm }) catch "";
+                    pos += line.len;
                 }
             }
             idx += 1;
