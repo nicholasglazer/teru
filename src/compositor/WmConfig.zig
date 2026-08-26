@@ -338,6 +338,29 @@ pointer_latency_debug: bool = false,
 /// individually as a stall. Only consulted when `pointer_latency_debug` is on.
 pointer_latency_stall_ms: u32 = 50,
 
+/// Hold a pointer-button RELEASE this many milliseconds before forwarding it,
+/// so a worn micro-switch that flickers open mid-hold can't break the hold. A
+/// PRESS arriving inside the window cancels the pending release and is itself
+/// swallowed, leaving the client's view of the button continuously down.
+/// Presses are never delayed, so click latency is unchanged — only release is
+/// late, by at most this window.
+///
+/// 0 (default) disables the filter entirely: no state is kept and the button
+/// path is untouched. libinput already debounces at 12 ms, so only reach for
+/// this when a switch is degraded enough to bounce wider than that — the
+/// symptom is a hold that drops on its own (a game stops firing mid-burst, a
+/// drag-select lets go). Keep it under ~40 ms: a window longer than a fast
+/// deliberate re-click will merge a double-click into one long press.
+mouse_debounce_ms: u32 = 0,
+
+/// Minimum press duration (ms) for `mouse_debounce_ms` to guard the release
+/// that ends it. Below this the press was a tap and its release is forwarded
+/// untouched, so a fast double-click is never merged into one long press.
+/// The default suits the failure this exists for — a hold that dies mid-way,
+/// while single clicks stay fine. 0 guards every release (and re-opens the
+/// double-click hazard). Ignored when `mouse_debounce_ms` is 0.
+mouse_debounce_hold_ms: u32 = 150,
+
 /// Snap the scrollback view back to the live bottom when the user TYPES or
 /// PASTES into a pane (like every terminal — you're interacting, so show the
 /// prompt). True by default; set false to keep the scrolled-back position and
@@ -769,6 +792,10 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.scroll_to_bottom_on_input = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "copy_on_select")) {
         self.copy_on_select = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+    } else if (std.mem.eql(u8, key, "mouse_debounce_ms")) {
+        self.mouse_debounce_ms = std.fmt.parseInt(u32, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "mouse_debounce_hold_ms")) {
+        self.mouse_debounce_hold_ms = std.fmt.parseInt(u32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "wheel_scroll_lines")) {
         self.wheel_scroll_lines = std.fmt.parseInt(u32, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "touchpad_scroll_factor")) {

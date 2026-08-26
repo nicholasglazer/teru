@@ -31,6 +31,7 @@ const Selection = teru.Selection;
 const mouse_report = teru.mouse_report;
 const wlr = @import("wlr.zig");
 const Server = @import("Server.zig");
+const ServerDebounce = @import("ServerDebounce.zig");
 const XdgView = @import("XdgView.zig");
 const Focus = @import("ServerFocus.zig");
 const ServerClipboard = @import("ServerClipboard.zig");
@@ -146,13 +147,17 @@ pub fn handleCursorButton(listener: *wlr.wl_listener, data: ?*anyopaque) callcon
     const server = wlr.listenerParent(Server, "cursor_button", listener);
     const event: *wlr.wlr_pointer_button_event = @ptrCast(@alignCast(data orelse return));
     server.notifyActivity();
-    processCursorButton(
-        server,
-        wlr.miozu_pointer_button_button(event),
-        wlr.miozu_pointer_button_state(event),
-        wlr.miozu_pointer_button_time(event),
-        null, // null = read live xkb state
-    );
+
+    const button = wlr.miozu_pointer_button_button(event);
+    const state = wlr.miozu_pointer_button_state(event);
+    const time = wlr.miozu_pointer_button_time(event);
+
+    // Chatter guard for a worn micro-switch — holds a release briefly so a
+    // bouncing contact can't break a hold. No-op unless configured on; the
+    // deferred release re-enters processCursorButton from its timer.
+    if (ServerDebounce.gate(server, button, state, time)) return;
+
+    processCursorButton(server, button, state, time, null); // null = read live xkb state
 }
 
 /// Number of font-zoom steps for a wheel `delta_discrete` value. wlroots 0.18

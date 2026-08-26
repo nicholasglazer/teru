@@ -23,4 +23,5 @@ test {
     _ = @import("KeysOsd.zig");
     _ = @import("ServerInput.zig"); // foldKeysym / buildMods / dispatch tests
     _ = @import("ServerCursor.zig"); // zoomStepsForDiscrete (v120) test
+    _ = @import("ServerDebounce.zig"); // pointer chatter guard state machine
 }

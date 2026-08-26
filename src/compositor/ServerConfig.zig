@@ -8,6 +8,7 @@
 const std = @import("std");
 const wlr = @import("wlr.zig");
 const WmConfig = @import("WmConfig.zig");
+const ServerDebounce = @import("ServerDebounce.zig");
 const Server = @import("Server.zig");
 const LeaderConfig = @import("LeaderConfig.zig");
 const KeysOsd = @import("KeysOsd.zig");
@@ -298,6 +299,12 @@ pub fn applyWmBar(self: *Server) void {
 /// Reload compositor config from disk and re-apply live.
 /// Called by Mod+Shift+R keybind or teruwm_reload_config MCP tool.
 pub fn reloadWmConfig(self: *Server) void {
+    // Deliver any button release the chatter guard is holding before the
+    // window it was parked under can change (or vanish). Dropping the filter
+    // to 0 with a release still in flight would otherwise leave that button
+    // stuck down for good — nothing would be left to forward it.
+    ServerDebounce.flush(self);
+
     // Re-read config file (requires io — use a dummy Io for file access)
     // Use libc fopen/fread to reload config (no Io needed). Fill in place:
     // wm_config holds self-referential slices, and this reload path is live

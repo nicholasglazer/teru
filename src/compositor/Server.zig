@@ -12,6 +12,7 @@ const Launcher = @import("Launcher.zig");
 const LeaderKey = teru.LeaderKey; // shared engine (config/LeaderKey.zig)
 const LeaderPanel = @import("LeaderPanel.zig");
 const KeysOsd = @import("KeysOsd.zig");
+const ServerDebounce = @import("ServerDebounce.zig");
 const LeaderConfig = @import("LeaderConfig.zig");
 const Bar = @import("Bar.zig");
 const WmConfig = @import("WmConfig.zig");
@@ -459,6 +460,13 @@ bar_tick_last_sig: u64 = 0,
 /// Keys-OSD expiry timer — one-shot, armed only while OSD entries are
 /// visible (KeysOsd.armTimer), released in releaseTimers like the rest.
 keys_osd_timer_src: ?*wlr.wl_event_source = null,
+
+// Pointer-button debounce (ServerDebounce). Inert unless
+// wm_config.mouse_debounce_ms is non-zero.
+debounce_pending: [ServerDebounce.max_pending]ServerDebounce.Pending = @splat(.{}),
+debounce_press: [ServerDebounce.max_pending]ServerDebounce.Press = @splat(.{}),
+debounce_timer_src: ?*wlr.wl_event_source = null,
+debounce_suppressed: u64 = 0,
 
 // Frames since the last PTY write from input (key, paste, mouse). Used by
 // Output.handleFrame's edge-trigger fallback poll: poll every vsync for
@@ -1074,6 +1082,7 @@ pub fn releaseTimers(self: *Server) void {
         &self.keybind_repeat_src,  &self.bar_tick_src,
         &self.terminal_repeat_src, &self.mouse_path_timer_src,
         &self.keys_osd_timer_src,  &self.socket_guard_src,
+        &self.debounce_timer_src,
     };
     for (srcs) |slot| {
         if (slot.*) |src| {
