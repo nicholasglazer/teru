@@ -338,6 +338,11 @@ fn unmapView(view: *XwaylandView) void {
     if (server.focused_xwayland == view.surface) {
         server.focused_xwayland = null;
     }
+    // A parked surface (deferred deactivation, see ServerScratchpad) must be
+    // dropped here too — flushing it after the surface dies is a use-after-free.
+    if (server.parked_xwayland == view.surface) {
+        server.parked_xwayland = null;
+    }
 
     // Raw *wlr_surface — keyed off the surface itself, not node_id.
     if (wlr.miozu_xwayland_surface_surface(view.surface)) |s| {
@@ -372,6 +377,11 @@ fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     server.clearFocusRefs(view.node_id);
     if (server.focused_xwayland == view.surface) {
         server.focused_xwayland = null;
+    }
+    // A parked surface (deferred deactivation, see ServerScratchpad) must be
+    // dropped here too — flushing it after the surface dies is a use-after-free.
+    if (server.parked_xwayland == view.surface) {
+        server.parked_xwayland = null;
     }
     if (wlr.miozu_xwayland_surface_surface(view.surface)) |s| {
         if (server.last_pointer_surface == s) server.last_pointer_surface = null;

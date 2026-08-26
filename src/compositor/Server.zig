@@ -365,6 +365,11 @@ prev_workspace: ?u8 = null,
 // to restore the exact pre-scratchpad window — terminal, XDG or XWayland,
 // tiled or floating. null when nothing meaningful was focused. Mirrors the
 // prev_workspace single-slot pattern (toggle is synchronous).
+/// An X11 surface whose deactivation has been DEFERRED because a
+/// compositor-owned overlay (a scratchpad) took the keyboard. It is still
+/// activated as far as the X client knows — see ServerScratchpad.focusScratchpad
+/// for why telling it otherwise is harmful. Flushed by ServerFocus.flushParkedXwayland.
+parked_xwayland: ?*wlr.wlr_xwayland_surface = null,
 scratchpad_prev_focus: ?u64 = null,
 
 // User-defined spawn chord commands. Each slot pairs with the

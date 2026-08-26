@@ -37,6 +37,17 @@ const NodeRegistry = @import("Node.zig");
 /// clients ack'd configure first and by the time they handled the
 /// press the release was already in the next batch, so the click
 /// dispatcher dropped it.
+/// Deactivate a surface parked by the scratchpad path, unless focus is landing
+/// right back on it. Parking exists so a transient overlay doesn't tell a
+/// fullscreen game it lost the active window; once focus genuinely moves
+/// elsewhere the client does need to hear it, so flush here.
+pub fn flushParkedXwayland(server: *Server, keep: ?*wlr.wlr_xwayland_surface) void {
+    const parked = server.parked_xwayland orelse return;
+    server.parked_xwayland = null;
+    if (keep) |k| if (k == parked) return;
+    wlr.wlr_xwayland_surface_activate(parked, false);
+}
+
 pub fn focusView(server: *Server, view: *XdgView) void {
     // Deactivate the previous focused view if different.
     if (server.focused_view) |prev| {
@@ -48,6 +59,7 @@ pub fn focusView(server: *Server, view: *XdgView) void {
         }
     }
 
+    flushParkedXwayland(server, null);
     _ = wlr.wlr_xdg_toplevel_set_activated(view.toplevel, true);
     if (view.ftl_handle) |h| wlr.wlr_foreign_toplevel_handle_v1_set_activated(h, true);
     const was_focused = (server.focused_view == view and server.focused_terminal == null);
@@ -385,6 +397,11 @@ pub fn reassertFloatStratum(server: *Server) void {
 /// because the seat had no keyboard-focused surface.
 pub fn focusXwaylandSurface(server: *Server, xw: *wlr.wlr_xwayland_surface) void {
     const target = wlr.miozu_xwayland_surface_surface(xw) orelse return;
+
+    // Focus is moving for real now: settle any deferred deactivation, unless we
+    // are returning to the very surface that was parked (the common case — the
+    // scratchpad closing and handing focus back to the game).
+    flushParkedXwayland(server, xw);
 
     // Deactivate prior XDG toplevel, if any — same XOR invariant the
     // XdgView path preserves.

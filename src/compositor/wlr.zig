@@ -826,6 +826,17 @@ pub const XCB_STACK_MODE_ABOVE: c_int = 0;
 pub const XCB_STACK_MODE_BELOW: c_int = 1;
 pub extern "wlroots-0.18" fn wlr_xwayland_set_seat(xwayland: *wlr_xwayland, seat: *wlr_seat) callconv(.c) void;
 
+// ICCCM input models (wlr/xwayland/xwayland.h). Which one a client advertises
+// decides whether wlroots will call XSetInputFocus for it at all: for GLOBAL
+// ("Globally Active" — WM_HINTS.input == False plus WM_TAKE_FOCUS, which is
+// Wine/Proton's default) wlroots only sends WM_TAKE_FOCUS and trusts the client
+// to focus itself.
+pub const WLR_ICCCM_INPUT_MODEL_NONE: c_int = 0;
+pub const WLR_ICCCM_INPUT_MODEL_PASSIVE: c_int = 1;
+pub const WLR_ICCCM_INPUT_MODEL_LOCAL: c_int = 2;
+pub const WLR_ICCCM_INPUT_MODEL_GLOBAL: c_int = 3;
+pub extern "wlroots-0.18" fn wlr_xwayland_icccm_input_model(surface: *const wlr_xwayland_surface) callconv(.c) c_int;
+
 // XWayland C glue accessors
 pub extern "c" fn miozu_xwayland_new_surface(xwl: *wlr_xwayland) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_xwayland_ready(xwl: *wlr_xwayland) callconv(.c) *wl_signal;

@@ -175,7 +175,21 @@ fn focusScratchpad(server: *Server, tp: *TerminalPane) void {
     };
 
     if (server.focused_view) |pv| _ = wlr.wlr_xdg_toplevel_set_activated(pv.toplevel, false);
-    if (server.focused_xwayland) |px| wlr.wlr_xwayland_surface_activate(px, false);
+    // Do NOT tell an X client it has been deactivated just because a
+    // compositor-owned overlay took the keyboard. A fullscreen DX game under
+    // Wine/Proton responds to deactivation by MINIMISING its own HWND, and a
+    // minimised Wine window then declines every WM_TAKE_FOCUS — which, for an
+    // ICCCM Globally-Active client, is the only channel wlroots has to give it
+    // focus back (it never calls XSetInputFocus for those). The result is a
+    // permanently dead keyboard with a working mouse, reproduced exactly by
+    // popping this scratchpad over a fullscreen game.
+    //
+    // teruwm already draws this distinction for override-redirect popups (see
+    // XwaylandView.mapView: keyboard only, no activate, so the parent stays
+    // "the focused window"). A scratchpad is the same class of overlay. Park the
+    // surface instead; ServerFocus.flushParkedXwayland deactivates it for real
+    // once focus moves somewhere that is not this scratchpad.
+    if (server.focused_xwayland) |px| server.parked_xwayland = px;
     server.focused_terminal = tp;
     server.focused_view = null;
     server.focused_xwayland = null;
