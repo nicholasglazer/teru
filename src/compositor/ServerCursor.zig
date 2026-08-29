@@ -708,6 +708,16 @@ fn forwardAndFocus(server: *Server, button: u32, state: u32, time: u32, super_he
                         if (server.terminalPaneById(nid)) |tp| {
                             if (!forwardMouseButtonToApp(server, tp, button, cx, cy)) {
                                 if (button == 272) terminalMousePress(server, tp, cx, cy); // BTN_LEFT
+                            } else if (tp.selection.active) {
+                                // The app consumed the press, but this is the only
+                                // press path a mouse-tracking pane ever takes — a
+                                // compositor selection left from before the app
+                                // grabbed the mouse would otherwise be permanent.
+                                // foot/alacritty drop the old highlight on any new
+                                // press too.
+                                tp.selection.clear();
+                                tp.pane.grid.markAllDirty();
+                                server.scheduleRender();
                             }
                         }
                     },
@@ -1006,6 +1016,12 @@ pub fn tickScrollAnim(server: *Server) void {
 pub fn tickDragAutoScroll(server: *Server) void {
     const tp = server.drag_terminal orelse return;
     if (!tp.mouse.mouse_down) return;
+    // An app-owned drag (press forwarded as mouse reports) must not scroll the
+    // pane or grow a compositor selection — the program runs its own selection
+    // off the reports. The motion dispatch already splits on this flag; without
+    // this guard a drag that strays past the content top silently begins a
+    // compositor selection that no unshifted click can ever clear.
+    if (server.drag_reports_to_app) return;
 
     const slot = server.nodes.findById(tp.node_id) orelse return;
     const pane_y: i32 = server.nodes.pos_y[slot];
