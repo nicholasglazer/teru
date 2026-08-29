@@ -181,6 +181,53 @@ tail -f "$XDG_RUNTIME_DIR/teru-session-work.log"
 
 See [DEBUGGING.md](DEBUGGING.md) for the full logging story.
 
+## Running a persistent session under systemd
+
+To make a session survive logouts and reboots, run the daemon as a systemd
+user unit (with lingering enabled) and attach over SSH:
+
+```ini
+# ~/.config/systemd/user/teru-session@.service
+[Unit]
+Description=teru persistent session '%i'
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+# Login shell so panes inherit the full interactive PATH + env.
+# -t %i re-applies ~/.config/teru/templates/%i.tsess on every daemon
+# start, so a reboot rebuilds the layout instead of a bare shell.
+ExecStart=/bin/bash -lc 'exec %h/.local/bin/teru --daemon %i -t %i'
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+# Without this, systemd's default (OOMPolicy=stop) tears down the WHOLE
+# unit — daemon and every pane — whenever the kernel OOM-kills any single
+# process running inside a pane, then Restart= brings it back empty.
+# `continue` lets the killed process die in its pane while the session
+# survives.
+OOMPolicy=continue
+
+[Install]
+WantedBy=default.target
+```
+
+```sh
+systemctl --user enable --now teru-session@work
+loginctl enable-linger "$USER"   # keep the user manager alive when logged out
+```
+
+If a session ever comes back empty, the unit journal says which way it died:
+
+```sh
+journalctl --user -u teru-session@work | grep -E "Failed with|oom"
+```
+
+`Failed with result 'oom-kill'` means a pane process was OOM-killed and the
+unit lacked `OOMPolicy=continue`; `result 'core-dump'` means the daemon
+itself crashed — grab the trace with `coredumpctl`.
+
 ## Known limitations
 
 - **Reattach colour fidelity.** On reattach the daemon replays the visible screen
