@@ -22,6 +22,7 @@ const Config = @import("../config/Config.zig");
 const LeaderDefs = @import("../config/LeaderDefs.zig");
 const Compositor = @import("../render/Compositor.zig");
 const daemon_proto = @import("../server/protocol.zig");
+const mouse_report = @import("../input/mouse_report.zig");
 
 // SIGWINCH self-pipe — set by run() before installing the handler.
 var g_sigwinch_pipe: posix.fd_t = -1;
@@ -329,12 +330,55 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
                             const sbl: u32 = if (pane) |p| (if (p.grid.scrollback) |sb| @intCast(sb.lineCount()) else 0) else 0;
 
                             if (mouse.button == 64 or mouse.button == 65) {
-                                // Wheel: scroll this pane's own scrollback. 64 = up
-                                // = toward older history (positive delta). cell_height
-                                // is 1 in the cell grid, so delta is lines directly.
+                                // Wheel. If the pane's app owns the wheel (mouse
+                                // tracking, or alt screen + alternate-scroll) hand it
+                                // over — Claude Code's fullscreen TUI scrolls its own
+                                // transcript on the alt screen, and scrolling OUR
+                                // scrollback there showed pre-launch shell history
+                                // glued above the live viewport. Same routing as
+                                // teruwm (mouse_report.classifyWheel). Otherwise scroll
+                                // this pane's own scrollback: 64 = up = toward older
+                                // history; cell_height is 1, so delta is lines.
                                 if (pane) |p| {
-                                    const step: i32 = if (mouse.button == 64) 3 else -3;
-                                    if (p.scrollBy(step, 1, sbl)) needs_render = true;
+                                    const wheel_lines = 3; // per notch: scrollback step and arrow repeat
+                                    const up = mouse.button == 64;
+                                    const d = mouse_report.classifyWheel(
+                                        p.vt.mouse_tracking != .none,
+                                        p.vt.alt_screen,
+                                        p.vt.alt_scroll,
+                                        if (up) -1 else 1,
+                                        120, // the outer terminal reports whole notches
+                                        &p.wheel_report_accum,
+                                    );
+                                    switch (d.action) {
+                                        .scrollback => {
+                                            const step: i32 = if (up) wheel_lines else -wheel_lines;
+                                            if (p.scrollBy(step, 1, sbl)) needs_render = true;
+                                        },
+                                        .swallow => {},
+                                        .report => {
+                                            var rb: [32]u8 = undefined;
+                                            const btn: u8 = if (up) mouse_report.BTN_WHEEL_UP else mouse_report.BTN_WHEEL_DOWN;
+                                            if (mouse_report.encodePress(p.vt.mouse_sgr, btn, lcol, lrow, &rb)) |seq|
+                                                sendPaneInput(sock, pid, seq);
+                                        },
+                                        .arrows => {
+                                            const seq: []const u8 = if (p.vt.app_cursor_keys)
+                                                (if (up) "\x1bOA" else "\x1bOB")
+                                            else
+                                                (if (up) "\x1b[A" else "\x1b[B");
+                                            // One message, so the repeats can't interleave with typing.
+                                            var rep: [wheel_lines * 3]u8 = undefined;
+                                            for (0..wheel_lines) |k| @memcpy(rep[k * seq.len ..][0..seq.len], seq);
+                                            sendPaneInput(sock, pid, rep[0 .. wheel_lines * seq.len]);
+                                        },
+                                    }
+                                    // Leaving a stale history offset on an app-owned
+                                    // pane would keep the old text composited on top.
+                                    if (d.action != .scrollback and p.scroll_offset != 0) {
+                                        p.scroll_offset = 0;
+                                        needs_render = true;
+                                    }
                                 }
                             } else if (mouse.button == 0) {
                                 // Left press → focus + start a selection anchored
@@ -455,6 +499,15 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, sock: posix.fd_t) !void {
             renderer.renderWithOpts(&mux, 1, .{ .nested = tui_input.isNested(), .nested_bar = tui_input.isNestedBar(), .prefix_active = tui_input.isPrefixActive(), .leader = &tui_input.leader });
         }
     }
+}
+
+/// Write `data` to one specific pane's PTY on the daemon (`.input` is
+/// pane_id-tagged, unlike `.active_input`) — the wheel targets the pane under
+/// the cursor, which need not be the focused one.
+fn sendPaneInput(sock: posix.fd_t, pane_id: u64, data: []const u8) void {
+    var buf: [64]u8 = undefined;
+    const payload = daemon_proto.encodePanePayload(pane_id, data, &buf) orelse return;
+    _ = daemon_proto.sendMessage(sock, .input, payload);
 }
 
 /// Copy the selection to the SYSTEM clipboard via OSC 52. The bytes travel to
