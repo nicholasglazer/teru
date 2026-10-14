@@ -63,11 +63,11 @@ pub fn build(b: *std.Build) void {
 
     // ── Font atlas glyph budget ───────────────────────────────────
     // -Dglyphs=ascii    → 360 glyphs (ASCII + Latin-1 + Box + Block + Symbols)
-    // -Dglyphs=extended → 1384 glyphs (above + Geometric, General Punctuation,
-    //                     Arrows, Misc Technical, Dingbats, Braille — the
-    //                     ranges modern TUIs actually emit: spinners ✳✻⠋,
-    //                     marks ✓⏺, – — … →) [default]
-    // -Dglyphs=full     → 1640 glyphs (above + Cyrillic)
+    // -Dglyphs=extended → 1640 glyphs (above + Geometric, General Punctuation,
+    //                     Arrows, Misc Technical, Dingbats, Braille, Cyrillic —
+    //                     the ranges modern TUIs actually emit: spinners ✳✻⠋,
+    //                     marks ✓⏺, – — … →, plus Russian text) [default]
+    // -Dglyphs=full     → same as extended (kept for compatibility)
     // Smaller budgets lower startup time + memory.
     const GlyphBudget = enum { ascii, extended, full };
     const glyph_budget = b.option(GlyphBudget, "glyphs", "Font atlas glyph budget (default: extended)") orelse .extended;

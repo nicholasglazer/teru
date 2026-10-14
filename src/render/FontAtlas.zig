@@ -18,15 +18,15 @@ const FontAtlas = @This();
 // Shapes, General Punctuation (– — … ' '), Arrows (→), Misc Technical
 // (⏺ ⌘ ⏎), Dingbats (✓ ✳ ✶ ✻ — claude-code's task marks + spinner frames
 // live here; without them the spinner literally blinks in and out of
-// existence), and Braille (⠋⠙… — every ora/rich-style CLI spinner).
-// Cyrillic only at full.
+// existence), Braille (⠋⠙… — every ora/rich-style CLI spinner), and
+// Cyrillic (Russian/Ukrainian text rendered as blank cells without it).
 const include_geometric: bool = build_options.glyph_budget != .ascii;
 const include_punct: bool = build_options.glyph_budget != .ascii;
 const include_arrows: bool = build_options.glyph_budget != .ascii;
 const include_misc_tech: bool = build_options.glyph_budget != .ascii;
 const include_dingbats: bool = build_options.glyph_budget != .ascii;
 const include_braille: bool = build_options.glyph_budget != .ascii;
-const include_cyrillic: bool = build_options.glyph_budget == .full;
+const include_cyrillic: bool = build_options.glyph_budget != .ascii;
 
 /// One codepoint's flat slot in the atlas grid.
 const Codepoint = struct { cp: u21, slot: u32 };
@@ -1211,9 +1211,8 @@ test "glyphSlot: synthesized symbols (always-on, after Block)" {
 
 test "glyphSlot: Cyrillic" {
     // Slot positions depend on which optional ranges precede Cyrillic:
-    //   .full     → Cyrillic comes after Geometric → starts at 360 + 96 = 456
-    //   .full without Geometric (impossible today) → would be 360
-    //   .ascii / .extended → Cyrillic excluded entirely
+    //   .extended / .full → Cyrillic comes after Geometric → starts at 360 + 96 = 456
+    //   .ascii            → Cyrillic excluded entirely
     if (!include_cyrillic) {
         try std.testing.expectEqual(@as(?u32, null), glyphSlot(0x0400));
         return;
