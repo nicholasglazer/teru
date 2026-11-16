@@ -34,7 +34,7 @@ pub fn handleNewOutput(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.
     const server = wlr.listenerParent(Server, "new_output", listener);
     const wlr_output: *wlr.wlr_output = @ptrCast(@alignCast(data orelse return));
 
-    _ = Output.create(server, wlr_output, server.zig_allocator) catch {
+    _ = Output.create(server, wlr_output, server.zig_allocator, .{}) catch {
         std.log.scoped(.compositor).err("failed to create output", .{});
         return;
     };
@@ -111,6 +111,27 @@ pub fn handleRequestSetPrimarySelection(listener: *wlr.wl_listener, data: ?*anyo
     wlr.miozu_relay_set_primary_selection(data orelse return, server.seat);
 }
 
+/// Drag-and-drop: a client asked to start a drag (wl_data_device.start_drag).
+/// Without this, wlroots never starts the drag and no client receives a DnD
+/// enter — Chromium could tear a tab out but never re-attach it, and file
+/// drags between apps did nothing. Serial validation lives in C glue.
+pub fn handleRequestStartDrag(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const server = wlr.listenerParent(Server, "request_start_drag", listener);
+    wlr.miozu_relay_start_drag(data orelse return, server.seat);
+}
+
+/// Drag-and-drop: the drag started — show the client's drag icon (e.g. the
+/// Chromium tab thumbnail) at the cursor. ServerCursor moves it on motion.
+pub fn handleStartDrag(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const server = wlr.listenerParent(Server, "start_drag", listener);
+    wlr.miozu_drag_icon_attach(
+        data orelse return,
+        server.sceneRoot(),
+        wlr.miozu_cursor_x(server.cursor),
+        wlr.miozu_cursor_y(server.cursor),
+    );
+}
+
 /// xdg-decoration-v1: prefer client-side decoration so clients
 /// (Chromium, Vivaldi, GTK) handle their titlebars and context
 /// menus internally. Tiling is unaffected — the compositor still
@@ -183,10 +204,21 @@ fn refreshIdleInhibited(server: *Server) void {
 
 // ── output_power_management_v1 ───────────────────────────────
 
-pub fn handleOutputPowerSetMode(_: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+pub fn handleOutputPowerSetMode(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
+    const server = wlr.listenerParent(Server, "output_power_set_mode", listener);
     const event: *wlr.wlr_output_power_v1_set_mode_event = @ptrCast(@alignCast(data orelse return));
     const output = wlr.miozu_output_power_event_output(event);
     const want_on = wlr.miozu_output_power_event_mode_on(event) != 0;
+
+    // While VR mode owns the display, a stale wlopm/swayidle proxy must not
+    // re-light the powered-off panel (which would also re-enable scanout), and
+    // an idle DPMS-off must not disable the headless capture target (which
+    // would freeze the headset).
+    if (server.vr_mode) {
+        if (server.vr_panel) |p| if (output == p.wlr_output) return;
+        if (server.headless_output) |h| if (output == h.wlr_output) return;
+    }
+
     const currently_on = wlr.miozu_output_enabled(output) != 0;
     if (want_on == currently_on) return;
     _ = wlr.miozu_output_commit_enabled(output, if (want_on) 1 else 0);
@@ -208,6 +240,12 @@ pub fn handleNewVirtualPointer(listener: *wlr.wl_listener, data: ?*anyopaque) ca
     const event: *wlr.wlr_virtual_pointer_v1_new_pointer_event = @ptrCast(@alignCast(data orelse return));
     const device = wlr.miozu_virtual_pointer_new_pointer(event);
     wlr.wlr_cursor_attach_input_device(server.cursor, device);
+    // Advertise the pointer. Without this a virtual pointer on a seat with no
+    // physical devices (headless) moved the cursor but no client ever got a
+    // wl_pointer — seat capabilities stayed 0. Add ONLY the pointer bit: a
+    // keyboard capability with no keyboard behind it means a wl_keyboard
+    // that never receives a keymap, which segfaults Chromium at startup.
+    wlr.miozu_seat_add_capability(server.seat, wlr.WL_SEAT_CAPABILITY_POINTER);
 }
 
 // ── output_management_v1 ─────────────────────────────────────

@@ -215,6 +215,22 @@ primary_output: ?*wlr.wlr_output = null,
 
 outputs: std.ArrayList(*Output) = .empty,
 focused_output: ?*Output = null,
+
+// ── VR station mode ─────────────────────────────────────────────
+// See ServerVr.zig. While vr_mode is true the internal panel's Output is
+// removed from `outputs` (it is no longer a live viewport for workspace
+// visibility/pull-swap), its wlr_output is disabled (CRTC/DPMS/panel power
+// off), and headless_output is the only output — a HEADLESS-N mirror at the
+// panel's layout box that keeps wlr-screencopy completing. A disabled output
+// alone stops committing, and the capture client would freeze on its last
+// frame.
+vr_mode: bool = false,
+vr_panel: ?*Output = null,
+vr_panel_x: i32 = 0,
+vr_panel_y: i32 = 0,
+headless_backend: ?*wlr.wlr_backend = null,
+headless_output: ?*Output = null,
+
 workspace_trees: [10]?*wlr.wlr_scene_tree = @splat(null),
 
 // Active XKB layout name (for the {keymap} bar widget).
@@ -506,6 +522,8 @@ request_set_cursor: wlr.wl_listener = makeListener(Cursor.handleRequestSetCursor
 // Clipboard: relay client copy requests to the seat (regular + primary
 // selection). Without these, nothing a client copies can be pasted elsewhere.
 request_set_selection: wlr.wl_listener = makeListener(Listeners.handleRequestSetSelection),
+request_start_drag: wlr.wl_listener = makeListener(Listeners.handleRequestStartDrag),
+start_drag: wlr.wl_listener = makeListener(Listeners.handleStartDrag),
 request_set_primary_selection: wlr.wl_listener = makeListener(Listeners.handleRequestSetPrimarySelection),
 // wp_cursor_shape_v1 — Chromium M111+, GTK 4.14+, modern Qt. Without
 // this listener hover state (pointer / text / grab / resize) is frozen
@@ -942,6 +960,8 @@ fn registerListeners(self: *Server) void {
     wlr.wl_signal_add(wlr.miozu_cursor_frame(self.cursor), &self.cursor_frame);
     wlr.wl_signal_add(wlr.miozu_seat_request_set_cursor(self.seat), &self.request_set_cursor);
     wlr.wl_signal_add(wlr.miozu_seat_request_set_selection(self.seat), &self.request_set_selection);
+    wlr.wl_signal_add(wlr.miozu_seat_request_start_drag(self.seat), &self.request_start_drag);
+    wlr.wl_signal_add(wlr.miozu_seat_start_drag(self.seat), &self.start_drag);
     wlr.wl_signal_add(wlr.miozu_seat_request_set_primary_selection(self.seat), &self.request_set_primary_selection);
     if (self.cursor_shape_mgr) |mgr| {
         wlr.wl_signal_add(wlr.miozu_cursor_shape_request_set_shape(mgr), &self.request_set_shape);
@@ -1267,6 +1287,20 @@ pub fn releaseSeat(self: *Server) void {
         wlr.wl_list_remove(&kb.key_listener.link);
         wlr.wl_list_remove(&kb.modifiers_listener.link);
         wlr.wl_list_remove(&kb.destroy_listener.link);
+    }
+
+    // VR capture backend (if live) — destroy before the DRM backend so its
+    // output's destroy handler frees the Output while Server state is alive.
+    // wlr_backend_destroy removes its event-loop-destroy hook, so
+    // wl_display_destroy cannot double-free it. This also runs on hot-restart
+    // (ServerRestart calls releaseSeat), which is why VR mode does not survive
+    // Mod+'; the toggle re-applies it.
+    if (self.headless_backend) |b| {
+        wlr.wlr_backend_destroy(b);
+        self.headless_backend = null;
+        self.headless_output = null;
+        self.vr_panel = null;
+        self.vr_mode = false;
     }
 
     wlr.wlr_backend_destroy(self.backend);

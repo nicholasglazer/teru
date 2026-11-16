@@ -267,6 +267,20 @@ bool miozu_output_enable_and_commit(struct wlr_output *output) {
     return ok;
 }
 
+/* Enable an output with an explicit mode. Headless (virtual) outputs have no
+ * preferred mode, and wlr_headless_output derives its frame-timer period from
+ * the refresh, so the caller passes the panel's own refresh. */
+int miozu_output_enable_custom(struct wlr_output *output,
+                               int width, int height, int refresh_mhz) {
+    struct wlr_output_state state;
+    wlr_output_state_init(&state);
+    wlr_output_state_set_custom_mode(&state, width, height, refresh_mhz);
+    wlr_output_state_set_enabled(&state, true);
+    int ok = wlr_output_commit_state(output, &state);
+    wlr_output_state_finish(&state);
+    return ok ? 1 : 0;
+}
+
 /* ── Pointer event accessors ─────────────────────────────────── */
 
 #include <wlr/types/wlr_pointer.h>
@@ -716,6 +730,13 @@ struct wl_signal *miozu_xwayland_surface_request_activate(struct wlr_xwayland_su
     return &s->events.request_activate;
 }
 
+/* Client asked to be iconified (WM_CHANGE_STATE IconicState or
+ * _NET_WM_STATE_HIDDEN — a Wine window's "_" button). xwm only forwards it;
+ * the compositor must answer with wlr_xwayland_surface_set_minimized. */
+struct wl_signal *miozu_xwayland_surface_request_minimize(struct wlr_xwayland_surface *s) {
+    return &s->events.request_minimize;
+}
+
 /* Requested/current _NET_WM_STATE_FULLSCREEN. When request_fullscreen
  * fires, this already holds the state the client asked for. */
 bool miozu_xwayland_surface_fullscreen(struct wlr_xwayland_surface *s) {
@@ -1043,6 +1064,70 @@ void miozu_relay_set_selection(void *event, struct wlr_seat *seat) {
 void miozu_relay_set_primary_selection(void *event, struct wlr_seat *seat) {
     struct wlr_seat_request_set_primary_selection_event *e = event;
     wlr_seat_set_primary_selection(seat, e->source, e->serial);
+}
+
+/* ── Drag-and-drop: start client drags + draw the drag icon ── */
+/* Same gap as the selection relay above: teruwm created the data_device   */
+/* manager but never answered wl_data_device.start_drag. wlroots only      */
+/* EMITS request_start_drag; with no listener the drag is never started,   */
+/* so no client ever saw a wl_data_device.enter. Visible symptom: Chromium */
+/* could tear a tab OUT (it makes that window itself) but never re-attach  */
+/* it — re-attaching is a DnD session onto the other window's tab strip.   */
+/* File drags between apps were dead for the same reason. Standard wlroots */
+/* wiring (matches sway): validate the implicit-grab serial, then start.  */
+
+struct wl_signal *miozu_seat_request_start_drag(struct wlr_seat *s) {
+    return &s->events.request_start_drag;
+}
+
+struct wl_signal *miozu_seat_start_drag(struct wlr_seat *s) {
+    return &s->events.start_drag;
+}
+
+void miozu_relay_start_drag(void *event, struct wlr_seat *seat) {
+    struct wlr_seat_request_start_drag_event *e = event;
+    if (wlr_seat_validate_pointer_grab_serial(seat, e->origin, e->serial)) {
+        wlr_seat_start_pointer_drag(seat, e->drag, e->serial);
+        return;
+    }
+    /* Not a live pointer grab (stale serial, touch drag we don't route): */
+    /* refuse, which cancels the source so the client isn't left waiting. */
+    wlr_data_source_destroy(e->drag->source);
+}
+
+/* One seat, so at most one drag icon at a time. wlr_scene_drag_icon      */
+/* destroys its own tree when the icon dies; we only drop our pointer.    */
+static struct wlr_scene_tree *g_drag_icon_tree = NULL;
+static struct wl_listener g_drag_icon_destroy;
+
+static void drag_icon_destroyed(struct wl_listener *l, void *data) {
+    (void)data;
+    wl_list_remove(&l->link);
+    g_drag_icon_tree = NULL;
+}
+
+/* start_drag: attach the client's drag icon (Chromium: the tab thumbnail) */
+/* to the scene, above everything, at the cursor.                          */
+void miozu_drag_icon_attach(void *event, struct wlr_scene_tree *root, double x, double y) {
+    struct wlr_drag *drag = event;
+    if (!drag->icon || !root || g_drag_icon_tree) return;
+    g_drag_icon_tree = wlr_scene_drag_icon_create(root, drag->icon);
+    if (!g_drag_icon_tree) return;
+    g_drag_icon_destroy.notify = drag_icon_destroyed;
+    wl_signal_add(&drag->icon->events.destroy, &g_drag_icon_destroy);
+    wlr_scene_node_raise_to_top(&g_drag_icon_tree->node);
+    wlr_scene_node_set_position(&g_drag_icon_tree->node, (int)x, (int)y);
+}
+
+/* Called on every cursor motion; a no-op unless a drag icon is live. */
+void miozu_drag_icon_move(double x, double y) {
+    if (!g_drag_icon_tree) return;
+    wlr_scene_node_set_position(&g_drag_icon_tree->node, (int)x, (int)y);
+}
+
+/* OR one capability into the seat's current set (never drops existing ones). */
+void miozu_seat_add_capability(struct wlr_seat *seat, uint32_t cap) {
+    wlr_seat_set_capabilities(seat, seat->capabilities | cap);
 }
 
 /* ── xdg_activation_v1 (v0.4.17) ─────────────────────────────── */

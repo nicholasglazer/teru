@@ -155,6 +155,13 @@ pub extern "wlroots-0.18" fn wlr_backend_autocreate(event_loop: *wl_event_loop, 
 pub extern "wlroots-0.18" fn wlr_backend_start(backend: *wlr_backend) callconv(.c) bool;
 pub extern "wlroots-0.18" fn wlr_backend_destroy(backend: *wlr_backend) callconv(.c) void;
 
+// Headless backend: a virtual output that renders the same scene into memory.
+// Used by VR station mode — the capture client mirrors it while the physical
+// panel is powered off (a disabled real output stops committing, and
+// wlr-screencopy then has nothing to copy).
+pub extern "wlroots-0.18" fn wlr_headless_backend_create(event_loop: *wl_event_loop) callconv(.c) ?*wlr_backend;
+pub extern "wlroots-0.18" fn wlr_headless_add_output(backend: *wlr_backend, width: c_uint, height: c_uint) callconv(.c) ?*wlr_output;
+
 // ── wlroots renderer ──────────────────────────────────────────
 
 pub extern "wlroots-0.18" fn wlr_renderer_autocreate(backend: *wlr_backend) callconv(.c) ?*wlr_renderer;
@@ -175,6 +182,10 @@ pub extern "wlroots-0.18" fn wlr_scene_attach_output_layout(scene: *wlr_scene, l
 
 pub extern "wlroots-0.18" fn wlr_output_layout_create(display: *wl_display) callconv(.c) ?*wlr_output_layout;
 pub extern "wlroots-0.18" fn wlr_output_layout_add_auto(layout: *wlr_output_layout, output: *wlr_output) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_output_layout_add(layout: *wlr_output_layout, output: *wlr_output, lx: c_int, ly: c_int) callconv(.c) ?*anyopaque;
+pub extern "wlroots-0.18" fn wlr_output_layout_remove(layout: *wlr_output_layout, output: *wlr_output) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_output_layout_get_box(layout: *wlr_output_layout, reference: ?*wlr_output, box: *wlr_box) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_scene_output_set_position(scene_output: *wlr_scene_output, lx: c_int, ly: c_int) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_output_init_render(output: *wlr_output, allocator: *wlr_allocator, renderer: *wlr_renderer) callconv(.c) bool;
 pub extern "wlroots-0.18" fn wlr_output_schedule_frame(output: *wlr_output) callconv(.c) void;
 
@@ -390,6 +401,9 @@ pub extern "c" fn miozu_output_power_event_output(e: *wlr_output_power_v1_set_mo
 pub extern "c" fn miozu_output_power_event_mode_on(e: *wlr_output_power_v1_set_mode_event) callconv(.c) c_int;
 pub extern "c" fn miozu_output_commit_enabled(output: *wlr_output, enabled: c_int) callconv(.c) c_int;
 pub extern "c" fn miozu_output_enabled(output: *wlr_output) callconv(.c) c_int;
+/// Enable an output with an explicit mode. Headless outputs have no preferred
+/// mode, and their refresh (mHz) sets the headless frame-timer period.
+pub extern "c" fn miozu_output_enable_custom(output: *wlr_output, width: c_int, height: c_int, refresh_mhz: c_int) callconv(.c) c_int;
 
 // wlr_virtual_keyboard_v1 / wlr_virtual_pointer_v1 — synthetic input
 // from wtype / ydotool / wlrctl / accessibility tools. Each new
@@ -588,6 +602,12 @@ pub extern "wlroots-0.18" fn wlr_data_source_send(src: *wlr_data_source, mime: [
 // selection) to the seat. Without this, client copies are silently dropped.
 pub extern "c" fn miozu_seat_request_set_primary_selection(seat: *wlr_seat) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_relay_set_selection(event: *anyopaque, seat: *wlr_seat) callconv(.c) void;
+pub extern "c" fn miozu_seat_request_start_drag(seat: *wlr_seat) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_seat_start_drag(seat: *wlr_seat) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_relay_start_drag(event: *anyopaque, seat: *wlr_seat) callconv(.c) void;
+pub extern "c" fn miozu_drag_icon_attach(event: *anyopaque, root: ?*wlr_scene_tree, x: f64, y: f64) callconv(.c) void;
+pub extern "c" fn miozu_drag_icon_move(x: f64, y: f64) callconv(.c) void;
+pub extern "c" fn miozu_seat_add_capability(seat: *wlr_seat, cap: u32) callconv(.c) void;
 pub extern "c" fn miozu_relay_set_primary_selection(event: *anyopaque, seat: *wlr_seat) callconv(.c) void;
 
 // ── Additional opaque types for glue ───────────────────────────
@@ -860,6 +880,7 @@ pub extern "c" fn miozu_xwayland_surface_set_geometry(surface: *wlr_xwayland_sur
 pub extern "c" fn miozu_xwayland_surface_request_fullscreen(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_xwayland_surface_set_override_redirect(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_xwayland_surface_request_activate(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_xwayland_surface_request_minimize(surface: *wlr_xwayland_surface) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_xwayland_surface_fullscreen(surface: *wlr_xwayland_surface) callconv(.c) bool;
 
 /// request_configure event payload (struct wlr_xwayland_surface_configure_event).
@@ -869,6 +890,7 @@ pub extern "c" fn miozu_xwayland_configure_event_y(e: *wlr_xwayland_surface_conf
 pub extern "c" fn miozu_xwayland_configure_event_width(e: *wlr_xwayland_surface_configure_event) callconv(.c) u16;
 pub extern "c" fn miozu_xwayland_configure_event_height(e: *wlr_xwayland_surface_configure_event) callconv(.c) u16;
 pub extern "wlroots-0.18" fn wlr_xwayland_surface_set_fullscreen(surface: *wlr_xwayland_surface, fullscreen: bool) callconv(.c) void;
+pub extern "wlroots-0.18" fn wlr_xwayland_surface_set_minimized(surface: *wlr_xwayland_surface, minimized: bool) callconv(.c) void;
 pub extern "wlroots-0.18" fn wlr_xwayland_or_surface_wants_focus(surface: *const wlr_xwayland_surface) callconv(.c) bool;
 pub extern "c" fn miozu_scene_node_destroy_signal(node: *wlr_scene_node) callconv(.c) *wl_signal;
 

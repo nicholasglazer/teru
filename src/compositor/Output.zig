@@ -38,9 +38,19 @@ workspace: u8 = 0,
 /// Previous visible workspace (for Mod+Escape toggle-last).
 prev_workspace: ?u8 = null,
 
+pub const CreateOptions = struct {
+    /// Explicit output-layout position (virtual/mirror outputs). null =
+    /// wlr_output_layout_add_auto, the historical behaviour for real monitors.
+    layout_pos: ?struct { x: i32, y: i32 } = null,
+    /// Custom mode committed while enabling. Headless outputs have no
+    /// preferred mode; refresh is mHz and drives the headless frame timer.
+    custom_mode: ?struct { w: i32, h: i32, refresh_mhz: i32 } = null,
+};
+
 /// Create an Output, register listeners, enable the output.
-pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.Allocator) !*Output {
+pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.Allocator, opts: CreateOptions) !*Output {
     const output = try allocator.create(Output);
+    errdefer allocator.destroy(output);
     output.* = .{
         .server = server,
         .wlr_output = wlr_output,
@@ -54,22 +64,41 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
         .workspace = server.layout_engine.active_workspace,
     };
 
-    // Init render pipeline for this output
-    _ = wlr.wlr_output_init_render(wlr_output, server.allocator, server.renderer);
+    // Init render pipeline for this output. Checked: a failure here used to be
+    // silent, leaving an output that never produced a frame.
+    if (!wlr.wlr_output_init_render(wlr_output, server.allocator, server.renderer)) {
+        std.log.scoped(.compositor).err("output render init failed", .{});
+        return error.OutputRenderInitFailed;
+    }
 
-    // Enable output with preferred mode
-    _ = wlr.miozu_output_enable_and_commit(wlr_output);
+    // Enable output: preferred mode for real monitors, the caller's custom
+    // mode for a headless/virtual output (it has no preferred mode).
+    if (opts.custom_mode) |m| {
+        if (wlr.miozu_output_enable_custom(wlr_output, m.w, m.h, m.refresh_mhz) == 0) {
+            std.log.scoped(.compositor).err("custom-mode enable failed", .{});
+            return error.OutputEnableFailed;
+        }
+    } else {
+        _ = wlr.miozu_output_enable_and_commit(wlr_output);
+    }
 
     // Register per-output listeners
     wlr.wl_signal_add(wlr.miozu_output_frame(wlr_output), &output.frame);
     wlr.wl_signal_add(wlr.miozu_output_request_state(wlr_output), &output.request_state);
     wlr.wl_signal_add(wlr.miozu_output_destroy(wlr_output), &output.destroy);
 
-    // Add to output layout (auto-positions next to existing outputs)
-    wlr.wlr_output_layout_add_auto(server.output_layout, wlr_output);
+    // Add to output layout (auto-positions next to existing outputs), or at
+    // the explicit position a virtual/mirror output needs.
+    if (opts.layout_pos) |p| {
+        _ = wlr.wlr_output_layout_add(server.output_layout, wlr_output, p.x, p.y);
+    } else {
+        wlr.wlr_output_layout_add_auto(server.output_layout, wlr_output);
+    }
 
-    // Create scene output for compositing
-    _ = wlr.wlr_scene_output_create(server.scene, wlr_output);
+    // Create scene output for compositing; mirror it at the same position.
+    if (wlr.wlr_scene_output_create(server.scene, wlr_output)) |so| {
+        if (opts.layout_pos) |p| wlr.wlr_scene_output_set_position(so, p.x, p.y);
+    }
 
     // Track in Server.outputs — pointer identity survives disconnect.
     // Failure here is non-fatal (legacy code paths still work with just
@@ -86,8 +115,11 @@ pub fn create(server: *Server, wlr_output: *wlr.wlr_output, allocator: std.mem.A
     const refresh_hz = @divTrunc(wlr.miozu_output_refresh_mhz(wlr_output) + 500, 1000);
     std.log.scoped(.compositor).info("output '{s}' connected ({d}x{d}@{d}Hz)", .{ name, w, h, refresh_hz });
 
-    // On first output: create background, bars, then spawn terminal
-    if (server.terminal_count == 0) {
+    // On first REAL output: create background + bar. Keyed on bar==null, not
+    // terminal_count==0: a headless output attached before the first terminal
+    // would otherwise create a second bar, overwrite server.bar and leak the
+    // first bar's scene buffers.
+    if (server.bar == null) {
         // Background rect: covers full output, lowered below everything else.
         // Color is solid ARGB from wm_config.bg_color.
         const scene_tree_root = wlr.miozu_scene_tree(server.scene);
@@ -273,6 +305,10 @@ fn handleRequestState(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c
 fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     const output: *Output = @fieldParentPtr("destroy", listener);
     const server = output.server;
+    // Clear VR back-pointers before the struct is freed, so an output unplug
+    // while VR mode is on cannot leave dangling pointers in Server.
+    if (server.headless_output == output) server.headless_output = null;
+    if (server.vr_panel == output) server.vr_panel = null;
     const name = wlr.miozu_output_name(output.wlr_output) orelse "unknown";
     std.log.scoped(.compositor).info("output '{s}' disconnected", .{name});
 

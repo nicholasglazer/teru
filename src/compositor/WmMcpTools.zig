@@ -232,6 +232,30 @@ pub fn thunkReloadConfig(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]co
     return toolReloadConfig(self, buf, id);
 }
 
+/// VR station mode. The response is a flat key=value line (okText does not
+/// escape embedded quotes), so the VR script can grep `output=HEADLESS-N`.
+pub fn thunkVrMode(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
+    const ServerVr = @import("ServerVr.zig");
+    const op = extractNestedJsonString(p, "op") orelse "status";
+    const panel = extractNestedJsonString(p, "panel");
+    const srv = self.server;
+    const ok = if (std.mem.eql(u8, op, "on"))
+        ServerVr.setMode(srv, true, panel)
+    else if (std.mem.eql(u8, op, "off"))
+        ServerVr.setMode(srv, false, panel)
+    else if (std.mem.eql(u8, op, "toggle"))
+        ServerVr.setMode(srv, !srv.vr_mode, panel)
+    else if (std.mem.eql(u8, op, "status"))
+        true
+    else
+        return jsonRpcError(buf, id, -32602, "op must be on|off|toggle|status");
+    if (!ok) return jsonRpcError(buf, id, -32603, "vr_mode failed (see compositor log)");
+    const st = ServerVr.status(srv);
+    return okText(buf, id, "active={} output={s} {d}x{d} panel={s} panel_enabled={}", .{
+        st.active, st.output_name, st.width, st.height, st.panel_name, st.panel_enabled,
+    });
+}
+
 pub fn thunkKeysOsd(self: *WmMcpServer, p: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
     const op = extractNestedJsonString(p, "op") orelse
         return jsonRpcError(buf, id, -32602, "Missing op");
