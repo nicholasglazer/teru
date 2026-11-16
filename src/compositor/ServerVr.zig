@@ -87,6 +87,13 @@ fn enable(server: *Server, panel_name: ?[]const u8) bool {
     const h: i32 = @max(1, wlr.miozu_output_height(panel.wlr_output));
     var refresh: i32 = wlr.miozu_output_refresh_mhz(panel.wlr_output);
     if (refresh <= 0) refresh = 60_000;
+    // The headset is the only consumer of the mirror. Compositing faster than
+    // it presents is wasted GPU that a fullscreen game wants; cap to the VR
+    // refresh (vr_refresh_hz, default 72). 0 = inherit the panel's rate.
+    if (server.wm_config.vr_refresh_hz > 0) {
+        const cap: i32 = @as(i32, server.wm_config.vr_refresh_hz) * 1000;
+        if (cap < refresh) refresh = cap;
+    }
 
     var box: wlr.wlr_box = undefined;
     wlr.wlr_output_layout_get_box(server.output_layout, panel.wlr_output, &box);

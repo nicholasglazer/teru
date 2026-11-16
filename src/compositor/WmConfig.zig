@@ -181,6 +181,12 @@ gap: u16 = 4,
 /// and XWayland clients.
 border_width: u16 = 2,
 
+/// Refresh rate the VR-mode headless output is capped to, in Hz. The headset
+/// is the only consumer of that output, so compositing faster than it can
+/// present is wasted GPU (and GPU is exactly what a fullscreen game needs).
+/// 0 = inherit the panel's refresh.
+vr_refresh_hz: u16 = 72,
+
 /// Border colour for the currently-focused window. ARGB u32 — high
 /// byte is alpha so users can make borders translucent (e.g.
 /// 0x80FF7733 = 50 %-alpha orange). Accepts 0xAARRGGBB or #AARRGGBB.
@@ -754,6 +760,8 @@ fn applyGlobal(self: *WmConfig, key: []const u8, value: []const u8) void {
         self.allow_virtual_input = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "border_width")) {
         self.border_width = std.fmt.parseInt(u16, value, 10) catch return;
+    } else if (std.mem.eql(u8, key, "vr_refresh_hz")) {
+        self.vr_refresh_hz = std.fmt.parseInt(u16, value, 10) catch return;
     } else if (std.mem.eql(u8, key, "unfocused_opacity")) {
         const f = std.fmt.parseFloat(f32, value) catch return;
         self.unfocused_opacity = @max(0.0, @min(1.0, f));
