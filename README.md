@@ -40,7 +40,7 @@ human with a keyboard for.
 
 **Concrete differentiators** (things no other terminal or compositor has):
 
-- **MCP control plane.** 22 tools for the terminal, 39 tools for the compositor. Every feature
+- **MCP control plane.** 22 tools for the terminal, 42 tools for the compositor. Every feature
   that has a keybind also has a tool. [docs/MCP-API.md](docs/MCP-API.md).
 - **Push widgets.** External daemons register `{widget:name}` entries in the bar and push updates
   via MCP — event-driven, no polling. [docs/AI-INTEGRATION.md](docs/AI-INTEGRATION.md#push-widgets).
@@ -139,6 +139,7 @@ Everything user-facing lives in `docs/`. Concept-by-concept:
 - [docs/MCP-API.md](docs/MCP-API.md) — 60-tool reference: both servers, every tool's schema and example
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — source tree, wlroots integration, scene graph, hot restart
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — methodology, results, planned follow-ups
+- [docs/vr-station-mode-guide.md](docs/vr-station-mode-guide.md) — power the panel off for VR: the headless mirror, why brightness/disable fail, the tool and the toggle
 
 ## Status
 
