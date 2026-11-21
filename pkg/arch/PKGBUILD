@@ -9,9 +9,8 @@ license=('MIT')
 depends=('libxcb' 'libxkbcommon' 'wayland')
 optdepends=('xclip: clipboard support on X11'
             'wl-clipboard: clipboard support on Wayland')
-# extra/zig is 0.16 and cannot build this; zig-master-bin is the only package
-# providing zig-unstable, and it Conflicts with extra/zig.
-makedepends=('zig-unstable')
+# Builds on stable Zig 0.17 (extra/zig). Zig master (0.18-dev) rejects this source.
+makedepends=('zig>=0.17' 'zig<0.18')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/nicholasglazer/teru/archive/v$pkgver.tar.gz")
 sha256sums=('SKIP')  # Updated by CI (aur.yml) on tag push
 

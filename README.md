@@ -12,7 +12,7 @@ Designed around an MCP control plane so AI agents and shell scripts can drive bo
  · <a href="docs/ARCHITECTURE.md">architecture</a>
  · <a href="docs/MCP-API.md">mcp api</a>
 
-<sub>Zig 0.17 (master) · Linux · macOS · Windows · MIT · <a href="docs/AI-INTEGRATION.md">AI integration</a></sub>
+<sub>Zig 0.17 · Linux · macOS · Windows · MIT · <a href="docs/AI-INTEGRATION.md">AI integration</a></sub>
 
 </div>
 

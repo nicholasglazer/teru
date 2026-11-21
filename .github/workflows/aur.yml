@@ -70,7 +70,8 @@ jobs:
           	arch = x86_64
           	arch = aarch64
           	license = MIT
-          	makedepends = zig-unstable
+          	makedepends = zig>=0.17
+          	makedepends = zig<0.18
           	depends = libxcb
           	depends = libxkbcommon
           	depends = wayland

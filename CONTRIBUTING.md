@@ -1,14 +1,14 @@
 # Contributing to teru
 
-Contributions welcome. teru is written in Zig 0.17 (master/dev) — see
-`.minimum_zig_version` in `build.zig.zon`. A release Zig will not build it.
+Contributions welcome. teru builds on stable Zig 0.17 (0.17.1 or newer). CI and
+releases use it, so a change has to build there. Zig master (0.18-dev) rejects this source.
 
 ## Setup
 
 ```bash
-# 1. Install Zig 0.17 (master/dev)
+# 1. Install stable Zig 0.17
 #    https://ziglang.org/download/
-#    Arch: paru -S zig-master-bin
+#    Arch: pacman -S zig
 
 # 2. Install system deps (Linux)
 #    Arch: pacman -S libxcb libxkbcommon wayland

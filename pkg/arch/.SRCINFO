@@ -7,6 +7,7 @@ pkgbase = teru
 	arch = aarch64
 	license = MIT
 	makedepends = zig>=0.17
+	makedepends = zig<0.18
 	depends = libxcb
 	depends = libxkbcommon
 	depends = wayland
