@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.16.0 — 2026-11-21
+
+Text in any script, a first usable window on Windows, VR station mode in the
+compositor, and a build that runs on stable Zig again. This is the first
+release with downloadable binaries since 0.11.0.
+
+### Added
+
+- **Characters outside the font atlas are drawn.** The atlas is a fixed grid
+  of pre-rasterized glyphs, and anything outside its ranges (Hangul, kana, Han,
+  Greek, Latin Extended and more) kept its width and drew nothing. Those
+  codepoints now get a glyph the first time they appear: rasterized from the
+  main font, then the symbol fallback, then a chain of CJK fonts found on the
+  system. Wide glyphs fill two cells. This works in the window, in `teru -n`
+  and in teruwm panes.
+
+- **Windows: teru.exe opens its own window.** It used to fall through to raw
+  mode in the console on every start, because the display check looked for
+  `DISPLAY` or `WAYLAND_DISPLAY`. With that fixed, the Win32 backend ran for
+  the first time and got the fixes it needed to be usable: `--version`,
+  `--help` and error messages print; shifted keys, AltGr, dead keys and the
+  keypad type what the layout says; resizing, Alt+F4 and closing work; and the
+  console window that Windows attaches to the process is released.
+  Tested under Wine only, not yet on a Windows machine. Sessions (`--daemon`,
+  `--attach`), the MCP server, raw mode, the config file and IME input are not
+  ported; the first three exit with a message. See `docs/INSTALLING.md`.
+
+- **teruwm: VR station mode.** `teruwm_vr_mode {op: on|off|toggle|status}`
+  powers the laptop panel off and moves the desktop to a headless output of
+  the same size, so a screen-capture client (a VR overlay) keeps receiving
+  frames while the panel draws no power. `vr_refresh_hz` (default 72) caps the
+  mirror at the headset's refresh instead of the panel's.
+
+### Fixed
+
+- **Cyrillic rendered as blank cells** with the default glyph budget. It is
+  now part of the default atlas.
+- **`teru -n`: the mouse wheel over a full-screen program** (Claude Code, vim,
+  less) scrolled teru's own scrollback and showed shell history above the
+  program. The wheel now goes to the program when it asks for mouse events or
+  runs on the alternate screen.
+- **teruwm: a gray selection that could not be cleared** over a pane whose
+  program tracks the mouse. A drag owned by the program no longer starts a
+  compositor selection, and a click clears one that exists.
+- **`startt` no longer strands the session on a failed build.** It keeps a
+  copy of a compositor that is known to start, reports the failure, and asks
+  before launching the installed binary or the copy.
+- **`tools/fix-crt.sh` broke every build after a Zig upgrade.** It now tests
+  whether the workaround is needed, generates `libc.txt` with `zig libc`, and
+  removes the file when the toolchain links without it.
+- A window shrunk to less than one cell keeps its last grid instead of
+  resizing to zero, and the renderer allocates the new framebuffer before it
+  frees the old one.
+
+### Changed
+
+- **teru builds on stable Zig 0.17.1.** CI, the release workflow and the AUR
+  package followed Zig master, which broke the build on any nightly and had
+  kept CI red since August. All three now use the stable compiler.
+- Faster parsing: CSI parameter runs and complete multi-byte UTF-8 sequences
+  are consumed in tight loops, and display width is a table lookup instead of
+  a range scan (vtebench unicode payload, parse: 2.85 ms to 2.15 ms).
+- `docs/SESSIONS.md` has a systemd user unit for persistent sessions, with
+  `OOMPolicy=continue` so one out-of-memory kill in a pane does not take the
+  whole session down.
+
 ## 0.15.4 — 2026-08-26
 
 Variable refresh rate for fullscreen clients, a battery-runtime readout in the

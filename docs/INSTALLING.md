@@ -10,9 +10,8 @@ See also: [teru.sh](https://teru.sh), [ARCHITECTURE.md](ARCHITECTURE.md).
 ## Pre-built Binaries
 
 Download from [GitHub Releases](https://github.com/nicholasglazer/teru/releases).
-**The newest published build is v0.11.0 (2026-06-10)** - the release pipeline was broken
-between then and 0.15.4, so there are no 0.12-0.15.3 binaries. For current code, build
-from source (below):
+Versions 0.12 through 0.15.4 have no binaries, because the release pipeline was broken
+between v0.11.0 and v0.16.0. Use v0.16.0 or later, or build from source (below):
 
 | Platform | File | Notes |
 |----------|------|-------|
