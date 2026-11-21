@@ -352,6 +352,8 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
     // Apply variant atlases to the CPU renderer
     switch (renderer) {
         .cpu => |*cpu| {
+            // `atlas` is replaced in place on zoom, so this pointer stays valid.
+            cpu.dyn = &atlas.dyn;
             if (variant_bold) |v| cpu.glyph_atlas_bold = v.data;
             if (variant_italic) |v| cpu.glyph_atlas_italic = v.data;
             if (variant_bold_italic) |v| cpu.glyph_atlas_bold_italic = v.data;

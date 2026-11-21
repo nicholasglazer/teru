@@ -180,6 +180,7 @@ fn initWithSpawn(server: *Server, rows: u16, cols: u16, spawn_config: Pane.Spawn
         renderer.glyph_atlas = fa.atlas_data;
         renderer.atlas_width = fa.atlas_width;
         renderer.atlas_height = fa.atlas_height;
+        renderer.dyn = &fa.dyn;
     }
     // Bold/italic variants (fall back to the regular atlas when unset).
     if (server.font_variant_bold) |v| renderer.glyph_atlas_bold = v.data;
@@ -298,6 +299,7 @@ pub fn createRestored(server: *Server, ws: u8, pane: *Pane) ?*TerminalPane {
         renderer.glyph_atlas = fa.atlas_data;
         renderer.atlas_width = fa.atlas_width;
         renderer.atlas_height = fa.atlas_height;
+        renderer.dyn = &fa.dyn;
     }
     if (server.font_variant_bold) |v| renderer.glyph_atlas_bold = v.data;
     if (server.font_variant_italic) |v| renderer.glyph_atlas_italic = v.data;
@@ -726,6 +728,7 @@ pub fn refont(self: *TerminalPane) void {
     self.renderer.glyph_atlas = fa.atlas_data;
     self.renderer.atlas_width = fa.atlas_width;
     self.renderer.atlas_height = fa.atlas_height;
+    self.renderer.dyn = &fa.dyn;
 
     const pad = self.renderer.padding;
     const new_cols: u16 = @intCast(@max(1, (self.renderer.width -| pad * 2) / fa.cell_width));

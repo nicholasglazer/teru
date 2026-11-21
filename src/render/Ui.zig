@@ -595,8 +595,14 @@ pub fn renderScrollOverlay(
             }
             i += seq_len;
 
+            // Columns the character occupies, as the live grid counted them:
+            // two for wide glyphs, none for combining marks (which the grid
+            // never stores, so they do not appear in scrollback either).
+            const span: usize = if (cp < 0x300) 1 else Grid.displayWidth(cp);
+            if (span == 0) continue;
+
             const screen_x = rx + col * cw;
-            if (screen_x + cw > rx + rw) break;
+            if (screen_x + span * cw > rx + rw) break;
 
             // Apply inverse and dim
             var eff_fg = fg_color;
@@ -608,7 +614,10 @@ pub fn renderScrollOverlay(
             if (sel) |sl| {
                 if (sel_row >= 0) {
                     const sb_lines_count: u32 = @intCast(sb.lineCount());
-                    if (sl.isSelected(@intCast(sel_row), @intCast(col), scroll_offset, sb_lines_count)) {
+                    // A wide glyph is selected as a whole (see Selection.isCellSelected).
+                    if (sl.isSelected(@intCast(sel_row), @intCast(col), scroll_offset, sb_lines_count) or
+                        (span == 2 and sl.isSelected(@intCast(sel_row), @intCast(col + 1), scroll_offset, sb_lines_count)))
+                    {
                         eff_bg = s.selection_bg;
                         if (eff_fg == eff_bg) eff_fg = s.ansi[15];
                     }
@@ -617,7 +626,7 @@ pub fn renderScrollOverlay(
 
             // Fill cell background (only the visible rows of a clipped line)
             const max_y = @min(screen_y + vis_h, ry + rh);
-            const max_x = @min(screen_x + cw, rx + rw);
+            const max_x = @min(screen_x + span * cw, rx + rw);
             if (eff_bg != s.bg) {
                 for (screen_y..max_y) |py| {
                     if (py >= cpu.height) break;
@@ -632,14 +641,23 @@ pub fn renderScrollOverlay(
             if (cpu.atlas_width > 0 and cpu.glyph_atlas.len > 0) {
                 if (FontAtlas.glyphSlot(@intCast(cp))) |slot| {
                     const atlas = cpu.getAtlasForAttrs(is_bold, false);
-                    Compositor.blitGlyphInRect(cpu, @intCast(slot), screen_x, screen_y, max_x, max_y, eff_fg, eff_bg, atlas, top_skip);
+                    Compositor.blitGlyphInRect(cpu, @intCast(slot), screen_x, screen_y, @min(screen_x + cw, max_x), max_y, eff_fg, eff_bg, atlas, top_skip);
+                } else if (cp > 0x20 and cpu.dyn != null) {
+                    // No fixed slot: the on-demand cache, as in the live grid.
+                    // A wide glyph is two slots, one per cell.
+                    if (cpu.dyn.?.resolve(cp, span == 2)) |slot| {
+                        Compositor.blitGlyphInRect(cpu, @intCast(slot), screen_x, screen_y, @min(screen_x + cw, max_x), max_y, eff_fg, eff_bg, cpu.glyph_atlas, top_skip);
+                        if (span == 2) {
+                            Compositor.blitGlyphInRect(cpu, @intCast(slot + 1), screen_x + cw, screen_y, max_x, max_y, eff_fg, eff_bg, cpu.glyph_atlas, top_skip);
+                        }
+                    }
                 } else if (cp < 127 and cp >= 32 and top_skip == 0) {
                     // Fallback to simple ASCII blit (no top-clip support — skip
                     // on the partial top line rather than overdraw above it).
                     blitCharAt(cpu, @intCast(cp), screen_x, screen_y, eff_fg);
                 }
             }
-            col += 1;
+            col += span;
         }
     }
 }

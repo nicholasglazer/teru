@@ -89,6 +89,10 @@ pub const SoftwareRenderer = struct {
     glyph_atlas_bold_italic: []const u8 = &.{}, // bold+italic variant (same layout, optional)
     atlas_width: u32,
     atlas_height: u32,
+    /// On-demand glyphs for codepoints with no fixed atlas slot. Must be the
+    /// cache of the atlas `glyph_atlas` points into (`&font_atlas.dyn`), or
+    /// null, in which case such codepoints draw nothing.
+    dyn: ?*FontAtlas.GlyphCache = null,
     cursor_color: u32, // configurable cursor block color (ARGB)
     padding: u32, // pixels of padding around content
     scheme: ColorScheme, // runtime color scheme (palette + semantic colors)
@@ -273,11 +277,17 @@ pub const SoftwareRenderer = struct {
             const screen_y = row * ch + self.padding;
             if (screen_y >= fb_h) break;
 
+            // Slot holding the right half of the wide on-demand glyph drawn in
+            // the previous cell, for the trailer cell (char == 0) to blit.
+            var right_half: ?u32 = null;
+
             for (0..cols) |col| {
                 const screen_x = col * cw + self.padding;
                 if (screen_x >= fb_w) break;
 
                 const cell = grid.cellAtConst(@intCast(row), @intCast(col));
+                const pending_half = right_half;
+                right_half = null;
 
                 // Resolve colors (handling inverse, dim, hidden)
                 var fg = self.scheme.resolve(cell.fg, true);
@@ -304,7 +314,7 @@ pub const SoftwareRenderer = struct {
                 // viewport.
                 if (sel) |s| {
                     const screen_row: u16 = @intCast(scroll_offset + row);
-                    if (s.isSelected(screen_row, @intCast(col), scroll_offset, sb_lines)) {
+                    if (s.isCellSelected(grid, @intCast(row), @intCast(col), screen_row, scroll_offset, sb_lines)) {
                         bg = self.scheme.selection_bg;
                         if (fg == bg) fg = self.scheme.ansi[15];
                     }
@@ -341,6 +351,20 @@ pub const SoftwareRenderer = struct {
                             bg,
                             glyph_atlas,
                         );
+                    } else if (self.dyn) |dyn| {
+                        // No fixed slot (Hangul, kana, Han, Greek, …): draw
+                        // from the on-demand cache, regular weight only.
+                        const wide = Grid.displayWidth(cp) == 2;
+                        if (dyn.resolve(cp, wide)) |slot| {
+                            self.blitGlyph(@intCast(slot), screen_x, screen_y, max_x, max_y, fg, bg, self.glyph_atlas);
+                            if (wide) right_half = slot + 1;
+                        }
+                    }
+                } else if (cp == 0) {
+                    // Trailer of a wide glyph: its own background and
+                    // selection state, the glyph's right half on top.
+                    if (pending_half) |slot| {
+                        self.blitGlyph(@intCast(slot), screen_x, screen_y, max_x, max_y, fg, bg, self.glyph_atlas);
                     }
                 }
 
@@ -959,4 +983,160 @@ test "padding fill with known scheme color" {
     // Verify grid content area exists: at least one cell from (pad, pad) to (pad+cw, pad+ch) is accessible
     const grid_area_start = (pad + ch / 2) * fb_w + (pad + cw / 2);
     try std.testing.expect(grid_area_start < renderer.framebuffer.len);
+}
+
+// ── On-demand glyphs (no fixed atlas slot) ─────────────────────────
+
+/// A 16-slots-per-row atlas with three fixed rows ('A' and 'B' drawn as
+/// solid blocks) and one reserved row, plus a glyph cache over the reserved
+/// row. No font file is involved, so these tests run anywhere.
+const OnDemandFixture = struct {
+    const cw: u32 = 4;
+    const ch: u32 = 8;
+    const atlas_w: u32 = 16 * cw;
+    const atlas_h: u32 = 4 * ch;
+
+    atlas: [atlas_w * atlas_h]u8 = @splat(0),
+    table: [FontAtlas.GlyphCache.table_len]u32 = @splat(0),
+    cache: FontAtlas.GlyphCache = .{},
+
+    fn setUp(self: *OnDemandFixture) void {
+        for ([_]u21{ 'A', 'B' }) |cp| {
+            const slot = FontAtlas.glyphSlot(cp).?;
+            const x0 = (slot % 16) * cw;
+            const y0 = (slot / 16) * ch;
+            for (0..ch) |y| @memset(self.atlas[(y0 + y) * atlas_w + x0 ..][0..cw], 0xFF);
+        }
+        self.cache = .{
+            .table = &self.table,
+            .pixels = &self.atlas,
+            .atlas_w = atlas_w,
+            .cell_w = cw,
+            .cell_h = ch,
+            .first_slot = 3 * 16,
+            .capacity = 8,
+        };
+        // U+D55C: the left half inks its first column, the right half its last.
+        var alpha: [2 * cw * ch]u8 = @splat(0);
+        for (0..ch) |y| {
+            alpha[y * 2 * cw] = 0xFF;
+            alpha[y * 2 * cw + 2 * cw - 1] = 0xFF;
+        }
+        _ = self.cache.insertRaw(0xD55C, &alpha).?;
+    }
+
+    fn renderer(self: *OnDemandFixture, cols: u32, rows: u32) !SoftwareRenderer {
+        var r = try SoftwareRenderer.init(std.testing.allocator, cols * cw, rows * ch, cw, ch);
+        r.padding = 0;
+        r.cursor_visible = false;
+        r.updateAtlas(&self.atlas, atlas_w, atlas_h);
+        r.dyn = &self.cache;
+        return r;
+    }
+
+    /// Pixels of cell (row, col) that differ from the scheme background.
+    fn ink(r: *const SoftwareRenderer, row: usize, col: usize) usize {
+        var n: usize = 0;
+        for (0..ch) |y| {
+            for (r.framebuffer[(row * ch + y) * r.width + col * cw ..][0..cw]) |px| n += @intFromBool(px != r.scheme.bg);
+        }
+        return n;
+    }
+
+    fn cellsEqual(r: *const SoftwareRenderer, row_a: usize, col_a: usize, row_b: usize, col_b: usize) bool {
+        for (0..ch) |y| {
+            const a = r.framebuffer[(row_a * ch + y) * r.width + col_a * cw ..][0..cw];
+            const b = r.framebuffer[(row_b * ch + y) * r.width + col_b * cw ..][0..cw];
+            if (!std.mem.eql(u32, a, b)) return false;
+        }
+        return true;
+    }
+};
+
+test "a wide on-demand glyph inks both of its cells and leaves neighbours alone" {
+    const allocator = std.testing.allocator;
+    var fx: OnDemandFixture = .{};
+    fx.setUp();
+
+    var grid = try Grid.init(allocator, 2, 6);
+    defer grid.deinit(allocator);
+    grid.write('A');
+    grid.write(0xD55C);
+    grid.write('B'); // row 0: A, lead, trailer, B
+    grid.cursor_row = 1;
+    grid.cursor_col = 0;
+    grid.write('A');
+    grid.write(' ');
+    grid.write(' ');
+    grid.write('B'); // row 1: the same without the wide glyph
+
+    var r = try fx.renderer(6, 2);
+    defer r.deinit();
+    r.render(&grid);
+
+    const cw = OnDemandFixture.cw;
+    const ch = OnDemandFixture.ch;
+    const fg = r.scheme.resolve(.default, true);
+    // Left half: first column of the lead cell. Right half: last column of the trailer.
+    try std.testing.expectEqual(@as(usize, ch), OnDemandFixture.ink(&r, 0, 1));
+    try std.testing.expectEqual(@as(usize, ch), OnDemandFixture.ink(&r, 0, 2));
+    try std.testing.expectEqual(fg, r.framebuffer[1 * cw]);
+    try std.testing.expectEqual(fg, r.framebuffer[2 * cw + cw - 1]);
+    // Neighbours are pixel-identical to the reference row; the rest is empty.
+    try std.testing.expect(OnDemandFixture.cellsEqual(&r, 0, 0, 1, 0));
+    try std.testing.expect(OnDemandFixture.cellsEqual(&r, 0, 3, 1, 3));
+    try std.testing.expectEqual(@as(usize, 0), OnDemandFixture.ink(&r, 0, 4));
+    try std.testing.expectEqual(@as(usize, 0), OnDemandFixture.ink(&r, 1, 1));
+    try std.testing.expectEqual(@as(usize, 0), OnDemandFixture.ink(&r, 1, 2));
+}
+
+test "on-demand glyphs survive a redraw of another row, and need the cache" {
+    const allocator = std.testing.allocator;
+    var fx: OnDemandFixture = .{};
+    fx.setUp();
+
+    var grid = try Grid.init(allocator, 2, 6);
+    defer grid.deinit(allocator);
+    grid.write('A');
+    grid.write(0xD55C);
+
+    var r = try fx.renderer(6, 2);
+    defer r.deinit();
+    r.renderDirty(&grid);
+    const row_px = @as(usize, r.width) * OnDemandFixture.ch;
+    const before = try allocator.dupe(u32, r.framebuffer[0..row_px]);
+    defer allocator.free(before);
+
+    // Only row 1 changes; row 0 must come through the dirty redraw untouched.
+    grid.cursor_row = 1;
+    grid.cursor_col = 0;
+    grid.write(0xD55C);
+    r.renderDirty(&grid);
+    try std.testing.expectEqualSlices(u32, before, r.framebuffer[0..row_px]);
+    try std.testing.expect(OnDemandFixture.ink(&r, 1, 0) > 0);
+    try std.testing.expect(OnDemandFixture.ink(&r, 1, 1) > 0);
+
+    // Without a cache attached the codepoint draws nothing, as before.
+    r.dyn = null;
+    r.render(&grid);
+    try std.testing.expectEqual(@as(usize, 0), OnDemandFixture.ink(&r, 0, 1));
+    try std.testing.expectEqual(@as(usize, 0), OnDemandFixture.ink(&r, 0, 2));
+}
+
+test "a trailer cell with no wide glyph before it draws nothing" {
+    const allocator = std.testing.allocator;
+    var fx: OnDemandFixture = .{};
+    fx.setUp();
+
+    var grid = try Grid.init(allocator, 1, 4);
+    defer grid.deinit(allocator);
+    grid.write('A');
+    grid.cellAt(0, 1).char = 0; // stale trailer after a narrow character
+    grid.cellAt(0, 0 + 2).char = 0; // and another with nothing before it
+
+    var r = try fx.renderer(4, 1);
+    defer r.deinit();
+    r.render(&grid);
+    try std.testing.expectEqual(@as(usize, 0), OnDemandFixture.ink(&r, 0, 1));
+    try std.testing.expectEqual(@as(usize, 0), OnDemandFixture.ink(&r, 0, 2));
 }

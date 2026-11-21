@@ -602,6 +602,20 @@ const width_table: WidthTable = blk: {
     break :blk .{ .class = class, .mixed = mixed };
 };
 
+/// The other column of the wide glyph that covers (row, col): the trailer's
+/// column for a lead cell, the lead's for a trailer. Null for a narrow cell,
+/// and for a trailer left behind with no wide glyph before it.
+pub fn widePartner(self: *const Grid, row: u16, col: u16) ?u16 {
+    const cp = self.cellAtConst(row, col).char;
+    if (cp == 0) {
+        if (col > 0 and displayWidth(self.cellAtConst(row, col - 1).char) == 2) return col - 1;
+        return null;
+    }
+    if (cp < 0x1100 or displayWidth(cp) != 2) return null;
+    if (col + 1 < self.cols and self.cellAtConst(row, col + 1).char == 0) return col + 1;
+    return null;
+}
+
 /// Write a character at the current cursor position with pen attributes, then
 /// advance the cursor by the glyph's DISPLAY WIDTH (1 or 2). Wraps at the right
 /// margin; a double-width glyph never straddles the margin. Zero-width

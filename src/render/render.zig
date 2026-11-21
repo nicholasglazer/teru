@@ -21,6 +21,8 @@ test {
     _ = @import("software.zig");
     _ = FontAtlas;
     _ = @import("FontSynth.zig");
+    _ = @import("GlyphCache.zig");
+    _ = @import("FallbackFonts.zig");
     _ = tier;
     _ = BarWidget;
     _ = BarRenderer;

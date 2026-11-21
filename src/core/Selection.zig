@@ -150,6 +150,16 @@ pub fn isSelected(self: *const Selection, screen_row: u16, col: u16, scroll_offs
     return true;
 }
 
+/// Whether the grid cell (row, col), shown on `screen_row`, is drawn selected.
+/// A wide glyph is selected as a whole: either of its two columns being in
+/// the selection highlights both, which matches what `getText` copies.
+pub fn isCellSelected(self: *const Selection, grid: *const Grid, row: u16, col: u16, screen_row: u16, scroll_offset: u32, sb_lines: u32) bool {
+    if (!self.active) return false;
+    if (self.isSelected(screen_row, col, scroll_offset, sb_lines)) return true;
+    const partner = grid.widePartner(row, col) orelse return false;
+    return self.isSelected(screen_row, partner, scroll_offset, sb_lines);
+}
+
 /// Extract selected text from grid and scrollback.
 pub fn getText(self: *const Selection, grid: *const Grid, sb: ?*const Scrollback, buf: []u8) usize {
     if (!self.active) return 0;
@@ -177,6 +187,11 @@ pub fn getText(self: *const Selection, grid: *const Grid, sb: ?*const Scrollback
             const grid_row: u16 = @intCast(row - sb_lines);
             if (grid_row < grid.rows) {
                 var col = col_start;
+                // A selection that starts on the right half of a wide glyph
+                // includes the glyph.
+                if (col < grid.cols) {
+                    if (grid.widePartner(grid_row, col)) |partner| col = @min(col, partner);
+                }
                 while (col <= col_end and col < grid.cols) : (col += 1) {
                     const cell = grid.cellAtConst(grid_row, col);
                     if (cell.char == 0) continue; // wide-glyph trailer — its lead carries the text (and avoids a NUL in the clipboard)
@@ -203,6 +218,19 @@ pub fn getText(self: *const Selection, grid: *const Grid, sb: ?*const Scrollback
         }
     }
     return pos;
+}
+
+/// Screen columns taken by one UTF-8 sequence: two for a wide glyph, one
+/// otherwise (including malformed bytes, which are drawn as one cell or not
+/// at all).
+fn columnsOf(seq: []const u8) u16 {
+    const cp: u21 = switch (seq.len) {
+        2 => (@as(u21, seq[0] & 0x1F) << 6) | (seq[1] & 0x3F),
+        3 => (@as(u21, seq[0] & 0x0F) << 12) | (@as(u21, seq[1] & 0x3F) << 6) | (seq[2] & 0x3F),
+        4 => (@as(u21, seq[0] & 0x07) << 18) | (@as(u21, seq[1] & 0x3F) << 12) | (@as(u21, seq[2] & 0x3F) << 6) | (seq[3] & 0x3F),
+        else => return 1,
+    };
+    return @max(1, Grid.displayWidth(cp));
 }
 
 /// Strip SGR escape sequences from VT bytes, extracting plain text
@@ -238,13 +266,17 @@ fn stripSgrToColumns(text: []const u8, col_start: u16, col_end: u16, buf: []u8) 
             i += 1;
         } else {
             const seq_len: usize = if (byte < 0xC0) 1 else if (byte < 0xE0) 2 else if (byte < 0xF0) 3 else 4;
-            if (col >= col_start and col <= col_end) {
-                const end = @min(i + seq_len, text.len);
+            const end = @min(i + seq_len, text.len);
+            // The character is copied when any column it occupies is in the
+            // range, so a selection starting on the right half of a wide
+            // glyph includes it, and columns after it line up with the screen.
+            const width = columnsOf(text[i..end]);
+            if (col + width > col_start and col <= col_end) {
                 for (text[i..end]) |b| {
                     if (len < buf.len) { buf[len] = b; len += 1; }
                 }
             }
-            col += 1;
+            col += width;
             i += seq_len;
         }
     }
@@ -448,4 +480,47 @@ test "update on inactive selection is no-op" {
     var sel = Selection{};
     sel.update(10, 20, 0, 0);
     try std.testing.expect(!sel.active);
+}
+
+test "stripSgrToColumns counts a wide glyph as two columns" {
+    var buf: [64]u8 = undefined;
+    // Columns: A=0, 한=1-2, B=3, 글=4-5, C=6.
+    const line = "A\u{d55c}B\x1b[1m\u{ae00}\x1b[0mC";
+    try std.testing.expectEqualStrings("B", buf[0..stripSgrToColumns(line, 3, 3, &buf)]);
+    try std.testing.expectEqualStrings("B\u{ae00}C", buf[0..stripSgrToColumns(line, 3, 6, &buf)]);
+    try std.testing.expectEqualStrings("A\u{d55c}", buf[0..stripSgrToColumns(line, 0, 1, &buf)]);
+    // Narrow non-ASCII still takes one column.
+    try std.testing.expectEqualStrings("b", buf[0..stripSgrToColumns("\u{e9}b", 1, 1, &buf)]);
+}
+
+test "a selection touching either half of a wide glyph takes the whole glyph" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 1, 8);
+    defer grid.deinit(allocator);
+    grid.write('A');
+    grid.write(0xD55C); // columns 1-2
+    grid.write('B');
+    grid.write('C');
+
+    var buf: [64]u8 = undefined;
+    var sel = Selection{};
+
+    // Starting on the right half (column 2): the glyph is highlighted and copied.
+    sel.begin(0, 2, 0, 0);
+    sel.update(0, 3, 0, 0);
+    try std.testing.expect(sel.isCellSelected(&grid, 0, 1, 0, 0, 0));
+    try std.testing.expect(sel.isCellSelected(&grid, 0, 2, 0, 0, 0));
+    try std.testing.expect(!sel.isCellSelected(&grid, 0, 0, 0, 0, 0));
+    try std.testing.expectEqualStrings("\u{d55c}B", buf[0..sel.getText(&grid, null, &buf)]);
+
+    // Ending on the left half (column 1): both halves are highlighted.
+    sel.begin(0, 0, 0, 0);
+    sel.update(0, 1, 0, 0);
+    try std.testing.expect(sel.isCellSelected(&grid, 0, 2, 0, 0, 0));
+    try std.testing.expect(!sel.isCellSelected(&grid, 0, 3, 0, 0, 0));
+    try std.testing.expectEqualStrings("A\u{d55c}", buf[0..sel.getText(&grid, null, &buf)]);
+
+    // The same line in scrollback copies the same text for the same columns.
+    try std.testing.expectEqualStrings("\u{d55c}B", buf[0..stripSgrToColumns("A\u{d55c}BC", 2, 3, &buf)]);
+    try std.testing.expectEqualStrings("A\u{d55c}", buf[0..stripSgrToColumns("A\u{d55c}BC", 0, 1, &buf)]);
 }

@@ -180,6 +180,13 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     bench_mod.addImport("teru", lib_mod);
+    // The renderer can rasterize glyphs on demand, so anything that links it
+    // needs stb_truetype.
+    bench_mod.addCSourceFile(.{
+        .file = b.path("vendor/stb_truetype.c"),
+        .flags = &.{"-DSTB_TRUETYPE_IMPLEMENTATION"},
+    });
+    bench_mod.addIncludePath(b.path("vendor"));
     const bench_exe = b.addExecutable(.{
         .name = "teru-bench",
         .root_module = bench_mod,
@@ -198,6 +205,12 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     test_mod.addOptions("build_options", build_options);
+    // Vendored C, no system dependency: the glyph cache tests call into it.
+    test_mod.addCSourceFile(.{
+        .file = b.path("vendor/stb_truetype.c"),
+        .flags = &.{"-DSTB_TRUETYPE_IMPLEMENTATION"},
+    });
+    test_mod.addIncludePath(b.path("vendor"));
     const lib_tests = b.addTest(.{
         .root_module = test_mod,
     });

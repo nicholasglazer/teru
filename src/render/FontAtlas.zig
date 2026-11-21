@@ -1,8 +1,12 @@
 //! Font atlas builder using stb_truetype (embedded, zero system deps).
 //!
-//! Rasterizes ASCII printable glyphs (32-126) into a single-channel
-//! grayscale texture atlas. Finds fonts by scanning standard paths
-//! or accepting an explicit font path. No FreeType, no fontconfig.
+//! Rasterizes a fixed set of glyph ranges into a single-channel grayscale
+//! texture atlas, one cell-sized slot per codepoint. Finds fonts by scanning
+//! standard paths or accepting an explicit font path. No FreeType, no
+//! fontconfig.
+//!
+//! Codepoints outside the fixed ranges are drawn on demand by `GlyphCache`
+//! into rows reserved at the end of the same bitmap (see the `dyn` field).
 
 const std = @import("std");
 const Io = std.Io;
@@ -10,6 +14,9 @@ const Dir = Io.Dir;
 const build_options = @import("build_options");
 const compat = @import("../compat.zig");
 const FontSynth = @import("FontSynth.zig");
+const stbtt = @import("stb.zig");
+const FallbackFonts = @import("FallbackFonts.zig");
+pub const GlyphCache = @import("GlyphCache.zig");
 const FontAtlas = @This();
 
 // Glyph-range gates resolved at compile time from `-Dglyphs=...`.
@@ -66,11 +73,12 @@ const fallback_font_paths = [_][]const u8{
     "/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf",
     "/usr/share/fonts/gnu-free/FreeMono.otf",
     "/System/Library/Fonts/Apple Symbols.ttf",
+    "C:\\Windows\\Fonts\\seguisym.ttf", // Segoe UI Symbol
 };
 
 /// Total glyph slots for the active `-Dglyphs` budget. SINGLE SOURCE OF TRUTH:
 /// atlas dimensions, glyphSlot() offsets, and every rasterizer derive from it.
-/// ascii=360, extended=1384, full=1640.
+/// ascii=360, extended and full=1640.
 const atlas_total_glyphs: u32 = 95 + 96 + 128 + 32 + 9 +
     (if (include_geometric) 96 else 0) +
     (if (include_cyrillic) 256 else 0) +
@@ -79,6 +87,13 @@ const atlas_total_glyphs: u32 = 95 + 96 + 128 + 32 + 9 +
     (if (include_arrows) 112 else 0) +
     (if (include_misc_tech) 256 else 0) +
     (if (include_dingbats) 192 else 0);
+
+/// Slots per atlas row. Renderers derive this from `atlas_width / cell_width`.
+const slots_per_row: u32 = 16;
+/// Atlas rows holding the fixed slots; the on-demand rows follow them.
+const static_rows: u32 = (atlas_total_glyphs + slots_per_row - 1) / slots_per_row;
+/// On-demand glyph pairs to reserve. The smallest build keeps a small cache.
+const dynamic_pair_limit: u32 = if (build_options.glyph_budget == .ascii) 256 else GlyphCache.max_pairs;
 
 /// Fill `buf` with the budget-gated codepoint→slot list in the canonical order
 /// glyphSlot() resolves: ASCII, Latin-1, Box, Block, Symbols, [Geometric],
@@ -140,29 +155,6 @@ fn buildAtlasCodepoints(buf: []Codepoint) u32 {
     return slot;
 }
 
-// ── stb_truetype C bindings ────────────────────────────────────────
-//
-// Hand-declared per .claude/rules/zig-terminal.md anti-pattern #10.
-// The real stbtt_fontinfo is 160 bytes (10 ints + 2 ptrs + 6 × 16-byte
-// stbtt__buf). A 256-byte aligned buffer is our opaque stack storage;
-// vendor/stb_truetype.c carries a _Static_assert guarding that ceiling.
-
-const stbtt = struct {
-    /// Opaque stack storage for an stbtt_fontinfo. Real struct is ~160 B;
-    /// vendor/stb_truetype.c carries a _Static_assert guarding this cap.
-    pub const stbtt_fontinfo = extern struct {
-        _storage: [256]u8 align(8) = undefined,
-    };
-
-    pub extern fn stbtt_InitFont(info: *stbtt_fontinfo, data: [*]const u8, offset: c_int) callconv(.c) c_int;
-    pub extern fn stbtt_FindGlyphIndex(info: *const stbtt_fontinfo, codepoint: c_int) callconv(.c) c_int;
-    pub extern fn stbtt_ScaleForPixelHeight(info: *const stbtt_fontinfo, pixel_height: f32) callconv(.c) f32;
-    pub extern fn stbtt_GetFontVMetrics(info: *const stbtt_fontinfo, ascent: *c_int, descent: *c_int, line_gap: *c_int) callconv(.c) void;
-    pub extern fn stbtt_GetCodepointHMetrics(info: *const stbtt_fontinfo, cp: c_int, advance_width: *c_int, left_side_bearing: *c_int) callconv(.c) void;
-    pub extern fn stbtt_GetCodepointBitmapBox(info: *const stbtt_fontinfo, cp: c_int, scale_x: f32, scale_y: f32, ix0: *c_int, iy0: *c_int, ix1: *c_int, iy1: *c_int) callconv(.c) void;
-    pub extern fn stbtt_MakeCodepointBitmap(info: *const stbtt_fontinfo, output: [*]u8, out_w: c_int, out_h: c_int, out_stride: c_int, scale_x: f32, scale_y: f32, codepoint: c_int) callconv(.c) void;
-};
-
 // ── Public types ───────────────────────────────────────────────────
 
 pub const GlyphInfo = struct {
@@ -211,6 +203,12 @@ font_data: []u8, // kept alive for stbtt
 /// was found; rendering then degrades to the synthesized glyphs / blank,
 /// exactly as before.
 fallback_font_data: ?[]u8 = null,
+/// Glyphs drawn on first use into the rows after the fixed slots, for every
+/// codepoint `glyphSlot` has no slot for. A renderer that should draw them
+/// holds a pointer to this next to its `atlas_data` slice, so the atlas must
+/// stay at a fixed address while that renderer exists. Its lookup table is a
+/// separate allocation this atlas owns.
+dyn: GlyphCache = .{},
 
 pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16, io: Io) !FontAtlas {
     // Resolve the font file. The configured `font_path` may be a full path OR
@@ -286,18 +284,22 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     //   Block Elements:  0x2580-0x259F (32 glyphs)
     //   Symbols (synth): see symbol_codepoints (9 glyphs)
     // Optional via -Dglyphs:
-    //   Geometric Shapes: 0x25A0-0x25FF (96 glyphs)   [extended, full]
-    //   Cyrillic:        0x0400-0x04FF (256 glyphs)   [full only]
-    //   Braille Patterns: 0x2800-0x28FF (256 glyphs)  [full only]
-    // Totals: 360 (ascii) / 1384 (extended) / 1640 (full)
+    //   Geometric Shapes, Cyrillic, Braille, General Punctuation, Arrows,
+    //   Misc Technical, Dingbats                      [extended, full]
+    // Totals: 360 (ascii) / 1640 (extended, full)
+    // Rows for on-demand glyphs (GlyphCache) follow the fixed ones.
     const total_glyphs: u32 = atlas_total_glyphs;
     const glyphs_per_row: u32 = 16;
     const num_rows: u32 = (total_glyphs + glyphs_per_row - 1) / glyphs_per_row;
     const atlas_w = glyphs_per_row * cell_w;
-    const atlas_h = num_rows * cell_h;
+    const dyn_pairs = GlyphCache.pairsFor(cell_w, cell_h, dynamic_pair_limit);
+    const atlas_h = (num_rows + dyn_pairs * 2 / glyphs_per_row) * cell_h;
 
     const atlas_data = try allocator.alloc(u8, atlas_w * atlas_h);
+    errdefer allocator.free(atlas_data);
     @memset(atlas_data, 0);
+    const dyn_table = try allocator.alloc(u32, GlyphCache.table_len);
+    errdefer allocator.free(dyn_table);
 
     // Initialize glyph tables
     var glyphs: [256]?GlyphInfo = @splat(null);
@@ -430,7 +432,7 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     }
     FontSynth.drawSymbols(atlas_data, atlas_w, cell_w, cell_h, glyphs_per_row, &synth_mask);
 
-    return FontAtlas{
+    var atlas: FontAtlas = .{
         .atlas_data = atlas_data,
         .atlas_width = atlas_w,
         .atlas_height = atlas_h,
@@ -450,7 +452,24 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
         .allocator = allocator,
         .font_data = font_data,
         .fallback_font_data = fallback_font_data,
+        .dyn = undefined,
     };
+    atlas.dyn.setUp(.{
+        .table = dyn_table,
+        .pixels = atlas_data,
+        .atlas_w = atlas_w,
+        .cell_w = cell_w,
+        .cell_h = cell_h,
+        .first_slot = static_rows * slots_per_row,
+        .capacity = dyn_pairs,
+        .main_font = font_data,
+        .main_scale = scale,
+        .symbol_font = fallback_font_data,
+        .symbol_scale = fb_scale,
+        .baseline = baseline,
+        .chain = FallbackFonts.chain(io),
+    });
+    return atlas;
 }
 
 /// Direction of a font-size zoom step. `.reset` returns to the config size.
@@ -514,10 +533,14 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
     const glyphs_per_row: u32 = 16;
     const num_rows: u32 = (total_glyphs + glyphs_per_row - 1) / glyphs_per_row;
     const atlas_w = glyphs_per_row * cell_w;
-    const atlas_h = num_rows * cell_h;
+    const dyn_pairs = GlyphCache.pairsFor(cell_w, cell_h, dynamic_pair_limit);
+    const atlas_h = (num_rows + dyn_pairs * 2 / glyphs_per_row) * cell_h;
 
     const atlas_data = try self.allocator.alloc(u8, atlas_w * atlas_h);
+    errdefer self.allocator.free(atlas_data);
     @memset(atlas_data, 0);
+    const dyn_table = try self.allocator.alloc(u32, GlyphCache.table_len);
+    errdefer self.allocator.free(dyn_table);
 
     var glyphs: [256]?GlyphInfo = @splat(null);
     var box_glyphs: [128]?GlyphInfo = @splat(null);
@@ -622,13 +645,14 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
 
     // The new atlas owns its own copy of the fallback bytes too.
     var fallback_copy: ?[]u8 = null;
+    errdefer if (fallback_copy) |c| self.allocator.free(c);
     if (self.fallback_font_data) |fbd| {
         const c = try self.allocator.alloc(u8, fbd.len);
         @memcpy(c, fbd);
         fallback_copy = c;
     }
 
-    return FontAtlas{
+    var atlas: FontAtlas = .{
         .atlas_data = atlas_data,
         .atlas_width = atlas_w,
         .atlas_height = atlas_h,
@@ -648,7 +672,25 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
         .allocator = self.allocator,
         .font_data = font_data_copy,
         .fallback_font_data = fallback_copy,
+        .dyn = undefined,
     };
+    // A fresh, empty cache: on-demand glyphs depend on the cell size.
+    atlas.dyn.setUp(.{
+        .table = dyn_table,
+        .pixels = atlas_data,
+        .atlas_w = atlas_w,
+        .cell_w = cell_w,
+        .cell_h = cell_h,
+        .first_slot = static_rows * slots_per_row,
+        .capacity = dyn_pairs,
+        .main_font = font_data_copy,
+        .main_scale = scale,
+        .symbol_font = fallback_copy,
+        .symbol_scale = fb_scale,
+        .baseline = baseline,
+        .chain = self.dyn.chain,
+    });
+    return atlas;
 }
 
 /// Load a font variant (bold, italic, etc.) and rasterize it into a new atlas
@@ -675,8 +717,9 @@ pub fn loadVariant(self: *const FontAtlas, allocator: std.mem.Allocator, font_pa
     const target_h: f32 = @floatFromInt(self.cell_height);
     const scale = target_h / (@as(f32, @floatFromInt(ascent)) - @as(f32, @floatFromInt(descent)));
 
-    // Allocate atlas with SAME dimensions as primary
-    const atlas = try allocator.alloc(u8, self.atlas_width * self.atlas_height);
+    // Same slot layout as the primary, but only its fixed rows: on-demand
+    // glyphs are always drawn from the primary bitmap.
+    const atlas = try allocator.alloc(u8, self.atlas_width * static_rows * self.cell_height);
     errdefer allocator.free(atlas);
     @memset(atlas, 0);
 
@@ -684,7 +727,7 @@ pub fn loadVariant(self: *const FontAtlas, allocator: std.mem.Allocator, font_pa
     const cw = self.cell_width;
     const ch = self.cell_height;
     const aw = self.atlas_width;
-    const ah = self.atlas_height;
+    const ah = static_rows * self.cell_height;
     const glyphs_per_row: u32 = 16;
 
     // Same budget-gated codepoint list / order as init() — shared helper so a
@@ -785,7 +828,8 @@ pub fn rasterizeVariant(self: *const FontAtlas, allocator: std.mem.Allocator, va
     else
         0;
 
-    const atlas_buf = try allocator.alloc(u8, self.atlas_width * self.atlas_height);
+    // Fixed rows only, as in loadVariant.
+    const atlas_buf = try allocator.alloc(u8, self.atlas_width * static_rows * self.cell_height);
     errdefer allocator.free(atlas_buf);
     @memset(atlas_buf, 0);
 
@@ -793,7 +837,7 @@ pub fn rasterizeVariant(self: *const FontAtlas, allocator: std.mem.Allocator, va
     const cw = self.cell_width;
     const ch = self.cell_height;
     const aw = self.atlas_width;
-    const ah = self.atlas_height;
+    const ah = static_rows * self.cell_height;
     const glyphs_per_row: u32 = 16;
 
     var codepoints: [atlas_total_glyphs]Codepoint = undefined;
@@ -863,6 +907,7 @@ pub const VariantAtlas = struct {
 
 pub fn deinit(self: *FontAtlas) void {
     self.allocator.free(self.atlas_data);
+    self.allocator.free(self.dyn.table);
     self.allocator.free(self.font_data);
     if (self.fallback_font_data) |fb| self.allocator.free(fb);
 }
@@ -1280,4 +1325,45 @@ test "glyphSlot: TUI symbol ranges (punct/arrows/misc-tech/dingbats/braille at e
     try std.testing.expect(glyphSlot(0x28FF) != null);
     // Lookup order: ✔ prefers its always-on symbol slot over the dingbats one.
     try std.testing.expectEqual(@as(?u32, 95 + 96 + 128 + 32 + 5), glyphSlot(0x2714));
+}
+
+test "a real atlas draws Hangul from a fallback font" {
+    const allocator = std.testing.allocator;
+    // Needs a monospace font and a font with Hangul at one of the fixed
+    // paths; CI images have neither, so skip instead of failing there.
+    var atlas = FontAtlas.init(allocator, null, 16, std.testing.io) catch return error.SkipZigTest;
+    defer atlas.deinit();
+    const covered = for (atlas.dyn.chain) |*font| {
+        if (stbtt.stbtt_FindGlyphIndex(&font.info, 0xD55C) != 0) break true;
+    } else false;
+    if (!covered) return error.SkipZigTest;
+
+    // The reserved rows start right after the fixed slots.
+    try std.testing.expectEqual(static_rows * slots_per_row, atlas.dyn.first_slot);
+    try std.testing.expect(atlas.dyn.capacity > 0);
+    try std.testing.expectEqual(atlas.atlas_width * atlas.atlas_height, @as(u32, @intCast(atlas.atlas_data.len)));
+
+    const slot = atlas.dyn.resolve(0xD55C, true).?;
+    try std.testing.expect(slot >= atlas.dyn.first_slot);
+    // Both halves of the glyph have ink.
+    for ([_]u32{ slot, slot + 1 }) |half| {
+        const x0 = (half % slots_per_row) * atlas.cell_width;
+        const y0 = (half / slots_per_row) * atlas.cell_height;
+        var ink: usize = 0;
+        for (0..atlas.cell_height) |y| {
+            for (atlas.atlas_data[(y0 + y) * atlas.atlas_width + x0 ..][0..atlas.cell_width]) |a| ink += @intFromBool(a != 0);
+        }
+        try std.testing.expect(ink > 0);
+    }
+
+    // A zoomed atlas starts with an empty cache of its own and can fill it.
+    var big = try atlas.rasterizeAtSize(32);
+    defer big.deinit();
+    try std.testing.expectEqual(@as(u32, 0), big.dyn.count);
+    try std.testing.expect(big.dyn.resolve(0xD55C, true) != null);
+    // Rasterizing every Hangul syllable at the large size never outgrows
+    // stb's scratch arena (see vendor/stb_truetype.c).
+    var cp: u21 = 0xAC00;
+    while (cp <= 0xD7A3) : (cp += 1) _ = big.dyn.resolve(cp, true);
+    try std.testing.expectEqual(@as(c_uint, 0), stbtt.teru_stbtt_fallback_allocs);
 }

@@ -57,6 +57,8 @@ pub fn renderPaneIntoRect(
         const screen_y = ry + row * ch;
         if (screen_y >= fb_h or screen_y >= ry + rh) break;
 
+        var right_half: ?u32 = null;
+
         for (0..cols) |col| {
             const screen_x = rx + col * cw;
             if (screen_x >= fb_w or screen_x >= rx + rw) break;
@@ -85,7 +87,7 @@ pub fn renderPaneIntoRect(
                 const abs_row = scroll_offset + row;
                 if (abs_row <= std.math.maxInt(u16)) {
                     const screen_row: u16 = @intCast(abs_row);
-                    if (s.isSelected(screen_row, @intCast(col), scroll_offset, sb_lines)) {
+                    if (s.isCellSelected(grid, @intCast(row), @intCast(col), screen_row, scroll_offset, sb_lines)) {
                         bg = renderer.scheme.selection_bg;
                         // If fg would be invisible against selection bg, use bright white
                         if (fg == bg) fg = renderer.scheme.ansi[15];
@@ -112,12 +114,29 @@ pub fn renderPaneIntoRect(
                 }
             }
 
-            // Blit glyph from atlas (ASCII, Latin-1, box drawing, block elements)
+            // Blit glyph from atlas: a fixed slot when the codepoint has one,
+            // otherwise the on-demand cache (see SoftwareRenderer.dyn). A wide
+            // on-demand glyph is two slots: the left half here, the right half
+            // in the trailer cell (char == 0) that follows.
             const cp = cell.char;
+            const pending_half = right_half;
+            right_half = null;
             if (renderer.atlas_width > 0 and renderer.glyph_atlas.len > 0) {
                 if (FontAtlas.glyphSlot(@intCast(cp))) |slot| {
                     const atlas = renderer.getAtlasForAttrs(cell.attrs.bold, cell.attrs.italic);
                     blitGlyphInRect(renderer, @intCast(slot), screen_x, screen_y, max_x, max_y, fg, bg, atlas, 0);
+                } else if (cp > 0x20) {
+                    if (renderer.dyn) |dyn| {
+                        const wide = Grid.displayWidth(cp) == 2;
+                        if (dyn.resolve(cp, wide)) |slot| {
+                            blitGlyphInRect(renderer, @intCast(slot), screen_x, screen_y, max_x, max_y, fg, bg, renderer.glyph_atlas, 0);
+                            if (wide) right_half = slot + 1;
+                        }
+                    }
+                } else if (cp == 0) {
+                    if (pending_half) |slot| {
+                        blitGlyphInRect(renderer, @intCast(slot), screen_x, screen_y, max_x, max_y, fg, bg, renderer.glyph_atlas, 0);
+                    }
                 }
             }
         }

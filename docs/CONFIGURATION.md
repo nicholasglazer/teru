@@ -142,6 +142,32 @@ padding = 4
 opacity = 0.95
 ```
 
+#### Characters your font does not have
+
+A coding font covers Latin, a few symbol blocks and little else. For
+everything else teru looks in other installed fonts, in this order:
+
+1. your `font`;
+2. a symbol font (Adwaita Mono, DejaVu Sans Mono, Noto Sans Symbols 2, or
+   Segoe UI Symbol on Windows);
+3. a CJK font, for Korean, Japanese and Chinese: Noto Sans CJK, IBM Plex Sans
+   KR/JP/TC, Nanum Gothic, IPA Gothic, Droid Sans Fallback or WenQuanYi Micro
+   Hei on Linux; Apple SD Gothic Neo, Hiragino or PingFang on macOS; Malgun
+   Gothic, MS Gothic, Yu Gothic or Microsoft YaHei on Windows.
+
+These are found at their standard install paths (teru does not use
+fontconfig), so installing one of them is all it takes: for example
+`noto-fonts-cjk` on Arch or `fonts-noto-cjk` on Debian and Ubuntu.
+
+A character that none of these fonts has is drawn as a hollow box, so you can
+see that something is there. Limits to know about:
+
+- Colour emoji are not supported and show as boxes.
+- Fallback characters are always drawn in regular weight, including in bold
+  or italic text.
+- Chinese text uses Japanese glyph shapes when a Japanese font is found first.
+- Combining marks and conjoining Hangul jamo are not composed.
+
 ### Colors and Themes
 
 | Option | Type | Default | Description |
