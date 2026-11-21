@@ -14,9 +14,9 @@ make audit-wm                                   # headless sweep of every teruwm
 ```
 
 - A bare `zig build` is the supported invocation. Do not pass `--libc` by hand. If a build fails with `libc installation is missing crt directory`, run `./tools/fix-crt.sh --check`.
-- This tree, CI and releases build on the latest stable Zig (0.17.1). `main` and the feature branches must stay buildable on it. `build.zig.zon` holds the minimum version.
-- Zig master (0.18-dev) work lives on the local branch `zig-0.18`, checked out in the sibling worktree `../teru-wt-zig18`. It is this branch plus the source changes only master accepts (`packed` becomes `bitpack`). Bring it up to date with `git -C ../teru-wt-zig18 merge <branch>`. It is not pushed, because CI would build it with stable.
-- `zig` on PATH may be either compiler, so run `zig version` first. `make` uses the compiler directory named in an untracked `local.mk`, when that file exists.
+- `main` and the feature branches build on the latest stable Zig (0.17.1), and so do CI and releases. `build.zig.zon` holds the minimum version.
+- Zig master (0.18-dev) work lives on the local branch `zig-0.18`, checked out in the worktree `foss/teru-wt-zig18`. It is the working branch plus the source changes only master accepts (`packed` becomes `bitpack`), so it builds on master and not on stable. Update it by running `git merge <branch>` inside that worktree. It is not pushed, because CI would build it with stable.
+- `zig` on PATH may be either compiler, so run `zig version` before building. In a checkout with an untracked `local.mk`, `make` uses the compiler that file names.
 - The Python end-to-end tests are in `tests/`; each file's header says what it covers.
 
 ## Where things are
