@@ -499,10 +499,108 @@ const wide_ranges = [_]WidthRange{
 /// at the wrong column (the "half renders when I type" bug).
 pub fn displayWidth(cp: u21) u16 {
     if (cp < 0x0300) return 1; // ASCII + Latin-1: always one cell — the hot path
+    return tableWidth(cp);
+}
+
+/// Kept out of line so the ASCII paths that call `displayWidth` stay small
+/// enough to inline; measured, inlining this costs them about 10%.
+noinline fn tableWidth(cp: u21) u16 {
+    if (cp >= width_table_limit) return 1; // no range reaches this far (checked at comptime)
+    const class = width_table.class[cp >> 8];
+    if (class < width_mixed_base) return class;
+    const slot: u8 = @truncate(cp);
+    const pairs = width_table.mixed[class - width_mixed_base][slot >> 2];
+    return (pairs >> (@as(u3, @intCast(slot & 3)) * 2)) & 3;
+}
+
+/// The range lists scanned directly. `displayWidth` must agree with this for
+/// every codepoint; the lists stay the single source of truth.
+fn displayWidthScan(cp: u21) u16 {
+    if (cp < 0x0300) return 1;
     if (inSortedRanges(cp, &zero_width_ranges)) return 0;
     if (inSortedRanges(cp, &wide_ranges)) return 2;
     return 1;
 }
+
+// ── Width lookup table ───────────────────────────────────────────
+//
+// `displayWidth` runs for every non-Latin codepoint written to the grid, and
+// scanning the range lists costs up to ~80 compares for the codepoints TUIs
+// use most (CJK, box drawing, Nerd Font icons). So the lists are compiled into
+// a two-level table: one class byte per 256-codepoint page, plus a 2-bit width
+// per codepoint for the few pages that mix widths. About 3 KB of read-only data.
+
+const width_table_limit = 0x40000;
+const width_page_count = width_table_limit >> 8;
+/// Class bytes below this are the width shared by the whole page; the rest
+/// are `width_mixed_base + index` into the mixed-page table.
+const width_mixed_base = 3;
+
+const width_sets = [_]struct { ranges: []const WidthRange, width: u2 }{
+    .{ .ranges = &zero_width_ranges, .width = 0 },
+    .{ .ranges = &wide_ranges, .width = 2 },
+};
+
+/// Per page: the width if one range covers it whole, and whether any range
+/// covers it only in part.
+fn widthPageKinds() struct { width: [width_page_count]u8, mixed: [width_page_count]bool } {
+    @setEvalBranchQuota(50_000);
+    var width: [width_page_count]u8 = @splat(1);
+    var mixed: [width_page_count]bool = @splat(false);
+    for (width_sets) |set| {
+        for (set.ranges) |r| {
+            if (r.hi >= width_table_limit) @compileError("width range beyond width_table_limit");
+            var page: usize = @as(usize, r.lo) >> 8;
+            while (page <= @as(usize, r.hi) >> 8) : (page += 1) {
+                const first = page << 8;
+                if (r.lo <= first and r.hi >= first + 0xFF) width[page] = set.width else mixed[page] = true;
+            }
+        }
+    }
+    return .{ .width = width, .mixed = mixed };
+}
+
+const width_mixed_count = blk: {
+    var n: usize = 0;
+    for (widthPageKinds().mixed) |is_mixed| n += @intFromBool(is_mixed);
+    if (n > 255 - width_mixed_base) @compileError("too many mixed-width pages for a u8 class");
+    break :blk n;
+};
+
+const WidthTable = struct {
+    class: [width_page_count]u8,
+    mixed: [width_mixed_count][64]u8,
+};
+
+const width_table: WidthTable = blk: {
+    @setEvalBranchQuota(400_000);
+    const kinds = widthPageKinds();
+    var class: [width_page_count]u8 = kinds.width;
+    var mixed: [width_mixed_count][64]u8 = @splat(@splat(0b01_01_01_01)); // width 1 everywhere
+    var next: u8 = 0;
+    for (kinds.mixed, 0..) |is_mixed, page| {
+        if (!is_mixed) continue;
+        class[page] = width_mixed_base + next;
+        next += 1;
+    }
+    for (width_sets) |set| {
+        for (set.ranges) |r| {
+            var page: usize = @as(usize, r.lo) >> 8;
+            while (page <= @as(usize, r.hi) >> 8) : (page += 1) {
+                if (!kinds.mixed[page]) continue;
+                const pairs = &mixed[class[page] - width_mixed_base];
+                var cp: usize = @max(@as(usize, r.lo), page << 8);
+                const last: usize = @min(@as(usize, r.hi), (page << 8) | 0xFF);
+                while (cp <= last) : (cp += 1) {
+                    const slot = cp & 0xFF;
+                    const shift: u3 = @intCast((slot & 3) * 2);
+                    pairs[slot >> 2] = (pairs[slot >> 2] & ~(@as(u8, 3) << shift)) | (@as(u8, set.width) << shift);
+                }
+            }
+        }
+    }
+    break :blk .{ .class = class, .mixed = mixed };
+};
 
 /// Write a character at the current cursor position with pen attributes, then
 /// advance the cursor by the glyph's DISPLAY WIDTH (1 or 2). Wraps at the right
@@ -1760,6 +1858,17 @@ test "displayWidth: narrow, wide, zero-width, and PUA stays narrow" {
     // Powerline/Nerd PUA must NOT be width 2, or it re-introduces misalignment.
     try std.testing.expectEqual(@as(u16, 1), displayWidth(0xE0B0)); // powerline separator
     try std.testing.expectEqual(@as(u16, 1), displayWidth(0xF00C)); // nerd check
+}
+
+test "displayWidth: the lookup table agrees with the range lists for every codepoint" {
+    var cp: u21 = 0;
+    while (true) : (cp += 1) {
+        if (displayWidth(cp) != displayWidthScan(cp)) {
+            std.debug.print("width mismatch at U+{X}: table {d}, ranges {d}\n", .{ cp, displayWidth(cp), displayWidthScan(cp) });
+            return error.TestExpectedEqual;
+        }
+        if (cp == 0x10FFFF) break;
+    }
 }
 
 test "write: wide glyph occupies two cells with a trailer and advances by 2" {
