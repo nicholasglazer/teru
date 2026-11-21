@@ -326,8 +326,7 @@ fn trimOldest(self: *Scrollback) bool {
     if (deltas_removed > 0) {
         const remaining = self.deltas.items.len - deltas_removed;
         if (remaining > 0) {
-            std.mem.copyForwards(
-                Delta,
+            @memmove(
                 self.deltas.items[0..remaining],
                 self.deltas.items[deltas_removed..self.deltas.items.len],
             );
@@ -340,8 +339,7 @@ fn trimOldest(self: *Scrollback) bool {
     self.keyframes.items[0].deinit(self.allocator);
     const kf_remaining = self.keyframes.items.len - 1;
     if (kf_remaining > 0) {
-        std.mem.copyForwards(
-            Keyframe,
+        @memmove(
             self.keyframes.items[0..kf_remaining],
             self.keyframes.items[1..self.keyframes.items.len],
         );
@@ -1123,7 +1121,7 @@ test "dumpReplayStream round-trips scrollback through a fresh parser" {
     // The oldest replayed line's text matches the source's at the same offset.
     const off = sb2.lineCount() - 1;
     const got = sb2.getLineByOffset(off) orelse return error.NoLine;
-    try std.testing.expect(std.mem.indexOf(u8, got, "line-") != null);
+    try std.testing.expect(std.mem.find(u8, got, "line-") != null);
 }
 
 test "dumpReplayStream keeps the most recent lines when the buffer is tight" {
@@ -1146,5 +1144,5 @@ test "dumpReplayStream keeps the most recent lines when the buffer is tight" {
     try std.testing.expect(w > 0);
     // The newest scrollback line should appear; the oldest should not.
     const newest = sb.getLineByOffset(0).?; // most recent in scrollback
-    try std.testing.expect(std.mem.indexOf(u8, small[0..w], newest) != null);
+    try std.testing.expect(std.mem.find(u8, small[0..w], newest) != null);
 }

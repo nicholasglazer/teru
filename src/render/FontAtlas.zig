@@ -1011,13 +1011,13 @@ fn resolveFontPath(allocator: std.mem.Allocator, spec: []const u8) !?[]const u8 
 
     // Looks like a path (has a separator) but doesn't exist: don't guess —
     // let the caller warn + fall back.
-    if (std.mem.indexOfAny(u8, spec, "/\\") != null) return null;
+    if (std.mem.findAny(u8, spec, "/\\") != null) return null;
 
     // Bare name: probe the system font dirs, then the user font dir.
     const exts = [_][]const u8{ "", ".ttf", ".otf", ".ttc", ".TTF", ".OTF" };
     for (font_search_paths) |dir| {
         for (exts) |ext| {
-            const cand = try std.fmt.allocPrint(allocator, "{s}/{s}{s}", .{ dir, spec, ext });
+            const cand = try allocator.print("{s}/{s}{s}", .{ dir, spec, ext });
             if (accessFast(cand)) return cand;
             allocator.free(cand);
         }
@@ -1033,7 +1033,7 @@ fn resolveFontPath(allocator: std.mem.Allocator, spec: []const u8) !?[]const u8 
     };
     if (compat.getenv(home_env)) |base| {
         for (exts) |ext| {
-            const cand = try std.fmt.allocPrint(allocator, "{s}{s}/{s}{s}", .{ base, suffix, spec, ext });
+            const cand = try allocator.print("{s}{s}/{s}{s}", .{ base, suffix, spec, ext });
             if (accessFast(cand)) return cand;
             allocator.free(cand);
         }
@@ -1047,7 +1047,7 @@ fn findMonospaceFont(allocator: std.mem.Allocator, io: Io) ![]const u8 {
     // Try preferred fonts in standard paths (fast: raw access syscall)
     for (font_search_paths) |dir| {
         for (preferred_fonts) |font_name| {
-            const path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, font_name });
+            const path = try allocator.print("{s}/{s}", .{ dir, font_name });
             if (accessFast(path)) {
                 return path;
             }
@@ -1067,7 +1067,7 @@ fn findMonospaceFont(allocator: std.mem.Allocator, io: Io) ![]const u8 {
     };
     if (compat.getenv(user_home_env)) |base| {
         for (preferred_fonts) |font_name| {
-            const path = try std.fmt.allocPrint(allocator, "{s}{s}/{s}", .{ base, user_font_suffix, font_name });
+            const path = try allocator.print("{s}{s}/{s}", .{ base, user_font_suffix, font_name });
             if (accessFast(path)) {
                 return path;
             }

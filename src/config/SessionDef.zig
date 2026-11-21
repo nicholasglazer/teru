@@ -396,10 +396,10 @@ pub fn restore(def: *SessionDef, mux: *Multiplexer, graph: *ProcessGraph, rows: 
 /// Caller owns the returned slice.
 pub fn getSessionDir(allocator: Allocator) ![]const u8 {
     if (compat.getenv("XDG_CONFIG_HOME")) |config_home| {
-        return std.fmt.allocPrint(allocator, "{s}/teru/sessions", .{config_home});
+        return allocator.print("{s}/teru/sessions", .{config_home});
     }
     const home = compat.getenv("HOME") orelse return error.NoHomeDir;
-    return std.fmt.allocPrint(allocator, "{s}/.config/teru/sessions", .{home});
+    return allocator.print("{s}/.config/teru/sessions", .{home});
 }
 
 /// Build the full path for a session file.
@@ -409,7 +409,7 @@ pub fn getSessionPath(allocator: Allocator, name: []const u8) ![]const u8 {
     if (!compat.isSafeFilename(name)) return error.InvalidName;
     const dir = try getSessionDir(allocator);
     defer allocator.free(dir);
-    return std.fmt.allocPrint(allocator, "{s}/{s}.tsess", .{ dir, name });
+    return allocator.print("{s}/{s}.tsess", .{ dir, name });
 }
 
 /// Save a session definition to disk at ~/.config/teru/sessions/NAME.tsess.

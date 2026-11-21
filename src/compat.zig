@@ -118,7 +118,7 @@ pub const MemWriter = struct {
         self.pos += 1;
     }
 
-    pub fn writeInt(self: *MemWriter, comptime T: type, value: T, comptime endian: std.builtin.Endian) !void {
+    pub fn writeInt(self: *MemWriter, comptime T: type, value: T, comptime endian: std.lang.Endian) !void {
         const bytes = std.mem.toBytes(if (endian == .big) std.mem.nativeToBig(T, value) else std.mem.nativeToLittle(T, value));
         try self.writeAll(&bytes);
     }
@@ -148,7 +148,7 @@ pub const MemReader = struct {
         return byte;
     }
 
-    pub fn readInt(self: *MemReader, comptime T: type, comptime endian: std.builtin.Endian) !T {
+    pub fn readInt(self: *MemReader, comptime T: type, comptime endian: std.lang.Endian) !T {
         const size = @sizeOf(T);
         if (self.pos + size > self.buffer.len) return error.EndOfStream;
         const bytes = self.buffer[self.pos..][0..size];
@@ -176,7 +176,7 @@ pub const DynWriter = struct {
         self.len += 1;
     }
 
-    pub fn writeInt(self: *DynWriter, comptime T: type, value: T, comptime endian: std.builtin.Endian) !void {
+    pub fn writeInt(self: *DynWriter, comptime T: type, value: T, comptime endian: std.lang.Endian) !void {
         const bytes = std.mem.toBytes(if (endian == .big) std.mem.nativeToBig(T, value) else std.mem.nativeToLittle(T, value));
         try self.writeAll(&bytes);
     }

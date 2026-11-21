@@ -227,7 +227,7 @@ pub const Keyboard = struct {
             // If Alt is held, prepend ESC to the character
             if (alt_held and written > 0 and written + 1 <= buf.len) {
                 // Shift existing bytes right by 1
-                std.mem.copyBackwards(u8, buf[1 .. written + 1], buf[0..written]);
+                @memmove(buf[1 .. written + 1], buf[0..written]);
                 buf[0] = 0x1B;
                 written += 1;
             }

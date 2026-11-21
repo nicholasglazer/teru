@@ -695,7 +695,7 @@ fn writeScratchpadNames(server: *Server) void {
 fn scratchNameForIndex(blob: []const u8, idx: usize) ?[]const u8 {
     var it = std.mem.splitScalar(u8, blob, '\n');
     while (it.next()) |line| {
-        const sp = std.mem.indexOfScalar(u8, line, ' ') orelse continue;
+        const sp = std.mem.findScalar(u8, line, ' ') orelse continue;
         const i = std.fmt.parseInt(usize, line[0..sp], 10) catch continue;
         if (i == idx) return line[sp + 1 ..];
     }
