@@ -134,6 +134,17 @@ const WM_CHAR: UINT = 0x0102;
 const WM_SYSKEYDOWN: UINT = 0x0104;
 const WM_SYSKEYUP: UINT = 0x0105;
 const WM_INPUTLANGCHANGE: UINT = 0x0051;
+const WM_ERASEBKGND: UINT = 0x0014;
+
+// WM_SIZE wParam
+const SIZE_MINIMIZED: WPARAM = 1;
+
+const VK_F4: WPARAM = 0x73;
+const VK_SHIFT: INT = 0x10;
+const VK_CONTROL: INT = 0x11;
+const VK_MENU: INT = 0x12; // Alt
+const VK_LCONTROL: INT = 0xA2;
+const VK_RMENU: INT = 0xA5; // right Alt
 const WM_MOUSEMOVE: UINT = 0x0200;
 const WM_LBUTTONDOWN: UINT = 0x0201;
 const WM_LBUTTONUP: UINT = 0x0202;
@@ -144,8 +155,6 @@ const WM_MBUTTONUP: UINT = 0x0208;
 const WM_MOUSEWHEEL: UINT = 0x020A;
 
 const PM_REMOVE: UINT = 0x0001;
-
-const COLOR_WINDOW: INT = 5;
 
 const DIB_RGB_COLORS: UINT = 0;
 const SRCCOPY: DWORD = 0x00CC0020;
@@ -193,6 +202,7 @@ extern "user32" fn DispatchMessageW(lpMsg: *const MSG) callconv(.c) LRESULT;
 extern "user32" fn DefWindowProcW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.c) LRESULT;
 extern "user32" fn PostQuitMessage(nExitCode: INT) callconv(.c) void;
 extern "user32" fn GetClientRect(hWnd: HWND, lpRect: *RECT) callconv(.c) BOOL;
+extern "user32" fn AdjustWindowRectEx(lpRect: *RECT, dwStyle: DWORD, bMenu: BOOL, dwExStyle: DWORD) callconv(.c) BOOL;
 extern "user32" fn ScreenToClient(hWnd: HWND, lpPoint: *POINT) callconv(.c) BOOL;
 extern "user32" fn InvalidateRect(hWnd: HWND, lpRect: ?*const RECT, bErase: BOOL) callconv(.c) BOOL;
 extern "user32" fn BeginPaint(hWnd: HWND, lpPaint: *PAINTSTRUCT) callconv(.c) HDC;
@@ -223,8 +233,8 @@ extern "gdi32" fn StretchDIBits(
     iUsage: UINT,
     rop: DWORD,
 ) callconv(.c) INT;
-extern "gdi32" fn GetDC(hWnd: HWND) callconv(.c) HDC;
-extern "gdi32" fn ReleaseDC(hWnd: HWND, hDC: HDC) callconv(.c) INT;
+extern "user32" fn GetDC(hWnd: HWND) callconv(.c) HDC;
+extern "user32" fn ReleaseDC(hWnd: HWND, hDC: HDC) callconv(.c) INT;
 
 // ── Win32 helper constants ──────────────────────────────────────────
 
@@ -257,6 +267,8 @@ fn GET_WHEEL_DELTA_WPARAM(wp: WPARAM) i16 {
 // ── Shared types (from platform/types.zig) ──────────────────────────
 
 const types = @import("../types.zig");
+const compat = @import("../../compat.zig");
+const keyboard = @import("keyboard.zig");
 pub const KeyEvent = types.KeyEvent;
 pub const MouseButton = types.MouseButton;
 pub const MouseEvent = types.MouseEvent;
@@ -267,11 +279,65 @@ pub const X11Info = types.X11Info;
 // ── Win32 window ────────────────────────────────────────────────────
 
 /// Per-window state accessible from the WndProc callback via GWLP_USERDATA.
+///
+/// One `PeekMessageW` call can run the WndProc several times: it delivers
+/// messages sent by other threads and by the system (a snap or maximize
+/// sends WM_SIZE directly) before it returns the next posted one. So events
+/// are queued, not kept in a single slot that a later message overwrites.
 const WindowState = struct {
+    /// Client-area size in pixels: the size of the surface we draw on.
     width: u32,
     height: u32,
     is_open: bool,
-    pending_event: ?Event,
+    /// The client size changed since the last `.resize` was handed out. A
+    /// flag instead of a queued event, so a drag that produces a hundred
+    /// WM_SIZE messages yields one resize to the final size, and a resize
+    /// can never be lost to a full queue.
+    size_dirty: bool = false,
+    events: [queue_len]Event = undefined,
+    head: usize = 0,
+    count: usize = 0,
+
+    const queue_len = 64;
+
+    fn push(self: *WindowState, event: Event) void {
+        if (self.count > 0) {
+            const last = &self.events[(self.head + self.count - 1) % queue_len];
+            // Collapse runs of pointer motion and of repaint requests: only
+            // the latest matters.
+            const same_kind = switch (event) {
+                .mouse_motion => last.* == .mouse_motion,
+                .expose => last.* == .expose,
+                else => false,
+            };
+            if (same_kind) {
+                last.* = event;
+                return;
+            }
+        }
+        if (self.count == queue_len) {
+            // The main loop is not draining (a modal move/size loop). Drop
+            // the oldest event; key releases and stale motion go first.
+            self.head = (self.head + 1) % queue_len;
+            self.count -= 1;
+        }
+        self.events[(self.head + self.count) % queue_len] = event;
+        self.count += 1;
+    }
+
+    /// Next event for the main loop. A pending resize goes first so the
+    /// framebuffer matches the window before anything is drawn.
+    fn take(self: *WindowState) ?Event {
+        if (self.size_dirty) {
+            self.size_dirty = false;
+            return .{ .resize = .{ .width = self.width, .height = self.height } };
+        }
+        if (self.count == 0) return null;
+        const event = self.events[self.head];
+        self.head = (self.head + 1) % queue_len;
+        self.count -= 1;
+        return event;
+    }
 };
 
 pub const Win32Window = struct {
@@ -288,13 +354,8 @@ pub const Win32Window = struct {
     pub fn init(width: u32, height: u32, title: []const u8) !Win32Window {
         const hinstance = GetModuleHandleW(null);
 
-        // Convert title to wide string (UTF-16, ASCII subset)
         var wide_title: [256:0]u16 = @splat(0);
-        const len = @min(title.len, 255);
-        for (0..len) |i| {
-            wide_title[i] = title[i]; // ASCII subset
-        }
-        wide_title[len] = 0;
+        widenTitle(&wide_title, title);
 
         const class_name: [*:0]const u16 = &[_:0]u16{ 't', 'e', 'r', 'u', '_', 'w', 'n', 'd' };
 
@@ -305,7 +366,10 @@ pub const Win32Window = struct {
         wc.lpfnWndProc = wndProc;
         wc.hInstance = hinstance;
         wc.hCursor = LoadCursorW(null, IDC_ARROW());
-        wc.hbrBackground = @ptrFromInt(@as(usize, @intCast(COLOR_WINDOW + 1)));
+        // No class brush: every pixel of the client area is ours to draw.
+        // With one, Windows erases to white before each WM_PAINT, which
+        // shows as a white flash for the whole of a drag-resize.
+        wc.hbrBackground = null;
         wc.lpszClassName = class_name;
 
         _ = RegisterClassExW(&wc);
@@ -320,7 +384,6 @@ pub const Win32Window = struct {
             .width = width,
             .height = height,
             .is_open = true,
-            .pending_event = null,
         };
         state_storage = state;
 
@@ -329,23 +392,34 @@ pub const Win32Window = struct {
         // handle keyboard input directly via ToUnicode, not IME.
         _ = ImmDisableIME(@bitCast(@as(i32, -1))); // -1 = all threads
 
+        // `width` x `height` is the client area the caller wants to draw on.
+        // CreateWindowExW takes the outer size, title bar and borders
+        // included, so grow the rectangle by the frame first.
+        const style: DWORD = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+        var outer = RECT{ .left = 0, .top = 0, .right = @intCast(width), .bottom = @intCast(height) };
+        _ = AdjustWindowRectEx(&outer, style, 0, WS_EX_LAYERED);
+
         // Create window with WS_EX_LAYERED so setOpacity works
         const hwnd = CreateWindowExW(
             WS_EX_LAYERED,
             class_name,
             @ptrCast(&wide_title),
-            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            style,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            @intCast(width),
-            @intCast(height),
+            outer.right - outer.left,
+            outer.bottom - outer.top,
             null, // parent
             null, // menu
             hinstance,
             null, // lpParam
         );
 
-        if (hwnd == null) return error.CreateWindowFailed;
+        if (hwnd == null) {
+            std.heap.smp_allocator.destroy(state);
+            state_storage = null;
+            return error.CreateWindowFailed;
+        }
 
         // Belt-and-suspenders: also disassociate IME context from this window.
         // This handles cases where ImmDisableIME didn't take effect.
@@ -353,6 +427,21 @@ pub const Win32Window = struct {
 
         // Store state pointer in window's GWLP_USERDATA
         _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, @intCast(@intFromPtr(state)));
+
+        // The WM_SIZE sent during creation arrived before the state pointer
+        // was attached, and Windows may not have granted the size asked for
+        // (a small screen clamps it). Read what we actually got; if it
+        // differs, the main loop's first event is a resize to it.
+        var client: RECT = .{};
+        if (GetClientRect(hwnd, &client) != 0) {
+            const cw: u32 = @intCast(@max(0, client.right - client.left));
+            const ch: u32 = @intCast(@max(0, client.bottom - client.top));
+            if (cw != 0 and ch != 0 and (cw != state.width or ch != state.height)) {
+                state.width = cw;
+                state.height = ch;
+                state.size_dirty = true;
+            }
+        }
 
         // Default to fully opaque
         _ = SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
@@ -380,14 +469,13 @@ pub const Win32Window = struct {
     }
 
     pub fn pollEvents(self: *Win32Window) ?Event {
-        // Check for pending event from WndProc
-        if (self.state.pending_event) |evt| {
-            self.state.pending_event = null;
-            return evt;
-        }
+        if (self.state.take()) |event| return event;
 
+        // A null window filter also retrieves thread messages, WM_QUIT among
+        // them, and messages for helper windows the system creates on this
+        // thread.
         var msg: MSG = .{};
-        if (PeekMessageW(&msg, self.hwnd, 0, 0, PM_REMOVE) != 0) {
+        while (PeekMessageW(&msg, null, 0, 0, PM_REMOVE) != 0) {
             if (msg.message == WM_QUIT) {
                 self.state.is_open = false;
                 return .close;
@@ -403,20 +491,19 @@ pub const Win32Window = struct {
             }
             _ = DispatchMessageW(&msg);
 
-            // Check if WndProc produced a pending event
-            if (self.state.pending_event) |evt| {
-                self.state.pending_event = null;
-                return evt;
-            }
-            return .none;
+            if (self.state.take()) |event| return event;
         }
-        return null;
+        // PeekMessageW runs the WndProc for sent messages even when it
+        // returns no posted message, so look once more.
+        return self.state.take();
     }
 
     pub fn putFramebuffer(self: *Win32Window, pixels: []const u32, fb_width: u32, fb_height: u32) void {
         const blit_w = @min(fb_width, self.state.width);
         const blit_h = @min(fb_height, self.state.height);
         if (blit_w == 0 or blit_h == 0) return;
+        // The DIB header below promises GDI fb_width x fb_height pixels.
+        if (pixels.len < @as(usize, fb_width) * fb_height) return;
 
         const hdc = GetDC(self.hwnd);
         if (hdc == null) return;
@@ -448,11 +535,12 @@ pub const Win32Window = struct {
         );
     }
 
+    /// Resize so the client area is `width` x `height`. The new size reaches
+    /// `state` through the WM_SIZE that SetWindowPos sends.
     pub fn setSize(self: *Win32Window, width: u32, height: u32) void {
-        // HWND_TOP = null cast to HWND — keep current Z-order
-        _ = SetWindowPos(self.hwnd, @ptrFromInt(0), 0, 0, @intCast(width), @intCast(height), SWP_NOMOVE | SWP_NOZORDER);
-        self.state.width = width;
-        self.state.height = height;
+        var outer = RECT{ .left = 0, .top = 0, .right = @intCast(width), .bottom = @intCast(height) };
+        _ = AdjustWindowRectEx(&outer, WS_OVERLAPPEDWINDOW, 0, WS_EX_LAYERED);
+        _ = SetWindowPos(self.hwnd, null, 0, 0, outer.right - outer.left, outer.bottom - outer.top, SWP_NOMOVE | SWP_NOZORDER);
     }
 
     pub fn getSize(self: *const Win32Window) Size {
@@ -466,15 +554,10 @@ pub const Win32Window = struct {
         _ = SetLayeredWindowAttributes(self.hwnd, 0, alpha, LWA_ALPHA);
     }
 
-    /// Set window title. Converts UTF-8 to UTF-16 (ASCII subset).
+    /// Set window title from UTF-8.
     pub fn setTitle(self: *Win32Window, title: []const u8) void {
         var wide_title: [256:0]u16 = @splat(0);
-        const len = @min(title.len, 255);
-        for (0..len) |i| {
-            // Handle ASCII subset; non-ASCII bytes become '?'
-            wide_title[i] = if (title[i] < 128) title[i] else '?';
-        }
-        wide_title[len] = 0;
+        widenTitle(&wide_title, title);
         _ = SetWindowTextW(self.hwnd, @ptrCast(&wide_title));
     }
 
@@ -510,40 +593,56 @@ pub const Win32Window = struct {
         switch (msg) {
             WM_CLOSE => {
                 state.is_open = false;
-                state.pending_event = .close;
+                state.push(.close);
                 return 0;
             },
+            WM_ERASEBKGND => return 1, // nothing to erase: we repaint it all
             WM_DESTROY => {
                 PostQuitMessage(0);
                 return 0;
             },
             WM_SIZE => {
-                const lp_usize: usize = @bitCast(lparam);
-                const new_w: u32 = @truncate(lp_usize);
-                const new_h: u32 = @truncate(lp_usize >> 16);
-                if (new_w != state.width or new_h != state.height) {
-                    state.width = new_w;
-                    state.height = new_h;
-                    state.pending_event = .{ .resize = .{ .width = new_w, .height = new_h } };
+                // A minimized window reports 0x0. Keep the last real size:
+                // resizing the grids and the pseudoconsole to nothing would
+                // discard their contents.
+                if (wparam == SIZE_MINIMIZED) return 0;
+                const size = clientSizeFromLparam(lparam);
+                if (size.width == 0 or size.height == 0) return 0;
+                if (size.width != state.width or size.height != state.height) {
+                    state.width = size.width;
+                    state.height = size.height;
+                    state.size_dirty = true;
                 }
                 return 0;
             },
 
             // ── Keyboard ────────────────────────────────────────────
             WM_KEYDOWN, WM_SYSKEYDOWN => {
-                const modifiers = getKeyModifiers();
-                state.pending_event = .{ .key_press = .{
-                    .keycode = @truncate(wparam),
-                    .modifiers = modifiers,
-                } };
+                // Alt+F4 closes the window only if DefWindowProc sees it.
+                if (msg == WM_SYSKEYDOWN and wparam == VK_F4) {
+                    return DefWindowProcW(hwnd, msg, wparam, lparam);
+                }
+                const ctrl = getKeyStateDown(VK_CONTROL);
+                const alt = getKeyStateDown(VK_MENU);
+                // Ctrl+Alt is how Windows delivers AltGr, and layouts with
+                // an AltGr level accept either Ctrl and either Alt for it.
+                // Ask the layout: if this key yields a character with both
+                // held, it is text and carries neither modifier.
+                const scan: u32 = @truncate((@as(usize, @bitCast(lparam)) >> 16) & 0xFF);
+                const altgr = ctrl and alt and keyboard.ctrlAltProducesText(@truncate(wparam), scan);
+                state.push(.{ .key_press = .{
+                    .keycode = keycodeFor(wparam, lparam, getKeyStateDown(VK_LCONTROL)),
+                    .modifiers = modifierMask(getKeyStateDown(VK_SHIFT), ctrl, alt, superDown(), altgr),
+                } });
                 return 0;
             },
             WM_KEYUP, WM_SYSKEYUP => {
-                const modifiers = getKeyModifiers();
-                state.pending_event = .{ .key_release = .{
-                    .keycode = @truncate(wparam),
-                    .modifiers = modifiers,
-                } };
+                state.push(.{ .key_release = .{
+                    // No left-Ctrl test on release: the press may have been
+                    // reported as right Alt, and its release must match.
+                    .keycode = keycodeFor(wparam, lparam, false),
+                    .modifiers = getKeyModifiers(),
+                } });
                 return 0;
             },
             WM_INPUTLANGCHANGE => {
@@ -556,67 +655,67 @@ pub const Win32Window = struct {
             WM_LBUTTONDOWN => {
                 const mx = GET_X_LPARAM(lparam);
                 const my = GET_Y_LPARAM(lparam);
-                state.pending_event = .{ .mouse_press = .{
+                state.push(.{ .mouse_press = .{
                     .x = if (mx >= 0) @intCast(mx) else 0,
                     .y = if (my >= 0) @intCast(my) else 0,
                     .button = .left,
                     .modifiers = getKeyModifiers(),
-                } };
+                } });
                 return 0;
             },
             WM_LBUTTONUP => {
                 const mx = GET_X_LPARAM(lparam);
                 const my = GET_Y_LPARAM(lparam);
-                state.pending_event = .{ .mouse_release = .{
+                state.push(.{ .mouse_release = .{
                     .x = if (mx >= 0) @intCast(mx) else 0,
                     .y = if (my >= 0) @intCast(my) else 0,
                     .button = .left,
                     .modifiers = getKeyModifiers(),
-                } };
+                } });
                 return 0;
             },
             WM_RBUTTONDOWN => {
                 const mx = GET_X_LPARAM(lparam);
                 const my = GET_Y_LPARAM(lparam);
-                state.pending_event = .{ .mouse_press = .{
+                state.push(.{ .mouse_press = .{
                     .x = if (mx >= 0) @intCast(mx) else 0,
                     .y = if (my >= 0) @intCast(my) else 0,
                     .button = .right,
                     .modifiers = getKeyModifiers(),
-                } };
+                } });
                 return 0;
             },
             WM_RBUTTONUP => {
                 const mx = GET_X_LPARAM(lparam);
                 const my = GET_Y_LPARAM(lparam);
-                state.pending_event = .{ .mouse_release = .{
+                state.push(.{ .mouse_release = .{
                     .x = if (mx >= 0) @intCast(mx) else 0,
                     .y = if (my >= 0) @intCast(my) else 0,
                     .button = .right,
                     .modifiers = getKeyModifiers(),
-                } };
+                } });
                 return 0;
             },
             WM_MBUTTONDOWN => {
                 const mx = GET_X_LPARAM(lparam);
                 const my = GET_Y_LPARAM(lparam);
-                state.pending_event = .{ .mouse_press = .{
+                state.push(.{ .mouse_press = .{
                     .x = if (mx >= 0) @intCast(mx) else 0,
                     .y = if (my >= 0) @intCast(my) else 0,
                     .button = .middle,
                     .modifiers = getKeyModifiers(),
-                } };
+                } });
                 return 0;
             },
             WM_MBUTTONUP => {
                 const mx = GET_X_LPARAM(lparam);
                 const my = GET_Y_LPARAM(lparam);
-                state.pending_event = .{ .mouse_release = .{
+                state.push(.{ .mouse_release = .{
                     .x = if (mx >= 0) @intCast(mx) else 0,
                     .y = if (my >= 0) @intCast(my) else 0,
                     .button = .middle,
                     .modifiers = getKeyModifiers(),
-                } };
+                } });
                 return 0;
             },
 
@@ -629,12 +728,12 @@ pub const Win32Window = struct {
                 var pt = POINT{ .x = GET_X_LPARAM(lparam), .y = GET_Y_LPARAM(lparam) };
                 _ = ScreenToClient(hwnd, &pt);
                 const button: MouseButton = if (delta > 0) .scroll_up else .scroll_down;
-                state.pending_event = .{ .mouse_press = .{
+                state.push(.{ .mouse_press = .{
                     .x = if (pt.x >= 0) @intCast(pt.x) else 0,
                     .y = if (pt.y >= 0) @intCast(pt.y) else 0,
                     .button = button,
                     .modifiers = getKeyModifiers(),
-                } };
+                } });
                 return 0;
             },
 
@@ -642,21 +741,21 @@ pub const Win32Window = struct {
             WM_MOUSEMOVE => {
                 const mx = GET_X_LPARAM(lparam);
                 const my = GET_Y_LPARAM(lparam);
-                state.pending_event = .{ .mouse_motion = .{
+                state.push(.{ .mouse_motion = .{
                     .x = if (mx >= 0) @intCast(mx) else 0,
                     .y = if (my >= 0) @intCast(my) else 0,
                     .modifiers = getKeyModifiers(),
-                } };
+                } });
                 return 0;
             },
 
             // ── Focus ───────────────────────────────────────────────
             WM_SETFOCUS => {
-                state.pending_event = .focus_in;
+                state.push(.focus_in);
                 return 0;
             },
             WM_KILLFOCUS => {
-                state.pending_event = .focus_out;
+                state.push(.focus_out);
                 return 0;
             },
 
@@ -665,7 +764,7 @@ pub const Win32Window = struct {
                 var ps: PAINTSTRUCT = .{};
                 _ = BeginPaint(hwnd, &ps);
                 _ = EndPaint(hwnd, &ps);
-                state.pending_event = .expose;
+                state.push(.expose);
                 return 0;
             },
 
@@ -673,15 +772,22 @@ pub const Win32Window = struct {
         }
     }
 
-    /// Read current modifier key state via GetKeyState (virtual key codes).
+    /// Modifier state for the message being handled, for events that are
+    /// not a key press (mouse, key release). Without a key to ask the
+    /// layout about, AltGr is taken to be its physical form: left Ctrl,
+    /// which Windows synthesises, plus right Alt.
     fn getKeyModifiers() u32 {
-        // GetKeyState returns high bit set if key is down
-        var mods: u32 = 0;
-        if (getKeyStateDown(0x10)) mods |= 0x01; // VK_SHIFT
-        if (getKeyStateDown(0x11)) mods |= 0x02; // VK_CONTROL
-        if (getKeyStateDown(0x12)) mods |= 0x04; // VK_MENU (Alt)
-        if (getKeyStateDown(0x5B) or getKeyStateDown(0x5C)) mods |= 0x08; // VK_LWIN / VK_RWIN
-        return mods;
+        return modifierMask(
+            getKeyStateDown(VK_SHIFT),
+            getKeyStateDown(VK_CONTROL),
+            getKeyStateDown(VK_MENU),
+            superDown(),
+            getKeyStateDown(VK_LCONTROL) and getKeyStateDown(VK_RMENU),
+        );
+    }
+
+    fn superDown() bool {
+        return getKeyStateDown(0x5B) or getKeyStateDown(0x5C); // VK_LWIN / VK_RWIN
     }
 
     fn getKeyStateDown(vk: INT) bool {
@@ -689,6 +795,123 @@ pub const Win32Window = struct {
         return (s & @as(i16, -0x7FFF - 1)) != 0; // high bit test
     }
 };
+
+/// Client width and height packed into a WM_SIZE lParam: two unsigned 16-bit
+/// words. The rest of the 64-bit lParam is not part of the size.
+fn clientSizeFromLparam(lparam: LPARAM) Size {
+    const bits: usize = @bitCast(lparam);
+    return .{
+        .width = @as(u16, @truncate(bits)),
+        .height = @as(u16, @truncate(bits >> 16)),
+    };
+}
+
+/// Modifier bits in the layout the shared input code expects, which is
+/// X11's: Shift 0x01, Control 0x04, Alt (Mod1) 0x08, Super (Mod4) 0x40.
+/// The shared code tests some of them by number.
+///
+/// With AltGr held, Control and Alt are left out: the pair is how Windows
+/// reports the AltGr level shift, and passing it on would turn AltGr+Q
+/// (`@` on a German layout) into a Ctrl+Alt shortcut or an ESC-prefixed key.
+fn modifierMask(shift: bool, ctrl: bool, alt: bool, super: bool, altgr: bool) u32 {
+    const k = types.windows_keycodes;
+    var mods: u32 = 0;
+    if (shift) mods |= k.SHIFT_MASK;
+    if (ctrl and !altgr) mods |= k.CTRL_MASK;
+    if (alt and !altgr) mods |= k.ALT_MASK;
+    if (super) mods |= 0x40;
+    return mods;
+}
+
+/// The key code to report for a key message. Both Alt keys arrive as
+/// VK_MENU; the right one is told apart by the extended-key bit, and is
+/// reported as VK_RMENU so the shared code can treat it as it does on
+/// other systems. Not when left Ctrl is down: that is AltGr, not Alt.
+fn keycodeFor(wparam: WPARAM, lparam: LPARAM, left_ctrl_down: bool) u32 {
+    const extended = (@as(usize, @bitCast(lparam)) & (1 << 24)) != 0;
+    if (wparam == VK_MENU and extended and !left_ctrl_down) return types.windows_keycodes.RALT;
+    return @truncate(wparam);
+}
+
+/// UTF-8 to a NUL-terminated UTF-16 title, truncated to fit. Invalid UTF-8
+/// becomes U+FFFD.
+fn widenTitle(dest: *[256:0]u16, title: []const u8) void {
+    const r = compat.utf8ToUtf16Chunk(title, dest[0..dest.len]);
+    dest[r.written] = 0;
+}
+
+test "WM_SIZE lParam is two 16-bit words" {
+    // 992x666, as Windows packs it.
+    const lp: LPARAM = @bitCast(@as(usize, 0x029a03e0));
+    const size = clientSizeFromLparam(lp);
+    try std.testing.expectEqual(@as(u32, 992), size.width);
+    try std.testing.expectEqual(@as(u32, 666), size.height);
+    // Bits above the two words do not leak into the height.
+    if (@bitSizeOf(usize) == 64) {
+        const noisy: LPARAM = @bitCast(@as(usize, 0x7fff_0000_029a_03e0));
+        try std.testing.expectEqual(@as(u32, 666), clientSizeFromLparam(noisy).height);
+    }
+}
+
+test "modifier bits are the values the shared input code tests by number" {
+    // windowed.zig checks Alt as `& 8`; mouse and key handling use X11's
+    // Shift 1 and Control 4.
+    try std.testing.expectEqual(@as(u32, 1), modifierMask(true, false, false, false, false));
+    try std.testing.expectEqual(@as(u32, 4), modifierMask(false, true, false, false, false));
+    try std.testing.expectEqual(@as(u32, 8), modifierMask(false, false, true, false, false));
+    try std.testing.expectEqual(@as(u32, 0x40), modifierMask(false, false, false, true, false));
+    // AltGr arrives as Ctrl+Alt and must reach the terminal as neither.
+    try std.testing.expectEqual(@as(u32, 0), modifierMask(false, true, true, false, true));
+    try std.testing.expectEqual(@as(u32, 1), modifierMask(true, true, true, false, true));
+}
+
+test "right Alt is told apart by the extended-key bit" {
+    const ext: LPARAM = 1 << 24;
+    try std.testing.expectEqual(@as(u32, 0x12), keycodeFor(0x12, 0, false)); // left Alt
+    try std.testing.expectEqual(@as(u32, 0xA5), keycodeFor(0x12, ext, false)); // right Alt
+    try std.testing.expectEqual(@as(u32, 0x12), keycodeFor(0x12, ext, true)); // AltGr
+    try std.testing.expectEqual(@as(u32, 0x0D), keycodeFor(0x0D, ext, false)); // keypad Enter
+}
+
+test "event queue: resize first, motion collapses, overflow drops the oldest" {
+    var st: WindowState = .{ .width = 10, .height = 10, .is_open = true };
+    st.push(.focus_in);
+    st.push(.{ .mouse_motion = .{ .x = 1, .y = 1, .modifiers = 0 } });
+    st.push(.{ .mouse_motion = .{ .x = 2, .y = 2, .modifiers = 0 } });
+    st.width = 20;
+    st.size_dirty = true;
+
+    try std.testing.expectEqual(@as(u32, 20), st.take().?.resize.width);
+    try std.testing.expect(st.take().? == .focus_in);
+    try std.testing.expectEqual(@as(u32, 2), st.take().?.mouse_motion.x);
+    try std.testing.expect(st.take() == null);
+
+    for (0..WindowState.queue_len + 3) |i| {
+        st.push(.{ .key_press = .{ .keycode = @intCast(i), .modifiers = 0 } });
+    }
+    try std.testing.expectEqual(@as(u32, 3), st.take().?.key_press.keycode);
+}
+
+test "widenTitle handles non-ASCII and truncates" {
+    var buf: [256:0]u16 = @splat(0);
+    widenTitle(&buf, "한 a");
+    try std.testing.expectEqual(@as(u16, 0xD55C), buf[0]);
+    try std.testing.expectEqual(@as(u16, ' '), buf[1]);
+    try std.testing.expectEqual(@as(u16, 'a'), buf[2]);
+    try std.testing.expectEqual(@as(u16, 0), buf[3]);
+
+    // A title cut in the middle of a character ends in U+FFFD, not in the
+    // stray bytes read as Latin-1.
+    widenTitle(&buf, "ab\xe2\x82");
+    try std.testing.expectEqualSlices(u16, &.{ 'a', 'b', 0xFFFD, 0xFFFD, 0 }, buf[0..5]);
+
+    const long: [600]u8 = @splat('x');
+    widenTitle(&buf, &long);
+    var len: usize = 0;
+    while (buf[len] != 0) len += 1;
+    try std.testing.expect(len >= 254 and len <= 256);
+    try std.testing.expectEqual(@as(u16, 'x'), buf[len - 1]);
+}
 
 // ── Platform wrapper (single-backend, matches Linux Platform shape) ─
 

@@ -12,6 +12,7 @@
 //! Anything beyond arg parsing belongs in a mode module.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const compat = @import("compat.zig");
 const render = @import("render/render.zig");
 const McpBridge = @import("agent/McpBridge.zig");
@@ -178,6 +179,26 @@ pub fn main(init: std.process.Init) !void {
             out("No active sessions\n");
         }
         return;
+    }
+
+    // Not ported to Windows yet: the session daemon and the MCP bridge
+    // (unix sockets and fork), --attach (it restores a file the detach
+    // command writes under $XDG_RUNTIME_DIR, which has no Windows location),
+    // and raw mode, whose loop cannot tell that the shell exited. Say so
+    // instead of starting something that looks alive and is not.
+    if (builtin.os.tag == .windows) {
+        if (daemon_session != null or mode_attach or mode_mcp_bridge) {
+            out("teru: --daemon, --attach and --mcp-server are not supported on Windows yet\n");
+            std.process.exit(2);
+        }
+        if (mode_raw or render.detectTier() == .tty) {
+            out("teru: running inside another console (--raw, or over SSH) is not supported on Windows yet\n");
+            std.process.exit(2);
+        }
+        if (session_name != null) {
+            out("teru: named sessions are not kept alive on Windows yet; opening a plain window\n");
+            session_name = null;
+        }
     }
 
     if (daemon_session) |name| {

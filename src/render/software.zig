@@ -468,9 +468,12 @@ pub const SoftwareRenderer = struct {
 
     /// Resize the framebuffer. Old contents are discarded.
     pub fn resize(self: *SoftwareRenderer, width: u32, height: u32) !void {
-        self.allocator.free(self.framebuffer);
+        // Allocate before freeing: on failure the old buffer and the old
+        // dimensions stay valid, and the caller keeps drawing at that size.
         const pixel_count = @as(usize, width) * @as(usize, height);
-        self.framebuffer = try self.allocator.alloc(u32, pixel_count);
+        const framebuffer = try self.allocator.alloc(u32, pixel_count);
+        self.allocator.free(self.framebuffer);
+        self.framebuffer = framebuffer;
         self.width = width;
         self.height = height;
         compat.memsetU32(self.framebuffer, self.scheme.bg);

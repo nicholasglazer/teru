@@ -83,15 +83,21 @@ const MacosKeycodes = struct {
 // Windows: virtual key codes (VK_*). Digits are 0x31-0x39, VK_0 = 0x30.
 const WindowsKeycodes = struct {
     pub const RALT: u32 = 0xA5; // VK_RMENU
-    pub const ALT_MASK: u32 = 0x01; // MOD_ALT
-    pub const CTRL_MASK: u32 = 0x02; // MOD_CONTROL
-    pub const SHIFT_MASK: u32 = 0x04; // MOD_SHIFT
+    // Same bit values as X11. The shared input code tests some modifiers
+    // by number, so the Win32 backend reports them in this layout.
+    pub const ALT_MASK: u32 = 8;
+    pub const CTRL_MASK: u32 = 4;
+    pub const SHIFT_MASK: u32 = 1;
     pub fn digitToWorkspace(keycode: u32) ?u8 {
         if (keycode >= 0x31 and keycode <= 0x39) return @intCast(keycode - 0x31);
         if (keycode == 0x30) return 9; // VK_0 → workspace 10
         return null;
     }
 };
+
+/// The Windows table by name, whatever the host. The Win32 backend builds
+/// its modifier bits from it, and its tests check the values on every OS.
+pub const windows_keycodes = WindowsKeycodes;
 
 /// X11 connection info for keyboard layout query.
 pub const X11Info = struct { conn: *anyopaque, root: u32 };

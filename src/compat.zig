@@ -45,7 +45,146 @@ const win32 = if (builtin.os.tag == .windows) struct {
     extern "kernel32" fn QueryPerformanceCounter(lpPerformanceCount: *i64) callconv(.c) c_int;
     extern "kernel32" fn GetCurrentProcessId() callconv(.c) u32;
     extern "kernel32" fn Sleep(dwMilliseconds: u32) callconv(.c) void;
+    // GetStdHandle returns NULL when the process has no such handle and
+    // INVALID_HANDLE_VALUE on failure.
+    extern "kernel32" fn GetStdHandle(nStdHandle: u32) callconv(.c) ?*anyopaque;
+    extern "kernel32" fn GetConsoleMode(hConsoleHandle: *anyopaque, lpMode: *u32) callconv(.c) c_int;
+    extern "kernel32" fn WriteConsoleW(hConsoleOutput: *anyopaque, lpBuffer: [*]const u16, nNumberOfCharsToWrite: u32, lpNumberOfCharsWritten: ?*u32, lpReserved: ?*anyopaque) callconv(.c) c_int;
+    extern "kernel32" fn WriteFile(hFile: *anyopaque, lpBuffer: [*]const u8, nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ?*u32, lpOverlapped: ?*anyopaque) callconv(.c) c_int;
+    extern "kernel32" fn FreeConsole() callconv(.c) c_int;
+    extern "kernel32" fn SetStdHandle(nStdHandle: u32, hHandle: ?*anyopaque) callconv(.c) c_int;
+
+    const STD_INPUT_HANDLE: u32 = @bitCast(@as(i32, -10));
+    const STD_OUTPUT_HANDLE: u32 = @bitCast(@as(i32, -11));
+    const STD_ERROR_HANDLE: u32 = @bitCast(@as(i32, -12));
+    const INVALID_HANDLE_VALUE: usize = std.math.maxInt(usize);
 } else undefined;
+
+// ── Standard output ──────────────────────────────────────────────
+
+/// Write `bytes` (UTF-8) to standard output. For the short messages the
+/// CLI prints (`--version`, `--help`, `[teru] ...`); failures are dropped,
+/// as there is nowhere left to report them.
+///
+/// On Windows a standard handle is a HANDLE, not a C runtime descriptor,
+/// so it cannot go through `write`. A console is written as UTF-16, which
+/// displays correctly whatever the console's code page is and leaves no
+/// console state to restore. A pipe or file gets the bytes unchanged.
+pub fn writeStdout(bytes: []const u8) void {
+    if (builtin.os.tag != .windows) {
+        var rest = bytes;
+        while (rest.len > 0) {
+            const n = std.c.write(posix.STDOUT_FILENO, rest.ptr, rest.len);
+            if (n <= 0) return;
+            rest = rest[@intCast(n)..];
+        }
+        return;
+    }
+
+    const handle = win32.GetStdHandle(win32.STD_OUTPUT_HANDLE) orelse return;
+    if (@intFromPtr(handle) == win32.INVALID_HANDLE_VALUE) return;
+
+    var mode: u32 = 0;
+    if (win32.GetConsoleMode(handle, &mode) != 0) {
+        var wide: [512]u16 = undefined;
+        var rest = bytes;
+        while (rest.len > 0) {
+            const step = utf8ToUtf16Chunk(rest, &wide);
+            if (step.consumed == 0) return;
+            if (win32.WriteConsoleW(handle, &wide, @intCast(step.written), null, null) == 0) return;
+            rest = rest[step.consumed..];
+        }
+        return;
+    }
+
+    var rest = bytes;
+    while (rest.len > 0) {
+        var written: u32 = 0;
+        const want: u32 = @intCast(@min(rest.len, 1 << 20));
+        if (win32.WriteFile(handle, rest.ptr, want, &written, null) == 0 or written == 0) return;
+        rest = rest[written..];
+    }
+}
+
+/// Convert a prefix of `src` (UTF-8) to UTF-16 in `dest`, stopping when
+/// `dest` cannot take another character. A byte that is not valid UTF-8
+/// becomes U+FFFD. `dest` must hold at least two units.
+pub fn utf8ToUtf16Chunk(src: []const u8, dest: []u16) struct { consumed: usize, written: usize } {
+    var i: usize = 0;
+    var n: usize = 0;
+    while (i < src.len and n + 2 <= dest.len) {
+        var cp: u21 = 0xFFFD;
+        var seq: usize = 1;
+        if (std.unicode.utf8ByteSequenceLength(src[i])) |len| {
+            if (i + len <= src.len) {
+                if (std.unicode.utf8Decode(src[i..][0..len])) |decoded| {
+                    cp = decoded;
+                    seq = len;
+                } else |_| {}
+            }
+        } else |_| {}
+        i += seq;
+
+        if (cp >= 0x10000) {
+            const v = cp - 0x10000;
+            dest[n] = @intCast(0xD800 + (v >> 10));
+            dest[n + 1] = @intCast(0xDC00 + (v & 0x3FF));
+            n += 2;
+        } else {
+            dest[n] = @intCast(cp);
+            n += 1;
+        }
+    }
+    return .{ .consumed = i, .written = n };
+}
+
+/// Leave the console this process was started on. Called once the
+/// terminal is about to open its own window. No-op outside Windows.
+///
+/// Started from Explorer, a console program gets a console window of its
+/// own, which would sit behind the terminal for as long as it runs.
+/// Started from a shell, it shares the shell's console, and Ctrl+C there or
+/// closing that window would end teru and every pane in it. Detaching
+/// only removes this process; a shared console stays with the shell.
+///
+/// The standard handles that pointed at the console are cleared, because
+/// Windows leaves their old values in place and a later write could land
+/// on an unrelated handle that reused the number. Handles redirected to a
+/// file or a pipe are kept, so `teru > log` still works.
+pub fn detachOwnConsole() void {
+    if (builtin.os.tag != .windows) return;
+    const ids = [_]u32{ win32.STD_INPUT_HANDLE, win32.STD_OUTPUT_HANDLE, win32.STD_ERROR_HANDLE };
+    var on_console: [ids.len]bool = @splat(false);
+    for (ids, &on_console) |id, *flag| {
+        const handle = win32.GetStdHandle(id) orelse continue;
+        if (@intFromPtr(handle) == win32.INVALID_HANDLE_VALUE) continue;
+        var mode: u32 = 0;
+        flag.* = win32.GetConsoleMode(handle, &mode) != 0;
+    }
+    if (win32.FreeConsole() == 0) return;
+    for (ids, on_console) |id, flag| {
+        if (flag) _ = win32.SetStdHandle(id, null);
+    }
+}
+
+test "utf8ToUtf16Chunk converts, replaces bad bytes and stops when full" {
+    var wide: [8]u16 = undefined;
+    const r = utf8ToUtf16Chunk("a한\xff😀", &wide);
+    try std.testing.expectEqual(@as(usize, 9), r.consumed);
+    try std.testing.expectEqualSlices(u16, &.{ 'a', 0xD55C, 0xFFFD, 0xD83D, 0xDE00 }, wide[0..r.written]);
+
+    // A truncated sequence at the end is replaced, not read past.
+    const t = utf8ToUtf16Chunk("\xed\x95", &wide);
+    try std.testing.expectEqual(@as(usize, 2), t.consumed);
+    try std.testing.expectEqualSlices(u16, &.{ 0xFFFD, 0xFFFD }, wide[0..t.written]);
+
+    // Never splits a character across chunks: 3 units of room, 2 astral
+    // characters, so only the first one fits.
+    var small: [3]u16 = undefined;
+    const s = utf8ToUtf16Chunk("😀😀", &small);
+    try std.testing.expectEqual(@as(usize, 4), s.consumed);
+    try std.testing.expectEqual(@as(usize, 2), s.written);
+}
 
 // ── SIGPIPE ──────────────────────────────────────────────────────
 //

@@ -123,6 +123,12 @@ pub fn spawn(opts: SpawnOptions) !WinPty {
     var si: STARTUPINFOEXW = std.mem.zeroes(STARTUPINFOEXW);
     si.StartupInfo.cb = @sizeOf(STARTUPINFOEXW);
     si.lpAttributeList = attr_list;
+    // STARTF_USESTDHANDLES with the three handles left null: the child
+    // takes its standard handles from the pseudoconsole. Without the flag
+    // it falls back to ours, so when teru's own output is redirected to a
+    // file or a pipe the shell writes there and reads EOF, bypassing the
+    // pane entirely.
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
 
     var pi: PROCESS_INFORMATION = std.mem.zeroes(PROCESS_INFORMATION);
 
@@ -196,10 +202,15 @@ pub fn waitForExit(self: *const WinPty) !u32 {
 }
 
 pub fn deinit(self: *WinPty) void {
+    // Close our pipe ends before the pseudoconsole. Before Windows 11 24H2
+    // ClosePseudoConsole waits for the console host to exit, and the host
+    // can be blocked writing output that nobody reads any more; that call
+    // then never returns. With the read end closed the host's write fails
+    // instead of blocking, and it shuts down.
+    _ = CloseHandle(self.stdout_read);
+    _ = CloseHandle(self.stdin_write);
     ClosePseudoConsole(self.hpc);
     _ = CloseHandle(self.process_handle);
-    _ = CloseHandle(self.stdin_write);
-    _ = CloseHandle(self.stdout_read);
     self.hpc = undefined;
     self.process_handle = undefined;
     self.stdin_write = undefined;
@@ -338,6 +349,7 @@ const PROCESS_INFORMATION = extern struct {
 // ── Win32 constants ──────────────────────────────────────────────
 
 const EXTENDED_STARTUPINFO_PRESENT: u32 = 0x00080000;
+const STARTF_USESTDHANDLES: u32 = 0x00000100;
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
 const INFINITE: u32 = 0xFFFFFFFF;
 const WAIT_TIMEOUT: u32 = 0x00000102;

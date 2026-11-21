@@ -73,14 +73,7 @@ pub var cli_exec_argv: ?[*:null]const ?[*:0]const u8 = null;
 // ── stdout helpers ────────────────────────────────────────────
 
 pub fn out(msg: []const u8) void {
-    if (builtin.os.tag == .windows) {
-        const k = struct {
-            extern "kernel32" fn GetStdHandle(n: u32) callconv(.c) *anyopaque;
-        };
-        _ = std.c.write(k.GetStdHandle(@bitCast(@as(i32, -11))), msg.ptr, msg.len);
-    } else {
-        _ = std.c.write(posix.STDOUT_FILENO, msg.ptr, msg.len);
-    }
+    compat.writeStdout(msg);
 }
 
 pub fn outFmt(buf: []u8, comptime fmt: []const u8, args: anytype) void {

@@ -147,7 +147,7 @@ Everything user-facing lives in `docs/`. Concept-by-concept:
 |---|---|
 | teru terminal, Linux (X11 + Wayland) | production; 570+ inline tests |
 | teru terminal, macOS (AppKit) | feature-complete, needs hardware testing; US ANSI keyboard only |
-| teru terminal, Windows (Win32 + ConPTY) | all subsystems wired; needs hardware testing |
+| teru terminal, Windows (Win32 + ConPTY) | early port: window, shell, typing and resize work under Wine; untested on Windows; no sessions, MCP or config file yet |
 | teruwm compositor, Linux (wlroots) | usable; XDG + XWayland verified with Chromium / Emacs / Figma |
 | Session persistence (`-n NAME`) | production |
 | MCP (61 tools) | production; E2E + audit suites exercise most tools |

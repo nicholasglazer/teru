@@ -9,6 +9,7 @@
 //! of the time. Eliminating it removes 709 lines, 2 link deps, and EGL.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Grid = @import("../core/Grid.zig");
 const SoftwareRenderer = @import("software.zig").SoftwareRenderer;
 const compat = @import("../compat.zig");
@@ -29,6 +30,13 @@ pub const RenderTier = enum {
 
 /// Detect the best rendering tier for the current environment.
 pub fn detectTier() RenderTier {
+    if (builtin.os.tag == .windows) {
+        // A Windows logon always has a desktop to open a window on; there
+        // is no DISPLAY to look for. The exception is an SSH session, which
+        // runs without one: a window created there would never be seen.
+        if (compat.getenv("SSH_CONNECTION") != null or compat.getenv("SSH_TTY") != null) return .tty;
+        return .cpu;
+    }
     if (compat.getenv("DISPLAY") != null) return .cpu;
     if (compat.getenv("WAYLAND_DISPLAY") != null) return .cpu;
     return .tty;

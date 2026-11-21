@@ -4,6 +4,7 @@
 //! Provides the same Keyboard interface as linux/keyboard.zig.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 // ── Win32 externs (link against user32) ────────────────────────────
 
@@ -18,9 +19,28 @@ extern "user32" fn ToUnicode(
 
 extern "user32" fn MapVirtualKeyW(uCode: u32, uMapType: u32) callconv(.c) u32;
 extern "user32" fn GetKeyboardState(lpKeyState: *[256]u8) callconv(.c) c_int;
+extern "user32" fn GetKeyState(nVirtKey: c_int) callconv(.c) i16;
 
-// MapVirtualKeyW map type: VK → scan code
+// ToUnicode flag: translate without changing the layout's dead-key state
+// (Windows 10 1607 and later).
+const TOUNICODE_NO_STATE_CHANGE: u32 = 0x4;
+
+/// Whether the active layout turns this key into text while Ctrl and Alt
+/// are both held, which is what makes the pair AltGr and not a Ctrl+Alt
+/// shortcut. On a US layout nothing does; on a German one Ctrl+Alt+Q is `@`.
+/// A dead key counts: it is the start of text. Windows only.
+pub fn ctrlAltProducesText(vk: u32, scan: u32) bool {
+    var state: [256]u8 = undefined;
+    if (GetKeyboardState(&state) == 0) return false;
+    var units: [4]u16 = undefined;
+    const n = ToUnicode(vk, scan, &state, &units, units.len, TOUNICODE_NO_STATE_CHANGE);
+    if (n < 0) return true;
+    return n > 0 and units[0] >= 0x20;
+}
+
+// MapVirtualKeyW map types: VK → scan code, VK → unshifted character
 const MAPVK_VK_TO_VSC: u32 = 0;
+const MAPVK_VK_TO_CHAR: u32 = 2;
 
 // ── Windows Virtual Key codes ──────────────────────────────────────
 
@@ -112,9 +132,11 @@ pub const Keyboard = struct {
     }
 
     /// Reset all key state. Call on focus-in to clear stuck modifiers.
+    /// A pending dead key is kept: Windows holds it in the layout's own
+    /// state, which this does not clear, and `dead_key_state` must keep
+    /// saying so.
     pub fn resetState(self: *Keyboard) void {
         self.key_state = @splat(0);
-        self.dead_key_state = 0;
     }
 
     /// Get the XKB-compatible keysym for a Windows virtual-key code.
@@ -122,6 +144,19 @@ pub const Keyboard = struct {
     /// so that KeyHandler can treat both platforms uniformly.
     pub fn getKeysym(self: *Keyboard, keycode: u32) u32 {
         _ = self;
+        // Punctuation keys have layout-dependent VK codes (VK_OEM_*) that
+        // are not characters: VK_OEM_MINUS is 0xBD, not '-'. Ask the active
+        // layout which unshifted character the key produces, which is the
+        // keysym X11 reports for it. The top bit marks a dead key.
+        // (Compiled only for Windows so the pure tests in this file link
+        // on other hosts.)
+        if (builtin.os.tag == .windows) {
+            if (isOemKey(keycode)) {
+                const ch = MapVirtualKeyW(keycode, MAPVK_VK_TO_CHAR) & 0x7FFF_FFFF;
+                if (ch != 0) return ch;
+            }
+            return letterKeysym(vkToKeysym(keycode), GetKeyState(@intCast(VK_SHIFT)) < 0);
+        }
         return vkToKeysym(keycode);
     }
 
@@ -151,51 +186,75 @@ pub const Keyboard = struct {
         self.key_state[VK_MENU] = if (depressed & 0x04 != 0) KEY_DOWN_FLAG else 0;
     }
 
+    /// Release a pending dead key as text into `buf` and return the byte
+    /// count. Translating Space with no modifiers makes the layout give up
+    /// the accent as its spacing character.
+    fn flushDeadKey(self: *Keyboard, buf: []u8) usize {
+        if (self.dead_key_state == 0) return 0;
+        self.dead_key_state = 0;
+        const idle: [256]u8 = @splat(0);
+        var units: [4]u16 = undefined;
+        const n = ToUnicode(VK_SPACE, MapVirtualKeyW(VK_SPACE, MAPVK_VK_TO_VSC), &idle, &units, units.len, 0);
+        if (n <= 0) return 0;
+        var written: usize = 0;
+        for (units[0..@intCast(n)]) |unit| {
+            if (unit == ' ' or (unit >= 0xD800 and unit <= 0xDFFF)) continue;
+            const len = std.unicode.utf8CodepointSequenceLength(unit) catch continue;
+            if (written + len > buf.len) break;
+            _ = std.unicode.utf8Encode(unit, buf[written..][0..len]) catch continue;
+            written += len;
+        }
+        return written;
+    }
+
     /// Translate a virtual-key code to bytes for the PTY.
     /// Handles special keys (arrows, F-keys, etc.) via VT escape sequences,
     /// Ctrl+letter combos, and printable characters via ToUnicode.
     pub fn processKey(self: *Keyboard, keycode: u32, buf: []u8) usize {
         if (buf.len == 0) return 0;
 
-        // Check for special keys first (arrows, F-keys, Home, etc.)
-        const keysym = vkToKeysym(keycode);
-        const special = keysymToEscape(keysym);
-        if (special.len > 0) {
-            const copy_len = @min(special.len, buf.len);
-            @memcpy(buf[0..copy_len], special[0..copy_len]);
-            return copy_len;
-        }
+        // Take the real key state for the message being handled: both
+        // halves of AltGr (left Ctrl + right Alt), the left/right modifier
+        // variants and the Caps Lock toggle, none of which the key-down
+        // bookkeeping in `updateKey` can reconstruct.
+        _ = GetKeyboardState(&self.key_state);
+
+        // A modifier on its own produces no text. Do not pass it to
+        // ToUnicode: that call consumes a pending dead key, so pressing
+        // Shift between ^ and E would lose the accent.
+        if (isModifierKey(keycode)) return 0;
 
         const ctrl_held = (self.key_state[VK_CONTROL] & KEY_DOWN_FLAG) != 0;
         const alt_held = (self.key_state[VK_MENU] & KEY_DOWN_FLAG) != 0;
 
-        // Ctrl+letter: produce control codes 0x01-0x1A
-        if (ctrl_held and !alt_held and keycode >= 'A' and keycode <= 'Z') {
-            buf[0] = @intCast(keycode - 'A' + 1);
-            return 1;
-        }
+        // Keys answered here never reach ToUnicode, which is what would
+        // combine or release a pending dead key.
+        const special = keysymToEscape(vkToKeysym(keycode));
+        var direct: [1]u8 = undefined;
+        const fixed: []const u8 = if (special.len > 0)
+            special
+        else if (ctrl_held and !alt_held and keycode >= 'A' and keycode <= 'Z') blk: {
+            direct[0] = @intCast(keycode - 'A' + 1); // Ctrl+letter: 0x01-0x1A
+            break :blk &direct;
+        } else if (ctrl_held and !alt_held) blk: {
+            direct[0] = switch (keycode) {
+                VK_SPACE => 0x00, // Ctrl+Space = NUL
+                0xDB => 0x1B, // VK_OEM_4, the '[' key: Ctrl+[ = ESC
+                0xDC => 0x1C, // VK_OEM_5, the '\' key: Ctrl+\ = FS
+                0xDD => 0x1D, // VK_OEM_6, the ']' key: Ctrl+] = GS
+                else => break :blk "",
+            };
+            break :blk &direct;
+        } else "";
 
-        // Ctrl+special combos
-        if (ctrl_held and !alt_held) {
-            switch (keycode) {
-                VK_SPACE => {
-                    buf[0] = 0x00; // Ctrl+Space = NUL
-                    return 1;
-                },
-                0xDB => { // VK_OEM_4 = '[' key
-                    buf[0] = 0x1B; // Ctrl+[ = ESC
-                    return 1;
-                },
-                0xDC => { // VK_OEM_5 = '\' key
-                    buf[0] = 0x1C; // Ctrl+\ = FS
-                    return 1;
-                },
-                0xDD => { // VK_OEM_6 = ']' key
-                    buf[0] = 0x1D; // Ctrl+] = GS
-                    return 1;
-                },
-                else => {},
-            }
+        if (fixed.len > 0) {
+            // An accent typed before, say, Enter stands on its own, as it
+            // does in any Windows program: emit it, then the key. Left in
+            // the layout it would attach to whatever letter came next.
+            const accent = self.flushDeadKey(buf);
+            const copy_len = @min(fixed.len, buf.len - accent);
+            @memcpy(buf[accent..][0..copy_len], fixed[0..copy_len]);
+            return accent + copy_len;
         }
 
         // Use ToUnicode for printable characters.
@@ -216,16 +275,26 @@ pub const Keyboard = struct {
             const count: usize = @intCast(result);
             const utf16_slice = utf16_buf[0..count];
             var written: usize = 0;
-            for (utf16_slice) |unit| {
-                const codepoint: u21 = @intCast(unit);
+            var i: usize = 0;
+            while (i < utf16_slice.len) : (i += 1) {
+                var codepoint: u21 = utf16_slice[i];
+                // Characters outside the BMP arrive as a surrogate pair.
+                if (codepoint >= 0xD800 and codepoint <= 0xDBFF and i + 1 < utf16_slice.len) {
+                    const low: u21 = utf16_slice[i + 1];
+                    if (low >= 0xDC00 and low <= 0xDFFF) {
+                        codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00);
+                        i += 1;
+                    }
+                }
                 const len = std.unicode.utf8CodepointSequenceLength(codepoint) catch continue;
                 if (written + len > buf.len) break;
                 _ = std.unicode.utf8Encode(codepoint, buf[written..][0..len]) catch continue;
                 written += len;
             }
 
-            // If Alt is held, prepend ESC to the character
-            if (alt_held and written > 0 and written + 1 <= buf.len) {
+            // Alt+key sends ESC then the character. Ctrl+Alt is AltGr: the
+            // character it selected is the whole input, with no prefix.
+            if (alt_held and !ctrl_held and written > 0 and written + 1 <= buf.len) {
                 // Shift existing bytes right by 1
                 @memmove(buf[1 .. written + 1], buf[0..written]);
                 buf[0] = 0x1B;
@@ -237,19 +306,48 @@ pub const Keyboard = struct {
                 return written;
             }
         } else if (result < 0) {
-            // Dead key: ToUnicode returns -1 for dead keys (accents, etc.)
-            // The dead key state is stored internally by ToUnicode.
-            // We call it again to clear the internal state, then return 0
-            // so the next keypress combines with it.
+            // Dead key (an accent waiting for its letter). Windows keeps it
+            // in the keyboard layout's own state and combines it with the
+            // next ToUnicode call, so there is nothing to do here but wait.
+            // Calling ToUnicode again would discard the accent.
             self.dead_key_state = keycode;
-            // Flush the dead key from Windows internal state
-            _ = ToUnicode(keycode, scan_code, &self.key_state, &utf16_buf, 4, 0);
             return 0;
         }
 
         return 0;
     }
 };
+
+/// X11 reports a letter key as its lowercase keysym unless Shift is held,
+/// and the shared key handling relies on that (the leader table is
+/// lowercase, with Shift selecting the capital entries). Windows key codes
+/// for letters are always the capital. Caps Lock is not consulted: it
+/// changes the text typed, not which binding a key means.
+fn letterKeysym(keysym: u32, shift: bool) u32 {
+    return if (keysym >= 'A' and keysym <= 'Z' and !shift) keysym + 0x20 else keysym;
+}
+
+/// Shift, Ctrl, Alt, Win, Caps Lock and their left/right variants.
+fn isModifierKey(vk: u32) bool {
+    return switch (vk) {
+        VK_SHIFT, VK_CONTROL, VK_MENU => true,
+        0x14 => true, // VK_CAPITAL
+        0x5B, 0x5C => true, // VK_LWIN, VK_RWIN
+        0x90, 0x91 => true, // VK_NUMLOCK, VK_SCROLL
+        0xA0...0xA5 => true, // VK_LSHIFT ... VK_RMENU
+        else => false,
+    };
+}
+
+/// VK_OEM_1 ... VK_OEM_3, VK_OEM_4 ... VK_OEM_8, VK_OEM_102 and the two
+/// Brazilian ABNT keys: the punctuation keys, whose character depends on
+/// the keyboard layout.
+fn isOemKey(vk: u32) bool {
+    return switch (vk) {
+        0xBA...0xC2, 0xDB...0xDF, 0xE2 => true, // 0xC1, 0xC2: the extra ABNT keys
+        else => false,
+    };
+}
 
 /// Map Windows virtual-key code to XKB-compatible keysym.
 /// Returns the VK code itself for printable ASCII keys (A-Z, 0-9, etc.),
@@ -282,10 +380,26 @@ fn vkToKeysym(vk: u32) u32 {
         VK_F10 => XKB_KEY_F10,
         VK_F11 => XKB_KEY_F11,
         VK_F12 => XKB_KEY_F12,
-        // Printable ASCII keys: VK codes for A-Z are 0x41-0x5A,
-        // 0-9 are 0x30-0x39 — same as their ASCII values.
-        // Return them directly; they double as XKB Latin-1 keysyms.
-        else => vk,
+        // Numeric keypad. Their VK codes (0x60-0x6F) collide with the
+        // ASCII for ` and a-o, so without this Alt+Numpad* would run the
+        // Alt+j binding. Report the XKB keypad keysyms instead.
+        0x60...0x69 => 0xffb0 + (vk - 0x60), // VK_NUMPAD0-9 → KP_0-9
+        0x6A => 0xffaa, // VK_MULTIPLY → KP_Multiply
+        0x6B => 0xffab, // VK_ADD → KP_Add
+        0x6C => 0xffac, // VK_SEPARATOR → KP_Separator
+        0x6D => 0xffad, // VK_SUBTRACT → KP_Subtract
+        0x6E => 0xffae, // VK_DECIMAL → KP_Decimal
+        0x6F => 0xffaf, // VK_DIVIDE → KP_Divide
+        0x5B => 0xffeb, // VK_LWIN → Super_L
+        0x5C => 0xffec, // VK_RWIN → Super_R
+        0x5D => 0xff67, // VK_APPS → Menu
+        0x7C...0x87 => 0xffca + (vk - 0x7C), // VK_F13-F24
+        // Space, digits and letters are the only keys whose VK code is
+        // their character; it doubles as the XKB Latin-1 keysym.
+        VK_SPACE, '0'...'9', 'A'...'Z' => vk,
+        // Everything else has no keysym here. Passing the raw code on
+        // would alias punctuation: VK_SNAPSHOT is 0x2C, a comma.
+        else => 0,
     };
 }
 
@@ -357,6 +471,41 @@ test "vkToKeysym: printable keys pass through as-is" {
     try std.testing.expectEqual(@as(u32, 'A'), vkToKeysym('A'));
     try std.testing.expectEqual(@as(u32, '0'), vkToKeysym('0'));
     try std.testing.expectEqual(@as(u32, ' '), vkToKeysym(VK_SPACE));
+}
+
+test "vkToKeysym: keypad keys do not alias letters" {
+    try std.testing.expectEqual(@as(u32, 0xffb0), vkToKeysym(0x60)); // not '`'
+    try std.testing.expectEqual(@as(u32, 0xffb9), vkToKeysym(0x69));
+    try std.testing.expectEqual(@as(u32, 0xffaa), vkToKeysym(0x6A)); // not 'j'
+    try std.testing.expectEqual(@as(u32, 0xffaf), vkToKeysym(0x6F)); // not 'o'
+}
+
+test "letterKeysym: lowercase unless Shift, other keysyms untouched" {
+    try std.testing.expectEqual(@as(u32, 'd'), letterKeysym('D', false));
+    try std.testing.expectEqual(@as(u32, 'D'), letterKeysym('D', true));
+    try std.testing.expectEqual(@as(u32, '1'), letterKeysym('1', false));
+    try std.testing.expectEqual(XKB_KEY_Return, letterKeysym(XKB_KEY_Return, false));
+}
+
+test "vkToKeysym: keys that are not characters have no character keysym" {
+    try std.testing.expectEqual(@as(u32, 0xffeb), vkToKeysym(0x5B)); // Win, not '['
+    try std.testing.expectEqual(@as(u32, 0xffec), vkToKeysym(0x5C)); // Win, not '\\'
+    try std.testing.expectEqual(@as(u32, 0xff67), vkToKeysym(0x5D)); // Menu, not ']'
+    try std.testing.expectEqual(@as(u32, 0), vkToKeysym(0x2C)); // PrintScreen, not ','
+    try std.testing.expectEqual(@as(u32, 0), vkToKeysym(0x5F)); // Sleep, not '_'
+    try std.testing.expectEqual(@as(u32, 0xffca), vkToKeysym(0x7C)); // F13, not '|'
+}
+
+test "modifier and OEM key classification" {
+    try std.testing.expect(isModifierKey(VK_SHIFT));
+    try std.testing.expect(isModifierKey(0xA5)); // VK_RMENU
+    try std.testing.expect(!isModifierKey('A'));
+    try std.testing.expect(!isModifierKey(VK_SPACE));
+    try std.testing.expect(isOemKey(0xBD)); // VK_OEM_MINUS
+    try std.testing.expect(isOemKey(0xDB)); // VK_OEM_4, '[' on a US layout
+    try std.testing.expect(!isOemKey('A'));
+    try std.testing.expect(isOemKey(0xC1)); // ABNT_C1
+    try std.testing.expect(!isOemKey(0xC3));
 }
 
 test "keysymToEscape: special keys produce VT sequences" {
@@ -434,7 +583,7 @@ test "Keyboard: updateModifiers sets modifier keys" {
     try std.testing.expectEqual(@as(u8, 0), kb.key_state[VK_CONTROL]);
 }
 
-test "Keyboard: resetState clears everything" {
+test "Keyboard: resetState clears key state and keeps a pending dead key" {
     var kb = try Keyboard.init();
     defer kb.deinit();
 
@@ -446,7 +595,7 @@ test "Keyboard: resetState clears everything" {
 
     try std.testing.expectEqual(@as(u8, 0), kb.key_state['A']);
     try std.testing.expectEqual(@as(u8, 0), kb.key_state[VK_SHIFT]);
-    try std.testing.expectEqual(@as(u32, 0), kb.dead_key_state);
+    try std.testing.expect(kb.dead_key_state != 0);
 }
 
 test "Keyboard: getKeysym delegates to vkToKeysym" {

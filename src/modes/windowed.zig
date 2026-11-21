@@ -311,6 +311,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
     var graph = ProcessGraph.init(allocator);
     defer graph.deinit();
 
+    compat.detachOwnConsole();
     var win = try platform.Platform.init(config.initial_width, config.initial_height, "teru", wm_class);
     defer win.deinit();
     win.setOpacity(config.opacity);
@@ -600,6 +601,9 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                 },
                 .focus_out => {
                     window_focused = false;
+                    // A right Alt released while another window has focus
+                    // never reports its release here.
+                    ralt_held = false;
                     // Stop the blink timer while unfocused — paint the
                     // cursor solid ON so the defocused state still has
                     // a visible caret, just static. The user isn't
@@ -631,8 +635,16 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
 
                     const new_cols: u16 = @intCast((sz.width -| padding * 2) / atlas.cell_width);
                     const new_rows: u16 = @intCast((sz.height -| padding * 2 -| status_bar_h) / atlas.cell_height);
-                    grid_cols = new_cols;
-                    grid_rows = new_rows;
+                    // A window dragged smaller than one cell would give a
+                    // grid with no rows, which drops its contents and every
+                    // byte the shell prints until it grows again. Keep the
+                    // last usable grid, and the size the rest of the loop
+                    // believes in, until a real size arrives.
+                    const usable = new_cols != 0 and new_rows != 0;
+                    if (usable) {
+                        grid_cols = new_cols;
+                        grid_rows = new_rows;
+                    }
 
                     // Proportional pane resize
                     const LayoutRect = @import("../tiling/LayoutEngine.zig").Rect;
@@ -663,6 +675,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                             }
                         } else |_| {
                             for (mux.panes.items) |*pane| {
+                                if (!usable) continue;
                                 if (new_cols != pane.grid.cols or new_rows != pane.grid.rows) {
                                     pane.resize(allocator, new_rows, new_cols) catch continue;
                                 }
@@ -670,6 +683,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                         }
                     } else {
                         for (mux.panes.items) |*pane| {
+                            if (!usable) continue;
                             if (new_cols != pane.grid.cols or new_rows != pane.grid.rows) {
                                 pane.resize(allocator, new_rows, new_cols) catch continue;
                             }
@@ -1649,7 +1663,11 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                         Ui.renderTextStatusBar(cpu, &mux, grid_cols, grid_rows, atlas.cell_width, atlas.cell_height, prefix.awaiting, vi_mode.modeString());
                     }
 
-                    win.putFramebuffer(cpu.getFramebuffer(), sz.width, sz.height);
+                    // The renderer's own dimensions, not the window's: they
+                    // describe the buffer being handed over. The two differ
+                    // when a resize of the renderer failed for lack of
+                    // memory and it kept its old buffer.
+                    win.putFramebuffer(cpu.getFramebuffer(), cpu.width, cpu.height);
                 },
                 .tty => {},
             }

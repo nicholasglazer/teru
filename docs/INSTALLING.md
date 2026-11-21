@@ -72,6 +72,22 @@ Download `teru-windows-x86_64.zip` from [Releases](https://github.com/nicholasgl
 
 **Windows SmartScreen:** Downloaded executables are blocked by default. Right-click `teru.exe` > Properties > check "Unblock" > OK. Or run `Unblock-File teru.exe` in PowerShell.
 
+### What works on Windows
+
+The Windows build is an early port. `teru.exe` opens its own window, runs your default shell (`%COMSPEC%`, normally `cmd.exe`) in it through ConPTY, and handles typing, resizing and closing. This has been exercised under Wine only, not yet on a Windows machine.
+
+Not available yet:
+
+- Named sessions, the session daemon and `--attach` (`-n NAME` opens an ordinary window that does not outlive it; `--daemon` and `--attach` exit with a message).
+- The MCP server and `--mcp-server`.
+- The configuration file. teru looks for it under `HOME`, which Windows does not set, so the defaults apply.
+- Input methods (IME). Korean, Japanese and Chinese text displays, but cannot be typed.
+- Scaling on high-DPI displays: text is drawn at 100% and stretched by Windows.
+- Running inside another console: `teru --raw`, and teru started over SSH, exit with a message.
+- Detaching (`prefix d`).
+
+Started from a shell, teru lets go of that shell's console once its window is up, so Ctrl+C in the shell does not close it.
+
 ## Build from Source
 
 Requires **stable Zig 0.17** (verified with 0.17.1 on 2026-11-20). On Arch, install

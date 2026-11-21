@@ -106,6 +106,12 @@ pub fn handleMuxCommand(
             return .panes_changed;
         },
         'd' => {
+            if (builtin.os.tag == .windows) {
+                // There is nowhere to save the session to and nothing that
+                // could restore it; quitting here would just kill the panes.
+                mux.notify("detach is not supported on Windows yet");
+                return .none;
+            }
             // Detach: save session and exit. Path is under
             // $XDG_RUNTIME_DIR (private, cleaned on logout) — see
             // common.sessionPath.
