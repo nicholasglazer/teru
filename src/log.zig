@@ -72,7 +72,7 @@ fn logFn(
     const prefix = "[" ++ @tagName(level) ++ "] (" ++ @tagName(scope) ++ ") ";
     var buf: [4096]u8 = undefined;
     const line: []const u8 = std.fmt.bufPrint(&buf, prefix ++ format ++ "\n", args) catch
-        prefix ++ "<log line too long; truncated>\n";
+        (prefix ++ "<log line too long; truncated>\n");
     // stderr write. On Windows the libc fd-arg is a HANDLE, so route through
     // the Win32 stderr HANDLE (from the PEB) via WriteFile. POSIX keeps the
     // direct fd-2 write — unchanged behavior on Linux/macOS.

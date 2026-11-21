@@ -142,7 +142,7 @@ fn isPlainKey(key: []const u8) bool {
 /// Build a small JSON-RPC error and frame it as a DCS reply.
 fn writeErrorReply(pane: *const Pane, id: []const u8, code: i32, msg: []const u8) void {
     var body_buf: [256]u8 = undefined;
-    const id_is_int = std.fmt.parseInt(i64, id, 10) catch null != null;
+    const id_is_int = (std.fmt.parseInt(i64, id, 10) catch null) != null;
     const body = if (id_is_int)
         std.fmt.bufPrint(&body_buf,
             \\{{"jsonrpc":"2.0","error":{{"code":{d},"message":"{s}"}},"id":{s}}}

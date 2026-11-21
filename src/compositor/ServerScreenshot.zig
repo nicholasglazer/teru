@@ -322,8 +322,8 @@ fn blitRectAlpha(dst: []u32, dst_w: u32, dst_h: u32, src: []const u32, src_w: u3
             }
             const d = dst[dst_start + x];
             const inv: u32 = 255 - a;
-            const r = ((s >> 16 & 0xff) * a + (d >> 16 & 0xff) * inv) / 255;
-            const g = ((s >> 8 & 0xff) * a + (d >> 8 & 0xff) * inv) / 255;
+            const r = (((s >> 16) & 0xff) * a + ((d >> 16) & 0xff) * inv) / 255;
+            const g = (((s >> 8) & 0xff) * a + ((d >> 8) & 0xff) * inv) / 255;
             const b = ((s & 0xff) * a + (d & 0xff) * inv) / 255;
             dst[dst_start + x] = 0xff000000 | (r << 16) | (g << 8) | b;
         }
