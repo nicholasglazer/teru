@@ -10,7 +10,6 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-CRT=$([ -f .cache/crt-fix-all/libc.txt ] && echo "--libc .cache/crt-fix-all/libc.txt")
 pass=0; fail=0
 run() { # run <label> <cmd...>
   local label="$1"; shift
@@ -20,6 +19,10 @@ run() { # run <label> <cmd...>
 
 echo "── Phase A: automated (headless) ────────────────────────────"
 ./tools/fix-crt.sh >/dev/null 2>&1
+# Captured AFTER fix-crt.sh, never before: the script now DELETES libc.txt when
+# the toolchain does not need the CRT workaround, so a value read first would
+# point every build below at a file that no longer exists.
+CRT=$([ -f .cache/crt-fix-all/libc.txt ] && echo "--libc .cache/crt-fix-all/libc.txt")
 run "lib + compositor inline tests"  bash -c "zig build test -Dcompositor $CRT >/dev/null 2>&1 && b=\$(ls -t \$(find .zig-cache/o -name test -type f -executable)|head -1) && \"\$b\" >/dev/null"
 run "build release binaries"         bash -c "zig build -Doptimize=ReleaseSafe -Dcompositor $CRT >/dev/null"
 run "teruwm headless E2E"            bash -c "make e2e-wm >/dev/null 2>&1"

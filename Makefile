@@ -7,8 +7,15 @@ BINDIR ?= $(PREFIX)/bin
 -include local.mk
 
 # ── CRT fix (GCC 15+ .sframe — Zig linker R_X86_64_PC64 gap) ──────────
-# fix-crt.sh is idempotent: fast no-op when .sframe not present,
-# creates stripped CRT copies + libc.txt when needed.
+# fix-crt.sh probes whether this toolchain actually needs the workaround and
+# only leaves libc.txt behind if it does AND that file provably links. On a
+# current zig it deletes the file, so CRT_FIX_FLAG expands empty and every
+# target below builds with a bare `zig build` — which is what CI, the AUR
+# PKGBUILD and the Nix flake already do.
+#
+# The flag is existence-gated, so a libc.txt that this zig rejects would break
+# all 18 build targets at once (that is exactly what stranded the user on
+# 2026-09-01). fix-crt.sh is responsible for never leaving an invalid one here.
 CRT_FIX_LIBC = .cache/crt-fix-all/libc.txt
 CRT_FIX_FLAG = $$([ -f $(CRT_FIX_LIBC) ] && echo "--libc $(CRT_FIX_LIBC)")
 
@@ -90,7 +97,7 @@ release-compositor: ## Release build with compositor (teruwm)
 .PHONY: run-wm
 run-wm: ## Build and run teruwm compositor
 	./tools/fix-crt.sh
-	zig build run-wm --libc $(CRT_FIX_FLAG)
+	zig build run-wm -Dcompositor $(CRT_FIX_FLAG) $$(./tools/zig-lib-fix.sh)
 
 # ── Install ─────────────────────────────────────────────────────────
 .PHONY: install

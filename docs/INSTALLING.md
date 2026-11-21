@@ -74,12 +74,11 @@ Download `teru-windows-x86_64.zip` from [Releases](https://github.com/nicholasgl
 
 ## Build from Source
 
-Requires **Zig 0.17 (master/dev)** — minimum `0.17.0-dev.1509` (enforced by
-`build.zig.zon`), verified at `0.17.0-dev.1884+841dd0eb8` (2026-08-26). The latest *stable*
-Zig (0.16.0) will not build this. On Arch, `extra/zig` is 0.16 and cannot be used; install
-`zig-master-bin` (which provides `zig-unstable`) instead. Building `teruwm` may need the
-GCC CRT workaround the Makefile applies automatically (`--libc`); prefer `make` over a bare
-`zig build`. Linux builds need system libraries.
+Requires **stable Zig 0.17** (verified with 0.17.1 on 2026-11-20). On Arch, install
+`extra/zig`. Zig master (0.18-dev) does not build this source. A bare `zig build` is the
+supported invocation — the GCC-15 `.sframe` CRT workaround that once required `--libc` is
+retired on current toolchains and `tools/fix-crt.sh` now disarms itself. Linux builds need
+system libraries.
 
 ### Linux dependencies
 
@@ -163,9 +162,9 @@ install-local`**:
 make install-local   # build release teru + teruwm, install both to ~/.local/bin
 ```
 
-One `-Dcompositor` build produces both binaries; the GCC-15 CRT fix and the
-upstream zig termios-typo workaround are applied automatically (see
-`tools/zig-lib-fix.sh`), then both are stripped and installed to
+One `-Dcompositor` build produces both binaries; the CRT and zig-stdlib
+workarounds are probed automatically and skipped when the toolchain does not
+need them (`tools/fix-crt.sh`, `tools/zig-lib-fix.sh`), then both are stripped and installed to
 `~/.local/bin` (no `sudo`, no `/usr/local`). Put `~/.local/bin` on your
 `PATH` and `teru` / `teruwm` resolve by name.
 
