@@ -201,11 +201,86 @@ pub fn feed(self: *VtParser, data: []const u8) void {
                 i += special;
                 continue;
             }
+
+            // Fast-path: complete multi-byte UTF-8 sequences, decoded straight
+            // from the buffer instead of one byte at a time.
+            if (remaining[0] >= 0xC0 and self.utf8_len == 0) {
+                const used = self.writeUtf8Run(remaining);
+                if (used > 0) {
+                    i += used;
+                    continue;
+                }
+            }
+        }
+
+        // Fast-path: the digits and separators of a CSI parameter string. In
+        // SGR-heavy output (colored TUIs, build logs) these are most of the
+        // bytes, so consume the whole run without per-byte state dispatch.
+        if (self.state == .csi_param) {
+            i = self.feedCsiParams(data, i);
+            if (i >= data.len) break;
         }
 
         self.processByte(data[i]);
         i += 1;
     }
+}
+
+/// Decode and write the complete, well-formed multi-byte UTF-8 sequences at
+/// the start of `data`, and return the bytes consumed. Stops at the first byte
+/// that does not begin such a sequence. A truncated or malformed sequence is
+/// left for the per-byte decoder (`handleUtf8`), which owns those cases, so
+/// the result is the same as feeding every byte through it. Out of line so the
+/// ASCII and escape-sequence loop in `feed` stays compact.
+noinline fn writeUtf8Run(self: *VtParser, data: []const u8) usize {
+    var i: usize = 0;
+    var last: u21 = 0;
+    run: while (i < data.len) {
+        const lead = data[i];
+        const len: usize = if (lead & 0xE0 == 0xC0)
+            2
+        else if (lead & 0xF0 == 0xE0)
+            3
+        else if (lead & 0xF8 == 0xF0)
+            4
+        else
+            break;
+        if (i + len > data.len) break;
+        for (data[i + 1 ..][0 .. len - 1]) |cont| {
+            if (cont & 0xC0 != 0x80) break :run;
+        }
+        last = decodeUtf8(data[i..][0..len]);
+        self.grid.write(last);
+        i += len;
+    }
+    if (i > 0) self.last_char = last;
+    return i;
+}
+
+/// Consume a run of CSI parameter bytes (`0`-`9`, `;`, `:`) starting at
+/// `start` and return the index of the first byte that is not one. Has exactly
+/// the effect of passing each byte to `handleCsiParam`; the byte that ends the
+/// run (final byte, intermediate, or anything else) is left for the caller.
+fn feedCsiParams(self: *VtParser, data: []const u8, start: usize) usize {
+    var i = start;
+    var count = self.param_count;
+    while (i < data.len) : (i += 1) {
+        const byte = data[i];
+        const digit = byte -% '0';
+        if (digit <= 9) {
+            if (count == 0) count = 1;
+            const idx = count - 1;
+            if (idx < MAX_PARAMS) self.params[idx] = self.params[idx] *| 10 +| digit;
+        } else if (byte == ';' or byte == ':') {
+            if (count < MAX_PARAMS) {
+                count += 1;
+                self.params[count - 1] = 0;
+                self.param_sub[count - 1] = (byte == ':');
+            }
+        } else break;
+    }
+    self.param_count = count;
+    return i;
 }
 
 /// SIMD-accelerated scan for special bytes in the input buffer.
@@ -2096,6 +2171,78 @@ test "SIMD fast-path — batched ground write produces same result as byte-by-by
         const simd_cell = grid_simd.cellAtConst(0, @intCast(col));
         try std.testing.expectEqual(ref_cell.char, simd_cell.char);
     }
+}
+
+/// Feed `input` through the bare state machine one byte at a time, then
+/// through `feed` split in two at every position (a read boundary can fall
+/// anywhere, including inside a CSI parameter string or a UTF-8 sequence), and
+/// require the same grid, cursor, pen and parser state each time.
+fn expectFeedMatchesStateMachine(input: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const rows = 6;
+    const cols = 20;
+
+    var grid_ref = try Grid.init(allocator, rows, cols);
+    defer grid_ref.deinit(allocator);
+    var ref = VtParser.init(allocator, &grid_ref);
+    for (input) |byte| ref.processByte(byte);
+
+    var split: usize = 0;
+    while (split <= input.len) : (split += 1) {
+        var grid = try Grid.init(allocator, rows, cols);
+        defer grid.deinit(allocator);
+        var parser = VtParser.init(allocator, &grid);
+        parser.feed(input[0..split]);
+        parser.feed(input[split..]);
+
+        errdefer std.debug.print("feed diverged from the state machine with the input split at byte {d}\n", .{split});
+        try std.testing.expectEqual(ref.state, parser.state);
+        try std.testing.expectEqual(ref.last_char, parser.last_char);
+        try std.testing.expectEqual(ref.param_count, parser.param_count);
+        try std.testing.expectEqual(ref.utf8_len, parser.utf8_len);
+        try std.testing.expectEqual(grid_ref.cursor_row, grid.cursor_row);
+        try std.testing.expectEqual(grid_ref.cursor_col, grid.cursor_col);
+        try std.testing.expect(std.meta.eql(grid_ref.pen_fg, grid.pen_fg));
+        try std.testing.expect(std.meta.eql(grid_ref.pen_bg, grid.pen_bg));
+        try std.testing.expect(std.meta.eql(grid_ref.pen_attrs, grid.pen_attrs));
+        for (grid_ref.cells, grid.cells, 0..) |want, got, idx| {
+            if (!std.meta.eql(want, got)) {
+                std.debug.print("cell {d}: want U+{X}, got U+{X}\n", .{ idx, want.char, got.char });
+                return error.TestExpectedEqual;
+            }
+        }
+    }
+}
+
+test "CSI parameter fast-path matches the state machine" {
+    // The vtebench dense-cells shape: two 256-colour selects plus attributes.
+    try expectFeedMatchesStateMachine("\x1b[38;5;102;48;5;353;1;3;4mA\x1b[38;5;103;48;5;352;1;3;4mB\x1b[0mC");
+    // Cursor addressing, and a parameter string that ends the input.
+    try expectFeedMatchesStateMachine("\x1b[3;7HG\x1b[2;2Hxy\x1b[4;1");
+    // Colon sub-parameters, empty parameters, a leading separator.
+    try expectFeedMatchesStateMachine("\x1b[38:2::10:20:30mA\x1b[4:3mB\x1b[;;1mC\x1b[:1mD\x1b[58:2:1:2:3;1mE");
+    // More parameters than MAX_PARAMS, and a value that saturates u16.
+    try expectFeedMatchesStateMachine("\x1b[1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17;18;19;20mA\x1b[99999999999;1mB");
+    // Private prefix, intermediate byte, and bytes that abort the sequence.
+    try expectFeedMatchesStateMachine("\x1b[?25l\x1b[2 qA\x1b[1;3\x18B\x1b[1;\x1b[7mC\x1b[12\nD");
+}
+
+test "UTF-8 fast-path matches the state machine" {
+    // 2-, 3- and 4-byte sequences, a wide glyph, a combining mark.
+    try expectFeedMatchesStateMachine("\u{e9}\u{436} \u{4f60}\u{597d} \u{1f389} e\u{301} ok");
+    // A run long enough to wrap, with a wide glyph landing on the right margin.
+    try expectFeedMatchesStateMachine("\u{436}\u{436}\u{436}\u{436}\u{436}\u{436}\u{436}\u{436}\u{436}\u{436}\u{436}\u{436}\u{436}\u{436}\u{436}\u{436}\u{436}\u{436}\u{436}\u{4f60}\u{597d}\u{4f60}");
+    // Truncated at the end of input, in each position of a 4-byte sequence.
+    try expectFeedMatchesStateMachine("a\xF0");
+    try expectFeedMatchesStateMachine("a\xF0\x9F");
+    try expectFeedMatchesStateMachine("a\xF0\x9F\x8E");
+    // Malformed: lead then ASCII, lead then lead, stray continuation, invalid
+    // lead bytes, an overlong form, a codepoint past U+10FFFF.
+    try expectFeedMatchesStateMachine("\xC3A\xE4\xC3\xA9\xA9z\xF8\x88\xFFq\xC0\x80\xF4\x90\x80\x80!");
+    // An escape sequence between the bytes of one character.
+    try expectFeedMatchesStateMachine("\xE4\x1b[1m\xBD\xA0x");
+    // Colour changes between non-ASCII characters, as a TUI emits them.
+    try expectFeedMatchesStateMachine("\x1b[38;5;45m\u{2500}\u{2500}\x1b[48;2;1;2;3m\u{e0b0}\x1b[0m\u{f00c} \u{4f60}");
 }
 
 test "SIMD fast-path — mixed text and escapes" {
