@@ -1,6 +1,11 @@
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 
+# Optional and untracked: machine-local settings. For example, to make every
+# target use one particular compiler instead of the `zig` on PATH:
+#   export PATH := $(HOME)/.local/share/zig/zig-x86_64-linux-0.17.1:$(PATH)
+-include local.mk
+
 # ── CRT fix (GCC 15+ .sframe — Zig linker R_X86_64_PC64 gap) ──────────
 # fix-crt.sh is idempotent: fast no-op when .sframe not present,
 # creates stripped CRT copies + libc.txt when needed.

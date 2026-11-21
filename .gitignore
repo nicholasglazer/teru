@@ -21,3 +21,6 @@ docs/.internal/
 homebrew-teru/
 scoop-teru/
 blog-drafts/
+
+# Machine-local make settings (see the top of the Makefile)
+local.mk
