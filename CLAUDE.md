@@ -1,153 +1,39 @@
-# teru — project notes for Claude Code
+# teru
 
-Two binaries, one source tree. `teru` is a terminal emulator + multiplexer;
-`teruwm` is a wlroots Wayland compositor built on the same libteru library.
-Written in Zig 0.17+. Links libc via `src/compat.zig`.
+One source tree, two binaries that share one version: `teru` (terminal emulator and multiplexer) and `teruwm` (a wlroots Wayland compositor built on the same library). Written in Zig, rendered on the CPU, with no Zig package dependencies.
 
-## CRT Fix (GCC 15+ .sframe)
-
-GCC 15+ adds `.sframe` sections to CRT files with `R_X86_64_PC64` relocations
-that the Zig linker can't handle yet (upstream gap). The build auto-detects this
-and creates stripped CRT copies in `.cache/crt-fix-all/`. Syslib symlinks
-are generated so Zig resolves libraries against the fixed `crt_dir`.
-
-Direct `zig build` needs `--libc`:
-```sh
-zig build --libc .cache/crt-fix-all/libc.txt
-zig build -Dcompositor --libc .cache/crt-fix-all/libc.txt
-```
-
-Makefile targets handle this automatically:
-```sh
-make dev               # auto-fix + debug teru
-make compositor        # auto-fix + debug teruwm
-```
-
-## Build
+## Build and test
 
 ```sh
-make dev                                  # debug teru (auto CRT fix)
-zig build                                 # debug teru (no CRT fix)
-zig build -Doptimize=ReleaseFast      # release teru   → zig-out/bin/teru
-make compositor                           # debug teruwm (auto CRT fix)
-zig build -Dcompositor                    # debug teruwm (no CRT fix)
-zig build -Doptimize=ReleaseFast -Dcompositor   # release teruwm → zig-out/bin/teruwm
-zig build test                        # 584 inline tests (library-level)
-zig build bench -- tools/bench-payloads   # throughput benchmarks
-zig build run                         # run debug teru (windowed)
-zig build run -- --raw                # run debug teru (TTY mode)
+zig build                                       # debug teru -> zig-out/bin/teru
+zig build -Dcompositor                          # debug teru + teruwm + teruwmctl
+zig build test                                  # inline tests; add -Dcompositor for the compositor's
+zig build -Doptimize=ReleaseSafe -Dcompositor   # release build of both
+make e2e-wm                                     # headless teruwm end-to-end test
+make audit-wm                                   # headless sweep of every teruwm MCP tool and keybind action
 ```
 
-## Architecture
+- A bare `zig build` is the supported invocation. Do not pass `--libc` by hand. If a build fails with `libc installation is missing crt directory`, run `./tools/fix-crt.sh --check`.
+- This tree, CI and releases build on the latest stable Zig (0.17.1). `main` and the feature branches must stay buildable on it. `build.zig.zon` holds the minimum version.
+- Zig master (0.18-dev) work lives on the local branch `zig-0.18`, checked out in the sibling worktree `../teru-wt-zig18`. It is this branch plus the source changes only master accepts (`packed` becomes `bitpack`). Bring it up to date with `git -C ../teru-wt-zig18 merge <branch>`. It is not pushed, because CI would build it with stable.
+- `zig` on PATH may be either compiler, so run `zig version` first. `make` uses the compiler directory named in an untracked `local.mk`, when that file exists.
+- The Python end-to-end tests are in `tests/`; each file's header says what it covers.
 
-- `src/core/` — VtParser, Grid, Pane, Multiplexer, Selection, KeyHandler, Clipboard, ViMode
-- `src/server/` — Session daemon (`daemon.zig`), wire protocol, cross-platform IPC (`ipc.zig`)
-- `src/pty/` — `pty.zig` comptime dispatch, `PosixPty.zig`, `WinPty.zig` (ConPTY), `RemotePty.zig`
-- `src/graph/` — `ProcessGraph` (DAG of processes/agents, MCP-queryable)
-- `src/agent/` — OSC 9999 parser, HookHandler/Listener, `McpServer.zig` + `McpDispatch.zig` (22 tools, line-JSON), `McpBridge.zig` (stdio proxy), `in_band.zig` (in-band MCP over OSC 9999 + DCS), `PaneBackend.zig`
-- `src/tiling/` — Layout engine + workspace state; 8 layouts (master-stack, grid, monocle, dishes, spiral, three-col, columns, accordion)
-- `src/persist/` — Session serialization, scrollback compression (keyframe + delta)
-- `src/config/` — Config parser, `Keybinds.zig` (configurable), `ConfigWatcher.zig` (inotify/kqueue/poll), `themes.zig`
-- `src/render/` — `software.zig` (SIMD renderer), `FontAtlas.zig` (stb_truetype), `BarRenderer.zig` (shared), `BarWidget.zig`, `PushWidget.zig`
-- `src/platform/` — X11 (XCB) + Wayland (xdg-shell) + AppKit + Win32; keyboard translation per OS
-- `src/compositor/` — **teruwm only.** `main.zig`, `Server.zig`, `Bar.zig`, `TerminalPane.zig`, `XdgView.zig`, `XwaylandView.zig`, `WmMcpServer.zig` (39 tools), `WmConfig.zig`, `Node.zig`, wlroots `wlr.zig` bindings, `miozu-wlr-glue.c`
-- `src/compat.zig` — `monotonicNow`, `sleepNs`, `getPid`, `getUid`, `posixFork`, `forkExec`, `MemWriter/MemReader`
-- `tools/bench.zig` — vtebench payload throughput harness (zig build bench)
+## Where things are
 
-Map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+`docs/ARCHITECTURE.md` is the module map. Two things it is easy to get wrong:
 
-## MCP
+- `src/compositor/` is teruwm only. Everything else is shared by both binaries.
+- There are two MCP servers on separate sockets. The terminal's is `src/agent/McpServer.zig` on `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock`. The compositor's is `src/compositor/WmMcpServer.zig` on `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock`. `teruwmctl` is the CLI for the second. `docs/MCP-API.md` lists every tool.
 
-Two servers. 61 tools total.
+## Invariants
 
-- **teru agent** (`src/agent/McpServer.zig`) — 22 tools + event push channel, sockets `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock` (requests) and `teru-mcp-events-$PID.sock` (events). Since v0.4.19 transparently forwards `teruwm_*` tools to the compositor socket.
-- **teruwm compositor** (`src/compositor/WmMcpServer.zig`) — 39 tools + event push channel, sockets `$XDG_RUNTIME_DIR/teruwm-mcp-$PID.sock` (requests) and `teruwm-mcp-events-$PID.sock` (events)
+- Every function that does file, network or timer I/O takes `io: std.Io`, threaded down from `main`.
+- The render hot path allocates nothing. It redraws only the rows between `grid.dirty_row_min` and `grid.dirty_row_max`, so anything that changes cells must keep that range correct.
+- `VtParser` is pure: no I/O and no allocation. CSI parameters and OSC strings are bounded, and overflow truncates instead of failing. An `ESC` inside a DCS body goes through `.dcs_st_esc`, never the general escape state.
+- No new dependencies without discussion, whether a Zig package, a system library or vendored C. Binary size and the no-GPU property depend on it.
 
-Reference: [docs/MCP-API.md](docs/MCP-API.md).
+## Version and docs
 
-## Key rules
-
-- Thread `io: std.Io` through every function that does file / network / timer I/O.
-- Prefer `.claude/skills/zig16.md` and `.claude/rules/zig-terminal.md` over guessing at Zig 0.17 API shapes.
-- Zero allocations in the render hot path. `renderDirty` uses `grid.dirty_row_min..=max` — don't break dirty tracking.
-- VtParser is pure: no I/O, no allocation. CSI params capped at 16, OSC at 256 — overflow truncates.
-- teruwm MCP calls always schedule a frame so state changes paint next vsync.
-- No new dependencies without discussion — the binary size and zero-GPU property are load-bearing.
-
-## Testing
-
-```sh
-zig build test                        # 584 inline tests
-python3 tests/session_survival_e2e.py # daemon survives SSH disconnect + reattach-resume
-python3 tests/daemon_resize_stress.py # daemon is uncrashable by client resize(0,0)
-python3 tests/many_pane_e2e.py        # every pane drained at 40 panes (no poll-set cap)
-python3 tests/interactive_attach_e2e.py  # multi-pane render + click-focus routing + nested mode
-make e2e-wm                           # teruwm CPU-spin regression net (bar-exec leak, shell-exit)
-make audit-wm                         # teruwm MCP sweep: all 39 tools + 58 keybind actions + 8 layouts
-bash tools/run-bench.sh               # reproduce benchmarks from docs/BENCHMARKS.md
-```
-
-## Version
-
-Current: **0.13.0** — see `build.zig` line 10 (`const version`).
-Propagated via `build_options.version` to `main.zig`, `McpServer.zig`,
-`WmMcpServer.zig`. Bump with `make bump-version V=x.y.z`.
-
-The v0.4.x line shipped as 0.4.2..0.4.26, hitting the 0.5.0 milestone
-after the chromium/vivaldi fix pack (wp_viewporter + 5 related globals).
-See `git tag` for the full series.
-
-## Known crash patterns + invariants (post-v0.4.25 defensive set)
-
-All six coredump-level bugs triaged during the v0.4.19..v0.4.25
-hardening pass shared one root shape: **wlroots scene / seat
-invariants violated by a stale or foreign surface**. Guards now in
-place:
-
-- **Surface liveness**: `vendor/miozu-wlr-glue.c::miozu_surface_is_live`
-  checks `surface->resource && surface->mapped` before *any* seat
-  notify or cursor-surface call. Scene buffers out-live surfaces
-  briefly during unmap→destroy; this guard drops the window.
-- **Request-set-cursor filter**: `miozu_set_cursor_event_from_focused`
-  — compare `event->seat_client` to `seat->pointer_state.focused_client`
-  and reject from anyone else. Matches sway/river. Without this a
-  defocused chromium pushing set_cursor after a modifier event (e.g.
-  Shift+Alt) left a scene-cursor node with `active_outputs &&
-  !primary_output`, crashing the next motion update.
-- **Grab-on-close**: every close path (`closeNode` / `closeFocused`
-  for terminal + XDG, plus XdgView.handleUnmap + handleDestroy) must
-  null `focused_terminal` + `focused_view` + `grab_node_id` BEFORE
-  freeing the underlying pane/view. Otherwise `wlr_xdg_toplevel_send_close`
-  or `wlr_cursor_set_*` dereferences a dead `wl_resource`.
-- **Workspace.removeNode** clears `active_node` and `master_id` when
-  they equal the removed id — otherwise `updateFocusedTerminal` looks
-  up a heap-freed pane pointer next frame.
-- **X11 stacking mirror**: every scene raise of an xwayland node must be
-  mirrored into the X server's stacking via `wlr_xwayland_surface_restack`
-  (done centrally in `ServerFocus.raiseNode`, plus map-time restacks in
-  `XwaylandView.mapView`). Xwayland delivers pointer input by re-picking
-  against ITS OWN stacking (DIX `XYToWindow`), not by which wl_surface the
-  compositor entered — and wlroots' xwm demotes every managed window to
-  the X-stack bottom at MapNotify. A window that is scene-raised but not
-  X-restacked renders on top while its clicks are delivered to the X
-  window underneath (the 2026-07 Steam-dialog / game-over-Steam bug).
-  Restack only windows whose scene node is enabled — a hidden window
-  restacked X-top is an invisible click-steal.
-- **DCS parser isolation**: an `ESC` inside a DCS body routes through
-  the dedicated `.dcs_st_esc` state, never the general `.escape` state.
-  Before v0.4.22 an embedded `ESC[` inside a DCS payload leaked into
-  the CSI parameter accumulator.
-
-## User-facing surface
-
-- [README.md](README.md) — what teru and teruwm are; link tree
-- [docs/INSTALLING.md](docs/INSTALLING.md) — per-platform install + teruwm TTY caveat
-- [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md) — every default keybind for both binaries
-- [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — teru.conf, teruwm/config, widgets, thresholds, rules
-- [docs/MCP-API.md](docs/MCP-API.md) — all 61 tools with schemas + examples
-- [docs/AI-INTEGRATION.md](docs/AI-INTEGRATION.md) — CustomPaneBackend, push widgets, OSC 9999, .tsess templates
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module map, rendering pipeline, hot-restart, gap arithmetic
-- [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — methodology + numbers, explicitly-not-measured items
-
-When you change something user-facing, update the relevant doc in the
-same PR. Stale docs are worse than no docs.
+- The version is `const version` in `build.zig`, shared by both binaries. Bump it with `make bump-version V=x.y.z`, which also updates `build.zig.zon`.
+- When behaviour a user can see changes, update the matching file in `docs/` in the same commit: `KEYBINDINGS.md`, `CONFIGURATION.md`, `MCP-API.md`, `INSTALLING.md`, `AI-INTEGRATION.md`, `SESSIONS.md`.

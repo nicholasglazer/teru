@@ -47,7 +47,7 @@ Every `.zig` module has inline `test` blocks. No separate test files. When addin
 - Follow existing patterns in the codebase
 - Use `std.testing.allocator` in tests (catches leaks automatically)
 - Prefer hand-declared C externs over `@cImport`
-- See `.claude/rules/zig-terminal.md` for Zig 0.17 API reference
+- See `.claude/rules/zig.md` for the Zig API shapes this codebase uses
 
 ## Areas looking for help
 
