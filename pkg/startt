@@ -1,17 +1,28 @@
 #!/bin/bash
 # startt — the `startx` of teruwm (start-teru).
 #
-# Builds the latest release teru + teruwm from source (`make install-local`)
-# and installs both to ~/.local/bin, then execs teruwm. Because it rebuilds
-# first you can never launch stale code — and unlike xmonad there's no
-# separate "recompile" step. A broken build aborts BEFORE the exec (set -e),
-# dropping you back to the login shell with the error visible.
+# Rebuilds teru + teruwm from source and installs both to ~/.local/bin, then
+# runs teruwm. Because it rebuilds first you can never launch stale code — and
+# unlike xmonad there's no separate "recompile" step.
+#
+# A broken build never silently launches stale code: it stops, shows the error,
+# and ASKS before falling back to the last binary that runs — because the
+# alternative is being stranded on a bare TTY with no desktop, which is what a
+# toolchain upgrade did on 2026-09-01. Answering "n" leaves you at the shell
+# with the error visible. (`make` installs teru before teruwm, so a failure can
+# still leave a half-updated pair — hence the fallback probes both
+# ~/.local/bin/teruwm and the .last-good snapshot taken before every build.)
 #
 # Install (symlink so the launcher tracks the repo):
 #   ln -sf "$PWD/pkg/startt" ~/.local/bin/startt
-# Usage:    startt            # release rebuild + install + launch (default)
-#           startt dev         # fast DEBUG rebuild + install + launch
+# Usage:    startt            # fast DEBUG rebuild + install + launch (default)
+#           startt dev         # same as bare `startt` (dev inner loop)
+#           startt release     # optimized rebuild + install + launch
 #           startt skip        # skip the rebuild, launch the installed binary
+#
+# Stranded by a broken build? `startt skip` skips it entirely. (It still needs
+# this file, which the install below symlinks into the repo — copy it out if you
+# want a recovery path that survives the repo too.)
 #
 # Source-tree location: set TERU_SRC, else the first of these that exists is used.
 set -euo pipefail
@@ -33,6 +44,15 @@ find_src() {
 # Default is DEBUG — the inner-loop build is ~1.3s incremental (after the
 # fix-crt idempotency fix), vs release's slow LLVM re-optimization. Use
 # `startt release` when you want the optimized daily-driver binary.
+# One canonical path, and a probe that proves the binary actually RUNS. `[ -x ]`
+# is not enough: coreutils `install` opens the destination O_TRUNC at mode 0600
+# and chmods 755 only at the end, so an install killed partway (a full /home is
+# the common one for a 57MB debug build) leaves a truncated, non-executable
+# teruwm — and the escape hatch below would then refuse to run while a perfectly
+# good teruwm.last-good sat next to it.
+TERUWM="$HOME/.local/bin/teruwm"
+_teruwm_ok() { [ -f "$1" ] && [ -x "$1" ] && timeout 10 "$1" --version >/dev/null 2>&1; }
+
 MODE="${1:-dev}"
 case "$MODE" in
     dev)     TARGET=dev-install   ;;   # fast DEBUG build (default — dev inner loop)
@@ -47,12 +67,94 @@ if [ -n "$TARGET" ]; then
         echo "  Set TERU_SRC=/path/to/teru, or run 'startt skip' to launch the installed binary." >&2
         exit 1
     }
-    make -C "$REPO" "$TARGET"
+    # Snapshot a known-good binary before make can destroy it. `install -Dm755`
+    # replaces the destination in place with no backup, so a rebuild is the one
+    # routine action that can cost you the only working compositor you have.
+    # Conditional on the probe, so an already-broken teruwm never overwrites a
+    # good backup; cp-to-tmp + mv so the backup is never itself a partial file.
+    if _teruwm_ok "$TERUWM"; then
+        cp -f "$TERUWM" "$TERUWM.last-good.tmp" 2>/dev/null \
+            && mv -f "$TERUWM.last-good.tmp" "$TERUWM.last-good" 2>/dev/null || true
+    fi
+
+    # NOT a bare `make`: under `set -e` a failed build killed this script here
+    # with zero startt-authored output, never mentioning that `startt skip`
+    # would have launched the perfectly good installed binary. Every other
+    # failure path in this file has an escape hatch; the single most likely
+    # one — "the build broke" — had none. Putting make in an `if !` context is
+    # what suspends errexit for it.
+    if ! make -C "$REPO" "$TARGET"; then
+        echo >&2
+        # NOT "nothing was installed": dev-install installs teru BEFORE teruwm,
+        # so a failure in the second one leaves a half-updated pair.
+        echo "── startt: BUILD FAILED ($TARGET). The build did not complete." >&2
+        installed=""
+        for _c in "$TERUWM" "$TERUWM.last-good"; do
+            if _teruwm_ok "$_c"; then installed="$_c"; break; fi
+        done
+        if [ -n "$installed" ]; then
+            echo "   Falling back to a compositor that runs:" >&2
+            ls -l --time-style=+'%F %T' "$installed" >&2
+            if [ "$installed" = "$TERUWM" ]; then
+                echo "   Launch it as-is any time with:  startt skip" >&2
+            else
+                echo "   $TERUWM is missing or unrunnable; this is the backup." >&2
+                echo "   Restore it with: cp $installed $TERUWM" >&2
+            fi
+            printf '   Launch it now? [Y/n] ' >&2
+            # The tty sat in canonical mode for the whole build, so anything typed
+            # while make ran — an impatient Enter on an 85s release build is close
+            # to reflex — is already in the line buffer and `read` would take it as
+            # the answer the instant this prompt appears. Opening a fresh fd does
+            # not discard it (the pending line lives in the line discipline, not
+            # the fd), so drain it: the answer must be a post-prompt keystroke.
+            # The group redirect, not `exec 3</dev/tty 2>/dev/null`: bash applies
+            # redirections left to right, so the failure message escapes before
+            # `2>/dev/null` takes effect — and moving it first would make stderr
+            # permanently /dev/null for the rest of the script.
+            if { exec 3</dev/tty; } 2>/dev/null; then
+                while read -r -t 0 -u 3; do read -r -t 0.1 -u 3 _ || break; done
+                read -r _ans <&3 || _ans=n
+                exec 3<&-
+            else
+                _ans=n; echo "n (no tty)" >&2
+            fi
+            case "$_ans" in
+                [Nn]*) exit 1 ;;
+                *) TERUWM="$installed"
+                   echo "[startt] launching $installed — source NOT rebuilt" >&2 ;;
+            esac
+        else
+            echo "   No runnable compositor at $TERUWM or $TERUWM.last-good." >&2
+            echo "   Fix the build error above, then run startt again." >&2
+            exit 1
+        fi
+    fi
 fi
 
 # Keyboard layout for TTY launch (env-inheritance break on bare TTY).
 KB_ENV="$HOME/.config/environment.d/10-miozu-keyboard.conf"
-[ -f "$KB_ENV" ] && { set -a; . "$KB_ENV"; set +a; }
+# Nothing from here to the launch of teruwm may fail fatally — every failure
+# in this stretch costs the user their desktop, not just a feature.
+#
+# `set -u` makes an unbound-variable expansion inside a sourced file kill this
+# shell outright, and an `exit` in it exits US — neither is catchable by an
+# `|| echo` guard. This file is systemd environment.d: KEY=VALUE data, not a
+# shell script (`man 5 environment.d`, whose own example is `PATH=/opt/foo/bin:$PATH`
+# — systemd expands that, bash under `set -u` dies on it). It is user-editable
+# dotfiles sitting on the path to the desktop, and this line runs in
+# `startt skip` too, so a bad edit there would disarm the escape hatch as well.
+# Read it in a subshell with -e/-u off and re-import only the XKB_* names.
+if [ -f "$KB_ENV" ]; then
+    _kb="$( set +eu; . "$KB_ENV" >/dev/null 2>&1
+            for _v in XKB_DEFAULT_RULES XKB_DEFAULT_MODEL XKB_DEFAULT_LAYOUT \
+                      XKB_DEFAULT_VARIANT XKB_DEFAULT_OPTIONS; do
+                eval "_val=\${$_v-}"
+                [ -n "$_val" ] && printf '%s=%s\n' "$_v" "$_val"
+            done )" || _kb=""
+    [ -n "$_kb" ] || echo "[startt] warning: no XKB_* settings read from $KB_ENV" >&2
+    while IFS= read -r _l; do [ -n "$_l" ] && export "$_l"; done <<< "$_kb"
+fi
 
 # Clear stale Wayland locks left by a crashed session.
 rm -f "/run/user/$(id -u)/wayland-"*.lock 2>/dev/null || true
@@ -120,8 +222,10 @@ fi
 # Persist teruwm's stderr so a crash/exit reason survives the TTY scrolling
 # away (the compositor logs to stderr; without this a silent exit is a mystery).
 TERU_LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/teru"
-mkdir -p "$TERU_LOG_DIR"
+mkdir -p "$TERU_LOG_DIR" 2>/dev/null || true
 TERU_LOG="$TERU_LOG_DIR/teruwm.log"
+# An unwritable log must never block a login.
+: >> "$TERU_LOG" 2>/dev/null || { echo "[startt] warning: cannot write $TERU_LOG" >&2; TERU_LOG=/dev/null; }
 printf '\n=== startt %s ===\n' "$(date '+%F %T')" >> "$TERU_LOG"
 
 # Run teruwm. NOT `exec` on purpose: if the compositor fails to acquire the
@@ -134,9 +238,21 @@ printf '\n=== startt %s ===\n' "$(date '+%F %T')" >> "$TERU_LOG"
 # `tee` keeps the error on the TTY AND appends it to the log; PIPESTATUS[0]
 # captures teruwm's real exit (not tee's).
 _run_teruwm() {
-    "$HOME/.local/bin/teruwm" 2>&1 | tee -a "$TERU_LOG"
+    "$TERUWM" 2>&1 | tee -a "$TERU_LOG"
     return "${PIPESTATUS[0]}"
 }
+
+# Guard every mode, not just the build-failure path — `startt skip` is the route
+# the header advertises for recovery, and it was the unguarded one. Placed AFTER
+# the build block so a fresh machine can still build its first binary.
+if [ ! -x "$TERUWM" ]; then
+    echo "startt: no compositor installed at $TERUWM." >&2
+    echo "  Build one:   startt              (or 'startt release')" >&2
+    if [ -x "$TERUWM.last-good" ]; then
+        echo "  Or restore:  cp $TERUWM.last-good $TERUWM" >&2
+    fi
+    exit 1
+fi
 
 set +e
 _run_teruwm
@@ -147,7 +263,11 @@ status=$?
 # Gated on _startt_pinned_gpu (not just "is WLR_DRM_DEVICES set") so a user's
 # deliberate pre-exported override is respected, not silently clobbered — if
 # their own pin fails they get the error help + log below to debug it.
-if [ "$status" -ne 0 ] && [ "$_startt_pinned_gpu" -eq 1 ]; then
+# 126/127 mean the binary could not be executed at all (missing, truncated by a
+# half-finished install, wrong arch) — retrying that on another GPU just runs it
+# a second time and then blames the pin for something it did not cause.
+if [ "$status" -ne 0 ] && [ "$status" -ne 126 ] && [ "$status" -ne 127 ] \
+   && [ "$_startt_pinned_gpu" -eq 1 ]; then
     printf '\n[startt] teruwm exited %d with WLR_DRM_DEVICES=%s — retrying on the default GPU\n' \
         "$status" "$WLR_DRM_DEVICES" | tee -a "$TERU_LOG"
     unset WLR_DRM_DEVICES
@@ -160,6 +280,11 @@ set -e
 if [ "$status" -ne 0 ]; then
     echo
     echo "── teruwm exited with status $status. Common causes on a bare TTY:"
+    if [ "$status" -eq 126 ] || [ "$status" -eq 127 ]; then
+        echo "   • $TERUWM could not be executed AT ALL (missing, truncated by a"
+        echo "     half-finished install, or wrong architecture). Rebuild with"
+        echo "     \`startt\`, or restore $TERUWM.last-good."
+    fi
     echo "   • 'Timeout waiting session to become active' / 'Could not connect"
     echo "     to remote display' → another compositor or Xorg holds the DRM"
     echo "     seat. Quit it, or launch from a VT that owns the active seat."
