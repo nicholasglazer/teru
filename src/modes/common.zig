@@ -81,6 +81,49 @@ pub fn outFmt(buf: []u8, comptime fmt: []const u8, args: anytype) void {
     out(msg);
 }
 
+/// Next scheduled wake deadline in ms. Picks the tightest of:
+///   - the hard idle cap (lets maintenance polls run periodically)
+///   - cursor-blink flip (when enabled + window focused)
+///   - frame-rate cap (when a render is pending but throttled)
+///   - persist debounce (layout save fires after quiescent period,
+///     only when `restore_layout` or `persist_session` is on)
+/// Prefix-mode timeout is intentionally skipped — its 500 ms default
+/// already matches the hard cap, and PrefixState.timestamp_ns uses
+/// the realtime clock which would mix badly with our monotonic now.
+pub fn computeIdleTimeoutMs(
+    now_ns: i128,
+    last_blink_ns: i128,
+    blink_enabled: bool,
+    frame_cap_deadline_ns: i128,
+    have_pending_render: bool,
+    persist_enabled: bool,
+    persist_dirty: bool,
+    persist_dirty_since_ns: i128,
+    cap_ms: i32,
+) i32 {
+    var t: i32 = cap_ms;
+    const one_ms: i128 = 1_000_000;
+    if (blink_enabled) {
+        const wait = (last_blink_ns + CURSOR_BLINK_NS) - now_ns;
+        const wait_ms: i32 = @intCast(@max(@as(i128, 0), @divTrunc(wait, one_ms)));
+        if (wait_ms < t) t = wait_ms;
+    }
+    if (have_pending_render) {
+        const wait = frame_cap_deadline_ns - now_ns;
+        const wait_ms: i32 = @intCast(@max(@as(i128, 0), @divTrunc(wait, one_ms)));
+        if (wait_ms < t) t = wait_ms;
+    }
+    // The debounced layout save runs only when persistence is on, and only
+    // that save clears `persist_dirty`. Counting the flag without the gate
+    // kept the timeout at 0 forever and spun a whole core while idle.
+    if (persist_enabled and persist_dirty) {
+        const wait = (persist_dirty_since_ns + PERSIST_DEBOUNCE_NS) - now_ns;
+        const wait_ms: i32 = @intCast(@max(@as(i128, 0), @divTrunc(wait, one_ms)));
+        if (wait_ms < t) t = wait_ms;
+    }
+    return t;
+}
+
 // ── Session restore info ──────────────────────────────────────
 
 pub const RestoreInfo = struct {
@@ -746,4 +789,15 @@ test "parseDaemonStateSync: ws_idx >= 10 → skipped safely without panic" {
     for (&mux.layout_engine.workspaces) |*ws| {
         try testing.expectEqual(@as(usize, 0), ws.node_ids.items.len);
     }
+}
+
+test "computeIdleTimeoutMs: an unsaved layout with persistence off does not spin" {
+    const now: i128 = 10 * std.time.ns_per_s;
+    const since = now - 5 * std.time.ns_per_s; // dirty for 5 s, long past the debounce
+    // Persistence off (the default): the flag is never cleared, so it must not count.
+    try std.testing.expectEqual(@as(i32, 500), computeIdleTimeoutMs(now, 0, false, 0, false, false, true, since, 500));
+    // Persistence on: the overdue save wakes the loop at once.
+    try std.testing.expectEqual(@as(i32, 0), computeIdleTimeoutMs(now, 0, false, 0, false, true, true, since, 500));
+    // A throttled frame wakes the loop at the frame deadline.
+    try std.testing.expectEqual(@as(i32, 16), computeIdleTimeoutMs(now, 0, false, now + 16_666_667, true, false, false, 0, 500));
 }

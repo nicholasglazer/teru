@@ -66,6 +66,9 @@ const Keyboard = switch (builtin.os.tag) {
 
 const RestoreInfo = common.RestoreInfo;
 
+/// Shortest interval between two painted frames (~60 fps).
+const frame_min_ns: i128 = 16_666_667;
+
 /// Block until any fd we care about becomes readable or the timeout
 /// expires. Replacing the fixed-timer io.sleep cut idle wake rate from
 /// ~60 Hz to whatever events actually demand. poll() returns EINTR on
@@ -102,44 +105,6 @@ fn waitForInput(
     if (watcher_fd) |fd| { if (n < fds.len) { fds[n] = .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }; n += 1; } }
 
     _ = posix.poll(fds[0..n], timeout_ms) catch {};
-}
-
-/// Next scheduled wake deadline in ms. Picks the tightest of:
-///   - the hard idle cap (lets maintenance polls run periodically)
-///   - cursor-blink flip (when enabled + window focused)
-///   - frame-rate cap (when a render is pending but throttled)
-///   - persist debounce (layout save fires after quiescent period)
-/// Prefix-mode timeout is intentionally skipped — its 500 ms default
-/// already matches the hard cap, and PrefixState.timestamp_ns uses
-/// the realtime clock which would mix badly with our monotonic now.
-fn computeIdleTimeoutMs(
-    now_ns: i128,
-    last_blink_ns: i128,
-    blink_enabled: bool,
-    frame_cap_deadline_ns: i128,
-    have_pending_render: bool,
-    persist_dirty: bool,
-    persist_dirty_since_ns: i128,
-    cap_ms: i32,
-) i32 {
-    var t: i32 = cap_ms;
-    const one_ms: i128 = 1_000_000;
-    if (blink_enabled) {
-        const wait = (last_blink_ns + common.CURSOR_BLINK_NS) - now_ns;
-        const wait_ms: i32 = @intCast(@max(@as(i128, 0), @divTrunc(wait, one_ms)));
-        if (wait_ms < t) t = wait_ms;
-    }
-    if (have_pending_render) {
-        const wait = frame_cap_deadline_ns - now_ns;
-        const wait_ms: i32 = @intCast(@max(@as(i128, 0), @divTrunc(wait, one_ms)));
-        if (wait_ms < t) t = wait_ms;
-    }
-    if (persist_dirty) {
-        const wait = (persist_dirty_since_ns + common.PERSIST_DEBOUNCE_NS) - now_ns;
-        const wait_ms: i32 = @intCast(@max(@as(i128, 0), @divTrunc(wait, one_ms)));
-        if (wait_ms < t) t = wait_ms;
-    }
-    return t;
 }
 
 /// Which direction a font-zoom step goes. `.reset` returns to `config.font_size`.
@@ -558,6 +523,9 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
     // sleep path (see waitForInput below).
     var window_focused: bool = true;
     var last_render_ns: i128 = 0;
+    // A frame that was due but held back by the frame cap below. It is
+    // painted when the cap expires; the poll timeout wakes the loop then.
+    var render_deferred = false;
 
     // Search mode state (Feature 9)
     var search_mode = false;
@@ -1515,7 +1483,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
         }
 
         // Check if any pane's grid is dirty
-        var any_dirty = had_output or force_redraw;
+        var any_dirty = had_output or force_redraw or render_deferred;
         force_redraw = false;
         if (!any_dirty) {
             for (mux.panes.items) |*pane| {
@@ -1559,7 +1527,14 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
             }
         }
 
-        if (any_dirty and !sync_active) {
+        // Frame cap: a stream of PTY output (cat, a build log) otherwise
+        // repaints and presents the whole window after every read, over a
+        // thousand times a second. The first frame after a quiet spell is
+        // never delayed; later ones wait out the rest of the frame interval.
+        const frame_due = compat.monotonicNow() - last_render_ns >= frame_min_ns;
+        render_deferred = any_dirty and !sync_active and !frame_due;
+
+        if (any_dirty and !sync_active and frame_due) {
             // Bell handling (configurable: visual or none)
             if (config.bell == .visual) {
                 for (mux.panes.items) |*pane| {
@@ -1695,19 +1670,19 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
         // not a regression.
         if (comptime builtin.os.tag == .linux) {
             const now_ns = compat.monotonicNow();
-            const frame_min_ns: i128 = 16_666_667; // ~60 fps
             const frame_cap_deadline = last_render_ns + frame_min_ns;
             var any_grid_dirty = false;
             for (mux.panes.items) |*pane| {
                 if (pane.grid.dirty) { any_grid_dirty = true; break; }
             }
-            const pending_render = any_grid_dirty and (frame_cap_deadline > now_ns);
-            const timeout_ms = computeIdleTimeoutMs(
+            const pending_render = (any_grid_dirty or render_deferred) and (frame_cap_deadline > now_ns);
+            const timeout_ms = common.computeIdleTimeoutMs(
                 now_ns,
                 last_blink_time,
                 config.cursor_blink and window_focused,
                 frame_cap_deadline,
                 pending_render,
+                config.restore_layout or config.persist_session,
                 mux.persist_dirty,
                 mux.persist_dirty_since,
                 500,
