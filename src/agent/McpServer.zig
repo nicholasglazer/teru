@@ -270,6 +270,10 @@ const write_tool_names = [_][]const u8{
     "teru_focus_pane",
     "teru_swap_pane",
     "teru_move_pane",
+    // These two write files: a session template (overwriting one of the
+    // same name) and a PNG under /tmp, ~/Pictures or the config dir.
+    "teru_session_save",
+    "teru_screenshot",
 };
 
 /// Snapshotted at server init from `$TERU_MCP_READONLY=1`.
