@@ -325,6 +325,28 @@ pub fn build(b: *std.Build) void {
         .name = "teru-check",
         .root_module = check_mod,
     });
-    const check_step = b.step("check", "Compile lib for target (no linking)");
+    const check_step = b.step("check", "Compile lib and the teru entry point for target (no linking)");
     check_step.dependOn(&check_lib.step);
+
+    // The library root does not reach the platform backends or the windowed
+    // mode, and Zig analyses only what is referenced, so checking it alone
+    // said nothing about, say, the macOS backend. Compile the real entry
+    // point as an object too: an object is not linked, so this needs no
+    // Apple SDK, xcb or wlroots and runs from any host.
+    const check_exe_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        // `extern "wayland-client"` and friends name a dynamic library,
+        // which Zig accepts in an unlinked object only as PIC.
+        .pic = true,
+    });
+    check_exe_mod.addOptions("build_options", build_options);
+    check_exe_mod.addIncludePath(b.path("vendor"));
+    const check_exe = b.addObject(.{
+        .name = "teru-check-exe",
+        .root_module = check_exe_mod,
+    });
+    check_step.dependOn(&check_exe.step);
 }

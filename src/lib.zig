@@ -115,4 +115,7 @@ test {
     // are only reached from code these tests do not touch.
     _ = @import("platform/windows/platform.zig");
     _ = @import("platform/windows/keyboard.zig");
+    // Same for the macOS backend's pure helpers. Its AppKit and Carbon
+    // calls are behind `builtin.os.tag == .macos`.
+    _ = @import("platform/macos/keyboard.zig");
 }
