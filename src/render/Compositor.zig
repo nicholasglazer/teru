@@ -80,18 +80,13 @@ pub fn renderPaneIntoRect(
             // Grid row must be offset by scroll_offset to get screen row —
             // screen rows 0..scroll_offset-1 are scrollback, scroll_offset.. are grid
             if (sel) |s| {
-                // Selection rows are u16. If scroll_offset + row exceeds u16
-                // (very deep scrollback while a selection is active), the row is
-                // beyond any selectable coordinate, so skip the highlight rather
-                // than @intCast-panic on the overflow.
-                const abs_row = scroll_offset + row;
-                if (abs_row <= std.math.maxInt(u16)) {
-                    const screen_row: u16 = @intCast(abs_row);
-                    if (s.isCellSelected(grid, @intCast(row), @intCast(col), screen_row, scroll_offset, sb_lines)) {
-                        bg = renderer.scheme.selection_bg;
-                        // If fg would be invisible against selection bg, use bright white
-                        if (fg == bg) fg = renderer.scheme.ansi[15];
-                    }
+                // u32, as in software.zig: with a long history the sum passes
+                // 65535, and narrowing it hid the highlight there.
+                const screen_row: u32 = scroll_offset +| @as(u32, @intCast(row));
+                if (s.isCellSelected(grid, @intCast(row), @intCast(col), screen_row, scroll_offset, sb_lines)) {
+                    bg = renderer.scheme.selection_bg;
+                    // If fg would be invisible against selection bg, use bright white
+                    if (fg == bg) fg = renderer.scheme.ansi[15];
                 }
             }
 
@@ -452,6 +447,33 @@ test "drawBorder" {
 
     // Interior should be unchanged (bg)
     try t.expectEqual(bg, renderer.framebuffer[3 * 10 + 3]);
+}
+
+test "renderPaneIntoRect highlights a selection more than 65535 lines into the history" {
+    var grid = try Grid.init(t.allocator, 2, 4);
+    defer grid.deinit(t.allocator);
+    var renderer = try SoftwareRenderer.init(t.allocator, 32, 32, 8, 16);
+    defer renderer.deinit();
+
+    const sb_lines: u32 = 200_000;
+    const scroll_offset: u32 = 70_000;
+    // Select grid row 1, columns 1..2, as seen at this scroll position.
+    var sel: Selection = .{};
+    sel.begin(scroll_offset + 1, 1, scroll_offset, sb_lines);
+    sel.update(scroll_offset + 1, 2, scroll_offset, sb_lines);
+
+    renderPaneIntoRect(&renderer, &grid, .{ .x = 0, .y = 0, .width = 32, .height = 32 }, 8, 16, false, &sel, scroll_offset, sb_lines, false);
+
+    const sel_bg = renderer.scheme.selection_bg;
+    const px = struct {
+        fn at(r: *const SoftwareRenderer, row: usize, col: usize) u32 {
+            return r.framebuffer[(row * 16 + 8) * r.width + col * 8 + 4];
+        }
+    }.at;
+    try t.expectEqual(sel_bg, px(&renderer, 1, 1));
+    try t.expectEqual(sel_bg, px(&renderer, 1, 2));
+    try t.expect(px(&renderer, 1, 0) != sel_bg);
+    try t.expect(px(&renderer, 0, 1) != sel_bg);
 }
 
 test "getBorderColor defaults without graph" {
