@@ -12,7 +12,9 @@
   whole screen per line, and spaces are no longer blended glyph by glyph.
   `seq 1 3000000` in a 1280x720 window went from 12.1 s to 1.8 s. teruwm panes
   no longer repaint the whole pane after output that only moved the cursor or
-  set the title.
+  set the title. The cost is memory: each pane's main screen is now kept in a
+  buffer twice its size, so its cell memory doubles (one headless teruwm pane
+  went from about 100 KB to 200 KB). Scrollback is not affected.
 - **Line drawing (ESC ( 0) works.** ncurses borders in dialog, mc, tig and
   similar programs showed as the letters `lqqk`.
 - **The mouse works in ncurses programs.** `ESC[?1006;1000h` turned on only
@@ -39,8 +41,9 @@
   `teru_get_config` with an out-of-range `master_ratio`.
 - **teruwm:** quitting no longer writes into freed wlroots memory; a window
   that asks for fullscreen before it maps (a browser restoring a session) no
-  longer hides everything; `wlr-randr` and kanshi mode changes re-tile the
-  panes; a new scratchpad no longer inherits a closed one's position; a shell
+  longer hides everything, and a browser that does so is no longer told it is
+  fullscreen while it sits in a tile; `wlr-randr` and kanshi mode changes
+  re-tile the panes; a new scratchpad no longer inherits a closed one's position; a shell
   exiting on another monitor's workspace no longer leaves a gap; and the bars
   no longer repaint or run their command widgets while a window is fullscreen.
 - **`teru --class NAME` sets the Wayland app_id,** so window rules match it
@@ -55,7 +58,9 @@
 - **MCP and hook sockets:** a client sending one byte at a time can no longer
   hold the event loop (and teruwm's rendering) for minutes. Calls to
   `teruwm_*` tools skip sockets left by a crashed teruwm and time out instead
-  of hanging teru.
+  of hanging teru: after 0.5 s inside teru, and after 30 s in
+  `teru --mcp-server --target teruwm` and `teruwmctl`, which block nothing
+  else, so slow tools such as a full-desktop screenshot still answer.
 - **`pkg/teru.service` starts.** It declared `Type=forking`, so systemd killed
   the daemon and every pane after 90 s and restarted it in a loop. It now also
   sets `OOMPolicy=continue`.
@@ -76,6 +81,12 @@
 - **`teru_set_config` rejects values containing line breaks,** which could add
   arbitrary lines such as `hook_on_*` commands, and refuses to rewrite a
   `teru.conf` larger than 16 KiB instead of truncating it.
+
+### Changed
+
+- **One master-ratio range everywhere: 0.15 to 0.85.** teruwm's border drag
+  and resize keys allowed 0.1 to 0.9, and a ratio read back from a binary
+  session file or the daemon was not checked at all.
 
 ### Packaging
 
