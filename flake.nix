@@ -42,7 +42,9 @@
             export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/.zig-cache
             export ZIG_LOCAL_CACHE_DIR=$TMPDIR/.zig-local-cache
 
-            zig build -Doptimize=ReleaseSafe --prefix $out
+            # -Dcpu=baseline: without it zig builds for the builder's own CPU,
+            # so the output depends on the machine and may not run elsewhere.
+            zig build -Doptimize=ReleaseSafe -Dcpu=baseline --prefix $out
 
             runHook postBuild
           '';
