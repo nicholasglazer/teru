@@ -1,5 +1,87 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Standalone teru no longer spins a CPU core while idle.** With the default
+  config (layout saving off) the main loop polled with a zero timeout forever,
+  starting 100 ms after launch, and used about 90% of a core.
+- **Bulk output is about six times faster.** Painted frames are capped at
+  60 fps instead of one per PTY read, a full-screen scroll no longer copies the
+  whole screen per line, and spaces are no longer blended glyph by glyph.
+  `seq 1 3000000` in a 1280x720 window went from 12.1 s to 1.8 s. teruwm panes
+  no longer repaint the whole pane after output that only moved the cursor or
+  set the title.
+- **Line drawing (ESC ( 0) works.** ncurses borders in dialog, mc, tig and
+  similar programs showed as the letters `lqqk`.
+- **The mouse works in ncurses programs.** `ESC[?1006;1000h` turned on only
+  the first mode, so htop, mc and ncdu never got mouse tracking.
+- **Making a pane shorter keeps the prompt and the newest output.** Rows above
+  the cursor now go to scrollback; before, the bottom rows were cut off and
+  lost.
+- **Resizing while vim, less or htop is open no longer blanks the shell
+  screen** underneath.
+- **`reset` resets.** RIS now also turns off mouse tracking, bracketed paste
+  and application cursor keys, restores line wrapping, and leaves an orphaned
+  alternate screen.
+- **Background colors fill erased areas (bce).** vim and less color schemes
+  no longer leave default-colored stripes.
+- **Cursor movement and line feeds outside a scroll region** follow xterm: a
+  status line drawn below the region no longer scrolls it.
+- **OSC 8 links stay correct after 255 links.** A click on an early link no
+  longer opens a different, newer URI.
+- **A broken escape sequence no longer prints as text.** ESC or a control
+  character inside a CSI sequence is handled the way xterm does.
+- **Crashes in release builds:** a CJK character in a one-column pane or
+  margin followed by an erase, a selection in scrollback more than 65,535
+  lines up, a 20-digit Content-Length sent to the hook socket, and
+  `teru_get_config` with an out-of-range `master_ratio`.
+- **teruwm:** quitting no longer writes into freed wlroots memory; a window
+  that asks for fullscreen before it maps (a browser restoring a session) no
+  longer hides everything; `wlr-randr` and kanshi mode changes re-tile the
+  panes; a new scratchpad no longer inherits a closed one's position; a shell
+  exiting on another monitor's workspace no longer leaves a gap; and the bars
+  no longer repaint or run their command widgets while a window is fullscreen.
+- **`teru --class NAME` sets the Wayland app_id,** so window rules match it
+  under teruwm and other Wayland compositors.
+- **X11 without shared memory (ssh -X):** large windows are drawn instead of
+  hanging teru, and a window narrower than the framebuffer is drawn instead
+  of dropped.
+- **The session daemon keeps running when an attached client stops
+  reading.** A suspended `teru -n` window froze every pane and MCP call; the
+  stuck client is now disconnected. `teru_wait_for` no longer swallows output
+  meant for the attached client.
+- **MCP and hook sockets:** a client sending one byte at a time can no longer
+  hold the event loop (and teruwm's rendering) for minutes. Calls to
+  `teruwm_*` tools skip sockets left by a crashed teruwm and time out instead
+  of hanging teru.
+- **`pkg/teru.service` starts.** It declared `Type=forking`, so systemd killed
+  the daemon and every pane after 90 s and restarted it in a loop. It now also
+  sets `OOMPolicy=continue`.
+- **Release binaries run on older x86_64 CPUs.** They were built for the CI
+  runner's own CPU and could need AVX2 or AVX-512; they now target x86_64-v2.
+
+### Security
+
+- **Program output can no longer type commands into the shell.** teru echoed
+  the id of an OSC 9999 query into the pane's input, even with
+  `agent_in_band` off, so text such as `cat`ing a file could run a command.
+  With the channel off teru now never replies, and with it on, ids are
+  limited to `[A-Za-z0-9_-]`.
+- **OSC 9999 `agent:start` from program output** no longer adds phantom tiles
+  to the layout.
+- **`TERU_MCP_READONLY` now blocks `teru_session_save` and
+  `teru_screenshot`,** which write files.
+- **`teru_set_config` rejects values containing line breaks,** which could add
+  arbitrary lines such as `hook_on_*` commands, and refuses to rewrite a
+  `teru.conf` larger than 16 KiB instead of truncating it.
+
+### Packaging
+
+- The Arch packages install `teruwmctl`, the desktop file from `pkg/` (with
+  `StartupWMClass`) and the systemd user unit.
+
 ## 0.16.0 — 2026-11-21
 
 Text in any script, a first usable window on Windows, VR station mode in the
