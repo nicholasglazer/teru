@@ -177,6 +177,7 @@ extern "xcb" fn xcb_free_gc(conn: *xcb_connection_t, gc: xcb_gcontext_t) callcon
 extern "xcb" fn xcb_change_property(conn: *xcb_connection_t, mode: u8, window: xcb_window_t, property: xcb_atom_t, type_: xcb_atom_t, format: u8, data_len: u32, data: ?*const anyopaque) callconv(.c) xcb_void_cookie_t;
 extern "xcb" fn xcb_poll_for_event(conn: *xcb_connection_t) callconv(.c) ?*xcb_generic_event_t;
 extern "xcb" fn xcb_flush(conn: *xcb_connection_t) callconv(.c) c_int;
+extern "xcb" fn xcb_get_maximum_request_length(conn: *xcb_connection_t) callconv(.c) u32;
 extern "xcb" fn xcb_put_image(conn: *xcb_connection_t, format: u8, drawable: xcb_window_t, gc: xcb_gcontext_t, width: u16, height: u16, dst_x: i16, dst_y: i16, left_pad: u8, depth: u8, data_len: u32, data: [*]const u8) callconv(.c) xcb_void_cookie_t;
 extern "xcb" fn xcb_intern_atom(conn: *xcb_connection_t, only_if_exists: u8, name_len: u16, name: [*]const u8) callconv(.c) xcb_intern_atom_cookie_t;
 extern "xcb" fn xcb_intern_atom_reply(conn: *xcb_connection_t, cookie: xcb_intern_atom_cookie_t, err: ?*?*anyopaque) callconv(.c) ?*xcb_intern_atom_reply_t;
@@ -489,10 +490,26 @@ pub const X11Window = struct {
             }
         }
 
-        // Fallback: send pixels over the socket (slow)
+        // Fallback: send pixels over the socket (slow). Two limits apply.
+        // PutImage's data must be exactly width*height*4, so send whole
+        // framebuffer rows (width = fb_width) and let the server clip to the
+        // window; sending width blit_w with fb_width-wide rows was rejected
+        // with BadLength whenever the window had shrunk. And one request
+        // may not exceed the server's maximum request length (about 16 MiB
+        // with BIG-REQUESTS): a maximized 4K frame is 33 MB, and libxcb
+        // shuts the connection down on an oversized request. Send strips.
         const data: [*]const u8 = @ptrCast(pixels.ptr);
-        const row_bytes = fb_width * 4;
-        _ = xcb_put_image(self.connection, XCB_IMAGE_FORMAT_Z_PIXMAP, self.window, self.gc, @intCast(blit_w), @intCast(blit_h), 0, 0, 0, self.depth, blit_h * row_bytes, data);
+        const row_bytes: usize = @as(usize, fb_width) * 4;
+        if (row_bytes == 0) return;
+        const put_image_header: usize = 24;
+        const max_bytes = @as(usize, xcb_get_maximum_request_length(self.connection)) * 4 -| put_image_header;
+        const rows_per: usize = @max(1, max_bytes / row_bytes);
+        var y: usize = 0;
+        while (y < blit_h) {
+            const rows = @min(rows_per, @as(usize, blit_h) - y);
+            _ = xcb_put_image(self.connection, XCB_IMAGE_FORMAT_Z_PIXMAP, self.window, self.gc, @intCast(fb_width), @intCast(rows), 0, @intCast(y), 0, self.depth, @intCast(rows * row_bytes), data + y * row_bytes);
+            y += rows;
+        }
         _ = xcb_flush(self.connection);
     }
 
