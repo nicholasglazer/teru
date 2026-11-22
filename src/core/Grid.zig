@@ -287,6 +287,13 @@ pub const RowMeta = struct {
 };
 
 cells: []Cell,
+/// Allocation the main screen's `cells` slides through: twice the screen.
+/// A full-screen scroll moves the `cells` window down one row instead of
+/// copying every row up, and copies the screen back to the start only
+/// when the window reaches the end, so scrolling costs about one row of
+/// copying per line instead of the whole screen. Empty when `cells` is a
+/// plain allocation (grids built without `init`, zero-sized grids).
+cells_backing: []Cell = &.{},
 rows: u16,
 cols: u16,
 cursor_row: u16 = 0,
@@ -352,7 +359,9 @@ row_meta: []RowMeta = &.{},
 
 pub fn init(allocator: std.mem.Allocator, rows: u16, cols: u16) !Grid {
     const total = @as(usize, rows) * @as(usize, cols);
-    const cells = try allocator.alloc(Cell, total);
+    const backing = try allocator.alloc(Cell, total * 2);
+    errdefer allocator.free(backing);
+    const cells = backing[0..total];
     for (cells) |*c| c.* = Cell.blank();
 
     const meta = try allocator.alloc(RowMeta, rows);
@@ -360,6 +369,7 @@ pub fn init(allocator: std.mem.Allocator, rows: u16, cols: u16) !Grid {
 
     return .{
         .cells = cells,
+        .cells_backing = backing,
         .rows = rows,
         .cols = cols,
         .scroll_bottom = rows -| 1,
@@ -369,14 +379,41 @@ pub fn init(allocator: std.mem.Allocator, rows: u16, cols: u16) !Grid {
 }
 
 pub fn deinit(self: *Grid, allocator: std.mem.Allocator) void {
-    allocator.free(self.cells);
+    if (!self.isWindow(self.cells)) allocator.free(self.cells);
     if (self.row_meta.len > 0) allocator.free(self.row_meta);
     self.row_meta = &.{};
     if (self.alt_cells) |alt| {
-        allocator.free(alt);
+        if (!self.isWindow(alt)) allocator.free(alt);
         self.alt_cells = null;
     }
+    allocator.free(self.cells_backing);
+    self.cells_backing = &.{};
     self.cells = &.{};
+}
+
+/// True when `buf` is the main-screen window inside `cells_backing`.
+/// `cells` and `alt_cells` swap on alt-screen switches, so either may be it.
+fn isWindow(self: *const Grid, buf: []const Cell) bool {
+    if (self.cells_backing.len == 0 or buf.len == 0) return false;
+    const start = @intFromPtr(self.cells_backing.ptr);
+    const p = @intFromPtr(buf.ptr);
+    return p >= start and p < start + self.cells_backing.len * @sizeOf(Cell);
+}
+
+/// Scroll a full-screen window up one row without copying the screen:
+/// move `cells` one row further into `cells_backing`. At the end of the
+/// backing, copy rows 1.. back to its start (once per `rows` lines).
+/// The caller has already captured the top row and clears the new bottom row.
+fn slideWindowUp(self: *Grid) void {
+    const total = self.cells.len;
+    const w: usize = self.cols;
+    const off = (@intFromPtr(self.cells.ptr) - @intFromPtr(self.cells_backing.ptr)) / @sizeOf(Cell);
+    if (off + w + total <= self.cells_backing.len) {
+        self.cells = self.cells_backing[off + w ..][0..total];
+    } else {
+        std.mem.copyForwards(Cell, self.cells_backing[0 .. total - w], self.cells[w..]);
+        self.cells = self.cells_backing[0..total];
+    }
 }
 
 /// Return a pointer to the cell at (row, col). Clamps to grid bounds.
@@ -794,6 +831,10 @@ pub fn scrollUpN(self: *Grid, n: u16) void {
             // Clear only margin columns in bottom row
             const clear_start = bottom * w + lm;
             for (self.cells[clear_start..][0..span]) |*c| c.* = Cell.blank();
+        } else if (top == 0 and bottom + 1 == self.rows and self.isWindow(self.cells)) {
+            // Whole screen scrolls: slide the window instead of copying.
+            self.slideWindowUp();
+            self.clearRow(@intCast(bottom));
         } else {
             // Full-width scroll (fast path)
             var row = top;
@@ -933,7 +974,11 @@ pub fn clearScreen(self: *Grid, mode: u8) void {
 /// Resize the grid, preserving content where possible.
 pub fn resize(self: *Grid, allocator: std.mem.Allocator, new_rows: u16, new_cols: u16) !void {
     const new_total = @as(usize, new_rows) * @as(usize, new_cols);
-    const new_cells = try allocator.alloc(Cell, new_total);
+    // Only one of `cells` / `alt_cells` can be the main-screen window.
+    const cells_was_window = self.isWindow(self.cells);
+    const alt_was_window = if (self.alt_cells) |alt| self.isWindow(alt) else false;
+    const new_alloc = try allocator.alloc(Cell, if (cells_was_window) new_total * 2 else new_total);
+    const new_cells = new_alloc[0..new_total];
     for (new_cells) |*c| c.* = Cell.blank();
 
     // Copy overlapping region
@@ -947,7 +992,12 @@ pub fn resize(self: *Grid, allocator: std.mem.Allocator, new_rows: u16, new_cols
         @memcpy(new_cells[new_start..][0..copy_cols], self.cells[old_start..][0..copy_cols]);
     }
 
-    allocator.free(self.cells);
+    if (cells_was_window) {
+        allocator.free(self.cells_backing);
+        self.cells_backing = new_alloc;
+    } else {
+        allocator.free(self.cells);
+    }
     self.cells = new_cells;
 
     // Resize row_meta, preserving existing marks
@@ -975,10 +1025,19 @@ pub fn resize(self: *Grid, allocator: std.mem.Allocator, new_rows: u16, new_cols
     // Content in the inactive buffer is not preserved on resize — this
     // matches behavior of most terminals (xterm, Alacritty, Kitty).
     if (self.alt_cells) |old_alt| {
-        allocator.free(old_alt);
-        const alt_cells = try allocator.alloc(Cell, new_total);
-        for (alt_cells) |*c| c.* = Cell.blank();
-        self.alt_cells = alt_cells;
+        if (alt_was_window) {
+            allocator.free(self.cells_backing);
+            self.cells_backing = &.{};
+            self.alt_cells = null;
+            const backing = try allocator.alloc(Cell, new_total * 2);
+            self.cells_backing = backing;
+            self.alt_cells = backing[0..new_total];
+        } else {
+            allocator.free(old_alt);
+            self.alt_cells = null;
+            self.alt_cells = try allocator.alloc(Cell, new_total);
+        }
+        for (self.alt_cells.?) |*c| c.* = Cell.blank();
     }
 
     // Clamp cursor
@@ -1435,6 +1494,40 @@ test "scrollUp shifts content up" {
     try std.testing.expectEqual(@as(u21, 'B'), grid.cellAtConst(0, 0).char);
     try std.testing.expectEqual(@as(u21, 'C'), grid.cellAtConst(1, 0).char);
     try std.testing.expectEqual(@as(u21, ' '), grid.cellAtConst(2, 0).char); // cleared
+}
+
+test "full-screen scrolls keep content across the window wrapping back" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 3, 2);
+    defer grid.deinit(allocator);
+
+    // Write one numbered line per scroll; the window wraps every 3 lines,
+    // so 20 scrolls cross the end of the backing several times.
+    var n: u21 = 0;
+    while (n < 20) : (n += 1) {
+        grid.cellAt(2, 0).char = 'a' + n;
+        grid.cellAt(2, 1).char = 'A' + n;
+        grid.scrollUp();
+        try std.testing.expectEqual(@as(u21, 'a' + n), grid.cellAtConst(1, 0).char);
+        try std.testing.expectEqual(@as(u21, 'A' + n), grid.cellAtConst(1, 1).char);
+        try std.testing.expectEqual(@as(u21, ' '), grid.cellAtConst(2, 0).char);
+        if (n > 0) try std.testing.expectEqual(@as(u21, 'a' + n - 1), grid.cellAtConst(0, 0).char);
+    }
+
+    // Alt screen round trip keeps the main screen, wherever its window is.
+    try grid.switchToAltScreen(allocator);
+    grid.scrollUp();
+    grid.switchToMainScreen();
+    try std.testing.expectEqual(@as(u21, 'a' + 19), grid.cellAtConst(1, 0).char);
+
+    // Resizing on either screen must not leak or double-free the backing.
+    try grid.resize(allocator, 4, 3);
+    try std.testing.expectEqual(@as(u21, 'a' + 19), grid.cellAtConst(1, 0).char);
+    try grid.switchToAltScreen(allocator);
+    try grid.resize(allocator, 2, 2);
+    grid.switchToMainScreen();
+    grid.scrollUp();
+    grid.scrollUp();
 }
 
 test "scrollDown shifts content down" {
