@@ -442,7 +442,8 @@ pub const WaylandWindow = struct {
     cursor_hotspot_x: i32 = 0,
     cursor_hotspot_y: i32 = 0,
 
-    pub fn init(width: u32, height: u32, title: []const u8) !WaylandWindow {
+    /// `app_id` is the xdg_toplevel app_id (`--class`); null means "teru".
+    pub fn init(width: u32, height: u32, title: []const u8, app_id: ?[]const u8) !WaylandWindow {
         // 1. Connect to the Wayland display
         const display: *wl_display = wl_display_connect(null) orelse
             return error.WaylandConnectFailed;
@@ -513,7 +514,19 @@ pub const WaylandWindow = struct {
         @memcpy(title_buf[0..title_len], title[0..title_len]);
         title_buf[title_len] = 0;
         xdg_toplevel_set_title(toplevel, @ptrCast(&title_buf));
-        xdg_toplevel_set_app_id(toplevel, "teru");
+        // `--class NAME` sets the app_id, so compositor window rules (teruwm's
+        // match the exact app_id) can tell this window apart; X11 honours it
+        // as WM_CLASS.
+        var app_id_buf: [128]u8 = undefined;
+        const aid = app_id orelse "teru";
+        const aid_len = if (aid.len == 0) 0 else @min(aid.len, app_id_buf.len - 1);
+        if (aid_len == 0) {
+            xdg_toplevel_set_app_id(toplevel, "teru");
+        } else {
+            @memcpy(app_id_buf[0..aid_len], aid[0..aid_len]);
+            app_id_buf[aid_len] = 0;
+            xdg_toplevel_set_app_id(toplevel, @ptrCast(&app_id_buf));
+        }
 
         // 10. Initial commit (empty, triggers the compositor to send configure)
         wl_surface_commit(surface);

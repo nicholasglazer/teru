@@ -84,7 +84,7 @@ pub fn main(init: std.process.Init) !void {
                 \\  --daemon <name>         Start headless daemon (server use)
                 \\  --mcp-server            MCP stdio proxy (alias: --mcp-bridge, --mcp-stdio)
                 \\  --target <teru|teruwm>  Target for --mcp-server (default: teru)
-                \\  --class <name>          Set WM_CLASS
+                \\  --class <name>          Set WM_CLASS / Wayland app_id
                 \\
                 \\Templates:
                 \\  Searched in: ~/.config/teru/templates/, then ./examples/
