@@ -712,6 +712,18 @@ fn toolSetLayout(self: *McpServer, workspace: u8, layout_str: []const u8, buf: [
     return okText(buf, id, "ok", .{});
 }
 
+/// A value teru_set_config may write as `key = value`. A CR or LF would add
+/// lines of its own (a hook_on_* command, past the key allowlist). '#' is
+/// fine: the parser treats it as a comment only at the start of a line, and
+/// colors are written `#rrggbb`.
+fn isSafeConfigValue(value: []const u8) bool {
+    if (value.len == 0 or value.len > 200) return false;
+    for (value) |c| {
+        if (c < 0x20 or c == 0x7F) return false;
+    }
+    return true;
+}
+
 fn toolSetConfig(_: *McpServer, key: []const u8, value: []const u8, buf: []u8, id: ?[]const u8) []const u8 {
 
     // Validate key is a known config option
@@ -731,6 +743,8 @@ fn toolSetConfig(_: *McpServer, key: []const u8, value: []const u8, buf: []u8, i
     }
     if (!is_valid)
         return tools.jsonRpcError(buf, id, -32602, "Unknown config key");
+    if (!isSafeConfigValue(value))
+        return tools.jsonRpcError(buf, id, -32602, "Invalid config value");
 
     // Read existing config, update or append the key
     const home = compat.getenv("HOME") orelse
@@ -746,8 +760,11 @@ fn toolSetConfig(_: *McpServer, key: []const u8, value: []const u8, buf: []u8, i
     const new_line = std.fmt.bufPrint(&line_buf, "{s} = {s}\n", .{ key, value }) catch
         return tools.jsonRpcError(buf, id, -32603, "Value too long");
 
-    // Read existing file content
-    var file_buf: [16384]u8 = undefined;
+    // Read existing file content. One byte more than we can edit, so a file
+    // that does not fit is refused instead of renamed over the original
+    // truncated, possibly mid-line.
+    const max_config: usize = 16384;
+    var file_buf: [max_config + 1]u8 = undefined;
     var file_len: usize = 0;
     {
         const f = std.c.fopen(@ptrCast(path_buf[0..path.len :0]), "r");
@@ -756,6 +773,8 @@ fn toolSetConfig(_: *McpServer, key: []const u8, value: []const u8, buf: []u8, i
             _ = std.c.fclose(f.?);
         }
     }
+    if (file_len > max_config)
+        return tools.jsonRpcError(buf, id, -32603, "teru.conf is larger than 16 KiB; edit it by hand");
 
     // Write to temp file then rename — atomic replacement prevents config
     // loss if the process crashes mid-write (fopen("w") truncates first).
@@ -1507,4 +1526,13 @@ test "appendPlainText never overruns a full buffer" {
     var out: [16]u8 = undefined;
     try t.expectEqual(@as(usize, 0), appendPlainText(&out, 0, "\x1b"));
     try t.expectEqual(@as(usize, 0), appendPlainText(&out, 0, "\x1b[31"));
+}
+
+test "isSafeConfigValue rejects line breaks" {
+    try std.testing.expect(isSafeConfigValue("14"));
+    try std.testing.expect(isSafeConfigValue("miozu dark"));
+    try std.testing.expect(!isSafeConfigValue("x\nhook_on_spawn = sh -c id"));
+    try std.testing.expect(!isSafeConfigValue("x\rhook_on_spawn = id"));
+    try std.testing.expect(isSafeConfigValue("#ff0000"));
+    try std.testing.expect(!isSafeConfigValue(""));
 }
