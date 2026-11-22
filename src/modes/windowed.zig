@@ -162,6 +162,7 @@ fn applyFontZoom(
     atlas: *render.FontAtlas,
     renderer: *render.tier.Renderer,
     font_size: *u16,
+    ui_scale: u32,
     padding: u32,
     status_bar_h: *u32,
     grid_cols: *u16,
@@ -171,11 +172,46 @@ fn applyFontZoom(
 ) bool {
     const new_size = render.FontAtlas.zoomedFontSize(target, font_size.*, config.font_size);
     if (new_size == font_size.*) return false;
+    if (!rebuildAtlas(scaledFontPx(new_size, ui_scale), ui_scale, allocator, win, config, mux, atlas, renderer, padding, status_bar_h, grid_cols, grid_rows, zoom_pending_resize, zoom_timestamp)) return false;
+    font_size.* = new_size;
+    return true;
+}
 
-    const new_atlas = atlas.rasterizeAtSize(new_size) catch return false;
+/// Display pixels per font point: the backing scale on macOS (2 on Retina),
+/// 1 everywhere else. `font_size` and `padding` in the config are in points,
+/// and the platform reports sizes in pixels.
+fn uiScale(win: *const platform.Platform) u32 {
+    if (comptime builtin.os.tag != .macos) return 1;
+    return win.contentScale();
+}
+
+/// A font size in points as the pixel height the atlas rasterises at.
+fn scaledFontPx(points: u16, ui_scale: u32) u16 {
+    return points *| @as(u16, @intCast(@min(ui_scale, std.math.maxInt(u16))));
+}
+
+/// Re-rasterize the glyph atlas at `px` pixels, refresh the renderer,
+/// re-grid every pane, and arm the deferred variant-atlas rebuild. False if
+/// rasterizing failed, in which case nothing changed.
+fn rebuildAtlas(
+    px: u16,
+    ui_scale: u32,
+    allocator: std.mem.Allocator,
+    win: *platform.Platform,
+    config: *const Config,
+    mux: *Multiplexer,
+    atlas: *render.FontAtlas,
+    renderer: *render.tier.Renderer,
+    padding: u32,
+    status_bar_h: *u32,
+    grid_cols: *u16,
+    grid_rows: *u16,
+    zoom_pending_resize: *bool,
+    zoom_timestamp: *i128,
+) bool {
+    const new_atlas = atlas.rasterizeAtSize(px) catch return false;
     atlas.deinit();
     atlas.* = new_atlas;
-    font_size.* = new_size;
 
     // Variant atlases are stale until the deferred rebuild runs — clear them
     // so the renderer falls back to the base atlas in the meantime.
@@ -195,7 +231,7 @@ fn applyFontZoom(
         },
         .tty => {},
     }
-    status_bar_h.* = if (config.show_status_bar) atlas.cell_height + 4 else 0;
+    status_bar_h.* = if (config.show_status_bar) atlas.cell_height + 4 * ui_scale else 0;
 
     const sz = win.getSize();
     grid_cols.* = @intCast((sz.width -| padding * 2) / atlas.cell_width);
@@ -317,7 +353,11 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
     win.setOpacity(config.opacity);
 
     var font_size = config.font_size;
-    var atlas = try render.FontAtlas.init(allocator, config.font_path, font_size, io);
+    // Pixels per point. Changes when the window moves between a Retina and
+    // a 1x display (see the .resize handler); always 1 off macOS.
+    var ui_scale: u32 = uiScale(&win);
+    _ = &ui_scale;
+    var atlas = try render.FontAtlas.init(allocator, config.font_path, scaledFontPx(font_size, ui_scale), io);
     defer atlas.deinit();
 
     // Load font variants for bold/italic (optional — silently fall back to primary)
@@ -338,11 +378,18 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
         variant_bold_italic = atlas.loadVariant(allocator, path, io) catch null;
     }
 
+    // The window's size in pixels. On macOS initial_width/height are points,
+    // so ask the window; elsewhere they are the pixels the window was given.
+    const init_sz: platform.Size = if (comptime builtin.os.tag == .macos)
+        win.getSize()
+    else
+        .{ .width = config.initial_width, .height = config.initial_height };
+
     // CPU SIMD renderer — no GPU needed (cursor color from config)
     var renderer = try render.tier.Renderer.initCpuWithCursor(
         allocator,
-        config.initial_width,
-        config.initial_height,
+        init_sz.width,
+        init_sz.height,
         atlas.cell_width,
         atlas.cell_height,
         config.cursor_color,
@@ -363,10 +410,11 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
     }
 
     if (common.cli_no_bar) config.show_status_bar = false;
-    const padding: u32 = config.padding;
-    var status_bar_h: u32 = if (config.show_status_bar) atlas.cell_height + 4 else 0;
-    var grid_cols: u16 = @intCast((config.initial_width -| padding * 2) / atlas.cell_width);
-    var grid_rows: u16 = @intCast((config.initial_height -| padding * 2 -| status_bar_h) / atlas.cell_height);
+    var padding: u32 = config.padding * ui_scale;
+    _ = &padding;
+    var status_bar_h: u32 = if (config.show_status_bar) atlas.cell_height + 4 * ui_scale else 0;
+    var grid_cols: u16 = @intCast((init_sz.width -| padding * 2) / atlas.cell_width);
+    var grid_rows: u16 = @intCast((init_sz.height -| padding * 2 -| status_bar_h) / atlas.cell_height);
 
     // Apply padding and full color scheme to renderer
     switch (renderer) {
@@ -425,8 +473,8 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
 
     // Set screen dimensions and renderer for MCP pane creation + screenshots
     if (mcp) |*m| {
-        m.screen_width = config.initial_width;
-        m.screen_height = config.initial_height;
+        m.screen_width = init_sz.width;
+        m.screen_height = init_sz.height;
         m.cell_width = atlas.cell_width;
         m.cell_height = atlas.cell_height;
         m.padding = padding;
@@ -626,6 +674,27 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                     }
                 },
                 .resize => |sz| {
+                    // Moved between a Retina and a 1x display: redraw the
+                    // font and padding at the new scale so text keeps its
+                    // physical size, then re-grid below as for any resize.
+                    if (comptime builtin.os.tag == .macos) {
+                        const s = uiScale(&win);
+                        if (s != ui_scale) {
+                            ui_scale = s;
+                            padding = config.padding * s;
+                            switch (renderer) {
+                                .cpu => |*cpu| cpu.padding = padding,
+                                .tty => {},
+                            }
+                            if (mcp) |*m| m.padding = padding;
+                            _ = rebuildAtlas(scaledFontPx(font_size, s), s, allocator, &win, &config, &mux, &atlas, &renderer, padding, &status_bar_h, &grid_cols, &grid_rows, &zoom_pending_resize, &zoom_timestamp);
+                            if (mcp) |*m| {
+                                m.cell_width = atlas.cell_width;
+                                m.cell_height = atlas.cell_height;
+                                m.status_bar_h = status_bar_h;
+                            }
+                        }
+                    }
                     renderer.resize(sz.width, sz.height);
 
                     if (mcp) |*m| {
@@ -1031,7 +1100,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                     }
                                     if (action == .toggle_status_bar) {
                                         config.show_status_bar = !config.show_status_bar;
-                                        status_bar_h = if (config.show_status_bar) atlas.cell_height + 4 else 0;
+                                        status_bar_h = if (config.show_status_bar) atlas.cell_height + 4 * ui_scale else 0;
                                         const sz = win.getSize();
                                         grid_cols = @intCast((sz.width -| padding * 2) / atlas.cell_width);
                                         grid_rows = @intCast((sz.height -| padding * 2 -| status_bar_h) / atlas.cell_height);
@@ -1052,7 +1121,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                             .zoom_out => .out,
                                             else => .reset,
                                         };
-                                        if (applyFontZoom(target, allocator, &win, &config, &mux, &atlas, &renderer, &font_size, padding, &status_bar_h, &grid_cols, &grid_rows, &zoom_pending_resize, &zoom_timestamp)) {
+                                        if (applyFontZoom(target, allocator, &win, &config, &mux, &atlas, &renderer, &font_size, ui_scale, padding, &status_bar_h, &grid_cols, &grid_rows, &zoom_pending_resize, &zoom_timestamp)) {
                                             force_redraw = true;
                                         }
                                     }
@@ -1194,7 +1263,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                     const result = mouse_handler.handleMousePress(&mux, mouse, &selection, &ms, lp, cfg, allocator, sz.width, sz.height);
                     if (result.zoom != .none) {
                         const target: ZoomTarget = if (result.zoom == .in) .in else .out;
-                        if (applyFontZoom(target, allocator, &win, &config, &mux, &atlas, &renderer, &font_size, padding, &status_bar_h, &grid_cols, &grid_rows, &zoom_pending_resize, &zoom_timestamp)) {
+                        if (applyFontZoom(target, allocator, &win, &config, &mux, &atlas, &renderer, &font_size, ui_scale, padding, &status_bar_h, &grid_cols, &grid_rows, &zoom_pending_resize, &zoom_timestamp)) {
                             force_redraw = true;
                         }
                     }
@@ -1458,7 +1527,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                     switch (renderer) {
                         .cpu => |*cpu| {
                             cpu.scheme = new_config.colorScheme();
-                            cpu.padding = new_config.padding;
+                            cpu.padding = new_config.padding * ui_scale;
                         },
                         .tty => {},
                     }
@@ -1502,7 +1571,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                     const font_size_changed = config.font_size != new_config.font_size;
                     config.font_size = new_config.font_size;
                     if (font_size_changed) {
-                        _ = applyFontZoom(.reset, allocator, &win, &config, &mux, &atlas, &renderer, &font_size, padding, &status_bar_h, &grid_cols, &grid_rows, &zoom_pending_resize, &zoom_timestamp);
+                        _ = applyFontZoom(.reset, allocator, &win, &config, &mux, &atlas, &renderer, &font_size, ui_scale, padding, &status_bar_h, &grid_cols, &grid_rows, &zoom_pending_resize, &zoom_timestamp);
                     }
 
                     for (mux.panes.items) |*pane| pane.grid.dirty = true;
@@ -1729,4 +1798,10 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
     if (config.restore_layout or config.persist_session) {
         common.persistSave(&mux, &graph, allocator, io);
     }
+}
+
+test "scaledFontPx: points to atlas pixels" {
+    try std.testing.expectEqual(@as(u16, 16), scaledFontPx(16, 1));
+    try std.testing.expectEqual(@as(u16, 32), scaledFontPx(16, 2));
+    try std.testing.expectEqual(std.math.maxInt(u16), scaledFontPx(40000, 2));
 }

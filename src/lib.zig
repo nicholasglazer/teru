@@ -110,6 +110,7 @@ test {
     // re-linking) run under `zig build test` without exposing modes/* as
     // public library API.
     _ = @import("modes/common.zig");
+    _ = @import("modes/windowed.zig");
     // The Windows backend's pure helpers (size decoding, modifier masks,
     // event queue, key tables) are tested on every host. Its Win32 calls
     // are only reached from code these tests do not touch.
