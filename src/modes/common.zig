@@ -109,8 +109,10 @@ pub fn computeIdleTimeoutMs(
         if (wait_ms < t) t = wait_ms;
     }
     if (have_pending_render) {
-        const wait = frame_cap_deadline_ns - now_ns;
-        const wait_ms: i32 = @intCast(@max(@as(i128, 0), @divTrunc(wait, one_ms)));
+        // Round up: truncating left a sub-millisecond remainder as poll(0),
+        // and the loop spun until the frame came due.
+        const wait = @max(@as(i128, 0), frame_cap_deadline_ns - now_ns);
+        const wait_ms: i32 = @intCast(@min(@as(i128, cap_ms), @divTrunc(wait + one_ms - 1, one_ms)));
         if (wait_ms < t) t = wait_ms;
     }
     // The debounced layout save runs only when persistence is on, and only
@@ -801,7 +803,21 @@ test "computeIdleTimeoutMs: an unsaved layout with persistence off does not spin
     // Persistence on: the overdue save wakes the loop at once.
     try std.testing.expectEqual(@as(i32, 0), computeIdleTimeoutMs(now, 0, false, 0, false, true, true, since, 500));
     // A throttled frame wakes the loop at the frame deadline.
-    try std.testing.expectEqual(@as(i32, 16), computeIdleTimeoutMs(now, 0, false, now + 16_666_667, true, false, false, 0, 500));
+    try std.testing.expectEqual(@as(i32, 17), computeIdleTimeoutMs(now, 0, false, now + 16_666_667, true, false, false, 0, 500));
+}
+
+test "computeIdleTimeoutMs: the frame-cap wait rounds up, so the loop never polls with 0 early" {
+    const now: i128 = 10 * std.time.ns_per_s;
+    // Less than a millisecond before the deadline: wait 1 ms, not poll(0).
+    try std.testing.expectEqual(@as(i32, 1), computeIdleTimeoutMs(now, 0, false, now + 400_000, true, false, false, 0, 500));
+    try std.testing.expectEqual(@as(i32, 1), computeIdleTimeoutMs(now, 0, false, now + 1, true, false, false, 0, 500));
+    // Exactly on a millisecond boundary: no extra millisecond.
+    try std.testing.expectEqual(@as(i32, 2), computeIdleTimeoutMs(now, 0, false, now + 2_000_000, true, false, false, 0, 500));
+    // Due or overdue: render now.
+    try std.testing.expectEqual(@as(i32, 0), computeIdleTimeoutMs(now, 0, false, now, true, false, false, 0, 500));
+    try std.testing.expectEqual(@as(i32, 0), computeIdleTimeoutMs(now, 0, false, now - 3_000_000, true, false, false, 0, 500));
+    // A far deadline is still bounded by the cap.
+    try std.testing.expectEqual(@as(i32, 500), computeIdleTimeoutMs(now, 0, false, now + 9 * std.time.ns_per_s, true, false, false, 0, 500));
 }
 
 test "autoAssignAgentWorkspace never adds graph ids to the layout" {
