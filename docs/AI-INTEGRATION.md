@@ -211,6 +211,11 @@ Reply (teru → agent stdin):
   ESC P 9999 ; id=<N> ; <json-body> ESC \
 ```
 
+The channel is off by default. Turn it on with `agent_in_band = true` in
+`teru.conf`; while it is off, teru does not reply at all. The `id` must be 1 to
+32 characters from `A-Z a-z 0-9 _ -`, because teru types it back into the
+pane's input; a query with any other id is dropped without a reply.
+
 `ST` can be `BEL` (`\x07`) or `ESC \`. Arguments are flat `key=value`
 pairs; integer-typed values are forwarded as JSON numbers, bare
 `true`/`false` as booleans, everything else as escaped strings. For

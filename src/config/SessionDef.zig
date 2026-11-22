@@ -199,7 +199,7 @@ pub fn parse(allocator: Allocator, content: []const u8) !SessionDef {
                     // Clamped: a hand-edited or corrupt .tsess must not carry
                     // a negative, huge or NaN ratio into the layout.
                     const r = parseFloat(kv.value) orelse 0.55;
-                    ws.ratio = if (std.math.isNan(r)) 0.55 else std.math.clamp(r, 0.1, 0.9);
+                    ws.ratio = if (std.math.isNan(r)) 0.55 else std.math.clamp(r, 0.15, 0.85);
                 }
             },
             .pane => {

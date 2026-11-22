@@ -765,12 +765,12 @@ fn parseBool(value: []const u8) ?bool {
     return null;
 }
 
-/// A master ratio inside 0.1-0.9; NaN gives null (keep the default).
+/// A master ratio inside the documented 0.15-0.85; NaN gives null (keep the default).
 /// parseFloat accepts nan, inf and negatives, and an unclamped ratio made
 /// teru_get_config's float-to-int cast abort ReleaseSafe builds.
 fn clampRatio(r: f32) ?f32 {
     if (std.math.isNan(r)) return null;
-    return std.math.clamp(r, 0.1, 0.9);
+    return std.math.clamp(r, 0.15, 0.85);
 }
 
 fn parseFloat(value: []const u8) ?f32 {
@@ -1417,8 +1417,8 @@ test "parse tui_pane_border accepts box/line/none and the old bools" {
 }
 
 test "workspace master_ratio is clamped and NaN is dropped" {
-    try std.testing.expectEqual(@as(?f32, 0.1), clampRatio(-0.5));
-    try std.testing.expectEqual(@as(?f32, 0.9), clampRatio(1e9));
+    try std.testing.expectEqual(@as(?f32, 0.15), clampRatio(-0.5));
+    try std.testing.expectEqual(@as(?f32, 0.85), clampRatio(1e9));
     try std.testing.expectEqual(@as(?f32, null), clampRatio(std.math.nan(f32)));
     try std.testing.expectEqual(@as(?f32, 0.6), clampRatio(0.6));
 }
