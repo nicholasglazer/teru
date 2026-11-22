@@ -524,7 +524,7 @@ fn callAndPrint(method: []const u8, params_json: []const u8) !void {
 
 fn runAndPrint(body: []const u8) !void {
     var resp_buf: [65536]u8 = undefined;
-    const resp = forward.forwardRequest(body, &resp_buf) orelse {
+    const resp = forward.forwardRequestStandalone(body, &resp_buf) orelse {
         errFmt("teruwmctl: no teruwm MCP socket. Set TERUWM_MCP_SOCKET or start teruwm.\n", .{});
         std.process.exit(2);
     };
@@ -635,7 +635,7 @@ fn runWatch() !void {
     ) catch unreachable;
 
     var resp_buf: [4096]u8 = undefined;
-    const resp = forward.forwardRequest(body, &resp_buf) orelse {
+    const resp = forward.forwardRequestStandalone(body, &resp_buf) orelse {
         errFmt("teruwmctl: no teruwm MCP socket. Set TERUWM_MCP_SOCKET or start teruwm.\n", .{});
         std.process.exit(2);
     };
