@@ -60,7 +60,8 @@ human with a keyboard for.
 paru -S teru
 
 # macOS: the Homebrew tap is stale (0.6.3) and cannot build current teru.
-# Download the release binary or build from source: docs/INSTALLING.md#macos
+# Releases up to 0.16.0 do not work on macOS; build from source or use a
+# CI artifact: docs/INSTALLING.md#macos
 
 # Windows (bucket is behind - 0.11.0)
 scoop bucket add teru https://github.com/nicholasglazer/scoop-teru

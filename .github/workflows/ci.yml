@@ -72,8 +72,9 @@ jobs:
         run: zig build test
       - name: Build
         run: zig build -Doptimize=ReleaseSafe
-      # A native build requires the runner's macOS version (15). Also build
-      # for macOS 13 and later; kept apart until it has been seen to link.
+      # A native build requires the runner's exact macOS version, point
+      # release included (vtool shows it as minos). Also build for macOS 13
+      # and later; kept apart until it has been seen to link.
       - name: Build for macOS 13 and later
         id: build-min
         continue-on-error: true
@@ -92,24 +93,28 @@ jobs:
       - name: Smoke test
         timeout-minutes: 8
         run: .github/scripts/macos-smoke.sh zig-out/bin/teru smoke
+      # Uploaded whatever the smoke test said: a failing binary is the one
+      # worth looking at.
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: teru-macos-smoke
+          name: teru-${{ matrix.name }}-smoke
           path: smoke/
           if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: teru-${{ matrix.name }}
           path: zig-out/bin/teru
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
-        if: steps.build-min.outcome == 'success'
+        if: always() && steps.build-min.outcome == 'success'
         with:
           name: teru-${{ matrix.name }}-macos13
           path: zig-out-macos13/bin/teru
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: teru-macos-x86_64-untested
+          name: teru-macos-x86_64-untested-${{ matrix.runner }}
           path: zig-out-x86_64/bin/teru
           if-no-files-found: ignore

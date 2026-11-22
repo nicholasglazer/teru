@@ -19,7 +19,7 @@ between v0.11.0 and v0.16.0. Use v0.16.0 or later, or build from source (below):
 | Linux x86_64 (X11 only) | `teru-linux-x86_64-x11.tar.gz` | No wayland dep |
 | Linux x86_64 (Wayland only) | `teru-linux-x86_64-wayland.tar.gz` | No xcb dep |
 | Windows x86_64 | `teru-windows-x86_64.zip` | Win10+ (ConPTY) |
-| macOS aarch64 | `teru-macos-aarch64.tar.gz` | Apple Silicon, macOS 15+; untested on hardware (see below) |
+| macOS aarch64 | `teru-macos-aarch64.tar.gz` | Apple Silicon. Releases up to 0.16.0 cannot open a window on macOS (see below) |
 
 ## Arch Linux (AUR)
 
@@ -41,9 +41,12 @@ builds it, runs its tests and starts it on a GitHub macOS runner (see
 are welcome, with `TERU_LOG=debug teru 2> teru.log` attached.
 
 - **Apple Silicon only.** Intel builds compile but have never been run.
-- **macOS 15 or later** for the release binary, which is built on a macOS 15
-  runner and takes that as its minimum. Building from source on your own Mac
-  targets your version.
+- **Minimum macOS version.** A binary built on a Mac requires at least the
+  exact macOS version it was built on (Zig takes the build machine's version,
+  point release included, as the minimum). A release or CI binary therefore
+  needs the version of the GitHub runner that built it, which may be newer
+  than yours: `vtool -show-build teru` prints it as `minos`. Building from
+  source on your own Mac always matches your version.
 - The keyboard follows the input source selected in System Settings
   (Dvorak, QWERTY, AZERTY, …); see the macOS section of
   [KEYBINDINGS.md](KEYBINDINGS.md#macos) for Option, Command and the
@@ -54,7 +57,20 @@ are welcome, with `TERU_LOG=debug teru 2> teru.log` attached.
   release), and idle CPU use is higher than on Linux (the event loop polls
   every 16 ms).
 
-### Download
+### Getting a binary
+
+No released binary up to and including 0.16.0 works on macOS: those choose
+the text-mode renderer instead of a window and fail to load the system
+font. Until the next release, build from source (below) or take the
+`teru-macos-aarch64` artifact of a recent CI run from the repository's
+Actions tab. GitHub zips artifacts and drops the execute bit:
+
+```bash
+unzip teru-macos-aarch64.zip
+chmod +x teru
+```
+
+Once a release with the macOS fixes is out, it downloads as:
 
 ```bash
 curl -L https://github.com/nicholasglazer/teru/releases/latest/download/teru-macos-aarch64.tar.gz | tar xz
@@ -62,7 +78,7 @@ sudo mv teru /usr/local/bin/
 ```
 
 A file downloaded with `curl` is not quarantined. One downloaded with a
-browser (or a CI artifact from GitHub) is, and Gatekeeper refuses to run it
+browser (a CI artifact included) is, and Gatekeeper refuses to run it
 because it is not notarized; since macOS 15 the Control-click > Open bypass
 is gone. Remove the attribute:
 

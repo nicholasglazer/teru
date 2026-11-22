@@ -19,12 +19,15 @@ now starts it on a GitHub macOS runner.
   `docs/KEYBINDINGS.md`.
 - **macOS: `macos_option_as_alt = none | left | right | both`** (default
   `none`): which Option keys send ESC+key instead of typing what macOS puts
-  on them. teru's Alt bindings work either way.
+  on them. teru's Alt bindings work either way, except where the layout
+  types a plain ASCII character with Option (`@` on German Option+L): that
+  key types it. Option with Return, Backspace or Tab always sends ESC first,
+  so Option+Backspace deletes a word in readline.
 - **macOS: Retina.** The window is drawn at the display's full resolution,
   with font size and padding scaled to match, and redrawn at the new scale
   when it moves between a Retina and a 1x display.
 - **macOS: menu bar and Command keys.** Cmd+Q, Cmd+H and Cmd+M; Cmd+C and
-  Cmd+V copy and paste; Cmd+= / Cmd+- / Cmd+0 zoom. `super+...` bindings
+  Cmd+V copy and paste; Cmd+= (or Cmd++) / Cmd+- / Cmd+0 zoom. `super+...` bindings
   match Command.
 - `zig build check -Dtarget=aarch64-macos` now type-checks the macOS backend
   and its tests from Linux; before, it compiled only the core library.
@@ -51,6 +54,23 @@ now starts it on a GitHub macOS runner.
 - **macOS: mouse and trackpad.** Hover events arrive, middle and right drags
   work, a selection dragged out of the window keeps following, and trackpad
   scrolling no longer jumps pages per swipe.
+- **A key that triggered a binding could leave a dead key waiting**, so on
+  a Mac Option+` (workspace_toggle_last, and the dead grave) made the next
+  letter typed come out accented. Keys are now translated to text only
+  after the bindings had their turn; this also applies on Windows.
+- **macOS: a click on the window's resize edge left teru's mouse button
+  held down**, because AppKit's resize loop consumed the release; plain
+  hovering then extended a selection.
+- **macOS: every frame made the kernel copy the whole framebuffer** (about
+  24 MB at full screen on a 14" MacBook Pro): the next frame was written
+  into memory the previous frame's image still shared. Frames now alternate
+  between two buffers.
+- **macOS: `teru --mcp-server` found no teru to talk to** without
+  `TERU_MCP_SOCKET`: it looked in `/run/user`, which macOS does not have.
+- **macOS, Retina: the underline and bar cursors and the grab zone of a
+  pane border were half their intended size.**
+- **Config reload ignored a changed `padding`** everywhere but the drawing,
+  so mouse clicks and pane sizes used the old value.
 - **macOS: sessions.** `teru -n` started no daemon (it exec'd
   `/proc/self/exe`), `teru --list` found nothing, a long session name could
   overrun the 104-byte socket path, and the detach file went to the shared

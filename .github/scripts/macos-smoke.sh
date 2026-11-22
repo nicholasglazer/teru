@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # macOS smoke test for CI. Starts teru in the runner's GUI session, checks
-# that it stays up and opens a window, types into it if macOS lets
-# osascript send keystrokes, quits it, and takes screenshots along the
-# way. Fails when teru exits early, dies from a signal, or exits with an
-# error. Every wait is bounded, so it cannot hang the job.
+# that it stays up and opens a window, that its event loop answers an MCP
+# request, types into it and quits it with Cmd+Q if macOS lets osascript
+# send keystrokes, and takes screenshots along the way. Fails when teru
+# exits early, dies from a signal, exits with an error, stops answering, or
+# ignores keystrokes that macOS confirms reached it while it was frontmost.
+# Every wait is bounded, so it cannot hang the job.
 #
 # Usage: macos-smoke.sh <teru binary> <output dir>
 set -u
@@ -48,11 +50,21 @@ note "started teru, pid $pid"
 
 alive() { kill -0 "$pid" 2>/dev/null; }
 
+# Bring teru to the front and check that it got there. Sets front_pid.
+front_pid=
+is_front() {
+    limit 15 osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $pid) to true" >> "$out/osascript.txt" 2>&1 || return 1
+    sleep 1
+    front_pid=$(limit 15 osascript -e 'tell application "System Events" to get unix id of first process whose frontmost is true' 2>> "$out/osascript.txt")
+    [ "$front_pid" = "$pid" ]
+}
+
 # Wait for it to settle (font load, shell start). It must still be running.
 for _ in $(seq 1 20); do alive || break; sleep 0.5; done
 if ! alive; then
     wait "$pid"
-    fail "teru exited during startup: $(describe_status $?)"
+    rc=$?
+    fail "teru exited during startup: $(describe_status $rc)"
 fi
 
 if [ "$failed" = 0 ]; then
@@ -65,38 +77,63 @@ if [ "$failed" = 0 ]; then
         echo "::warning::macOS smoke test: no on-screen window owned by teru"
     fi
 
+    # The main loop serves teru's MCP socket, so an answer proves it is
+    # still turning. Needs no Accessibility permission.
+    # ipc.buildPath on macOS: $TMPDIR/teru-$UID-mcp-$PID.sock.
+    sock="${TMPDIR:-/tmp}"
+    sock="${sock%/}/teru-$(id -u)-mcp-$pid.sock"
+    if [ -S "$sock" ]; then
+        req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"teru_list_panes","arguments":{}}}'
+        printf '%s\n' "$req" | TERU_MCP_SOCKET="$sock" limit 15 "$bin" --mcp-server > "$out/mcp.txt" 2>&1
+        if grep -q '"result"' "$out/mcp.txt"; then
+            note "mcp: teru answered teru_list_panes"
+        else
+            fail "teru did not answer an MCP request on $sock: $(head -c 300 "$out/mcp.txt")"
+        fi
+    else
+        note "WARN: no MCP socket at $sock"
+        echo "::warning::macOS smoke test: teru's MCP socket was not found"
+    fi
+
     # Typing needs Accessibility permission for osascript, which a runner
-    # may not grant. Without it, only liveness and screenshots are checked.
-    limit 15 osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $pid) to true" > /dev/null 2>&1
-    if limit 20 osascript \
+    # may not grant. A keystroke counts as delivered only when osascript
+    # succeeded and teru was the frontmost process at the time; teru must
+    # then act on it. Otherwise only liveness and screenshots are checked.
+    if is_front && limit 20 osascript \
         -e 'tell application "System Events" to keystroke "echo teru-smoke-ok > /tmp/teru-smoke-typed"' \
-        -e 'tell application "System Events" to key code 36' > "$out/osascript.txt" 2>&1; then
-        sleep 3
+        -e 'tell application "System Events" to key code 36' >> "$out/osascript.txt" 2>&1; then
+        for _ in $(seq 1 10); do [ -f /tmp/teru-smoke-typed ] && break; sleep 0.5; done
         if [ -f /tmp/teru-smoke-typed ]; then
             note "typing: the shell in teru ran a typed command"
         else
-            note "WARN: keystrokes were sent but the typed command did not run"
-            echo "::warning::macOS smoke test: typed command did not run in teru"
+            fail "keystrokes reached teru while it was frontmost, but the typed command did not run"
         fi
     else
-        note "keystrokes: not permitted on this runner ($(head -c 200 "$out/osascript.txt"))"
+        note "keystrokes: not delivered to teru (frontmost: ${front_pid:-?}; $(tail -c 200 "$out/osascript.txt"))"
     fi
     shot 2-after-typing
 
     if ! alive; then
         wait "$pid"
-        fail "teru died while running: $(describe_status $?)"
+        rc=$?
+        fail "teru died while running: $(describe_status $rc)"
     fi
 fi
 
 if alive; then
-    # Quit the way a user would (Cmd+Q, which runs teru's own shutdown);
-    # SIGTERM if keystrokes are not permitted; SIGKILL as the last resort.
-    limit 15 osascript -e 'tell application "System Events" to keystroke "q" using command down' > /dev/null 2>&1
-    for _ in $(seq 1 20); do alive || break; sleep 0.5; done
-    quit_by=cmd-q
+    # Quit the way a user would (Cmd+Q, which runs teru's own shutdown).
+    # SIGTERM only when the keystroke could not be delivered: teru has no
+    # SIGTERM handler, so that ends even a hung teru with 143 and proves
+    # nothing. SIGKILL as the last resort.
+    quit_by=sigterm
+    if is_front && limit 15 osascript -e 'tell application "System Events" to keystroke "q" using command down' >> "$out/osascript.txt" 2>&1; then
+        quit_by=cmd-q
+        for _ in $(seq 1 20); do alive || break; sleep 0.5; done
+        alive && fail "Cmd+Q reached teru while it was frontmost, but teru did not quit"
+    else
+        note "Cmd+Q: not delivered to teru (frontmost: ${front_pid:-?})"
+    fi
     if alive; then
-        quit_by=sigterm
         kill -TERM "$pid" 2>/dev/null
         for _ in $(seq 1 20); do alive || break; sleep 0.5; done
     fi
@@ -113,7 +150,14 @@ if alive; then
     esac
 fi
 
-# Crash reports written by macOS, if any.
+# Crash reports written by macOS, if any. ReportCrash writes them a few
+# seconds after the process dies, so wait for one after a signal.
+if [ "${rc:-0}" -gt 128 ]; then
+    for _ in $(seq 1 30); do
+        find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -name 'teru*.ips' -mmin -30 2>/dev/null | grep -q . && break
+        sleep 0.5
+    done
+fi
 find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -name 'teru*' -mmin -30 -exec cp {} "$out/" \; 2>/dev/null
 if ls "$out"/teru*.ips > /dev/null 2>&1; then
     fail "macOS wrote a crash report for teru"
