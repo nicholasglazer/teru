@@ -21,6 +21,33 @@ There are three keyboard modes:
 - **Scroll / Vi copy** — entered with `$mod+V`. Use vi motions to navigate
   scrollback and copy text.
 
+## macOS
+
+- **Keyboard layout.** teru types what the input source selected in System
+  Settings types: Dvorak, QWERTY, AZERTY or any other. There is no layout
+  setting in teru. Bindings match the character a key types, so `Alt+J` is
+  the key that types `j` in your layout, as on Linux.
+- **Option is Alt** for teru's bindings (`$mod` is Alt). For everything else
+  Option types what macOS puts on it, like any Mac app: Option+E then E
+  types é. Set `macos_option_as_alt = left` (or `right`, `both`) in
+  teru.conf to make that Option key send ESC+key instead, for readline's
+  Alt+B / Alt+F and Emacs. An Option combination that types nothing is sent
+  as ESC+key either way.
+- **Command** never types into the terminal. `Cmd+C` / `Cmd+V` copy and
+  paste, `Cmd+=` / `Cmd+-` / `Cmd+0` zoom the font, `Cmd+Q` quits, `Cmd+H`
+  hides and `Cmd+M` minimises. Bind more with `super+...` in `[keybinds]`.
+  With the "Dvorak - QWERTY ⌘" input source, Command shortcuts use the
+  QWERTY positions, as in other Mac apps.
+- **Shortcuts macOS keeps.** `Ctrl+Space` (teru's prefix key) is also the
+  macOS shortcut for "Select the previous input source", which is on by
+  default once two input sources are installed (Dvorak and QWERTY, say), and
+  then never reaches teru. Turn it off in System Settings > Keyboard >
+  Keyboard Shortcuts > Input Sources, or set `prefix_key` to something else.
+  `Ctrl+Left` / `Ctrl+Right` switch Spaces in Mission Control.
+- **Not yet supported:** input methods with a composition window (Japanese,
+  Chinese, Korean). With one selected, keys type the Latin letters of its
+  underlying keyboard layout.
+
 ---
 
 ## Pane / window management

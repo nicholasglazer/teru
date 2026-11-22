@@ -830,6 +830,17 @@ pub const Keybinds = struct {
         _ = self.add(n, M, '-', .zoom_out);
         _ = self.add(n, M, '_', .zoom_in);
         _ = self.add(n, M, '\\', .zoom_reset);
+
+        // macOS: the Command shortcuts every Mac app has. The key is the
+        // character the layout gives it with Command held, so Cmd+C is
+        // wherever the layout's C is.
+        if (@import("builtin").os.tag == .macos) {
+            _ = self.add(.shared, Mods.SUPER, 'c', .copy_selection);
+            _ = self.add(.shared, Mods.SUPER, 'v', .paste_clipboard);
+            _ = self.add(n, Mods.SUPER, '=', .zoom_in);
+            _ = self.add(n, Mods.SUPER, '-', .zoom_out);
+            _ = self.add(n, Mods.SUPER, '0', .zoom_reset);
+        }
     }
 
     /// Load default scratchpad keybinds (compositor only). Two chords

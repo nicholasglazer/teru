@@ -213,6 +213,11 @@ pub fn build(b: *std.Build) void {
         .flags = &.{"-DSTB_TRUETYPE_IMPLEMENTATION"},
     });
     test_mod.addIncludePath(b.path("vendor"));
+    if (os_tag == .macos) {
+        // The keyboard tests load real layouts through HIToolbox.
+        test_mod.linkFramework("Carbon", .{});
+        test_mod.linkFramework("CoreFoundation", .{});
+    }
     const lib_tests = b.addTest(.{
         .root_module = test_mod,
     });
@@ -351,4 +356,24 @@ pub fn build(b: *std.Build) void {
         .root_module = check_exe_mod,
     });
     check_step.dependOn(&check_exe.step);
+
+    // And the unit tests, compiled but not run or linked: the macOS-only
+    // tests (real keyboard layouts) otherwise first compile on a Mac. Not
+    // for Windows, where the test graph has never compiled (the tests use
+    // POSIX file descriptors).
+    if (os_tag != .windows) {
+        const check_test_mod = b.createModule(.{
+            .root_source_file = b.path("src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        check_test_mod.addOptions("build_options", build_options);
+        check_test_mod.addIncludePath(b.path("vendor"));
+        const check_tests = b.addTest(.{
+            .name = "teru-check-tests",
+            .root_module = check_test_mod,
+        });
+        check_step.dependOn(&check_tests.step);
+    }
 }

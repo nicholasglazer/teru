@@ -195,6 +195,9 @@ term: ?[]const u8 = null,
 scroll_speed: u32 = 3,
 touchpad_scroll_invert: bool = false,
 alt_scroll_zoom: bool = true, // Alt+scroll wheel adjusts font size
+/// macOS: which Option keys send ESC+key (Meta) instead of typing the
+/// character macOS puts on them. Read on every OS, used only on macOS.
+macos_option_as_alt: OptionAsAlt = .none,
 copy_on_select: bool = true,
 bell: Bell = .visual,
 tab_width: u8 = 8,
@@ -617,6 +620,8 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         self.alt_scroll_zoom = parseBool(value) orelse return;
     } else if (std.mem.eql(u8, key, "copy_on_select")) {
         self.copy_on_select = parseBool(value) orelse return;
+    } else if (std.mem.eql(u8, key, "macos_option_as_alt")) {
+        self.macos_option_as_alt = parseOptionAsAlt(value) orelse return;
     } else if (std.mem.eql(u8, key, "bell")) {
         self.bell = parseBell(value) orelse return;
     } else if (std.mem.eql(u8, key, "alt_workspace_switch")) {
@@ -762,6 +767,18 @@ pub fn parsePrefixKey(value: []const u8) ?u8 {
 fn parseBool(value: []const u8) ?bool {
     if (std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "yes") or std.mem.eql(u8, value, "1")) return true;
     if (std.mem.eql(u8, value, "false") or std.mem.eql(u8, value, "no") or std.mem.eql(u8, value, "0")) return false;
+    return null;
+}
+
+/// Which Option keys act as Alt/Meta on macOS.
+pub const OptionAsAlt = enum { none, left, right, both };
+
+fn parseOptionAsAlt(value: []const u8) ?OptionAsAlt {
+    if (std.mem.eql(u8, value, "left")) return .left;
+    if (std.mem.eql(u8, value, "right")) return .right;
+    if (std.mem.eql(u8, value, "both")) return .both;
+    if (std.mem.eql(u8, value, "none")) return .none;
+    if (parseBool(value)) |b| return if (b) .both else .none;
     return null;
 }
 
@@ -1406,4 +1423,14 @@ test "parse tui_pane_border accepts box/line/none and the old bools" {
     var c5 = Config{ .allocator = allocator };
     c5.parse(allocator, "tui_pane_border = wibble\n");
     try std.testing.expectEqual(PaneBorder.box, c5.tui_pane_border);
+}
+
+test "macos_option_as_alt: values" {
+    try std.testing.expectEqual(@as(?OptionAsAlt, .left), parseOptionAsAlt("left"));
+    try std.testing.expectEqual(@as(?OptionAsAlt, .right), parseOptionAsAlt("right"));
+    try std.testing.expectEqual(@as(?OptionAsAlt, .both), parseOptionAsAlt("both"));
+    try std.testing.expectEqual(@as(?OptionAsAlt, .both), parseOptionAsAlt("true"));
+    try std.testing.expectEqual(@as(?OptionAsAlt, .none), parseOptionAsAlt("none"));
+    try std.testing.expectEqual(@as(?OptionAsAlt, .none), parseOptionAsAlt("no"));
+    try std.testing.expectEqual(@as(?OptionAsAlt, null), parseOptionAsAlt("sideways"));
 }

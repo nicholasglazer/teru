@@ -64,6 +64,21 @@ const Keyboard = switch (builtin.os.tag) {
     else => void,
 };
 
+/// The keyboard module writes the ESC for Alt/Meta itself (macOS, where
+/// Option can also type text), so the generic Alt prefix must not add one.
+const kb_owns_meta = Keyboard != void and @hasDecl(Keyboard, "owns_meta_prefix") and Keyboard.owns_meta_prefix;
+
+/// Hand the macOS Option-as-Alt setting to the keyboard module.
+fn applyKeyboardConfig(kb: anytype, config: *const Config) void {
+    if (comptime builtin.os.tag != .macos) return;
+    kb.option_as_alt = switch (config.macos_option_as_alt) {
+        .none => .none,
+        .left => .left,
+        .right => .right,
+        .both => .both,
+    };
+}
+
 const RestoreInfo = common.RestoreInfo;
 
 /// Block until any fd we care about becomes readable or the timeout
@@ -573,6 +588,9 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
     defer if (Keyboard != void) {
         if (keyboard) |*kb| kb.deinit();
     };
+    if (Keyboard != void) {
+        if (keyboard) |*kb| applyKeyboardConfig(kb, &config);
+    }
 
     var prefix = KeyHandler.PrefixState{ .timeout_ns = @as(i128, config.prefix_timeout_ms) * 1_000_000 };
     // Doom-style leader (Alt+Space → which-key), shared engine. Config-driven
@@ -1189,7 +1207,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                             // Forward to active pane; Alt prefix sends ESC first.
                             const ALT_MASK: u32 = 8;
                             if (mux.getActivePane()) |pane| {
-                                if (key.modifiers & ALT_MASK != 0 and len > 0 and key_buf[0] != 0x1b) {
+                                if (!kb_owns_meta and key.modifiers & ALT_MASK != 0 and len > 0 and key_buf[0] != 0x1b) {
                                     var alt_buf: [33]u8 = undefined;
                                     alt_buf[0] = 0x1b;
                                     @memcpy(alt_buf[1..][0..len], key_buf[0..len]);
@@ -1552,6 +1570,10 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                     config.bold_is_bright = new_config.bold_is_bright;
                     config.bell = new_config.bell;
                     config.copy_on_select = new_config.copy_on_select;
+                    config.macos_option_as_alt = new_config.macos_option_as_alt;
+                    if (Keyboard != void) {
+                        if (keyboard) |*kb| applyKeyboardConfig(kb, &config);
+                    }
                     config.mouse_hide_when_typing = new_config.mouse_hide_when_typing;
                     config.restore_layout = new_config.restore_layout;
                     config.persist_session = new_config.persist_session;

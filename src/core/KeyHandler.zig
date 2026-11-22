@@ -192,6 +192,9 @@ pub fn platformMods(modifiers: u32, ralt: bool) KB.Mods {
     if (ralt) m.ralt = true;
     if (modifiers & kc.CTRL_MASK != 0) m.ctrl = true;
     if (modifiers & kc.SHIFT_MASK != 0) m.shift = true;
+    // Command, so super+... bindings work in standalone teru on macOS.
+    // Other systems keep ignoring Super here, as they always have.
+    if (builtin.os.tag == .macos and modifiers & kc.SUPER_MASK != 0) m.super_ = true;
     return m;
 }
 
