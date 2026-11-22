@@ -114,6 +114,14 @@ pub fn build(b: *std.Build) void {
             });
         }
     } else if (os_tag == .macos) {
+        // Zig finds the SDK's frameworks only for a native build. To build
+        // for another target, for instance an older minimum macOS
+        // (-Dtarget=aarch64-macos.13.0; a native build requires the host's
+        // version), pass the SDK: -Dmacos-sdk="$(xcrun --show-sdk-path)".
+        if (b.option([]const u8, "macos-sdk", "macOS SDK path, for non-native macOS targets (xcrun --show-sdk-path)")) |sdk| {
+            exe_mod.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
+            exe_mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/lib" }) });
+        }
         exe_mod.linkFramework("AppKit", .{});
         exe_mod.linkFramework("CoreGraphics", .{});
         // Core Animation: each frame is presented as a CALayer's contents.
