@@ -336,15 +336,17 @@ pub fn loadHooks(config: *const Config, hooks: *Hooks) void {
 
 // ── Agent lifecycle helpers ───────────────────────────────────
 
-/// Assign an agent node to a workspace matching its group name.
+/// Record an agent graph node under a workspace matching its group name.
 /// Uses a simple hash of the group name to pick workspace 1-8.
+///
+/// Only the process graph is updated. `node_id` is a ProcessGraph id, not a
+/// pane id, so it must never go into a layout workspace: that added a phantom
+/// tile for every OSC 9999 agent:start (which any program output can send),
+/// could collide with a real pane id, and nothing ever removed it.
 pub fn autoAssignAgentWorkspace(mux: *Multiplexer, node_id: u64, group: []const u8) void {
     var hash: u32 = 0;
     for (group) |c| hash = hash *% 31 +% c;
     const ws: u8 = @truncate((hash % 8) + 1);
-
-    const ws_engine = &mux.layout_engine.workspaces[ws];
-    ws_engine.addNode(mux.allocator, node_id) catch return;
 
     if (mux.graph) |g| g.moveToWorkspace(node_id, ws);
 }
@@ -800,4 +802,15 @@ test "computeIdleTimeoutMs: an unsaved layout with persistence off does not spin
     try std.testing.expectEqual(@as(i32, 0), computeIdleTimeoutMs(now, 0, false, 0, false, true, true, since, 500));
     // A throttled frame wakes the loop at the frame deadline.
     try std.testing.expectEqual(@as(i32, 16), computeIdleTimeoutMs(now, 0, false, now + 16_666_667, true, false, false, 0, 500));
+}
+
+test "autoAssignAgentWorkspace never adds graph ids to the layout" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator);
+    defer mux.deinit();
+    var i: u64 = 1;
+    while (i <= 20) : (i += 1) autoAssignAgentWorkspace(&mux, i, "group-x");
+    for (&mux.layout_engine.workspaces) |*ws| {
+        try testing.expectEqual(@as(usize, 0), ws.node_ids.items.len);
+    }
 }
