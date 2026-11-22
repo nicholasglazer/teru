@@ -139,7 +139,23 @@ fn isPlainKey(key: []const u8) bool {
     return true;
 }
 
-/// Build a small JSON-RPC error and frame it as a DCS reply.
+/// The id to echo in a reply, or null to drop the query. The id is written
+/// back verbatim into the pane's input, so it is limited to
+/// [A-Za-z0-9_-]{1,32}. Without that, an id carrying ^U and a newline made
+/// the shell erase the DCS prefix and run the rest as a command.
+fn replyId(query_id: ?[]const u8) ?[]const u8 {
+    const id = query_id orelse return "null";
+    if (id.len == 0 or id.len > 32) return null;
+    for (id) |c| {
+        const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or c == '_' or c == '-';
+        if (!ok) return null;
+    }
+    return id;
+}
+
+/// Build a small JSON-RPC error and frame it as a DCS reply. `id` must have
+/// passed replyId.
 fn writeErrorReply(pane: *const Pane, id: []const u8, code: i32, msg: []const u8) void {
     var body_buf: [256]u8 = undefined;
     const id_is_int = (std.fmt.parseInt(i64, id, 10) catch null) != null;
@@ -162,12 +178,11 @@ fn writeErrorReply(pane: *const Pane, id: []const u8, code: i32, msg: []const u8
 /// never crash the terminal just because some agent sent garbage.
 pub fn handleQuery(pane: *const Pane, event: protocol.AgentEvent, mcp: *McpServer, opts: Options) void {
     const tool = event.query_tool orelse return;
-    const id = event.query_id orelse "null";
-
-    if (!opts.enabled) {
-        writeErrorReply(pane, id, -32601, "in-band MCP disabled (set agent_in_band=true)");
-        return;
-    }
+    // No answerback at all unless the user turned the channel on: any
+    // program output (`cat` of a file, a remote ssh host) can send a query,
+    // and every reply is typed into the pane's input.
+    if (!opts.enabled) return;
+    const id = replyId(event.query_id) orelse return;
 
     if (!isToolAllowed(tool)) {
         writeErrorReply(pane, id, -32601, "tool not allowed via in-band channel");
@@ -402,4 +417,17 @@ test "in-band pane scoping cannot be bypassed (cross-pane exfil guard)" {
     };
     const forced2 = overridePaneId(&args2, &out, "2");
     try std.testing.expect(buildJsonRpcRequest("teru_read_output", "1", forced2, &req_buf) == null);
+}
+
+test "replyId — only plain ids are echoed back to the pane" {
+    try std.testing.expectEqualStrings("null", replyId(null).?);
+    try std.testing.expectEqualStrings("42", replyId("42").?);
+    try std.testing.expectEqualStrings("req_7-a", replyId("req_7-a").?);
+    // ^U erases the line in cooked mode and \n submits what follows it.
+    try std.testing.expect(replyId("\x15touch /tmp/PWNED\n") == null);
+    try std.testing.expect(replyId("1\r") == null);
+    try std.testing.expect(replyId("a b") == null);
+    try std.testing.expect(replyId("\"}") == null);
+    try std.testing.expect(replyId("") == null);
+    try std.testing.expect(replyId("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx") == null);
 }
