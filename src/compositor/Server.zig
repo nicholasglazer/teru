@@ -1219,7 +1219,12 @@ pub fn detachGlobalListeners(self: *Server) void {
     safeRemoveListener(&self.xdg_activate);
     safeRemoveListener(&self.new_xdg_decoration);
     safeRemoveListener(&self.request_set_cursor);
+    safeRemoveListener(&self.request_set_selection);
+    safeRemoveListener(&self.request_start_drag);
+    safeRemoveListener(&self.start_drag);
+    safeRemoveListener(&self.request_set_primary_selection);
     safeRemoveListener(&self.request_set_shape);
+    safeRemoveListener(&self.new_pointer_constraint);
     safeRemoveListener(&self.new_xwayland_surface);
     safeRemoveListener(&self.new_inhibitor);
     safeRemoveListener(&self.output_power_set_mode);
