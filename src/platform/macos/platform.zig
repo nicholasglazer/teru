@@ -39,6 +39,19 @@ extern "c" fn class_addMethod(class: *anyopaque, name: SEL, imp: *const anyopaqu
 extern "c" fn objc_autoreleasePoolPush() ?*anyopaque;
 extern "c" fn objc_autoreleasePoolPop(pool: ?*anyopaque) void;
 
+/// One autorelease pool, pushed and popped in strict nesting order.
+pub const AutoreleasePool = struct {
+    handle: ?*anyopaque,
+
+    pub fn push() AutoreleasePool {
+        return .{ .handle = objc_autoreleasePoolPush() };
+    }
+
+    pub fn pop(self: AutoreleasePool) void {
+        objc_autoreleasePoolPop(self.handle);
+    }
+};
+
 // objc_msgSend_stret only exists on x86_64; arm64 returns structs via registers.
 const objc_msgSend_stret_fn = if (builtin.cpu.arch == .x86_64) blk: {
     const f = struct {
@@ -310,10 +323,16 @@ pub const MacosWindow = struct {
     scroll: events.ScrollAccumulator = .{},
     /// sRGB, created once.
     color_space: ?*anyopaque,
-    /// CGBitmapContext each frame is copied into; rebuilt when the size changes.
-    staging: ?*anyopaque = null,
+    /// Two CGBitmapContexts the frames are copied into, used in turn;
+    /// rebuilt when the size changes. See putFramebuffer.
+    staging: [2]?*anyopaque = .{ null, null },
+    staging_next: u1 = 0,
     staging_w: u32 = 0,
     staging_h: u32 = 0,
+    /// Mouse buttons (pressedMouseButtons bits) whose release teru already
+    /// reported because AppKit's own tracking loop took the real one; a
+    /// mouse-up for them that still arrives is dropped. See onMouseDown.
+    released_early: u64 = 0,
 
     /// `width` x `height` is the content size in points: the same physical
     /// size a 1x Linux window of that many pixels has.
@@ -438,8 +457,7 @@ pub const MacosWindow = struct {
         msgSendVoid(self.ns_window, sel("close"), .{});
         msgSendVoid(self.ns_window, sel("release"), .{});
         if (self.window_delegate) |d| msgSendVoid(d, sel("release"), .{});
-        CGContextRelease(self.staging);
-        self.staging = null;
+        self.releaseStaging();
         CGColorSpaceRelease(self.color_space);
         self.color_space = null;
         self.is_open = false;
@@ -489,21 +507,26 @@ pub const MacosWindow = struct {
 
         // The renderer reuses (and on resize frees) its buffer, while Core
         // Animation may still read the image after commit. So each frame is
-        // copied into a bitmap context, which is allocated only when the
-        // size changes; the image snapshot taken from it is copy-on-write.
-        if (self.staging == null or self.staging_w != blit_w or self.staging_h != blit_h) {
-            CGContextRelease(self.staging);
-            self.staging = CGBitmapContextCreate(null, blit_w, blit_h, 8, 0, self.color_space, kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst);
+        // copied into a bitmap context, allocated only when the size
+        // changes, and the image handed to the layer is a copy-on-write
+        // snapshot of it. Two contexts are used in turn: the layer holds the
+        // previous frame's image, and writing into the context that image
+        // came from would make the kernel copy every page it shares.
+        if (self.staging_w != blit_w or self.staging_h != blit_h) {
+            self.releaseStaging();
             self.staging_w = blit_w;
             self.staging_h = blit_h;
-            if (self.staging == null) {
+        }
+        const slot = &self.staging[self.staging_next];
+        if (slot.* == null) {
+            slot.* = CGBitmapContextCreate(null, blit_w, blit_h, 8, 0, self.color_space, kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst);
+            if (slot.* == null) {
                 std.log.err("macos: CGBitmapContextCreate {d}x{d} failed", .{ blit_w, blit_h });
-                self.staging_w = 0;
-                self.staging_h = 0;
                 return;
             }
         }
-        const ctx = self.staging.?;
+        const ctx = slot.*.?;
+        self.staging_next +%= 1;
         const dst = CGBitmapContextGetData(ctx) orelse return;
         const bpr = CGBitmapContextGetBytesPerRow(ctx);
         if (bpr < @as(usize, blit_w) * 4) return;
@@ -526,6 +549,14 @@ pub const MacosWindow = struct {
         // teru's loop does not return to a run loop that commits implicit
         // transactions on its own schedule; push this one out now.
         msgSendVoid(CATransaction, sel("flush"), .{});
+    }
+
+    fn releaseStaging(self: *MacosWindow) void {
+        for (&self.staging) |*s| {
+            CGContextRelease(s.*);
+            s.* = null;
+        }
+        self.staging_next = 0;
     }
 
     /// Resize the content area to `width` x `height` backing pixels.
@@ -595,14 +626,25 @@ pub const MacosWindow = struct {
                 self.onFlagsChanged(event);
             },
             NSEventTypeLeftMouseDown,
-            NSEventTypeLeftMouseUp,
             NSEventTypeRightMouseDown,
+            NSEventTypeOtherMouseDown,
+            => self.onMouseDown(event, event_type),
+            NSEventTypeLeftMouseUp,
             NSEventTypeRightMouseUp,
+            NSEventTypeOtherMouseUp,
+            => {
+                msgSendVoid(self.ns_app, sel("sendEvent:"), .{event});
+                const mask = buttonMask(event, event_type);
+                if (self.released_early & mask != 0) {
+                    // Already reported when its press was (onMouseDown).
+                    self.released_early &= ~mask;
+                    return;
+                }
+                self.onMouse(event, event_type);
+            },
             NSEventTypeMouseMoved,
             NSEventTypeLeftMouseDragged,
             NSEventTypeRightMouseDragged,
-            NSEventTypeOtherMouseDown,
-            NSEventTypeOtherMouseUp,
             NSEventTypeOtherMouseDragged,
             => {
                 // AppKit needs these for the title bar, the window buttons and
@@ -652,6 +694,59 @@ pub const MacosWindow = struct {
         self.queue.push(if (pressed) .{ .key_press = key } else .{ .key_release = key });
     }
 
+    /// A press. AppKit has to see it (window activation, the title bar,
+    /// edge resizing), and on the resize edge it runs its live-resize loop
+    /// inside sendEvent:, which changes the geometry and consumes the
+    /// matching mouse-up. So the position is read first, and if the button
+    /// is no longer down once sendEvent: returns, the release is reported
+    /// at once: otherwise teru would believe the button held, and extend a
+    /// selection or drag a pane border on plain hover. A quick click whose
+    /// own mouse-up is still queued gets that one dropped instead.
+    fn onMouseDown(self: *MacosWindow, event: id, event_type: u64) void {
+        const mask = buttonMask(event, event_type);
+        self.released_early &= ~mask;
+        const button = mouseButton(event, event_type);
+        // A press must land in the view, not the title bar.
+        const px = if (button != null) self.eventPixel(event, false) else null;
+        const mods = keyboard.x11Modifiers(modifierFlags(event));
+
+        msgSendVoid(self.ns_app, sel("sendEvent:"), .{event});
+
+        const b = button orelse return; // back/forward buttons
+        const p = px orelse return;
+        const me = types.MouseEvent{ .x = p.x, .y = p.y, .button = b, .modifiers = mods };
+        self.queue.push(.{ .mouse_press = me });
+        if (msgSendU64(cls("NSEvent"), sel("pressedMouseButtons"), .{}) & mask == 0) {
+            self.queue.push(.{ .mouse_release = me });
+            self.released_early |= mask;
+        }
+    }
+
+    /// The event's button as a pressedMouseButtons bit: 1 << buttonNumber
+    /// (left 0, right 1, middle 2).
+    fn buttonMask(event: id, event_type: u64) u64 {
+        return switch (event_type) {
+            NSEventTypeLeftMouseDown, NSEventTypeLeftMouseUp => 1 << 0,
+            NSEventTypeRightMouseDown, NSEventTypeRightMouseUp => 1 << 1,
+            else => blk: {
+                const n = msgSendI64(event, sel("buttonNumber"), .{});
+                break :blk if (n >= 0 and n < 64) @as(u64, 1) << @intCast(n) else 0;
+            },
+        };
+    }
+
+    /// The teru button for a mouse event; null for a plain move and for
+    /// buttons teru has no use for (back, forward).
+    fn mouseButton(event: id, event_type: u64) ?types.MouseButton {
+        return switch (event_type) {
+            NSEventTypeLeftMouseDown, NSEventTypeLeftMouseUp, NSEventTypeLeftMouseDragged => .left,
+            NSEventTypeRightMouseDown, NSEventTypeRightMouseUp, NSEventTypeRightMouseDragged => .right,
+            NSEventTypeOtherMouseDown, NSEventTypeOtherMouseUp, NSEventTypeOtherMouseDragged => if (msgSendI64(event, sel("buttonNumber"), .{}) == 2) .middle else null,
+            else => null,
+        };
+    }
+
+    /// Releases and motion. Presses go through onMouseDown.
     fn onMouse(self: *MacosWindow, event: id, event_type: u64) void {
         const Kind = enum { press, release, motion };
         const kind: Kind = switch (event_type) {
@@ -659,12 +754,7 @@ pub const MacosWindow = struct {
             NSEventTypeLeftMouseUp, NSEventTypeRightMouseUp, NSEventTypeOtherMouseUp => .release,
             else => .motion,
         };
-        const button: ?types.MouseButton = switch (event_type) {
-            NSEventTypeLeftMouseDown, NSEventTypeLeftMouseUp, NSEventTypeLeftMouseDragged => .left,
-            NSEventTypeRightMouseDown, NSEventTypeRightMouseUp, NSEventTypeRightMouseDragged => .right,
-            NSEventTypeOtherMouseDown, NSEventTypeOtherMouseUp, NSEventTypeOtherMouseDragged => if (msgSendI64(event, sel("buttonNumber"), .{}) == 2) .middle else null,
-            else => null, // plain move
-        };
+        const button = mouseButton(event, event_type);
         if (kind != .motion and button == null) return; // back/forward buttons
 
         // A press must land in the view (not the title bar). A release or a

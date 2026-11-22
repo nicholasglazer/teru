@@ -634,6 +634,13 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
     _ = &search_len;
 
     while (running) {
+        // macOS: everything AppKit, Core Animation and the input-source
+        // calls autorelease during this iteration is freed at its end.
+        // teru never runs [NSApp run], which would provide this pool, and
+        // an object autoreleased with no pool lives until exit.
+        const iteration_pool = platform.AutoreleasePool.push();
+        defer iteration_pool.pop();
+
         // Check prefix timeout
         if (prefix.isExpired()) {
             prefix.reset();

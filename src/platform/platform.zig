@@ -22,3 +22,16 @@ else if (builtin.os.tag == .windows)
     @import("windows/platform.zig").Platform
 else
     @compileError("unsupported platform: " ++ @tagName(builtin.os.tag));
+
+/// An Objective-C autorelease pool on macOS, for one pass of the main loop:
+/// `const pool = AutoreleasePool.push(); defer pool.pop();`. Does nothing
+/// on other platforms.
+pub const AutoreleasePool = if (builtin.os.tag == .macos)
+    @import("macos/platform.zig").AutoreleasePool
+else
+    struct {
+        pub fn push() @This() {
+            return .{};
+        }
+        pub fn pop(_: @This()) void {}
+    };
