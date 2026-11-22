@@ -59,8 +59,8 @@ human with a keyboard for.
 # Arch Linux (AUR) - terminal only; teruwm has no package, build from source below
 paru -S teru
 
-# macOS (tap is behind - 0.6.3; build from source for current)
-brew install nicholasglazer/teru/teru
+# macOS: the Homebrew tap is stale (0.6.3) and cannot build current teru.
+# Download the release binary or build from source: docs/INSTALLING.md#macos
 
 # Windows (bucket is behind - 0.11.0)
 scoop bucket add teru https://github.com/nicholasglazer/scoop-teru
@@ -146,7 +146,7 @@ Everything user-facing lives in `docs/`. Concept-by-concept:
 | Area | Status |
 |---|---|
 | teru terminal, Linux (X11 + Wayland) | production; 570+ inline tests |
-| teru terminal, macOS (AppKit) | feature-complete, needs hardware testing; US ANSI keyboard only |
+| teru terminal, macOS (AppKit) | untested on hardware: CI builds, tests and starts it; Apple Silicon, any keyboard layout, Retina; no IME yet |
 | teru terminal, Windows (Win32 + ConPTY) | early port: window, shell, typing and resize work under Wine; untested on Windows; no sessions, MCP or config file yet |
 | teruwm compositor, Linux (wlroots) | usable; XDG + XWayland verified with Chromium / Emacs / Figma |
 | Session persistence (`-n NAME`) | production |

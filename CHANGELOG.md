@@ -1,5 +1,67 @@
 # Changelog
 
+## Unreleased
+
+macOS readiness. The macOS build had never been run, and a review against
+Apple's documentation found that it could not have worked: it chose the TTY
+mode instead of opening a window, failed to load the default font, would
+have drawn nothing, and modifier keys produced no events. This fixes what
+review and static checks can find. It is still untested on a real Mac; CI
+now starts it on a GitHub macOS runner.
+
+### Added
+
+- **macOS: the keyboard follows the layout selected in System Settings.**
+  Dvorak, QWERTY, AZERTY, Russian or any other type what they type in other
+  Mac apps; teru has no layout setting. Dead keys compose (Option+E then E is
+  é), Ctrl+key uses the layout's letter, and Command shortcuts follow the
+  layout's Command table ("Dvorak - QWERTY ⌘"). See the macOS section of
+  `docs/KEYBINDINGS.md`.
+- **macOS: `macos_option_as_alt = none | left | right | both`** (default
+  `none`): which Option keys send ESC+key instead of typing what macOS puts
+  on them. teru's Alt bindings work either way.
+- **macOS: Retina.** The window is drawn at the display's full resolution,
+  with font size and padding scaled to match, and redrawn at the new scale
+  when it moves between a Retina and a 1x display.
+- **macOS: menu bar and Command keys.** Cmd+Q, Cmd+H and Cmd+M; Cmd+C and
+  Cmd+V copy and paste; Cmd+= / Cmd+- / Cmd+0 zoom. `super+...` bindings
+  match Command.
+- `zig build check -Dtarget=aarch64-macos` now type-checks the macOS backend
+  and its tests from Linux; before, it compiled only the core library.
+- `-Dmacos-sdk=PATH` build option, to build for an older macOS minimum or
+  for Intel (`docs/INSTALLING.md`).
+
+### Fixed
+
+- **macOS: teru ran in TTY mode instead of opening a window**, because the
+  display check looked for `DISPLAY` or `WAYLAND_DISPLAY`.
+- **macOS: startup failed on the default font**, Menlo.ttc. Font collections
+  (.ttc) were opened at the collection header instead of their first font.
+- **macOS: frames were drawn in a way that shows nothing** on current macOS
+  (lockFocus outside drawRect:), with red and blue swapped. Frames are now
+  the contents of a Core Animation layer.
+- **macOS: Shift, Ctrl and Option never reached the keyboard**, and Command
+  was read as Alt. Every keystroke beeped.
+- **macOS: crashes and leaks in the window code**: no autorelease pool (memory
+  grew with every event), the window freed by AppKit on close and then used,
+  window titles read past their end and an invalid one raised an exception.
+- **macOS: closing, minimising and quitting.** Minimising no longer counts as
+  closing; the close button, Cmd+Q and Quit from the Dock now go through
+  teru's own shutdown instead of AppKit's `exit()`.
+- **macOS: mouse and trackpad.** Hover events arrive, middle and right drags
+  work, a selection dragged out of the window keeps following, and trackpad
+  scrolling no longer jumps pages per swipe.
+- **macOS: sessions.** `teru -n` started no daemon (it exec'd
+  `/proc/self/exe`), `teru --list` found nothing, a long session name could
+  overrun the 104-byte socket path, and the detach file went to the shared
+  `/tmp`.
+- **macOS: shells started from the Finder or Dock had launchd's bare PATH
+  and no locale.** They now start as login shells, with `LANG` set when no
+  locale is, and their environment is prepared before `fork`.
+- **macOS: config reload stopped after the first save** from editors that
+  save by renaming a new file over the old one.
+- **macOS: new panes did not open in the current directory.**
+
 ## 0.16.0 — 2026-11-21
 
 Text in any script, a first usable window on Windows, VR station mode in the

@@ -19,7 +19,7 @@ between v0.11.0 and v0.16.0. Use v0.16.0 or later, or build from source (below):
 | Linux x86_64 (X11 only) | `teru-linux-x86_64-x11.tar.gz` | No wayland dep |
 | Linux x86_64 (Wayland only) | `teru-linux-x86_64-wayland.tar.gz` | No xcb dep |
 | Windows x86_64 | `teru-windows-x86_64.zip` | Win10+ (ConPTY) |
-| macOS aarch64 | `teru-macos-aarch64.tar.gz` | Apple Silicon |
+| macOS aarch64 | `teru-macos-aarch64.tar.gz` | Apple Silicon, macOS 15+; untested on hardware (see below) |
 
 ## Arch Linux (AUR)
 
@@ -34,24 +34,60 @@ Optional clipboard support: `paru -S xclip` (X11) or `paru -S wl-clipboard` (Way
 
 ## macOS
 
-### Homebrew (recommended)
+**Status: untested on a real Mac.** The AppKit backend has been reviewed
+against Apple's documentation and type-checks for macOS from Linux, and CI
+builds it, runs its tests and starts it on a GitHub macOS runner (see
+`.github/scripts/macos-smoke.sh`). Nobody has used it on a Mac yet. Reports
+are welcome, with `TERU_LOG=debug teru 2> teru.log` attached.
 
-```bash
-brew install nicholasglazer/teru/teru
-```
+- **Apple Silicon only.** Intel builds compile but have never been run.
+- **macOS 15 or later** for the release binary, which is built on a macOS 15
+  runner and takes that as its minimum. Building from source on your own Mac
+  targets your version.
+- The keyboard follows the input source selected in System Settings
+  (Dvorak, QWERTY, AZERTY, …); see the macOS section of
+  [KEYBINDINGS.md](KEYBINDINGS.md#macos) for Option, Command and the
+  `Ctrl+Space` clash.
+- Retina displays are drawn at full resolution.
+- Not yet: input methods with a composition window (Japanese, Chinese,
+  Korean), redrawing while the window is being resized (it catches up on
+  release), and idle CPU use is higher than on Linux (the event loop polls
+  every 16 ms).
 
-Builds from source via Zig. No Gatekeeper warnings since the binary is built locally.
-
-**The tap is behind.** It pins 0.6.3, and its `depends_on "zig"` resolves to stable Zig
-(0.16.0), which will not build current teru. For 0.15.x on macOS, build from source below.
-
-### Manual
+### Download
 
 ```bash
 curl -L https://github.com/nicholasglazer/teru/releases/latest/download/teru-macos-aarch64.tar.gz | tar xz
-xattr -cr teru    # remove Gatekeeper quarantine
 sudo mv teru /usr/local/bin/
 ```
+
+A file downloaded with `curl` is not quarantined. One downloaded with a
+browser (or a CI artifact from GitHub) is, and Gatekeeper refuses to run it
+because it is not notarized; since macOS 15 the Control-click > Open bypass
+is gone. Remove the attribute:
+
+```bash
+xattr -d com.apple.quarantine teru
+```
+
+or allow it once in System Settings > Privacy & Security > Open Anyway. If it
+is killed at once with `Killed: 9`, its ad-hoc signature was invalidated (by
+`strip`, for instance): `codesign -f -s - teru` re-signs it.
+
+### Build from source
+
+The most reliable route, and nothing is quarantined. Needs Zig 0.17.1 and
+the Xcode Command Line Tools (`xcode-select --install`) for the SDK:
+
+```bash
+git clone https://github.com/nicholasglazer/teru.git && cd teru
+zig build -Doptimize=ReleaseSafe     # zig-out/bin/teru
+```
+
+### Homebrew (stale)
+
+The tap (`nicholasglazer/teru/teru`) pins 0.6.3 and its `depends_on "zig"`
+cannot build current teru. Do not use it until it is updated.
 
 ## Windows
 
@@ -142,6 +178,18 @@ make release-wayland      # Wayland-only (no libxcb dep)
 ```bash
 zig build -Doptimize=ReleaseSafe
 ```
+
+A native build takes the running macOS version as its minimum. To build for
+older versions, or for Intel, name the target and pass the SDK, which Zig
+looks up by itself only for native builds:
+
+```bash
+zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-macos.13.0 \
+  -Dmacos-sdk="$(xcrun --sdk macosx --show-sdk-path)"
+```
+
+From Linux, `zig build check -Dtarget=aarch64-macos` type-checks the whole
+macOS build, tests included, without linking.
 
 ### Windows (cross-compile from Linux)
 
