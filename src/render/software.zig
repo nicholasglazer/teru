@@ -95,6 +95,9 @@ pub const SoftwareRenderer = struct {
     dyn: ?*FontAtlas.GlyphCache = null,
     cursor_color: u32, // configurable cursor block color (ARGB)
     padding: u32, // pixels of padding around content
+    /// Display pixels per point (2 on a Retina Mac, else 1): the underline
+    /// and bar cursors are 2 points thick.
+    ui_scale: u32 = 1,
     scheme: ColorScheme, // runtime color scheme (palette + semantic colors)
     cursor_blink_on: bool = true, // blink phase — toggled by a blink timer; stays true when blink is off
     cursor_visible: bool = true, // DECTCEM (ESC[?25l hides); set by the caller from VtParser.cursor_visible
@@ -407,14 +410,15 @@ pub const SoftwareRenderer = struct {
                 switch (grid.cursor_shape) {
                     .block => fillRect(self.framebuffer, fb_w, cx, cy, cursor_max_x, cursor_max_y, cursor_color),
                     .underline => {
-                        // Fill bottom 2 rows of the cell
-                        const ul_start = if (ch >= 2) cy + ch - 2 else cy;
+                        // Fill the bottom 2 points of the cell
+                        const thick: usize = 2 * @as(usize, self.ui_scale);
+                        const ul_start = if (ch >= thick) cy + ch - thick else cy;
                         const ul_min = @min(ul_start, fb_h);
                         fillRect(self.framebuffer, fb_w, cx, ul_min, cursor_max_x, cursor_max_y, cursor_color);
                     },
                     .bar => {
-                        // Fill left 2 columns of the cell
-                        const bar_w = @min(@as(usize, 2), cw);
+                        // Fill the left 2 points of the cell
+                        const bar_w = @min(2 * @as(usize, self.ui_scale), cw);
                         const bar_max_x = @min(cx + bar_w, fb_w);
                         fillRect(self.framebuffer, fb_w, cx, cy, bar_max_x, cursor_max_y, cursor_color);
                     },

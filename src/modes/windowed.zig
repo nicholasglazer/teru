@@ -435,6 +435,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
     switch (renderer) {
         .cpu => |*cpu| {
             cpu.padding = padding;
+            cpu.ui_scale = ui_scale;
             cpu.scheme = config.colorScheme();
         },
         .tty => {},
@@ -712,7 +713,16 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                 .tty => {},
                             }
                             if (mcp) |*m| m.padding = padding;
-                            _ = rebuildAtlas(scaledFontPx(font_size, s), s, allocator, &win, &config, &mux, &atlas, &renderer, padding, &status_bar_h, &grid_cols, &grid_rows, &zoom_pending_resize, &zoom_timestamp);
+                            switch (renderer) {
+                                .cpu => |*cpu| cpu.ui_scale = s,
+                                .tty => {},
+                            }
+                            if (!rebuildAtlas(scaledFontPx(font_size, s), s, allocator, &win, &config, &mux, &atlas, &renderer, padding, &status_bar_h, &grid_cols, &grid_rows, &zoom_pending_resize, &zoom_timestamp)) {
+                                // The old atlas stays, so text is drawn at the
+                                // previous display's size until a zoom or a
+                                // move back succeeds.
+                                std.log.err("display scale {d}: rasterizing the font at {d} px failed; text keeps the previous size", .{ s, scaledFontPx(font_size, s) });
+                            }
                             if (mcp) |*m| {
                                 m.cell_width = atlas.cell_width;
                                 m.cell_height = atlas.cell_height;
@@ -1288,6 +1298,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                         .grid_cols = grid_cols,
                         .padding = padding,
                         .status_bar_h = status_bar_h,
+                        .ui_scale = ui_scale,
                     };
                     const cfg = mouse_handler.MouseConfig{
                         .copy_on_select = config.copy_on_select,
@@ -1325,6 +1336,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                         .grid_cols = grid_cols,
                         .padding = padding,
                         .status_bar_h = status_bar_h,
+                        .ui_scale = ui_scale,
                     };
                     const sz = win.getSize();
                     const release_cfg = mouse_handler.MouseConfig{
@@ -1353,6 +1365,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                         .grid_cols = grid_cols,
                         .padding = padding,
                         .status_bar_h = status_bar_h,
+                        .ui_scale = ui_scale,
                     };
                     const sz = win.getSize();
                     const result = mouse_handler.handleMouseMotion(&mux, motion.x, motion.y, motion.modifiers, &selection, &ms, lp, sz.width, sz.height);
@@ -1562,12 +1575,32 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
         if (config_watcher) |*w| {
             if (w.poll()) {
                 if (Config.reload(allocator, io)) |new_config| {
+                    // Padding is used by the renderer, the mouse hit-tests,
+                    // the pane layout and the MCP screenshots, and the
+                    // .resize handler re-derives it from config.padding: all
+                    // of them take the new value.
+                    const padding_changed = config.padding != new_config.padding;
+                    config.padding = new_config.padding;
+                    padding = config.padding * ui_scale;
+                    if (mcp) |*m| m.padding = padding;
                     switch (renderer) {
                         .cpu => |*cpu| {
                             cpu.scheme = new_config.colorScheme();
-                            cpu.padding = new_config.padding * ui_scale;
+                            cpu.padding = padding;
                         },
                         .tty => {},
+                    }
+                    if (padding_changed) {
+                        const sz = win.getSize();
+                        grid_cols = @intCast((sz.width -| padding * 2) / atlas.cell_width);
+                        grid_rows = @intCast((sz.height -| padding * 2 -| status_bar_h) / atlas.cell_height);
+                        for (mux.panes.items) |*pane| {
+                            if (grid_rows != 0 and grid_cols != 0 and (grid_rows != pane.grid.rows or grid_cols != pane.grid.cols)) {
+                                pane.grid.resize(allocator, grid_rows, grid_cols) catch |e| std.log.warn("pane grid resize failed: {s}", .{@errorName(e)});
+                                pane.linkVt(allocator);
+                            }
+                        }
+                        mux.resizePanePtys(sz.width, sz.height, atlas.cell_width, atlas.cell_height, padding, status_bar_h);
                     }
                     win.setOpacity(new_config.opacity);
                     mux.notification_duration_ns = @as(i128, new_config.notification_duration_ms) * 1_000_000;

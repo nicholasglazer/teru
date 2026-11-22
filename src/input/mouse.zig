@@ -64,6 +64,9 @@ pub const LayoutParams = struct {
     grid_cols: u16,
     padding: u32,
     status_bar_h: u32,
+    /// Display pixels per point: 2 on a Retina Mac, 1 elsewhere. Scales the
+    /// fixed pixel distances below so they keep their physical size.
+    ui_scale: u32 = 1,
 };
 
 /// Config flags relevant to mouse handling.
@@ -242,6 +245,9 @@ fn copySelectionToClipboard(mux: *Multiplexer, selection: *Selection) void {
 
 // ── Border Drag Detection ────────────────────────────────────────
 
+/// How far from a split or layout border, each side, a press grabs it.
+const border_grab_px: u32 = 4;
+
 /// Check if a click is on a split or layout border, starting a drag if so.
 /// Returns true if a border drag was started.
 fn detectBorderDrag(mux: *Multiplexer, mouse_x: u32, mouse_y: u32, lp: LayoutParams, ms: *MouseState, win_width: u32, win_height: u32) bool {
@@ -255,7 +261,7 @@ fn detectBorderDrag(mux: *Multiplexer, mouse_x: u32, mouse_y: u32, lp: LayoutPar
 
     // Tree split drag
     if (ws.split_root != null) {
-        if (mux.layout_engine.workspaces[mux.active_workspace].findSplitForBorder(click_screen, mouse_x, mouse_y, 4)) |hit| {
+        if (mux.layout_engine.workspaces[mux.active_workspace].findSplitForBorder(click_screen, mouse_x, mouse_y, border_grab_px * lp.ui_scale)) |hit| {
             ms.border_dragging = true;
             const split_dir = mux.layout_engine.workspaces[mux.active_workspace].split_nodes[hit.node_idx].split.dir;
             ms.border_drag_x = if (split_dir == .horizontal) mouse_y else mouse_x;
@@ -268,7 +274,7 @@ fn detectBorderDrag(mux: *Multiplexer, mouse_x: u32, mouse_y: u32, lp: LayoutPar
     // Flat layout: detect master ratio border
     const layout = ws.layout;
     const ratio = ws.master_ratio;
-    const zone: u32 = 4;
+    const zone: u32 = border_grab_px * lp.ui_scale;
     const is_vertical = (layout == .master_stack or layout == .three_col);
     const is_horizontal = (layout == .dishes);
     if (is_vertical) {
