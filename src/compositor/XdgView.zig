@@ -648,6 +648,12 @@ fn handleRequestFullscreen(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(
     std.log.scoped(.compositor).info("client fullscreen request node={d} want={}", .{ view.node_id, want });
     // Ack: tell the client the fullscreen state it will get on next configure.
     _ = wlr.wlr_xdg_toplevel_set_fullscreen(view.toplevel, want);
+    // Before the first map the node is not registered yet. Acting now hid
+    // every window and both bars around an unmapped surface and bypassed the
+    // browser exception in handleMap, which honours the latched request
+    // itself (appIdSkipsMapFullscreen). The ack above still rides into the
+    // initial configure that mpv and gamescope rely on.
+    if (server.nodes.findById(view.node_id) == null) return;
     if (want) {
         server.focusView(view);
         server.enterFullscreen(view.node_id);
