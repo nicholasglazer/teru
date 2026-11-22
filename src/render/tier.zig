@@ -30,10 +30,12 @@ pub const RenderTier = enum {
 
 /// Detect the best rendering tier for the current environment.
 pub fn detectTier() RenderTier {
-    if (builtin.os.tag == .windows) {
-        // A Windows logon always has a desktop to open a window on; there
-        // is no DISPLAY to look for. The exception is an SSH session, which
-        // runs without one: a window created there would never be seen.
+    if (builtin.os.tag == .windows or builtin.os.tag == .macos) {
+        // A Windows or macOS logon always has a desktop to open a window
+        // on; there is no DISPLAY to look for (macOS sets one only under
+        // XQuartz, which teru does not use). The exception is an SSH
+        // session, which runs without one: a window created there would
+        // never be seen.
         if (compat.getenv("SSH_CONNECTION") != null or compat.getenv("SSH_TTY") != null) return .tty;
         return .cpu;
     }
