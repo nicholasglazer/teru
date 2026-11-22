@@ -122,7 +122,10 @@ pub fn renderPaneIntoRect(
             const pending_half = right_half;
             right_half = null;
             if (renderer.atlas_width > 0 and renderer.glyph_atlas.len > 0) {
-                if (FontAtlas.glyphSlot(@intCast(cp))) |slot| {
+                if (cp == ' ') {
+                    // A space is all background, filled above. Blending its
+                    // empty glyph cost about a quarter of a full repaint.
+                } else if (FontAtlas.glyphSlot(@intCast(cp))) |slot| {
                     const atlas = renderer.getAtlasForAttrs(cell.attrs.bold, cell.attrs.italic);
                     blitGlyphInRect(renderer, @intCast(slot), screen_x, screen_y, max_x, max_y, fg, bg, atlas, 0);
                 } else if (cp > 0x20) {

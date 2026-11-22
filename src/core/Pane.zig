@@ -332,10 +332,20 @@ pub fn readAndProcess(self: *Pane, buf: []u8) !usize {
     };
     if (n > 0) {
         debugLogPty(buf[0..n]);
-        self.vt.feed(buf[0..n]);
-        self.grid.dirty = true;
+        self.feedOutput(buf[0..n]);
     }
     return n;
+}
+
+/// Run program output through the VT parser and flag the pane for a repaint.
+fn feedOutput(self: *Pane, bytes: []const u8) void {
+    self.vt.feed(bytes);
+    // Mark the cursor row, not a bare `dirty = true`: on a grid with no
+    // tracked rows that leaves the inverted all-rows sentinel, so a read
+    // that only moved the cursor or set the title repainted the whole
+    // pane. Grid mutators already mark the rows they change, and
+    // renderDirty widens the range to the old and new cursor rows.
+    self.grid.markRowDirty(self.grid.cursor_row);
 }
 
 // ── Debug: raw PTY capture ───────────────────────────────────────
@@ -504,6 +514,21 @@ test "Pane readAndProcess returns 0 on empty" {
     // The important thing is it doesn't error.
     var buf: [4096]u8 = undefined;
     _ = try pane.readAndProcess(&buf);
+}
+
+test "Pane output that changes no cells marks a row range, not a full repaint" {
+    const allocator = std.testing.allocator;
+
+    var pane = try Pane.init(allocator, 24, 80, 9, .{});
+    defer pane.deinit(allocator);
+    pane.linkVt(allocator); // init returns by value; point the parser at this copy's grid
+
+    for ([_][]const u8{ "\x1b[D", "\x1b[5;5H", "\x1b]0;title\x07", "\x1b[?25l" }) |seq| {
+        pane.grid.clearDirty();
+        pane.feedOutput(seq);
+        try std.testing.expect(pane.grid.dirty);
+        try std.testing.expect(pane.grid.dirty_row_min <= pane.grid.dirty_row_max);
+    }
 }
 
 test "Pane resize" {
