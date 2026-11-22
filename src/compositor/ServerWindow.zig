@@ -204,7 +204,10 @@ pub fn exitFullscreen(self: *Server) void {
     // Re-tile (respects bar height again)
     const ws = self.layout_engine.active_workspace;
     self.arrangeworkspace(ws);
-    if (self.bar) |b| _ = b.render(self);
+    if (self.bar) |b| {
+        b.dirty = true; // Bar.render skipped every paint while fullscreen
+        _ = b.render(self);
+    }
 
     // enterFullscreen raised the target to the scene top; if it is tiled it
     // must drop back beneath floats/scratchpads (click routing prefers
