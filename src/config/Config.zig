@@ -765,12 +765,13 @@ fn parseBool(value: []const u8) ?bool {
     return null;
 }
 
-/// A master ratio inside the documented 0.15-0.85; NaN gives null (keep the default).
-/// parseFloat accepts nan, inf and negatives, and an unclamped ratio made
-/// teru_get_config's float-to-int cast abort ReleaseSafe builds.
+/// A master ratio inside Workspace.ratio_min..ratio_max; NaN gives null
+/// (keep the default). parseFloat accepts nan, inf and negatives, and an
+/// unclamped ratio made teru_get_config's float-to-int cast abort ReleaseSafe
+/// builds.
 fn clampRatio(r: f32) ?f32 {
     if (std.math.isNan(r)) return null;
-    return std.math.clamp(r, 0.15, 0.85);
+    return LayoutEngine.Workspace.clampRatio(r, r);
 }
 
 fn parseFloat(value: []const u8) ?f32 {

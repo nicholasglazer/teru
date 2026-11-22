@@ -1230,7 +1230,7 @@ pub fn processCursorMotion(server: *Server, time: u32) void {
         const delta = cx - server.grab_x;
         const ratio_delta: f32 = @floatCast(delta / out_w);
         const ws = server.layout_engine.getActiveWorkspace();
-        ws.master_ratio = @max(0.1, @min(0.9, ws.master_ratio + ratio_delta));
+        ws.master_ratio = teru.Workspace.clampRatio(ws.master_ratio + ratio_delta, ws.master_ratio);
         server.grab_x = cx;
         // Defer layout to frame callback — one arrange per vsync, not per motion.
         server.layout_dirty = true;

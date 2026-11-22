@@ -516,14 +516,14 @@ pub fn resizeActive(self: *Multiplexer, dx: i8, dy: i8) void {
         .master_stack, .three_col => {
             if (dx != 0) {
                 const step: f32 = @as(f32, @floatFromInt(dx)) * 0.02;
-                ws.master_ratio = @min(0.85, @max(0.15, ws.master_ratio + step));
+                ws.master_ratio = LayoutEngine.Workspace.clampRatio(ws.master_ratio + step, ws.master_ratio);
             }
         },
         // Vertical layout: dy adjusts master_ratio (height)
         .dishes => {
             if (dy != 0) {
                 const step: f32 = @as(f32, @floatFromInt(dy)) * 0.02;
-                ws.master_ratio = @min(0.85, @max(0.15, ws.master_ratio + step));
+                ws.master_ratio = LayoutEngine.Workspace.clampRatio(ws.master_ratio + step, ws.master_ratio);
             }
         },
         else => {},

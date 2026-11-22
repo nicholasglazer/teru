@@ -9,6 +9,7 @@ const Io = std.Io;
 const Dir = Io.Dir;
 const ProcessGraph = @import("../graph/ProcessGraph.zig");
 const compat = @import("../compat.zig");
+const Workspace = @import("../tiling/Workspace.zig");
 
 const Session = @This();
 
@@ -255,7 +256,9 @@ pub fn deserialize(reader: anytype, allocator: Allocator) !Session {
                 .name = "",
                 .layout = layout,
                 .active_index = 0,
-                .master_ratio = @bitCast(ratio_bits),
+                // A corrupt or hand-made file must not bring a NaN or
+                // out-of-range ratio back; keep the range every path uses.
+                .master_ratio = Workspace.clampRatio(@bitCast(ratio_bits), 0.55),
                 .pane_count = pane_count,
                 .node_ids = &.{},
             };
@@ -695,5 +698,30 @@ test "serializeWithWorkspaces: ws_meta (layout + master_ratio + active_ws) round
             session.workspace_states[i].master_ratio,
             0.0001,
         );
+    }
+}
+
+test "deserialize clamps a corrupt workspace master_ratio" {
+    const allocator = std.testing.allocator;
+    var graph = ProcessGraph.init(allocator);
+    defer graph.deinit();
+
+    const bad = [_]f32{ -3.0, 0.0, 0.05, 0.5, 0.97, 1e30, std.math.nan(f32), std.math.inf(f32), -std.math.inf(f32), 0.85 };
+    const want = [_]f32{ 0.15, 0.15, 0.15, 0.5, 0.85, 0.85, 0.55, 0.85, 0.15, 0.85 };
+    var ws_meta: [10]WorkspaceMeta = undefined;
+    for (&ws_meta, 0..) |*m, i| {
+        m.* = .{ .layout = 0, .master_ratio = bad[i], .pane_count = 0, .active_workspace = 0 };
+    }
+
+    var buf: [4096]u8 = undefined;
+    var writer = compat.MemWriter{ .buffer = &buf };
+    try serializeWithWorkspaces(&graph, &writer, &ws_meta);
+
+    var reader = compat.MemReader{ .buffer = writer.getWritten() };
+    var session = try deserialize(&reader, allocator);
+    defer session.deinit();
+
+    for (0..10) |i| {
+        try std.testing.expectEqual(want[i], session.workspace_states[i].master_ratio);
     }
 }

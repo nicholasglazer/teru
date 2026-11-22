@@ -31,9 +31,6 @@ pub const version = build_options.version;
 pub const DEFAULT_ROWS: u16 = 24;
 pub const DEFAULT_COLS: u16 = 80;
 
-pub const MASTER_RATIO_MIN: f32 = 0.15;
-pub const MASTER_RATIO_MAX: f32 = 0.85;
-
 pub const DOUBLE_CLICK_NS: i128 = 300_000_000; // 300 ms
 pub const CURSOR_BLINK_NS: i128 = 530_000_000; // 530 ms on/off
 pub const PERSIST_DEBOUNCE_NS: i128 = 100_000_000; // 100 ms
@@ -463,7 +460,7 @@ pub fn parseDaemonStateSync(daemon_fd: posix.fd_t, mux: *Multiplexer, payload: [
             // the layout the daemon just told us (grid → master-stack on 4 panes).
             ws.layout_pinned = true;
             ws.active_node = if (active_pane_id != 0) active_pane_id else null;
-            ws.master_ratio = @as(f32, @floatFromInt(ratio_x100)) / 100.0;
+            ws.master_ratio = LE.Workspace.clampRatio(@as(f32, @floatFromInt(ratio_x100)) / 100.0, ws.master_ratio);
         }
     }
 
