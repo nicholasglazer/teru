@@ -1026,16 +1026,16 @@ fn toolWaitFor(self: *McpServer, pane_id: u64, pattern: []const u8, lines: u32, 
 
     const grid = &pane.grid;
 
-    // Non-blocking: a single PTY drain + scan, then return immediately. The
-    // tool schema documents this as non-blocking; the agent polls/retries.
-    // The old 10×50ms sleep loop blocked the single-threaded event loop —
-    // render, keyboard/mouse, PTY reads, all MCP/hook polling — for up to
-    // 500ms on one call (violates the project's "never block the loop" rule).
+    // Non-blocking: a single scan, then return immediately. The tool schema
+    // documents this as non-blocking; the agent polls/retries. The old
+    // 10×50ms sleep loop blocked the single-threaded event loop — render,
+    // keyboard/mouse, PTY reads, all MCP/hook polling — for up to 500ms on
+    // one call (violates the project's "never block the loop" rule).
+    //
+    // No PTY read here either: the event loop drains PTYs before it polls
+    // MCP, and in the session daemon a read here consumed output that was
+    // never relayed to the attached client.
     {
-        // Force a PTY read so the grid is up-to-date
-        var pty_buf: [8192]u8 = undefined;
-        _ = pane.readAndProcess(&pty_buf) catch 0;
-
         const cells = grid.cells; // grid is never modified by scroll — always real content
         const check_rows = @min(lines, grid.rows);
         const start_row = grid.rows - check_rows;
