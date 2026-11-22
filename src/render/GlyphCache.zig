@@ -53,7 +53,7 @@ pub const AtlasFont = struct {
     pub fn init(bytes: ?[]const u8, scale: f32) AtlasFont {
         const data = bytes orelse return .{};
         var font: AtlasFont = .{ .scale = scale };
-        font.present = stb.stbtt_InitFont(&font.info, data.ptr, 0) != 0;
+        font.present = stb.initFirstFace(&font.info, data);
         return font;
     }
 };

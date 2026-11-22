@@ -231,7 +231,7 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
 
     // Initialize stbtt
     var font_info: stbtt.stbtt_fontinfo = undefined;
-    if (stbtt.stbtt_InitFont(&font_info, font_data.ptr, 0) == 0) {
+    if (!stbtt.initFirstFace(&font_info, font_data)) {
         return error.FontInitFailed;
     }
 
@@ -247,7 +247,7 @@ pub fn init(allocator: std.mem.Allocator, font_path: ?[]const u8, font_size: u16
     var fb_info: stbtt.stbtt_fontinfo = undefined;
     for (fallback_font_paths) |fp| {
         const data = loadFile(allocator, fp, io) catch continue;
-        if (stbtt.stbtt_InitFont(&fb_info, data.ptr, 0) == 0) {
+        if (!stbtt.initFirstFace(&fb_info, data)) {
             allocator.free(data);
             continue;
         }
@@ -496,7 +496,7 @@ pub fn zoomedFontSize(target: ZoomTarget, current: u16, config_size: u16) u16 {
 /// caller must deinit the old one.
 pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
     var font_info: stbtt.stbtt_fontinfo = undefined;
-    if (stbtt.stbtt_InitFont(&font_info, self.font_data.ptr, 0) == 0) {
+    if (!stbtt.initFirstFace(&font_info, self.font_data)) {
         return error.FontInitFailed;
     }
 
@@ -506,7 +506,7 @@ pub fn rasterizeAtSize(self: *const FontAtlas, new_size: u16) !FontAtlas {
     var fb_info: stbtt.stbtt_fontinfo = undefined;
     var have_fb = false;
     if (self.fallback_font_data) |fbd| {
-        if (stbtt.stbtt_InitFont(&fb_info, fbd.ptr, 0) != 0) have_fb = true;
+        if (stbtt.initFirstFace(&fb_info, fbd)) have_fb = true;
     }
     const fb_scale: f32 = if (have_fb)
         stbtt.stbtt_ScaleForPixelHeight(&fb_info, @floatFromInt(new_size))
@@ -703,7 +703,7 @@ pub fn loadVariant(self: *const FontAtlas, allocator: std.mem.Allocator, font_pa
 
     // Init stbtt with the variant font
     var font_info: stbtt.stbtt_fontinfo = undefined;
-    if (stbtt.stbtt_InitFont(&font_info, font_data.ptr, 0) == 0) {
+    if (!stbtt.initFirstFace(&font_info, font_data)) {
         // font_data is freed by the errdefer above — do NOT free it here too
         // (that was a double-free on the InitFont-failure path).
         return error.FontInitFailed;
@@ -742,7 +742,7 @@ pub fn loadVariant(self: *const FontAtlas, allocator: std.mem.Allocator, font_pa
     var fb_info: stbtt.stbtt_fontinfo = undefined;
     var have_fb = false;
     if (self.fallback_font_data) |fbd| {
-        if (stbtt.stbtt_InitFont(&fb_info, fbd.ptr, 0) != 0) have_fb = true;
+        if (stbtt.initFirstFace(&fb_info, fbd)) have_fb = true;
     }
     const fb_scale: f32 = if (have_fb)
         stbtt.stbtt_ScaleForPixelHeight(&fb_info, target_h)
@@ -804,7 +804,7 @@ pub fn loadVariant(self: *const FontAtlas, allocator: std.mem.Allocator, font_pa
 pub fn rasterizeVariant(self: *const FontAtlas, allocator: std.mem.Allocator, variant: *VariantAtlas) !VariantAtlas {
     // Init stbtt from cached font bytes
     var font_info: stbtt.stbtt_fontinfo = undefined;
-    if (stbtt.stbtt_InitFont(&font_info, variant.font_data.ptr, 0) == 0)
+    if (!stbtt.initFirstFace(&font_info, variant.font_data))
         return error.FontInitFailed;
 
     var ascent: c_int = 0;
@@ -821,7 +821,7 @@ pub fn rasterizeVariant(self: *const FontAtlas, allocator: std.mem.Allocator, va
     var fb_info: stbtt.stbtt_fontinfo = undefined;
     var have_fb = false;
     if (self.fallback_font_data) |fbd| {
-        if (stbtt.stbtt_InitFont(&fb_info, fbd.ptr, 0) != 0) have_fb = true;
+        if (stbtt.initFirstFace(&fb_info, fbd)) have_fb = true;
     }
     const fb_scale: f32 = if (have_fb)
         stbtt.stbtt_ScaleForPixelHeight(&fb_info, target_h)
@@ -1012,6 +1012,8 @@ const preferred_fonts = switch (@import("builtin").os.tag) {
         "SF-Mono-Regular.otf",
         "SFMono-Regular.otf",
         "Menlo.ttc",
+        // SF Mono as macOS ships it, outside the developer tools.
+        "SFNSMono.ttf",
         "Monaco.ttf",
         "Courier New.ttf",
     },
