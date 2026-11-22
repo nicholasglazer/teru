@@ -95,8 +95,28 @@ pub const RestoreInfo = struct {
 
 /// Fork a teru daemon named `name` in the background, optionally
 /// with a template. Returns true iff the fork succeeded.
+/// The running teru binary, to re-exec as the daemon. Linux has
+/// /proc/self/exe; macOS has no /proc, so it asks dyld.
+fn selfExePath(buf: *[1024:0]u8) ?[*:0]const u8 {
+    switch (builtin.os.tag) {
+        .linux => return "/proc/self/exe",
+        .macos => {
+            const dyld = struct {
+                extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
+            };
+            var size: u32 = buf.len;
+            if (dyld._NSGetExecutablePath(buf, &size) != 0) return null;
+            buf[buf.len] = 0;
+            return buf;
+        },
+        else => return null,
+    }
+}
+
 pub fn autoStartNamedDaemon(name: []const u8, template: ?[]const u8) bool {
-    const exe_path = "/proc/self/exe";
+    // Resolved before fork: the child should only exec.
+    var exe_buf: [1024:0]u8 = undefined;
+    const exe_path = selfExePath(&exe_buf) orelse return false;
     var name_buf: [128:0]u8 = undefined;
     if (name.len >= name_buf.len) return false;
     @memcpy(name_buf[0..name.len], name);
@@ -151,7 +171,7 @@ pub fn autoStartNamedDaemon(name: []const u8, template: ?[]const u8) bool {
 /// Per-session daemon log path: `$XDG_RUNTIME_DIR/teru-session-<name>.log`.
 /// Tail this to watch a backgrounded daemon (see docs/DEBUGGING.md).
 pub fn daemonLogPath(buf: []u8, name: []const u8) ?[:0]const u8 {
-    const dir = compat.getenv("XDG_RUNTIME_DIR") orelse "/tmp";
+    const dir = compat.runtimeDir();
     const path = std.fmt.bufPrint(buf, "{s}/teru-session-{s}.log", .{ dir, name }) catch return null;
     if (path.len + 1 > buf.len) return null;
     buf[path.len] = 0;

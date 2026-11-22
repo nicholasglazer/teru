@@ -465,17 +465,13 @@ pub fn foregroundCmdline(self: *const Pane, buf: []u8) []const u8 {
     return cmd;
 }
 
-/// The working directory of the pane's foreground process (Linux only; empty
-/// string elsewhere or on error). Restores each pane where its app was running.
+/// The working directory of the pane's foreground process (Linux and
+/// macOS; empty string elsewhere or on error). Restores each pane where its
+/// app was running.
 pub fn foregroundCwd(self: *const Pane, buf: []u8) []const u8 {
-    if (builtin.os.tag != .linux) return "";
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return "";
     const pid = self.foregroundPid() orelse return "";
-    var proc_path: [64:0]u8 = undefined;
-    const path = std.fmt.bufPrint(&proc_path, "/proc/{d}/cwd", .{pid}) catch return "";
-    proc_path[path.len] = 0;
-    const rc = std.c.readlink(&proc_path, buf.ptr, buf.len);
-    if (rc > 0) return buf[0..@intCast(rc)];
-    return "";
+    return compat.processCwd(@intCast(pid), buf);
 }
 
 // ── Tests ────────────────────────────────────────────────────────

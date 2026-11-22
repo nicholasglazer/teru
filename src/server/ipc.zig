@@ -137,8 +137,7 @@ pub fn buildPathFamily(buf: *[256]u8, family: []const u8, prefix: []const u8, na
         return std.fmt.bufPrint(buf, "\\\\.\\pipe\\{s}-{s}-{s}", .{ family, prefix, name }) catch null;
     } else if (builtin.os.tag == .macos) {
         const uid = compat.getUid();
-        const tmpdir = compat.getenv("TMPDIR") orelse "/tmp";
-        return std.fmt.bufPrint(buf, "{s}/{s}-{d}-{s}-{s}.sock", .{ tmpdir, family, uid, prefix, name }) catch null;
+        return std.fmt.bufPrint(buf, "{s}/{s}-{d}-{s}-{s}.sock", .{ macosSocketDir(), family, uid, prefix, name }) catch null;
     } else {
         // Linux: prefer $XDG_RUNTIME_DIR, fallback to /run/user/{uid}
         const uid = compat.getUid();
@@ -150,13 +149,32 @@ pub fn buildPathFamily(buf: *[256]u8, family: []const u8, prefix: []const u8, na
     }
 }
 
+/// Where macOS sockets live: `$TMPDIR` (per user, mode 0700) without its
+/// trailing slash, else /tmp. `teru --list` scans the same directory.
+pub fn macosSocketDir() []const u8 {
+    if (compat.getenv("TMPDIR")) |dir| {
+        const trimmed = compat.trimTrailingSlashes(dir);
+        if (trimmed.len > 0) return trimmed;
+    }
+    return "/tmp";
+}
+
+/// Size of `sockaddr_un.sun_path`: 108 on Linux, 104 on macOS. A path
+/// must fit with its NUL.
+pub const sun_path_len: usize = if (builtin.os.tag == .windows)
+    108
+else
+    @typeInfo(@FieldType(posix.sockaddr.un, "path")).array.len;
+
 // ── POSIX implementation ────────────────────────────────────────
 
 fn listenPosix(path: []const u8) IpcError!IpcHandle {
-    if (path.len >= 108) return IpcError.PathTooLong;
+    // Checked against the real sun_path: macOS's is 104 bytes, and a
+    // 104-107 byte path used to pass a hard-coded 108 and overrun it.
+    if (path.len >= sun_path_len) return IpcError.PathTooLong;
 
     // Remove stale socket
-    var path_z: [109]u8 = undefined;
+    var path_z: [sun_path_len + 1]u8 = undefined;
     @memcpy(path_z[0..path.len], path);
     path_z[path.len] = 0;
     _ = std.c.unlink(@ptrCast(&path_z));
@@ -230,7 +248,7 @@ fn acceptPosix(server: IpcHandle) ?IpcHandle {
 }
 
 fn connectPosix(path: []const u8) IpcError!IpcHandle {
-    if (path.len >= 108) return IpcError.PathTooLong;
+    if (path.len >= sun_path_len) return IpcError.PathTooLong;
 
     const sock = std.c.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
     if (sock < 0) return IpcError.SocketFailed;
@@ -371,4 +389,17 @@ test "buildPath: returns null for overflow" {
 test "IpcHandle: PosixHandle size" {
     if (builtin.os.tag == .windows) return;
     try std.testing.expectEqual(@sizeOf(i32), @sizeOf(PosixHandle));
+}
+
+test "sun_path_len matches the platform's sockaddr_un" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const expected: usize = if (builtin.os.tag == .macos) 104 else 108;
+    try std.testing.expectEqual(expected, sun_path_len);
+}
+
+test "connect rejects a path that does not fit sun_path" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var long: [sun_path_len]u8 = @splat('a');
+    long[0] = '/';
+    try std.testing.expectError(IpcError.PathTooLong, connect(&long));
 }

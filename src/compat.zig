@@ -432,11 +432,32 @@ test "formatLocalTimestamp: YYYY-MM-DD_HH-MM-SS shape" {
 /// Returns null only on bufPrint overflow. Returned slice is sentinel-
 /// null-terminated so it can be passed straight to C APIs.
 pub fn runtimeFilePath(buf: []u8, name: []const u8) ?[:0]const u8 {
-    const dir = getenv("XDG_RUNTIME_DIR") orelse "/tmp";
+    const dir = runtimeDir();
     const path = std.fmt.bufPrint(buf, "{s}/{s}", .{ dir, name }) catch return null;
     if (path.len + 1 > buf.len) return null;
     buf[path.len] = 0;
     return buf[0..path.len :0];
+}
+
+/// The directory for per-user runtime files (sockets, logs, the detach
+/// blob): `$XDG_RUNTIME_DIR`, else on macOS `$TMPDIR`, else `/tmp`.
+/// macOS sets no XDG_RUNTIME_DIR, but its TMPDIR is per user and mode
+/// 0700, where /tmp is shared by every user. No trailing slash.
+pub fn runtimeDir() []const u8 {
+    if (getenv("XDG_RUNTIME_DIR")) |dir| return dir;
+    if (builtin.os.tag == .macos) {
+        if (getenv("TMPDIR")) |dir| {
+            const trimmed = trimTrailingSlashes(dir);
+            if (trimmed.len > 0) return trimmed;
+        }
+    }
+    return "/tmp";
+}
+
+/// `dir` without trailing slashes; macOS's TMPDIR ends in one. "/" becomes
+/// "", which callers treat as unset.
+pub fn trimTrailingSlashes(dir: []const u8) []const u8 {
+    return std.mem.trimEnd(u8, dir, "/");
 }
 
 /// Reject path traversal in user-supplied filenames (session names,
@@ -876,6 +897,41 @@ pub fn ensureParentDirC(path: []const u8) void {
     mkdirAllTo(path[0..last_slash]);
 }
 
+/// The current working directory of process `pid`, written into `buf`;
+/// empty when unknown. Linux reads /proc/<pid>/cwd; macOS has no /proc
+/// and asks the kernel with proc_pidinfo.
+pub fn processCwd(pid: std.posix.pid_t, buf: []u8) []const u8 {
+    switch (builtin.os.tag) {
+        .linux => {
+            var proc_path: [64:0]u8 = undefined;
+            const path = std.fmt.bufPrint(&proc_path, "/proc/{d}/cwd", .{pid}) catch return "";
+            proc_path[path.len] = 0;
+            const rc = std.c.readlink(&proc_path, buf.ptr, buf.len);
+            if (rc > 0) return buf[0..@intCast(rc)];
+            return "";
+        },
+        .macos => {
+            const libproc = struct {
+                // struct vnode_info_path: a 152-byte vnode_info, then the path.
+                const VnodeInfoPath = extern struct { info: [152]u8 align(8), path: [1024]u8 };
+                // struct proc_vnodepathinfo: current and root directory.
+                const VnodePathInfo = extern struct { cdir: VnodeInfoPath, rdir: VnodeInfoPath };
+                const PROC_PIDVNODEPATHINFO: c_int = 9;
+                extern "c" fn proc_pidinfo(pid: c_int, flavor: c_int, arg: u64, buffer: *anyopaque, size: c_int) c_int;
+            };
+            comptime std.debug.assert(@sizeOf(libproc.VnodePathInfo) == 2352);
+            var info: libproc.VnodePathInfo = undefined;
+            const rc = libproc.proc_pidinfo(pid, libproc.PROC_PIDVNODEPATHINFO, 0, &info, @sizeOf(libproc.VnodePathInfo));
+            if (rc != @sizeOf(libproc.VnodePathInfo)) return "";
+            const path = std.mem.sliceTo(&info.cdir.path, 0);
+            if (path.len == 0 or path.len > buf.len) return "";
+            @memcpy(buf[0..path.len], path);
+            return buf[0..path.len];
+        },
+        else => return "",
+    }
+}
+
 /// Read /proc/<pid>/cmdline, replacing null separators with spaces.
 /// Returns the bytes written into `buf`. Empty on non-Linux or on error.
 ///
@@ -918,3 +974,18 @@ fn mkdirAllTo(path: []const u8) void {
     _ = std.c.mkdir(@ptrCast(path_z[0..path.len :0]), 0o755);
 }
 
+
+test "trimTrailingSlashes: macOS TMPDIR form" {
+    try std.testing.expectEqualStrings("/var/folders/xy/T", trimTrailingSlashes("/var/folders/xy/T/"));
+    try std.testing.expectEqualStrings("/tmp", trimTrailingSlashes("/tmp"));
+    try std.testing.expectEqualStrings("/a", trimTrailingSlashes("/a//"));
+    try std.testing.expectEqualStrings("", trimTrailingSlashes("/"));
+}
+
+test "processCwd: this process" {
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir = processCwd(@intCast(std.c.getpid()), &buf);
+    try std.testing.expect(dir.len > 0);
+    try std.testing.expect(dir[0] == '/');
+}

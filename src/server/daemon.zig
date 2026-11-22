@@ -777,9 +777,10 @@ pub fn listSessions(buf: *[1024]u8) ?[]const u8 {
 
 fn listSessionsPosix(buf: *[1024]u8) ?[]const u8 {
     const uid = compat.getUid();
-    var dir_path_buf: [64]u8 = undefined;
+    var dir_path_buf: [256]u8 = undefined;
+    // The directory ipc.buildPathFamily puts the sockets in.
     const dir_path = if (builtin.os.tag == .macos)
-        std.fmt.bufPrint(&dir_path_buf, "/tmp", .{}) catch return null
+        std.fmt.bufPrint(&dir_path_buf, "{s}", .{ipc.macosSocketDir()}) catch return null
     else
         std.fmt.bufPrint(&dir_path_buf, "/run/user/{d}", .{uid}) catch return null;
 
@@ -792,7 +793,7 @@ fn listSessionsPosix(buf: *[1024]u8) ?[]const u8 {
     const suffix = ".sock";
 
     // Null-terminate for C opendir
-    var dir_path_z: [65]u8 = undefined;
+    var dir_path_z: [257]u8 = undefined;
     @memcpy(dir_path_z[0..dir_path.len], dir_path);
     dir_path_z[dir_path.len] = 0;
 

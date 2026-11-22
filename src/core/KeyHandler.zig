@@ -116,7 +116,7 @@ pub fn handleMuxCommand(
             // $XDG_RUNTIME_DIR (private, cleaned on logout) — see
             // common.sessionPath.
             var path_buf: [256:0]u8 = undefined;
-            const dir = compat.getenv("XDG_RUNTIME_DIR") orelse "/tmp";
+            const dir = compat.runtimeDir();
             const path = std.fmt.bufPrint(&path_buf, "{s}/teru-session.bin", .{dir}) catch {
                 writeMsg("[teru] Session path too long, exiting anyway\n");
                 running.* = false;

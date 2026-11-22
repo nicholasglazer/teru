@@ -480,17 +480,12 @@ fn toolCreatePane(self: *McpServer, workspace: u8, horizontal: bool, command: ?[
     // Resolve CWD: explicit param > active pane's CWD > inherit
     var cwd_buf: [512]u8 = undefined;
     const cwd: ?[]const u8 = if (cwd_param) |c| c else blk: {
-        // Read active pane's CWD from /proc/<pid>/cwd
+        // The active pane's shell's working directory.
         if (self.multiplexer.getActivePane()) |pane| {
             if (pane.childPid()) |pid| {
                 if (builtin.os.tag == .windows) break :blk null;
-                var path_z: [64:0]u8 = undefined;
-                const proc_path = std.fmt.bufPrint(&path_z, "/proc/{d}/cwd", .{pid}) catch break :blk null;
-                path_z[proc_path.len] = 0;
-                const rc = std.c.readlink(@ptrCast(&path_z), &cwd_buf, cwd_buf.len);
-                if (rc > 0) {
-                    break :blk cwd_buf[0..@intCast(rc)];
-                }
+                const dir = compat.processCwd(@intCast(pid), &cwd_buf);
+                if (dir.len > 0) break :blk dir;
             }
         }
         break :blk null;

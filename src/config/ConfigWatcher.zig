@@ -105,7 +105,19 @@ fn pollInotify(self: *ConfigWatcher) bool {
 // ── macOS: kqueue ───────────────────────────────────────────────
 
 fn initKqueue() ?ConfigWatcher {
-    // kqueue requires opening the file to watch it
+    // Create kqueue
+    const kq = std.c.kqueue();
+    if (kq < 0) return null;
+    const file_fd = watchConfigFile(kq) orelse {
+        _ = posix.system.close(kq);
+        return null;
+    };
+    return .{ .fd = kq, .wd = file_fd };
+}
+
+/// Open teru.conf and register it with `kq`; returns the file's fd. kqueue
+/// watches an open file, not a path.
+fn watchConfigFile(kq: posix.fd_t) ?posix.fd_t {
     const home = compat.getenv("HOME") orelse return null;
     var path_buf: [512]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/.config/teru/teru.conf", .{home}) catch return null;
@@ -116,19 +128,15 @@ fn initKqueue() ?ConfigWatcher {
     const file_fd = posix.system.open(@ptrCast(path_buf[0..path.len :0]), .{ .ACCMODE = .RDONLY }, @as(std.posix.mode_t, 0));
     if (file_fd < 0) return null;
 
-    // Create kqueue
-    const kq = std.c.kqueue();
-    if (kq < 0) {
-        _ = posix.system.close(file_fd);
-        return null;
-    }
-
-    // Register EVFILT_VNODE for writes
+    // Writes in place, and the file being deleted or renamed away: editors
+    // such as vim and VS Code save by writing a new file and renaming it
+    // over the old one, after which the open file is no longer teru.conf.
     var changelist = [1]std.posix.Kevent{.{
         .ident = @intCast(file_fd),
         .filter = std.posix.system.EVFILT.VNODE,
         .flags = std.posix.system.EV.ADD | std.posix.system.EV.CLEAR,
-        .fflags = std.posix.system.NOTE.WRITE | std.posix.system.NOTE.ATTRIB,
+        .fflags = std.posix.system.NOTE.WRITE | std.posix.system.NOTE.ATTRIB |
+            std.posix.system.NOTE.DELETE | std.posix.system.NOTE.RENAME,
         .data = 0,
         .udata = 0,
     }};
@@ -136,11 +144,9 @@ fn initKqueue() ?ConfigWatcher {
     const rc = std.posix.system.kevent(kq, &changelist, 1, &empty_events, 0, null);
     if (rc < 0) {
         _ = posix.system.close(file_fd);
-        _ = posix.system.close(kq);
         return null;
     }
-
-    return .{ .fd = kq, .wd = file_fd };
+    return file_fd;
 }
 
 fn pollKqueue(self: *ConfigWatcher) bool {
@@ -148,7 +154,24 @@ fn pollKqueue(self: *ConfigWatcher) bool {
     var events: [4]std.posix.Kevent = undefined;
     var empty_changelist: [1]std.posix.Kevent = undefined;
     const n = std.posix.system.kevent(self.fd, &empty_changelist, 0, &events, events.len, &timeout);
-    return n > 0;
+    if (n <= 0) {
+        // The file was replaced while no new one existed yet: try again.
+        if (self.wd < 0) {
+            self.wd = watchConfigFile(self.fd) orelse -1;
+            return self.wd >= 0;
+        }
+        return false;
+    }
+    const gone = std.posix.system.NOTE.DELETE | std.posix.system.NOTE.RENAME;
+    for (events[0..@intCast(n)]) |ev| {
+        if (ev.fflags & gone != 0) {
+            // Closing the fd also removes its kqueue registration.
+            if (self.wd >= 0) _ = posix.system.close(self.wd);
+            self.wd = watchConfigFile(self.fd) orelse -1;
+            break;
+        }
+    }
+    return true;
 }
 
 // ── Windows / fallback: stat polling ────────────────────────────
