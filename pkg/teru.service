@@ -13,16 +13,29 @@
 # Or with persist_session = true in teru.conf, just run:
 #   teru
 # It auto-attaches to the running daemon.
+#
+# For several named sessions, see the teru-session@.service template in
+# docs/SESSIONS.md.
 
 [Unit]
 Description=teru terminal daemon
 Documentation=https://teru.sh
 
 [Service]
-Type=forking
-ExecStart=%h/.local/bin/teru --daemon default
+# `teru --daemon` runs in the foreground and never forks. Type=forking made
+# systemd wait for an exit that never came, time the start out after 90 s,
+# kill the daemon and every pane, and restart it over and over.
+Type=simple
+WorkingDirectory=%h
+# Login shell so panes inherit the full interactive PATH + env. Distro
+# packages rewrite the path to /usr/bin/teru.
+ExecStart=/bin/bash -lc 'exec %h/.local/bin/teru --daemon default'
 Restart=on-failure
 RestartSec=3
+TimeoutStopSec=20
+# The default (OOMPolicy=stop) tears down the whole unit, daemon and every
+# pane, when the kernel OOM-kills any single process inside a pane.
+OOMPolicy=continue
 
 [Install]
 WantedBy=default.target

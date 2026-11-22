@@ -51,7 +51,8 @@ human with a keyboard for.
   containers, on machines with no GPU driver loaded. [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 - **Process graph.** Every pane, every agent, every child process is a node in a DAG the MCP
   can query. OSC 9999 lets any process self-declare as an AI agent.
-- **Single statically-linked binary per platform.** No Python, no Node, no Electron.
+- **Single self-contained binary per platform.** No Python, no Node, no Electron. It links
+  only system libraries: libc, plus xcb, xkbcommon and wayland-client on Linux.
 
 ## Install
 

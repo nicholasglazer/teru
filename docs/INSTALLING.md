@@ -42,8 +42,9 @@ brew install nicholasglazer/teru/teru
 
 Builds from source via Zig. No Gatekeeper warnings since the binary is built locally.
 
-**The tap is behind.** It pins 0.6.3, and its `depends_on "zig"` resolves to stable Zig
-(0.16.0), which will not build current teru. For 0.15.x on macOS, build from source below.
+**The tap is behind.** It pins 0.6.3 and builds with whatever Zig Homebrew ships, while
+current teru needs stable Zig 0.17. For the current release on macOS, build from source
+below.
 
 ### Manual
 
