@@ -77,11 +77,40 @@ fn scanFor(out: *[256]u8, prefix: []const u8, exclude_prefix: ?[]const u8) ?[]co
             if (std.mem.startsWith(u8, name, ex)) continue;
         }
         if (!std.mem.endsWith(u8, name, ".sock")) continue;
+        // A crashed or SIGTERM'd teruwm leaves its socket behind. Skip one
+        // whose owner is gone, or every forward fails while readdir happens
+        // to list it before the live compositor's.
+        if (ownerPid(name, prefix)) |pid| {
+            if (!pidAlive(pid)) continue;
+        }
 
         const full = std.fmt.bufPrint(out, "{s}/{s}", .{ dir_path, name }) catch continue;
         return full;
     }
     return null;
+}
+
+/// The PID in `<prefix><PID>.sock`, or null when the name carries none.
+fn ownerPid(name: []const u8, prefix: []const u8) ?i32 {
+    if (name.len <= prefix.len + ".sock".len) return null;
+    const digits = name[prefix.len .. name.len - ".sock".len];
+    return std.fmt.parseInt(i32, digits, 10) catch null;
+}
+
+/// Whether a process with this PID exists (signal 0 probes without sending).
+fn pidAlive(pid: i32) bool {
+    if (pid <= 0) return false;
+    if (std.c.kill(pid, @enumFromInt(0)) == 0) return true;
+    // EPERM: it exists but belongs to someone else.
+    return std.posix.errno(@as(c_int, -1)) == .PERM;
+}
+
+/// Bound the blocking forward socket: it runs on teru's event loop, so a
+/// hung teruwm must not hang teru with it.
+fn setForwardTimeouts(fd: i32) void {
+    const tv: std.c.timeval = .{ .sec = 0, .usec = 500_000 };
+    _ = std.c.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &tv, @sizeOf(std.c.timeval));
+    _ = std.c.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, &tv, @sizeOf(std.c.timeval));
 }
 
 /// Send a JSON-RPC request body to teruwm's MCP socket, receive the
@@ -93,6 +122,7 @@ pub fn forwardRequest(body: []const u8, out: []u8) ?[]const u8 {
     const sock_path = findTeruwmSocket() orelse return null;
     var conn = ipc.connect(sock_path) catch return null;
     defer conn.close();
+    if (builtin.os.tag != .windows) setForwardTimeouts(conn.rawFd());
 
     // teruwm speaks HTTP/1.1 + JSON-RPC (same framing since v0.4.18).
     var header_buf: [256]u8 = undefined;
@@ -130,4 +160,18 @@ test "scanRuntimeDir returns null when no teruwm socket exists" {
     // This test is best-effort — if a real teruwm happens to be running
     // on this machine, it'll still find it. Skip in that case.
     _ = scanRuntimeDir();
+}
+
+test "ownerPid reads the PID from a socket name" {
+    try std.testing.expectEqual(@as(?i32, 1234), ownerPid("teruwm-mcp-1234.sock", "teruwm-mcp-"));
+    try std.testing.expectEqual(@as(?i32, 77), ownerPid("teruwm-mcp-events-77.sock", "teruwm-mcp-events-"));
+    try std.testing.expectEqual(@as(?i32, null), ownerPid("teruwm-mcp-x.sock", "teruwm-mcp-"));
+    try std.testing.expectEqual(@as(?i32, null), ownerPid("teruwm-mcp-.sock", "teruwm-mcp-"));
+}
+
+test "pidAlive: this process is alive, an unused PID is not" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    try std.testing.expect(pidAlive(@intCast(std.c.getpid())));
+    try std.testing.expect(!pidAlive(0));
+    try std.testing.expect(!pidAlive(std.math.maxInt(i32)));
 }
