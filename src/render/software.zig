@@ -313,7 +313,8 @@ pub const SoftwareRenderer = struct {
                 // rows 0..scroll_offset-1 are scrollback above the
                 // viewport.
                 if (sel) |s| {
-                    const screen_row: u16 = @intCast(scroll_offset + row);
+                    // u32: with a long history the sum passes 65535.
+                    const screen_row: u32 = scroll_offset +| @as(u32, @intCast(row));
                     if (s.isCellSelected(grid, @intCast(row), @intCast(col), screen_row, scroll_offset, sb_lines)) {
                         bg = self.scheme.selection_bg;
                         if (fg == bg) fg = self.scheme.ansi[15];

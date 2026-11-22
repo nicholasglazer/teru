@@ -23,7 +23,7 @@ end_col: u16 = 0,
 /// screen_row is 0-based from the top of the viewport.
 /// scroll_offset is how many scrollback lines are visible above the grid.
 /// sb_lines is the total number of scrollback lines.
-pub fn screenToAbsolute(screen_row: u16, scroll_offset: u32, sb_lines: u32) u32 {
+pub fn screenToAbsolute(screen_row: u32, scroll_offset: u32, sb_lines: u32) u32 {
     // The viewport shows:
     //   rows 0..scroll_offset-1 = scrollback lines (newest first from offset)
     //   rows scroll_offset..grid_rows-1 = grid rows
@@ -31,9 +31,9 @@ pub fn screenToAbsolute(screen_row: u16, scroll_offset: u32, sb_lines: u32) u32 
     //   scrollback line at viewport row r (where r < scroll_offset) = sb_lines - scroll_offset + r
     //   grid row at viewport row r (where r >= scroll_offset) = sb_lines + (r - scroll_offset)
     if (scroll_offset > 0 and screen_row < scroll_offset) {
-        return sb_lines -| scroll_offset + @as(u32, screen_row);
+        return sb_lines -| scroll_offset + screen_row;
     }
-    return sb_lines + @as(u32, screen_row) -| scroll_offset;
+    return sb_lines + screen_row -| scroll_offset;
 }
 
 /// Convert an absolute row back to a screen row, or null if off-screen.
@@ -57,7 +57,7 @@ pub fn absoluteToScreen(abs_row: u32, scroll_offset: u32, sb_lines: u32, grid_ro
 }
 
 /// Begin a new selection at the given screen position.
-pub fn begin(self: *Selection, screen_row: u16, col: u16, scroll_offset: u32, sb_lines: u32) void {
+pub fn begin(self: *Selection, screen_row: u32, col: u16, scroll_offset: u32, sb_lines: u32) void {
     const abs = screenToAbsolute(screen_row, scroll_offset, sb_lines);
     self.active = true;
     self.start_row = abs;
@@ -67,7 +67,7 @@ pub fn begin(self: *Selection, screen_row: u16, col: u16, scroll_offset: u32, sb
 }
 
 /// Update the selection endpoint (called during drag).
-pub fn update(self: *Selection, screen_row: u16, col: u16, scroll_offset: u32, sb_lines: u32) void {
+pub fn update(self: *Selection, screen_row: u32, col: u16, scroll_offset: u32, sb_lines: u32) void {
     if (!self.active) return;
     self.end_row = screenToAbsolute(screen_row, scroll_offset, sb_lines);
     self.end_col = col;
@@ -79,16 +79,17 @@ pub fn finish(self: *Selection) void {
 }
 
 /// Select the word at (screen_row, col).
-pub fn selectWord(self: *Selection, grid: *const Grid, screen_row: u16, col: u16, delimiters: []const u8, scroll_offset: u32, sb_lines: u32) void {
+pub fn selectWord(self: *Selection, grid: *const Grid, screen_row: u32, col: u16, delimiters: []const u8, scroll_offset: u32, sb_lines: u32) void {
     // Word selection only works on visible grid rows (not scrollback)
-    const grid_row: u16 = if (scroll_offset > 0 and screen_row >= scroll_offset)
-        screen_row - @as(u16, @intCast(@min(scroll_offset, std.math.maxInt(u16))))
+    const view_row: u32 = if (scroll_offset > 0 and screen_row >= scroll_offset)
+        screen_row - scroll_offset
     else if (scroll_offset == 0)
         screen_row
     else
         return; // In scrollback region, skip word selection
 
-    if (grid_row >= grid.rows) return;
+    if (view_row >= grid.rows) return;
+    const grid_row: u16 = @intCast(view_row);
 
     var left: u16 = col;
     while (left > 0) {
@@ -134,7 +135,7 @@ fn normalized(self: *const Selection) struct { r0: u32, c0: u16, r1: u32, c1: u1
 
 /// Check if a screen cell at (screen_row, col) is within the selection,
 /// given the current viewport scroll state.
-pub fn isSelected(self: *const Selection, screen_row: u16, col: u16, scroll_offset: u32, sb_lines: u32) bool {
+pub fn isSelected(self: *const Selection, screen_row: u32, col: u16, scroll_offset: u32, sb_lines: u32) bool {
     if (!self.active) return false;
     const abs = screenToAbsolute(screen_row, scroll_offset, sb_lines);
     const n = self.normalized();
@@ -153,7 +154,7 @@ pub fn isSelected(self: *const Selection, screen_row: u16, col: u16, scroll_offs
 /// Whether the grid cell (row, col), shown on `screen_row`, is drawn selected.
 /// A wide glyph is selected as a whole: either of its two columns being in
 /// the selection highlights both, which matches what `getText` copies.
-pub fn isCellSelected(self: *const Selection, grid: *const Grid, row: u16, col: u16, screen_row: u16, scroll_offset: u32, sb_lines: u32) bool {
+pub fn isCellSelected(self: *const Selection, grid: *const Grid, row: u16, col: u16, screen_row: u32, scroll_offset: u32, sb_lines: u32) bool {
     if (!self.active) return false;
     if (self.isSelected(screen_row, col, scroll_offset, sb_lines)) return true;
     const partner = grid.widePartner(row, col) orelse return false;
@@ -523,4 +524,14 @@ test "a selection touching either half of a wide glyph takes the whole glyph" {
     // The same line in scrollback copies the same text for the same columns.
     try std.testing.expectEqualStrings("\u{d55c}B", buf[0..stripSgrToColumns("A\u{d55c}BC", 2, 3, &buf)]);
     try std.testing.expectEqualStrings("A\u{d55c}", buf[0..stripSgrToColumns("A\u{d55c}BC", 0, 1, &buf)]);
+}
+
+test "selection rows past 65535 lines of scrollback" {
+    var sel: Selection = .{};
+    const sb_lines: u32 = 200_000;
+    const scroll_offset: u32 = 200_000; // scrolled to the top of the history
+    sel.begin(scroll_offset + 3, 0, scroll_offset, sb_lines);
+    sel.update(scroll_offset + 3, 5, scroll_offset, sb_lines);
+    try std.testing.expect(sel.isSelected(scroll_offset + 3, 2, scroll_offset, sb_lines));
+    try std.testing.expect(!sel.isSelected(scroll_offset + 4, 2, scroll_offset, sb_lines));
 }
