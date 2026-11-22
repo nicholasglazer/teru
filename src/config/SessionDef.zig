@@ -196,7 +196,10 @@ pub fn parse(allocator: Allocator, content: []const u8) !SessionDef {
                 } else if (std.mem.eql(u8, kv.key, "layout")) {
                     ws.layout = layoutFromString(kv.value);
                 } else if (std.mem.eql(u8, kv.key, "ratio")) {
-                    ws.ratio = parseFloat(kv.value) orelse 0.55;
+                    // Clamped: a hand-edited or corrupt .tsess must not carry
+                    // a negative, huge or NaN ratio into the layout.
+                    const r = parseFloat(kv.value) orelse 0.55;
+                    ws.ratio = if (std.math.isNan(r)) 0.55 else std.math.clamp(r, 0.1, 0.9);
                 }
             },
             .pane => {

@@ -812,7 +812,9 @@ fn toolGetConfig(self: *McpServer, buf: []u8, id: ?[]const u8) []const u8 {
     , .{
         mux.active_workspace,
         @tagName(ws.layout),
-        @as(u32, @intFromFloat(ws.master_ratio * 100)),
+        // Same guard as daemon.sendStateSync: a NaN or out-of-range ratio
+        // would make @intFromFloat abort ReleaseSafe builds.
+        @as(u32, if (std.math.isNan(ws.master_ratio)) 50 else @intFromFloat(std.math.clamp(ws.master_ratio, 0.0, 1.0) * 100.0)),
         mux.panes.items.len,
         self.screen_width,
         self.screen_height,

@@ -689,7 +689,7 @@ fn applyWorkspaceField(self: *Config, allocator: Allocator, ws_idx: usize, key: 
     } else if (std.mem.eql(u8, key, "layouts")) {
         self.workspace_layout_counts[ws_idx] = parseLayoutList(value, &self.workspace_layout_lists[ws_idx]);
     } else if (std.mem.eql(u8, key, "master_ratio")) {
-        self.workspace_ratios[ws_idx] = parseFloat(value);
+        self.workspace_ratios[ws_idx] = if (parseFloat(value)) |r| clampRatio(r) else null;
     } else if (std.mem.eql(u8, key, "name")) {
         // Free any previous name
         if (self.workspace_names[ws_idx]) |prev| allocator.free(prev);
@@ -763,6 +763,14 @@ fn parseBool(value: []const u8) ?bool {
     if (std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "yes") or std.mem.eql(u8, value, "1")) return true;
     if (std.mem.eql(u8, value, "false") or std.mem.eql(u8, value, "no") or std.mem.eql(u8, value, "0")) return false;
     return null;
+}
+
+/// A master ratio inside 0.1-0.9; NaN gives null (keep the default).
+/// parseFloat accepts nan, inf and negatives, and an unclamped ratio made
+/// teru_get_config's float-to-int cast abort ReleaseSafe builds.
+fn clampRatio(r: f32) ?f32 {
+    if (std.math.isNan(r)) return null;
+    return std.math.clamp(r, 0.1, 0.9);
 }
 
 fn parseFloat(value: []const u8) ?f32 {
@@ -1406,4 +1414,11 @@ test "parse tui_pane_border accepts box/line/none and the old bools" {
     var c5 = Config{ .allocator = allocator };
     c5.parse(allocator, "tui_pane_border = wibble\n");
     try std.testing.expectEqual(PaneBorder.box, c5.tui_pane_border);
+}
+
+test "workspace master_ratio is clamped and NaN is dropped" {
+    try std.testing.expectEqual(@as(?f32, 0.1), clampRatio(-0.5));
+    try std.testing.expectEqual(@as(?f32, 0.9), clampRatio(1e9));
+    try std.testing.expectEqual(@as(?f32, null), clampRatio(std.math.nan(f32)));
+    try std.testing.expectEqual(@as(?f32, 0.6), clampRatio(0.6));
 }
