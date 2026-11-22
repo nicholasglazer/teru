@@ -214,8 +214,15 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     // handleRequestFullscreen when the user fullscreens a video; only this
     // come-up-fullscreen-on-map shortcut is suppressed for them.
     const aid_for_fs: []const u8 = if (app_id) |aid| std.mem.sliceTo(aid, 0) else "";
-    if (wlr.miozu_xdg_toplevel_requested_fullscreen(view.toplevel) and !appIdSkipsMapFullscreen(aid_for_fs)) {
-        server.enterFullscreen(view.node_id);
+    if (wlr.miozu_xdg_toplevel_requested_fullscreen(view.toplevel)) {
+        if (!appIdSkipsMapFullscreen(aid_for_fs)) {
+            server.enterFullscreen(view.node_id);
+        } else {
+            // handleRequestFullscreen acked the pre-map request, so the
+            // browser believes it is fullscreen while it sits in a tile.
+            // Take the ack back.
+            _ = wlr.wlr_xdg_toplevel_set_fullscreen(view.toplevel, false);
+        }
     }
 }
 
