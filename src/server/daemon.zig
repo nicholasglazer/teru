@@ -240,7 +240,10 @@ pub fn run(self: *Daemon) void {
                         // Tag output with pane_id: [8-byte LE pane_id][data]
                         var tagged_buf: [8 + 8192]u8 = undefined;
                         if (proto.encodePanePayload(pane_id, pty_buf[0..n], &tagged_buf)) |tagged| {
-                            _ = proto.sendMessage(cfd, .output, tagged);
+                            // A client that stops reading must not stall the
+                            // loop: writeAll already waited 5 s for it. Drop it;
+                            // a re-attach gets a full grid sync.
+                            if (!proto.sendMessage(cfd, .output, tagged)) self.disconnectClient();
                         }
                     }
                 }
@@ -407,7 +410,7 @@ fn sendPaneScrollback(self: *Daemon, pane: *Pane) void {
 
 /// Send raw VT bytes to the client, tagged with a pane id, split into chunks
 /// that stay under the receiver's buffer. Returns false if a socket write
-/// failed (caller should stop). Splitting at an arbitrary byte — even
+/// failed; the client has then been disconnected. Splitting at an arbitrary byte — even
 /// mid-escape-sequence — is safe: the client is a byte-at-a-time state machine
 /// that carries its parser position across reads.
 ///
@@ -434,7 +437,12 @@ fn sendPaneOutput(self: *Daemon, pane_id: u64, bytes: []const u8) bool {
         const take: usize = @min(chunk_max, bytes.len - sent);
         const end: usize = 8 + take; // ≤ 4096 = msg_buf.len
         @memcpy(msg_buf[8..][0..take], bytes[sent..][0..take]);
-        if (!proto.sendMessage(cfd, .output, msg_buf[0..end])) return false;
+        if (!proto.sendMessage(cfd, .output, msg_buf[0..end])) {
+            // Partial frames desync the stream; a stuck client is dropped
+            // so every later send returns at once (see the relay in run).
+            self.disconnectClient();
+            return false;
+        }
         sent += take;
     }
     return true;
@@ -641,7 +649,7 @@ fn sendStateSync(self: *Daemon) void {
         }
     }
 
-    _ = proto.sendMessage(cfd, .state_sync, buf[0..pos]);
+    if (!proto.sendMessage(cfd, .state_sync, buf[0..pos])) self.disconnectClient();
 }
 
 fn disconnectClient(self: *Daemon) void {
