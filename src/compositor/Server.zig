@@ -1536,6 +1536,15 @@ pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
     Layout.arrangeWorkspaceSmooth(self, ws_index);
 }
 
+/// Re-tile the workspace each output shows after an output's mode, scale or
+/// position changed (wlr-randr, kanshi, a resized nested window). The bars
+/// keep their width until a restart or refont; resizing them is separate.
+pub fn relayoutOutputs(self: *Server) void {
+    for (self.outputs.items) |o| self.arrangeworkspace(o.workspace);
+    self.recomputeVisibility();
+    self.scheduleRender();
+}
+
 /// Focus a view — activate its toplevel and send keyboard focus.
 ///
 /// The keyboard-enter target surface matters more than you'd think:

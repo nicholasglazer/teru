@@ -263,6 +263,9 @@ pub fn handleOutputManagerApply(listener: *wlr.wl_listener, data: ?*anyopaque) c
     if (ok) {
         wlr.miozu_output_config_send_succeeded(cfg);
         server.pushOutputManagerState();
+        // A new mode, scale or position changes the tiling area; without
+        // this, panes kept their old geometry, partly off-screen.
+        server.relayoutOutputs();
     } else {
         wlr.miozu_output_config_send_failed(cfg);
     }
