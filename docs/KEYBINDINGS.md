@@ -32,9 +32,18 @@ There are three keyboard modes:
   types é. Set `macos_option_as_alt = left` (or `right`, `both`) in
   teru.conf to make that Option key send ESC+key instead, for readline's
   Alt+B / Alt+F and Emacs. An Option combination that types nothing is sent
-  as ESC+key either way.
+  as ESC+key either way, and so is Option with Return, Backspace, Tab or
+  Escape (Option+Backspace deletes a word in readline).
+- **Option on German, French and similar layouts.** Where your layout
+  types a plain ASCII character with Option (`@ [ ] { } | \ ~`: Option+L is
+  `@` and Option+5 is `[` on German), that key types the character and
+  skips teru's Alt binding, so Alt+L and Alt+5 do nothing there. On US and
+  Dvorak nothing changes: their Option characters are accents and symbols
+  such as ∆ and ˚, so every Alt binding keeps its key. To get the bindings
+  back on those keys, set `macos_option_as_alt` for one Option key and type
+  the characters with the other.
 - **Command** never types into the terminal. `Cmd+C` / `Cmd+V` copy and
-  paste, `Cmd+=` / `Cmd+-` / `Cmd+0` zoom the font, `Cmd+Q` quits, `Cmd+H`
+  paste, `Cmd+=` (or `Cmd++`) / `Cmd+-` / `Cmd+0` zoom the font, `Cmd+Q` quits, `Cmd+H`
   hides and `Cmd+M` minimises. Bind more with `super+...` in `[keybinds]`.
   With the "Dvorak - QWERTY ⌘" input source, Command shortcuts use the
   QWERTY positions, as in other Mac apps.

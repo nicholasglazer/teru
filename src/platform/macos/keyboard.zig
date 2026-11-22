@@ -19,9 +19,11 @@
 //! Option: by default it types what macOS types with it (accents, and on
 //! many layouts @ [ ] { }). `macos_option_as_alt` in teru.conf makes the
 //! left, right or both Option keys send ESC+key instead (Meta, for readline
-//! and Emacs). teru's own Alt bindings work either way: they are matched
-//! before any text is produced. An Option combination that types nothing
-//! is sent as Meta whatever the setting.
+//! and Emacs). teru's own Alt bindings are matched before any text is
+//! produced, except where the layout's Option character is ASCII (see
+//! `optionTypesText`): that character is typed. An Option combination that
+//! types nothing, and Option on Return, Backspace, Tab and the like, is
+//! sent as Meta whatever the setting.
 //!
 //! Command never types into the terminal; Cmd+key is for bindings and the
 //! menu bar.
@@ -505,6 +507,12 @@ pub const Keyboard = struct {
                 const esc = if (kc == kVK_Tab and shift) "\x1b[Z" else keysymToEscape(ks);
                 // An accent typed before, say, Return stands on its own.
                 var n = self.flushDeadKey(buf);
+                // Option on a key that never types text is Meta whatever
+                // the setting, as on Linux: Option+Backspace is ESC DEL
+                // (readline's backward-kill-word), Option+Return is ESC CR.
+                // Sequences that already start with ESC are sent as they
+                // are, since another ESC would make them two keys.
+                if (option and esc.len > 0 and esc[0] != 0x1b) n += copyInto(buf[n..], "\x1b");
                 n += copyInto(buf[n..], esc);
                 return n;
             }
@@ -547,6 +555,36 @@ pub const Keyboard = struct {
             return 0;
         }
         return utf16ToUtf8(units[0..n16], buf);
+    }
+
+    /// Whether this key press is Option typing an ASCII character: Option
+    /// (with or without Shift, without Control or Command) on a side that
+    /// is not set as Meta, on a key whose Option character in the selected
+    /// layout is printable ASCII. That is how German, French, Swedish and
+    /// many other layouts type `@ [ ] { } | \ ~`, so the windowed mode types
+    /// these instead of matching teru's Alt bindings. On US and Dvorak the
+    /// Option layer is accents, dead keys and non-ASCII symbols, so this is
+    /// false and every Alt binding keeps its key.
+    pub fn optionTypesText(self: *Keyboard, keycode: u32) bool {
+        const raw = self.raw_flags;
+        if (raw & NSEventModifierFlagOption == 0) return false;
+        if (raw & (NSEventModifierFlagControl | NSEventModifierFlagCommand) != 0) return false;
+        if (optionIsMeta(raw, self.option_as_alt)) return false;
+        if (keycode >= 128) return false;
+        const kc: u16 = @intCast(keycode);
+        if (isModifierKeycode(kc) or keycodeKeysym(kc) != null) return false;
+        self.refreshLayouts();
+        var mods: u32 = uc_option;
+        if (raw & NSEventModifierFlagShift != 0) mods |= uc_shift;
+        if (raw & NSEventModifierFlagCapsLock != 0) mods |= uc_caps;
+        // A fresh dead-key state: an accent waiting from an earlier key is
+        // neither composed nor consumed by the question.
+        var dead: u32 = 0;
+        var units: [8]u16 = undefined;
+        const n = self.textLayout().translate(kc, mods, 0, &dead, &units);
+        // A dead key (Option+` or Option+E on US) types nothing yet.
+        if (n != 1 or dead != 0) return false;
+        return units[0] > 0x20 and units[0] < 0x7f;
     }
 
     // ── Internals ───────────────────────────────────────────────────
@@ -1237,6 +1275,94 @@ test "processKey: Option as Meta per side" {
     try testing.expectEqualStrings("\x1bb", press(&kb, ROPT, kVK_ANSI_B, &buf));
 }
 
+test "processKey: Option on keys that never type text sends ESC first" {
+    var kb = deadKeyKeyboard();
+    defer kb.deinit();
+    var buf: [32]u8 = undefined;
+    for ([_]OptionAsAlt{ .none, .left }) |setting| {
+        kb.option_as_alt = setting;
+        try testing.expectEqualStrings("\x1b\x7f", press(&kb, LOPT, kVK_Delete, &buf));
+        try testing.expectEqualStrings("\x1b\r", press(&kb, LOPT, kVK_Return, &buf));
+        try testing.expectEqualStrings("\x1b\t", press(&kb, LOPT, kVK_Tab, &buf));
+        // Already an escape sequence: unchanged.
+        try testing.expectEqualStrings("\x1b[A", press(&kb, LOPT, kVK_UpArrow, &buf));
+        try testing.expectEqualStrings("\x1b", press(&kb, LOPT, kVK_Escape, &buf));
+        try testing.expectEqualStrings("\x1b[Z", press(&kb, LOPT | SHIFT, kVK_Tab, &buf));
+    }
+    // Backspace after an accent still only cancels the accent.
+    kb.option_as_alt = .none;
+    _ = press(&kb, LOPT, kVK_ANSI_E, &buf);
+    try testing.expectEqualStrings("", press(&kb, LOPT, kVK_Delete, &buf));
+}
+
+test "optionTypesText: ASCII on the Option layer is typed, not bound" {
+    // German-like: Option+L types @, Option+5 types [, Option+E is a dead key.
+    const german = struct {
+        fn translate(_: ?*const anyopaque, kc: u16, mods: u32, opts: u32, dead: *u32, out: []u16) usize {
+            if (mods & uc_option != 0) {
+                switch (kc) {
+                    kVK_ANSI_L => out[0] = '@',
+                    kVK_ANSI_5 => out[0] = '[',
+                    kVK_ANSI_B => out[0] = 0x222B, // ∫
+                    kVK_Space => out[0] = ' ',
+                    kVK_ANSI_E => {
+                        if (opts & kUCKeyTranslateNoDeadKeysMask != 0) {
+                            out[0] = 0xB4;
+                            return 1;
+                        }
+                        dead.* = 1;
+                        return 0;
+                    },
+                    else => return 0,
+                }
+                return 1;
+            }
+            return usFallbackTranslate(null, kc, mods, opts, dead, out);
+        }
+    };
+    var kb = Keyboard.initWithLayout(.{ .translateFn = german.translate });
+    defer kb.deinit();
+    var buf: [32]u8 = undefined;
+
+    kb.updateModifiers(LOPT, 0, 0, 0);
+    try testing.expect(kb.optionTypesText(kVK_ANSI_L));
+    try testing.expect(kb.optionTypesText(kVK_ANSI_5));
+    try testing.expectEqualStrings("@", press(&kb, LOPT, kVK_ANSI_L, &buf));
+    kb.updateModifiers(ROPT, 0, 0, 0);
+    try testing.expect(kb.optionTypesText(kVK_ANSI_L));
+    // Non-ASCII, a dead key, a space, nothing on Option, a non-text key: bindings.
+    kb.updateModifiers(LOPT, 0, 0, 0);
+    try testing.expect(!kb.optionTypesText(kVK_ANSI_B));
+    try testing.expect(!kb.optionTypesText(kVK_ANSI_E));
+    try testing.expect(!kb.optionTypesText(kVK_Space));
+    try testing.expect(!kb.optionTypesText(kVK_ANSI_J));
+    try testing.expect(!kb.optionTypesText(kVK_Return));
+    try testing.expect(!kb.optionTypesText(kVK_Option));
+    // Asking does not start or consume a dead key.
+    try testing.expectEqual(@as(u32, 0), kb.dead_key_state);
+    // Without Option, with Control or Command, or on a Meta side: bindings.
+    kb.updateModifiers(0, 0, 0, 0);
+    try testing.expect(!kb.optionTypesText(kVK_ANSI_L));
+    kb.updateModifiers(LOPT | CTRL, 0, 0, 0);
+    try testing.expect(!kb.optionTypesText(kVK_ANSI_L));
+    kb.updateModifiers(LOPT | CMD, 0, 0, 0);
+    try testing.expect(!kb.optionTypesText(kVK_ANSI_L));
+    kb.option_as_alt = .left;
+    kb.updateModifiers(LOPT, 0, 0, 0);
+    try testing.expect(!kb.optionTypesText(kVK_ANSI_L));
+    kb.updateModifiers(ROPT, 0, 0, 0);
+    try testing.expect(kb.optionTypesText(kVK_ANSI_L));
+}
+
+test "optionTypesText: nothing on the US fallback layout" {
+    var kb = deadKeyKeyboard();
+    defer kb.deinit();
+    kb.updateModifiers(LOPT, 0, 0, 0);
+    for ([_]u8{ kVK_ANSI_E, kVK_ANSI_B, kVK_ANSI_J, kVK_ANSI_1, kVK_ANSI_Grave }) |kc| {
+        try testing.expect(!kb.optionTypesText(kc));
+    }
+}
+
 test "optionIsMeta: sides" {
     try testing.expect(!optionIsMeta(LOPT, .none));
     try testing.expect(optionIsMeta(LOPT, .left));
@@ -1448,6 +1574,38 @@ test "macOS Russian layout: Cyrillic text, Latin Ctrl" {
     try testing.expectEqualStrings("\x03", press(&kb, CTRL, kVK_ANSI_C, &buf));
     kb.updateModifiers(0, 0, 0, 0);
     try testing.expectEqual(@as(u32, 'c'), kb.getKeysym(kVK_ANSI_C));
+}
+
+test "macOS German layout: Option types @ and [ instead of binding" {
+    if (comptime !is_macos) return error.SkipZigTest;
+    var kb = try systemKeyboardForTest("com.apple.keylayout.German", "com.apple.keylayout.German");
+    defer releaseTestKeyboard(&kb);
+    var buf: [16]u8 = undefined;
+    kb.updateModifiers(LOPT, 0, 0, 0);
+    try testing.expect(kb.optionTypesText(kVK_ANSI_L));
+    try testing.expect(kb.optionTypesText(kVK_ANSI_5));
+    try testing.expectEqualStrings("@", press(&kb, LOPT, kVK_ANSI_L, &buf));
+    try testing.expectEqualStrings("[", press(&kb, LOPT, kVK_ANSI_5, &buf));
+}
+
+test "macOS US and Dvorak layouts: Alt bindings keep every Option key" {
+    if (comptime !is_macos) return error.SkipZigTest;
+    for ([_][*:0]const u8{ "com.apple.keylayout.US", "com.apple.keylayout.Dvorak" }) |id_| {
+        var kb = try systemKeyboardForTest(id_, id_);
+        defer releaseTestKeyboard(&kb);
+        for ([_]u32{ 0, SHIFT }) |extra| {
+            kb.updateModifiers(LOPT | extra, 0, 0, 0);
+            var kc: u32 = 0;
+            while (kc < 0x33) : (kc += 1) {
+                if (kb.optionTypesText(kc)) {
+                    // US puts a plain ` on Option+Shift+`; nothing else.
+                    if (extra == SHIFT and kc == kVK_ANSI_Grave) continue;
+                    std.debug.print("{s}: Option keycode 0x{x} types ASCII\n", .{ id_, kc });
+                    return error.TestUnexpectedResult;
+                }
+            }
+        }
+    }
 }
 
 test "macOS: the selected input source loads" {

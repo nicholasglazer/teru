@@ -838,6 +838,10 @@ pub const Keybinds = struct {
             _ = self.add(.shared, Mods.SUPER, 'c', .copy_selection);
             _ = self.add(.shared, Mods.SUPER, 'v', .paste_clipboard);
             _ = self.add(n, Mods.SUPER, '=', .zoom_in);
+            // Cmd++ as Mac apps take it: Cmd+Shift+= on US, and Cmd+=
+            // where = itself needs Shift (Shift+0 on German).
+            _ = self.add(n, Mods.SUPER.withShift(), '+', .zoom_in);
+            _ = self.add(n, Mods.SUPER.withShift(), '=', .zoom_in);
             _ = self.add(n, Mods.SUPER, '-', .zoom_out);
             _ = self.add(n, Mods.SUPER, '0', .zoom_reset);
         }
@@ -984,6 +988,19 @@ test "Action.fromString" {
     try std.testing.expect(Action.fromString("resize:-2:0").? == .resize_shrink_w);
     try std.testing.expect(Action.fromString("keys_osd:toggle").? == .keys_osd_toggle);
     try std.testing.expect(Action.fromString("bogus") == null);
+}
+
+test "terminal defaults leave room for user bindings, macOS Cmd zoom with Shift" {
+    var kb = Keybinds{};
+    kb.loadDefaults();
+    kb.loadTerminalZoomDefaults();
+    try std.testing.expect(kb.count + 32 <= MAX_BINDINGS);
+    if (@import("builtin").os.tag == .macos) {
+        try std.testing.expect(kb.lookup(.normal, Mods.SUPER, '=').? == .zoom_in);
+        try std.testing.expect(kb.lookup(.normal, Mods.SUPER.withShift(), '+').? == .zoom_in);
+        try std.testing.expect(kb.lookup(.normal, Mods.SUPER.withShift(), '=').? == .zoom_in);
+        try std.testing.expect(kb.lookup(.normal, Mods.SUPER, '0').? == .zoom_reset);
+    }
 }
 
 test "Keybinds defaults and lookup" {

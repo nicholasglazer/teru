@@ -946,17 +946,11 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                 }
                             }
 
-                            var key_buf: [32]u8 = undefined;
-                            // DECCKM: when the focused app enabled application-cursor
-                            // keys (ESC[?1h), arrows must be SS3 (ESC O x), not the CSI
-                            // form processKey emits — claude-code and other readline /
-                            // ncurses TUIs need this or arrow keys do nothing in menus.
-                            const app_cursor = if (mux.getActivePane()) |p| p.vt.app_cursor_keys else false;
-                            const ss3 = if (app_cursor) ks.ss3Arrow(keysym) else "";
-                            const len = if (ss3.len > 0) blk: {
-                                @memcpy(key_buf[0..ss3.len], ss3);
-                                break :blk ss3.len;
-                            } else kb.processKey(key.keycode, &key_buf);
+                            // macOS, on layouts such as German or French: Option
+                            // types @ [ ] { } on some keys. Those keys type, and
+                            // skip the Alt handling below (nested forwarding, the
+                            // leader, Alt bindings), so the character is not lost.
+                            const option_types = if (comptime builtin.os.tag == .macos) kb.optionTypesText(key.keycode) else false;
 
                             // Nested-teru Alt-forwarding. When the focused pane is
                             // itself a teru that announced it wants Alt (OSC 9998;1),
@@ -966,7 +960,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                             // pane in the OUTER layout) and the Ctrl-prefix stays the
                             // escape hatch for local control while focused on a nested
                             // session.
-                            if (!prefix.awaiting and !ralt_held and (key.modifiers & 8) != 0) {
+                            if (!prefix.awaiting and !ralt_held and !option_types and (key.modifiers & 8) != 0) {
                                 const fwd_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else if (keysym == ks.Return) '\r' else 0;
                                 if (fwd_char != 0) {
                                     if (mux.getActivePaneMut()) |pane| {
@@ -992,7 +986,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                             var leader_kb: ?@import("../config/Keybinds.zig").Action = null;
                             {
                                 const lead_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else if (keysym == ks.Escape) 0x1b else 0;
-                                const alt_down = (key.modifiers & 8) != 0 and !ralt_held;
+                                const alt_down = (key.modifiers & 8) != 0 and !ralt_held and !option_types;
                                 if (leader.active) {
                                     if (lead_char == 0) continue; // non-char key → swallow
                                     const shifted = (key.modifiers & ks.SHIFT_MASK) != 0;
@@ -1023,7 +1017,8 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                             {
                                 const ks_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else if (keysym == ks.Return) '\r' else 0;
                                 const kb_mode: @import("../config/Keybinds.zig").Mode = if (prefix.awaiting) .prefix else .normal;
-                                if (leader_kb orelse KeyHandler.lookupConfigAction(&config.keybinds, kb_mode, key.modifiers, ks_char, ralt_held)) |kb_action| {
+                                const bound = if (option_types and !prefix.awaiting) null else KeyHandler.lookupConfigAction(&config.keybinds, kb_mode, key.modifiers, ks_char, ralt_held);
+                                if (leader_kb orelse bound) |kb_action| {
                                     if (prefix.awaiting) prefix.reset();
                                     const action = KeyHandler.executeAction(kb_action, &mux);
                                     if (kb_action == .mode_prefix) {
@@ -1146,6 +1141,24 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                     continue;
                                 }
                             }
+
+                            // Translated only now, after the bindings, nested
+                            // forwarding and the leader had their turn: on macOS
+                            // and Windows translating a dead key arms it, and a key
+                            // one of those took (Option+` on a Mac is both a dead
+                            // grave and workspace_toggle_last) would leave the
+                            // accent waiting for the next letter typed.
+                            var key_buf: [32]u8 = undefined;
+                            // DECCKM: when the focused app enabled application-cursor
+                            // keys (ESC[?1h), arrows must be SS3 (ESC O x), not the CSI
+                            // form processKey emits — claude-code and other readline /
+                            // ncurses TUIs need this or arrow keys do nothing in menus.
+                            const app_cursor = if (mux.getActivePane()) |p| p.vt.app_cursor_keys else false;
+                            const ss3 = if (app_cursor) ks.ss3Arrow(keysym) else "";
+                            const len = if (ss3.len > 0) blk: {
+                                @memcpy(key_buf[0..ss3.len], ss3);
+                                break :blk ss3.len;
+                            } else kb.processKey(key.keycode, &key_buf);
 
                             if (len == 0) continue;
 

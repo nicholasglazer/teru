@@ -253,7 +253,7 @@ theme = dracula
 | `bell` | `visual` or `none` | `visual` | Bell behavior. `visual` flashes the framebuffer, `none` disables |
 | `copy_on_select` | bool | `true` | Automatically copy selected text to clipboard |
 | `dynamic_title` | bool | `true` | Allow programs to set the window title via OSC sequences |
-| `macos_option_as_alt` | `none`, `left`, `right` or `both` | `none` | macOS only. Which Option keys send ESC+key (Meta, for readline and Emacs) instead of typing the character macOS puts on them (Option+E then E types é; on many layouts Option types `@ [ ] { }`). teru's own Alt bindings work either way. `true` means `both`, `false` means `none` |
+| `macos_option_as_alt` | `none`, `left`, `right` or `both` | `none` | macOS only. Which Option keys send ESC+key (Meta, for readline and Emacs) instead of typing the character macOS puts on them (Option+E then E types é; on many layouts Option types `@ [ ] { }`). teru's Alt bindings work either way, except on an Option key that is not Meta and whose character in your layout is ASCII (`@` on German Option+L): that key types the character. Option with Return, Backspace or Tab always sends ESC first. `true` means `both`, `false` means `none` |
 
 ```conf
 shell = /usr/bin/zsh
