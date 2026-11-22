@@ -56,6 +56,21 @@ pub fn spawn(opts: SpawnOptions) !Pty {
     };
     _ = posix.system.ioctl(master, compat.TIOCSWINSZ, @intFromPtr(&ws));
 
+    // macOS: everything the child needs is prepared here, before fork. An
+    // AppKit process has other threads, and a child of a multi-threaded
+    // process may only make async-signal-safe calls until it execs; setenv
+    // allocates, and could deadlock on a lock another thread held.
+    const mac = builtin.os.tag == .macos;
+    var env_block: if (mac) EnvBlock else void = undefined;
+    const mac_env: if (mac) [*:null]const ?[*:0]const u8 else void = if (mac)
+        buildChildEnv(&env_block, opts.env orelse std.c.environ, opts.cols, opts.rows, opts.term, true)
+    else {};
+    // A login shell, as Terminal.app starts one: a GUI app launched from
+    // the Finder or Dock inherits launchd's bare PATH, and only a login
+    // shell runs /etc/zprofile (path_helper) and ~/.zprofile (Homebrew).
+    var argv0_buf: [256:0]u8 = undefined;
+    const login_argv0: ?[*:0]const u8 = if (mac) loginArgv0(&argv0_buf, shell) else null;
+
     // Fork child process for the shell
     const fork_pid = compat.posixFork();
     if (fork_pid < 0) return error.ForkFailed;
@@ -95,7 +110,12 @@ pub fn spawn(opts: SpawnOptions) !Pty {
         // execve races with the shell's init and can leave ECHO permanently off.
 
         // Set environment
-        setChildEnv(opts.cols, opts.rows, opts.term);
+        if (mac) {
+            // Built before fork; execvp below reads `environ` for PATH.
+            std.c.environ = @ptrCast(@constCast(mac_env));
+        } else {
+            setChildEnv(opts.cols, opts.rows, opts.term);
+        }
 
         // Change directory if specified
         if (opts.cwd) |cwd| {
@@ -112,12 +132,13 @@ pub fn spawn(opts: SpawnOptions) !Pty {
             // execvp for PATH lookup (teru -e vim, teru -e htop, etc.)
             _ = execvp(exec_argv[0].?, exec_argv);
         } else {
-            const env = opts.env orelse std.c.environ;
+            const env = if (mac) mac_env else opts.env orelse std.c.environ;
             var shell_buf: [std.Io.Dir.max_path_bytes:0]u8 = undefined;
+            if (shell.len >= shell_buf.len) compat.posixExit(1);
             @memcpy(shell_buf[0..shell.len], shell);
             shell_buf[shell.len] = 0;
             const shell_z: [*:0]const u8 = &shell_buf;
-            const argv = [_:null]?[*:0]const u8{ shell_z, null };
+            const argv = [_:null]?[*:0]const u8{ login_argv0 orelse shell_z, null };
             _ = posix.system.execve(shell_z, &argv, @ptrCast(env));
         }
         compat.posixExit(1);
@@ -221,8 +242,125 @@ pub fn isAlive(self: *const Pty) bool {
 // ── Private helpers ──────────────────────────────────────────────
 
 fn getDefaultShell() []const u8 {
-    return compat.getenv("SHELL") orelse "/bin/sh";
+    if (compat.getenv("SHELL")) |sh| return sh;
+    if (builtin.os.tag == .macos) {
+        // launchd may not set SHELL for an app started from the Finder.
+        if (std.c.getpwuid(std.c.getuid())) |pw| {
+            if (pw.shell) |sh| {
+                const s = std.mem.sliceTo(sh, 0);
+                if (s.len > 0) return s;
+            }
+        }
+        return "/bin/zsh";
+    }
+    return "/bin/sh";
 }
+
+/// "-zsh" for "/bin/zsh": the argv[0] that tells a shell it is a login
+/// shell. Null if it does not fit.
+fn loginArgv0(buf: *[256:0]u8, shell: []const u8) ?[*:0]const u8 {
+    const base = std.fs.path.basename(shell);
+    if (base.len == 0 or base.len + 1 >= buf.len) return null;
+    buf[0] = '-';
+    @memcpy(buf[1..][0..base.len], base);
+    buf[base.len + 1] = 0;
+    return buf;
+}
+
+/// The child's environment, built in the parent: the inherited variables
+/// plus teru's own, with no allocation.
+pub const EnvBlock = struct {
+    ptrs: [max_vars + 1]?[*:0]const u8,
+    strings: [1024]u8,
+
+    pub const max_vars = 1024;
+};
+
+/// Variables teru sets in every pane, replacing inherited ones.
+const overridden_vars = [_][]const u8{ "TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLUMNS", "LINES" };
+
+fn envKey(entry: []const u8) []const u8 {
+    const eq = std.mem.findScalar(u8, entry, '=') orelse return entry;
+    return entry[0..eq];
+}
+
+/// Fill `block` with `base` minus the variables teru overrides, then
+/// teru's TERM, COLORTERM, TERM_PROGRAM, TERM_PROGRAM_VERSION, COLUMNS and
+/// LINES. With `ensure_lang`, adds LANG=en_US.UTF-8 when none of LANG,
+/// LC_ALL and LC_CTYPE is set: a GUI app gets no locale from launchd, and
+/// without one shells and editors mishandle anything beyond ASCII.
+pub fn buildChildEnv(
+    block: *EnvBlock,
+    base: [*:null]const ?[*:0]const u8,
+    cols: u16,
+    rows: u16,
+    term: ?[]const u8,
+    ensure_lang: bool,
+) [*:null]const ?[*:0]const u8 {
+    var n: usize = 0;
+    var has_locale = false;
+    // Room for teru's own variables at the end.
+    const reserve = overridden_vars.len + 1;
+    var i: usize = 0;
+    while (base[i]) |entry_z| : (i += 1) {
+        const entry = std.mem.sliceTo(entry_z, 0);
+        const key = envKey(entry);
+        if (std.mem.eql(u8, key, "LANG") or std.mem.eql(u8, key, "LC_ALL") or std.mem.eql(u8, key, "LC_CTYPE")) has_locale = true;
+        var skip = false;
+        for (overridden_vars) |o| {
+            if (std.mem.eql(u8, key, o)) skip = true;
+        }
+        if (skip) continue;
+        if (n + reserve >= EnvBlock.max_vars) continue; // an absurd environment: drop the excess
+        block.ptrs[n] = entry_z;
+        n += 1;
+    }
+
+    var w = Appender{ .buf = &block.strings };
+    const term_val = term orelse "xterm-256color";
+    const added = [_]?[*:0]const u8{
+        w.add("TERM", term_val),
+        w.add("COLORTERM", "truecolor"),
+        w.add("TERM_PROGRAM", "teru"),
+        w.add("TERM_PROGRAM_VERSION", build_options.version),
+        w.addInt("COLUMNS", cols),
+        w.addInt("LINES", rows),
+        if (ensure_lang and !has_locale) w.add("LANG", "en_US.UTF-8") else null,
+    };
+    for (added) |a| {
+        if (a) |p| {
+            block.ptrs[n] = p;
+            n += 1;
+        }
+    }
+    block.ptrs[n] = null;
+    return @ptrCast(&block.ptrs);
+}
+
+/// Writes NUL-terminated KEY=VALUE strings into a fixed buffer.
+const Appender = struct {
+    buf: []u8,
+    len: usize = 0,
+
+    fn add(self: *Appender, key: []const u8, value: []const u8) ?[*:0]const u8 {
+        const need = key.len + 1 + value.len + 1;
+        if (self.len + need > self.buf.len) return null;
+        const start = self.len;
+        const out = self.buf[start..][0..need];
+        @memcpy(out[0..key.len], key);
+        out[key.len] = '=';
+        @memcpy(out[key.len + 1 ..][0..value.len], value);
+        out[need - 1] = 0;
+        self.len += need;
+        return @ptrCast(self.buf[start..].ptr);
+    }
+
+    fn addInt(self: *Appender, key: []const u8, value: u16) ?[*:0]const u8 {
+        var num: [8]u8 = undefined;
+        const s = std.fmt.bufPrint(&num, "{d}", .{value}) catch return null;
+        return self.add(key, s);
+    }
+};
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
@@ -254,3 +392,47 @@ extern "c" fn grantpt(fd: c_int) c_int;
 extern "c" fn unlockpt(fd: c_int) c_int;
 extern "c" fn ptsname(fd: c_int) ?[*:0]const u8;
 extern "c" fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) c_int;
+
+test "buildChildEnv: keeps the environment, overrides teru's variables" {
+    const base = [_:null]?[*:0]const u8{ "HOME=/Users/a", "TERM=dumb", "PATH=/usr/bin:/bin", "COLUMNS=1" };
+    var block: EnvBlock = undefined;
+    const env = buildChildEnv(&block, &base, 120, 40, null, true);
+    var got: std.ArrayList([]const u8) = .empty;
+    defer got.deinit(std.testing.allocator);
+    var i: usize = 0;
+    while (env[i]) |e| : (i += 1) try got.append(std.testing.allocator, std.mem.sliceTo(e, 0));
+    const want = [_][]const u8{
+        "HOME=/Users/a",
+        "PATH=/usr/bin:/bin",
+        "TERM=xterm-256color",
+        "COLORTERM=truecolor",
+        "TERM_PROGRAM=teru",
+        "TERM_PROGRAM_VERSION=" ++ build_options.version,
+        "COLUMNS=120",
+        "LINES=40",
+        "LANG=en_US.UTF-8",
+    };
+    try std.testing.expectEqual(want.len, got.items.len);
+    for (want, got.items) |w, g| try std.testing.expectEqualStrings(w, g);
+}
+
+test "buildChildEnv: an existing locale is left alone; TERM override" {
+    const base = [_:null]?[*:0]const u8{ "LC_CTYPE=UTF-8", "SHELL=/bin/zsh" };
+    var block: EnvBlock = undefined;
+    const env = buildChildEnv(&block, &base, 80, 24, "xterm-teru", true);
+    var i: usize = 0;
+    var saw_term = false;
+    while (env[i]) |e| : (i += 1) {
+        const entry = std.mem.sliceTo(e, 0);
+        try std.testing.expect(!std.mem.startsWith(u8, entry, "LANG="));
+        if (std.mem.eql(u8, entry, "TERM=xterm-teru")) saw_term = true;
+    }
+    try std.testing.expect(saw_term);
+}
+
+test "loginArgv0: dash and the shell's name" {
+    var buf: [256:0]u8 = undefined;
+    try std.testing.expectEqualStrings("-zsh", std.mem.sliceTo(loginArgv0(&buf, "/bin/zsh").?, 0));
+    try std.testing.expectEqualStrings("-fish", std.mem.sliceTo(loginArgv0(&buf, "/opt/homebrew/bin/fish").?, 0));
+    try std.testing.expect(loginArgv0(&buf, "") == null);
+}
