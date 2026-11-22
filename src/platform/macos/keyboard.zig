@@ -143,6 +143,62 @@ const NSEventModifierFlagControl: u32 = 1 << 18;
 const NSEventModifierFlagOption: u32 = 1 << 19;
 const NSEventModifierFlagCommand: u32 = 1 << 20;
 
+// Device-dependent bits in the low word of modifierFlags (IOLLEvent.h,
+// NX_DEVICE*KEYMASK): which side of a modifier is down.
+const dev_lctrl: u32 = 0x0001;
+const dev_lshift: u32 = 0x0002;
+const dev_rshift: u32 = 0x0004;
+const dev_lcmd: u32 = 0x0008;
+const dev_rcmd: u32 = 0x0010;
+const dev_lalt: u32 = 0x0020;
+const dev_ralt: u32 = 0x0040;
+const dev_rctrl: u32 = 0x2000;
+
+/// The modifier bits shared code tests, in X11 layout: Shift 0x1, Lock 0x2,
+/// Control 0x4, Mod1 (Alt) 0x8, Mod4 (Super) 0x40. The input code tests some
+/// modifiers by number, so the backend reports Option as Alt and Command as
+/// Super in these bits, as the Win32 backend does.
+pub const x11_shift: u32 = 0x01;
+pub const x11_lock: u32 = 0x02;
+pub const x11_control: u32 = 0x04;
+pub const x11_alt: u32 = 0x08;
+pub const x11_super: u32 = 0x40;
+
+/// Translate NSEvent modifierFlags to the X11 bit layout.
+pub fn x11Modifiers(raw: u32) u32 {
+    var m: u32 = 0;
+    if (raw & NSEventModifierFlagShift != 0) m |= x11_shift;
+    if (raw & NSEventModifierFlagCapsLock != 0) m |= x11_lock;
+    if (raw & NSEventModifierFlagControl != 0) m |= x11_control;
+    if (raw & NSEventModifierFlagOption != 0) m |= x11_alt;
+    if (raw & NSEventModifierFlagCommand != 0) m |= x11_super;
+    return m;
+}
+
+/// For a flagsChanged event: whether the modifier key `keycode` went down
+/// (true) or up (false). Null for keys that are not held modifiers (Caps
+/// Lock, which reports its toggle state, and Fn) and for other keys.
+///
+/// The key's own device bit says which, so pressing right Shift while left
+/// Shift is held reads as a press. Keyboards that set no device bits (some
+/// remote-desktop and virtual devices) fall back to the class flag.
+pub fn modifierTransition(keycode: u32, raw: u32) ?bool {
+    const Bits = struct { own: u32, other: u32, class: u32 };
+    const b: Bits = switch (keycode) {
+        kVK_Shift => .{ .own = dev_lshift, .other = dev_rshift, .class = NSEventModifierFlagShift },
+        kVK_RightShift => .{ .own = dev_rshift, .other = dev_lshift, .class = NSEventModifierFlagShift },
+        kVK_Control => .{ .own = dev_lctrl, .other = dev_rctrl, .class = NSEventModifierFlagControl },
+        kVK_RightControl => .{ .own = dev_rctrl, .other = dev_lctrl, .class = NSEventModifierFlagControl },
+        kVK_Option => .{ .own = dev_lalt, .other = dev_ralt, .class = NSEventModifierFlagOption },
+        kVK_RightOption => .{ .own = dev_ralt, .other = dev_lalt, .class = NSEventModifierFlagOption },
+        kVK_Command => .{ .own = dev_lcmd, .other = dev_rcmd, .class = NSEventModifierFlagCommand },
+        kVK_RightCommand => .{ .own = dev_rcmd, .other = dev_lcmd, .class = NSEventModifierFlagCommand },
+        else => return null,
+    };
+    if (raw & (b.own | b.other) == 0) return raw & b.class != 0;
+    return raw & b.own != 0;
+}
+
 // ── Static lookup tables ─────────────────────────────────────────────
 
 /// IOKit keycode -> unshifted ASCII character (US ANSI layout).
@@ -917,4 +973,50 @@ test "keysymToEscape: all F-keys mapped" {
 test "keysymToEscape: unknown keysym returns empty" {
     const esc = keysymToEscape(0x12345);
     try std.testing.expectEqual(@as(usize, 0), esc.len);
+}
+
+test "x11Modifiers: NSEvent flags to X11 bits" {
+    try std.testing.expectEqual(@as(u32, 0), x11Modifiers(0));
+    // Device bits alone (left Command's 0x8) must not read as Alt.
+    try std.testing.expectEqual(@as(u32, 0), x11Modifiers(dev_lcmd | dev_rshift | dev_lctrl));
+    try std.testing.expectEqual(x11_shift, x11Modifiers(NSEventModifierFlagShift | dev_lshift));
+    try std.testing.expectEqual(x11_control | x11_shift, x11Modifiers(NSEventModifierFlagControl | NSEventModifierFlagShift));
+    try std.testing.expectEqual(x11_alt, x11Modifiers(NSEventModifierFlagOption | dev_ralt));
+    try std.testing.expectEqual(x11_super, x11Modifiers(NSEventModifierFlagCommand | dev_lcmd));
+    try std.testing.expectEqual(x11_lock, x11Modifiers(NSEventModifierFlagCapsLock));
+}
+
+test "x11Modifiers: matches the shared modifier masks" {
+    const kc = @import("../types.zig").keycodes;
+    if (@import("builtin").os.tag != .macos) return error.SkipZigTest;
+    try std.testing.expectEqual(kc.SHIFT_MASK, x11Modifiers(NSEventModifierFlagShift));
+    try std.testing.expectEqual(kc.CTRL_MASK, x11Modifiers(NSEventModifierFlagControl));
+    try std.testing.expectEqual(kc.ALT_MASK, x11Modifiers(NSEventModifierFlagOption));
+    try std.testing.expectEqual(kc.SUPER_MASK, x11Modifiers(NSEventModifierFlagCommand));
+}
+
+test "modifierTransition: press and release from the device bit" {
+    const shift = NSEventModifierFlagShift;
+    try std.testing.expectEqual(@as(?bool, true), modifierTransition(kVK_Shift, shift | dev_lshift));
+    try std.testing.expectEqual(@as(?bool, false), modifierTransition(kVK_Shift, 0));
+    // Right Shift pressed while left is held: a press, though the class
+    // flag was already set.
+    try std.testing.expectEqual(@as(?bool, true), modifierTransition(kVK_RightShift, shift | dev_lshift | dev_rshift));
+    // Left released while right stays down: a release.
+    try std.testing.expectEqual(@as(?bool, false), modifierTransition(kVK_Shift, shift | dev_rshift));
+    try std.testing.expectEqual(@as(?bool, true), modifierTransition(kVK_RightOption, NSEventModifierFlagOption | dev_ralt));
+    try std.testing.expectEqual(@as(?bool, false), modifierTransition(kVK_RightOption, NSEventModifierFlagOption | dev_lalt));
+    try std.testing.expectEqual(@as(?bool, true), modifierTransition(kVK_RightControl, NSEventModifierFlagControl | dev_rctrl));
+    try std.testing.expectEqual(@as(?bool, true), modifierTransition(kVK_Command, NSEventModifierFlagCommand | dev_lcmd));
+}
+
+test "modifierTransition: no device bits falls back to the class flag" {
+    try std.testing.expectEqual(@as(?bool, true), modifierTransition(kVK_Control, NSEventModifierFlagControl));
+    try std.testing.expectEqual(@as(?bool, false), modifierTransition(kVK_Control, 0));
+}
+
+test "modifierTransition: Caps Lock, Fn and ordinary keys are not held modifiers" {
+    try std.testing.expectEqual(@as(?bool, null), modifierTransition(kVK_CapsLock, NSEventModifierFlagCapsLock));
+    try std.testing.expectEqual(@as(?bool, null), modifierTransition(0x3F, 0)); // kVK_Function
+    try std.testing.expectEqual(@as(?bool, null), modifierTransition(kVK_ANSI_A, NSEventModifierFlagShift));
 }

@@ -118,4 +118,6 @@ test {
     // Same for the macOS backend's pure helpers. Its AppKit and Carbon
     // calls are behind `builtin.os.tag == .macos`.
     _ = @import("platform/macos/keyboard.zig");
+    _ = @import("platform/macos/geometry.zig");
+    _ = @import("platform/macos/events.zig");
 }

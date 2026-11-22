@@ -116,6 +116,8 @@ pub fn build(b: *std.Build) void {
     } else if (os_tag == .macos) {
         exe_mod.linkFramework("AppKit", .{});
         exe_mod.linkFramework("CoreGraphics", .{});
+        // Core Animation: each frame is presented as a CALayer's contents.
+        exe_mod.linkFramework("QuartzCore", .{});
         exe_mod.linkFramework("Carbon", .{});
     } else if (os_tag == .windows) {
         exe_mod.linkSystemLibrary("user32", .{});

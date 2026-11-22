@@ -58,6 +58,7 @@ const LinuxKeycodes = struct {
     pub const ALT_MASK: u32 = 8; // Mod1Mask
     pub const CTRL_MASK: u32 = 4; // ControlMask
     pub const SHIFT_MASK: u32 = 1; // ShiftMask
+    pub const SUPER_MASK: u32 = 0x40; // Mod4Mask
     pub fn digitToWorkspace(keycode: u32) ?u8 {
         return if (keycode >= 10 and keycode <= 19) @intCast(keycode - 10) else null;
     }
@@ -67,9 +68,13 @@ const LinuxKeycodes = struct {
 // Digit keycodes are non-sequential, so use explicit switch.
 const MacosKeycodes = struct {
     pub const RALT: u32 = 61; // kVK_RightOption
-    pub const ALT_MASK: u32 = 0x080000; // NSEventModifierFlagOption
-    pub const CTRL_MASK: u32 = 0x040000; // NSEventModifierFlagControl
-    pub const SHIFT_MASK: u32 = 0x020000; // NSEventModifierFlagShift
+    // Same bit values as X11. The shared input code tests some modifiers
+    // by number, so the AppKit backend translates NSEventModifierFlags to
+    // this layout: Option is Alt, Command is Super (Mod4).
+    pub const ALT_MASK: u32 = 8;
+    pub const CTRL_MASK: u32 = 4;
+    pub const SHIFT_MASK: u32 = 1;
+    pub const SUPER_MASK: u32 = 0x40;
     pub fn digitToWorkspace(keycode: u32) ?u8 {
         return switch (keycode) {
             18 => 0, 19 => 1, 20 => 2, 21 => 3, 23 => 4, // kVK_ANSI_1-5
@@ -88,6 +93,7 @@ const WindowsKeycodes = struct {
     pub const ALT_MASK: u32 = 8;
     pub const CTRL_MASK: u32 = 4;
     pub const SHIFT_MASK: u32 = 1;
+    pub const SUPER_MASK: u32 = 0x40;
     pub fn digitToWorkspace(keycode: u32) ?u8 {
         if (keycode >= 0x31 and keycode <= 0x39) return @intCast(keycode - 0x31);
         if (keycode == 0x30) return 9; // VK_0 → workspace 10

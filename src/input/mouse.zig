@@ -29,13 +29,12 @@ const DOUBLE_CLICK_NS: i128 = 300_000_000; // 300ms
 const MASTER_RATIO_MIN: f32 = 0.15;
 const MASTER_RATIO_MAX: f32 = 0.85;
 
-/// Shift modifier mask, resolved per-OS at comptime (X11/XKB 1, macOS
-/// NSEventModifierFlagShift = 1<<17, Win32 0x01). A hardcoded `1` silently
-/// broke Shift+click/Shift+hover URL handling on macOS (NSEvent Shift is
-/// 0x20000, so `& 1` was always 0). Mirrors ALT_MASK below.
+/// Shift modifier mask, resolved per-OS at comptime. Every backend now
+/// reports modifiers in the X11 layout (Shift 1), but keep reading it from
+/// the table so a backend that does not is caught in one place.
 const SHIFT_MASK: u32 = platform_types.keycodes.SHIFT_MASK;
-/// Alt/Mod1 modifier mask, resolved per-OS at comptime (X11/XKB 8, macOS
-/// NSEventModifierFlagOption, Win32 MOD_ALT). Used for Alt+scroll-wheel zoom.
+/// Alt/Mod1 modifier mask, resolved per-OS at comptime (8 on every backend).
+/// Used for Alt+scroll-wheel zoom.
 const ALT_MASK: u32 = platform_types.keycodes.ALT_MASK;
 
 /// Persistent mouse state tracked across events.
