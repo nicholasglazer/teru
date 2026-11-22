@@ -40,6 +40,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
 const tools = @import("McpTools.zig");
+const compat = @import("../compat.zig");
 
 /// Framing of request/response bytes on the wire.
 pub const Framing = enum {
@@ -53,6 +54,8 @@ pub const Framing = enum {
 };
 
 pub const max_request: usize = 65536;
+/// Longest one request read may block the event loop, whatever the progress.
+pub const request_read_deadline_ns: i128 = 100 * std.time.ns_per_ms;
 pub const max_response: usize = 65536;
 
 pub fn Framework(comptime Impl: type) type {
@@ -185,8 +188,15 @@ pub fn Framework(comptime Impl: type) type {
             var req_buf: [max_request]u8 = undefined;
             var total: usize = 0;
             var stalls: u8 = 0;
+            // Absolute cap on the time this read may hold the event loop
+            // (teru's, or teruwm's, which then stops rendering). The stall
+            // counter alone reset on every byte, so a client dripping one
+            // byte every few ms held the loop for minutes. Real clients send
+            // the request in one write on a Unix socket.
+            const deadline = compat.monotonicNow() + request_read_deadline_ns;
 
             while (total < req_buf.len) {
+                if (compat.monotonicNow() >= deadline) break;
                 const rc = std.c.read(conn_fd, req_buf[total..].ptr, req_buf.len - total);
                 if (rc < 0) {
                     // The accepted fd is non-blocking (ipc.acceptPosix) and
