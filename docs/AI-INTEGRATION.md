@@ -62,7 +62,8 @@ Minimal Claude Code / Cursor hookup (uses the built-in stdio adapters
 ```
 
 `teru --mcp-server` discovers `teru-mcp-*.sock` in `$XDG_RUNTIME_DIR`
-(or pin via `TERU_MCP_SOCKET`). `teruwmctl --mcp-stdio` discovers
+(on macOS `teru-$UID-mcp-*.sock` in `$TMPDIR`), or pin it via
+`TERU_MCP_SOCKET`. `teruwmctl --mcp-stdio` discovers
 `teruwm-mcp-*.sock` (or pin via `TERUWM_MCP_SOCKET`). Either end
 tolerates the target being down — the first tool call returns a clean
 JSON-RPC error instead of hanging.

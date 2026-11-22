@@ -205,7 +205,17 @@ fn discoverSocket() ?[]const u8 {
 
     const uid = std.c.getuid();
     var dir_buf: [128]u8 = undefined;
-    const dir_path = std.fmt.bufPrint(&dir_buf, "/run/user/{d}", .{uid}) catch return null;
+    // Where ipc.buildPath puts the socket. macOS: $TMPDIR, and the name
+    // carries the uid (teru-501-mcp-$PID.sock), since /run/user is Linux.
+    const dir_path = if (builtin.os.tag == .macos)
+        ipc.macosSocketDir()
+    else
+        std.fmt.bufPrint(&dir_buf, "/run/user/{d}", .{uid}) catch return null;
+    var prefix_buf: [48]u8 = undefined;
+    const prefix = if (builtin.os.tag == .macos)
+        std.fmt.bufPrint(&prefix_buf, "teru-{d}-mcp-", .{uid}) catch return null
+    else
+        "teru-mcp-";
 
     const dir_z = std.fmt.bufPrintSentinel(&discovered_path, "{s}", .{dir_path}, 0) catch return null;
     const dir = std.c.opendir(dir_z.ptr) orelse return null;
@@ -214,13 +224,13 @@ fn discoverSocket() ?[]const u8 {
     while (std.c.readdir(dir)) |ent| {
         const name_ptr: [*:0]const u8 = @ptrCast(&ent.*.name);
         const name = std.mem.sliceTo(name_ptr, 0);
-        if (!std.mem.startsWith(u8, name, "teru-mcp-")) continue;
+        if (!std.mem.startsWith(u8, name, prefix)) continue;
         if (!std.mem.endsWith(u8, name, ".sock")) continue;
         // Skip the event-push socket (teru-mcp-events-$PID.sock) — the stdio
         // proxy needs the REQUEST socket (teru-mcp-$PID.sock). Both match the
         // prefix/suffix above, and readdir order is arbitrary, so without this
         // the proxy could bind to the events socket and never get responses.
-        if (std.mem.startsWith(u8, name, "teru-mcp-events-")) continue;
+        if (std.mem.startsWith(u8, name[prefix.len..], "events-")) continue;
 
         const full = std.fmt.bufPrint(&discovered_path, "{s}/{s}", .{ dir_path, name }) catch continue;
         return full;

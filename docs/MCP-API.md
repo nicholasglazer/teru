@@ -245,7 +245,7 @@ for the full protocol spec.
 
 ## teru (terminal) MCP — 22 tools
 
-Socket: `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock`. Implementation: `src/agent/McpServer.zig`.
+Socket: `$XDG_RUNTIME_DIR/teru-mcp-$PID.sock` (macOS: `$TMPDIR/teru-$UID-mcp-$PID.sock`). Implementation: `src/agent/McpServer.zig`.
 
 ### Panes
 
