@@ -137,12 +137,18 @@ pub fn main(init: std.process.Init) !void {
     //      (if any) while the event loop is STILL ALIVE. It cannot live in
     //      server.deinit: that runs after wl_display_destroy has freed the
     //      loop, and wl_event_source_remove on a freed loop is a UAF.
-    //   6. wl_display_destroy — tears down globals + the event loop.
+    //   6. detachGlobalListeners — unlink our listeners from signals inside
+    //      wlroots globals (xdg-shell, seat, protocol managers), which
+    //      wl_display_destroy frees without unlinking foreign listeners.
+    //   6b. wl_display_destroy — tears down globals + the event loop.
     //   7. server.deinit — frees Server-owned heap memory last.
     // Registered LAST runs FIRST, so we register in reverse of the
     // desired run order.
     defer server.deinit();
     defer wlr.wl_display_destroy(display);
+    // Unhook listeners that live in wlroots globals while those globals are
+    // still allocated; wl_display_destroy frees them without unlinking us.
+    defer server.detachGlobalListeners();
     // Remove wl_event_loop timer sources BEFORE the loop is freed by
     // wl_display_destroy — wl_event_source_remove on a freed loop is a UAF
     // (same reason cancelClipboardPaste runs here, not in deinit).
