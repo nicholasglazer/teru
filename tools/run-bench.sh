@@ -106,5 +106,5 @@ echo "VT throughput (MB/s, median — parse / parse+render):"
 echo "$throughput" | python3 -c "
 import json, sys
 for r in json.load(sys.stdin):
-    print(f\"  {r['name']:24s} {r['parse_mb_s']:7.1f} MB/s  /  {r['render_mb_s']:7.1f} MB/s\")
+    print(f\"  {r['name']:24s} {r['parse_mb_s']:7.1f} MiB/s  /  {r['render_mb_s']:7.1f} MiB/s\")
 "
