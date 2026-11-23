@@ -103,7 +103,8 @@ pub fn main(init: std.process.Init) !void {
                 \\  Alt+Space      Leader menu        Ctrl+Space Space  Cycle layout
                 \\  Alt+V          Scroll/copy mode   Alt+- / Alt+\     Font smaller / reset
                 \\  Ctrl+Space d   Detach             Ctrl+\            Detach
-                \\  (detach needs a session: teru -n NAME; elsewhere Ctrl+\ is SIGQUIT)
+                \\  (detach needs a session: teru -n NAME, or persist_session = true;
+                \\   elsewhere Ctrl+\ is SIGQUIT; a nested teru in the pane gets it)
                 \\
                 \\
             );

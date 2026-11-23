@@ -214,8 +214,12 @@ pub fn lookupConfigAction(
 /// with no daemon has nothing to detach from, so the byte goes to the program
 /// and the tty turns it into SIGQUIT as in any other terminal. Alt+Ctrl+\ is
 /// not detach: the TUI client reads it as ESC+FS and forwards it.
-pub fn isDetachKey(key_bytes: []const u8, modifiers: u32, attached: bool) bool {
-    return attached and modifiers & kc.ALT_MASK == 0 and
+/// `nested` is true while the focused pane shows a nested teru client (it
+/// announced itself with OSC 9998;1 and is on the alternate screen): the
+/// byte then goes to that client, so the innermost session detaches, as it
+/// did before the outer window took the key.
+pub fn isDetachKey(key_bytes: []const u8, modifiers: u32, attached: bool, nested: bool) bool {
+    return attached and !nested and modifiers & kc.ALT_MASK == 0 and
         key_bytes.len == 1 and key_bytes[0] == 0x1c;
 }
 
@@ -454,15 +458,18 @@ test "handleGlobalKey RAlt+m marks master, Alt+m focuses" {
 
 test "isDetachKey: Ctrl+\\ detaches only when attached to a daemon" {
     // Attached window: FS (Ctrl+\) detaches.
-    try std.testing.expect(isDetachKey("\x1c", kc.CTRL_MASK, true));
+    try std.testing.expect(isDetachKey("\x1c", kc.CTRL_MASK, true, false));
     // No daemon: FS goes to the program (SIGQUIT), never swallowed.
-    try std.testing.expect(!isDetachKey("\x1c", kc.CTRL_MASK, false));
+    try std.testing.expect(!isDetachKey("\x1c", kc.CTRL_MASK, false, false));
+    // A nested teru in the focused pane gets FS, so the inner client detaches.
+    try std.testing.expect(!isDetachKey("\x1c", kc.CTRL_MASK, true, true));
+    try std.testing.expect(!isDetachKey("\x1c", kc.CTRL_MASK, false, true));
     // Alt+Ctrl+\ is forwarded, as in the TUI client.
-    try std.testing.expect(!isDetachKey("\x1c", kc.CTRL_MASK | kc.ALT_MASK, true));
+    try std.testing.expect(!isDetachKey("\x1c", kc.CTRL_MASK | kc.ALT_MASK, true, false));
     // Other keys, and FS inside a longer sequence, are not detach.
-    try std.testing.expect(!isDetachKey("\\", 0, true));
-    try std.testing.expect(!isDetachKey("\x1b\x1c", kc.CTRL_MASK, true));
-    try std.testing.expect(!isDetachKey("", kc.CTRL_MASK, true));
+    try std.testing.expect(!isDetachKey("\\", 0, true, false));
+    try std.testing.expect(!isDetachKey("\x1b\x1c", kc.CTRL_MASK, true, false));
+    try std.testing.expect(!isDetachKey("", kc.CTRL_MASK, true, false));
 }
 
 test "isLeaderChord: exactly Alt+Space" {
@@ -566,7 +573,7 @@ test "teru --help keybindings match the default table" {
     try std.testing.expectEqual(MuxAction.detach, executeAction(.session_detach, &mux));
     // Alt+Space opens the leader; Ctrl+\ detaches an attached window.
     try std.testing.expect(isLeaderChord(A, false, ' '));
-    try std.testing.expect(isDetachKey("\x1c", kc.CTRL_MASK, true));
+    try std.testing.expect(isDetachKey("\x1c", kc.CTRL_MASK, true, false));
     // Alt+D is the launcher in the shared table, which teru does not have:
     // it is not detach, so --help must not say so.
     try std.testing.expect(lookupConfigAction(&kb, .normal, A, 'd', false).? != .session_detach);

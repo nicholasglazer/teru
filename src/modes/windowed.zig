@@ -1041,7 +1041,13 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                             // Ctrl+\ detaches a window attached to a daemon
                             // session, like the TUI client. Without a daemon it
                             // falls through and reaches the program as SIGQUIT.
-                            if (KeyHandler.isDetachKey(key_buf[0..len], key.modifiers, daemon_fd != null)) {
+                            // A nested teru in the focused pane gets the byte, so
+                            // the innermost client detaches.
+                            const nested_pane = if (mux.getActivePane()) |pane|
+                                pane.vt.nested_alt_forward and pane.vt.alt_screen
+                            else
+                                false;
+                            if (KeyHandler.isDetachKey(key_buf[0..len], key.modifiers, daemon_fd != null, nested_pane)) {
                                 prefix.reset();
                                 running = false;
                                 continue;

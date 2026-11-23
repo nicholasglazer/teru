@@ -33,9 +33,11 @@
   the prefix now leaves prefix mode instead of being sent to the program.
 - **Alt+Shift+Space resets the layout in a teru window.** It opened the
   leader menu, which only Alt+Space should open.
-- **Ctrl+\\ detaches a teru window attached to a session** (`teru -n NAME`),
-  as it already did in the SSH client. Before, it sent SIGQUIT to the
-  program in the focused pane. Without a session it still sends SIGQUIT.
+- **Ctrl+\\ detaches a teru window attached to a session** (`teru -n NAME`,
+  or plain `teru` with `persist_session = true`), as it already did in the SSH
+  client. Before, it sent SIGQUIT to the program in the focused pane. Without
+  a session it still sends SIGQUIT, and a nested teru in the focused pane
+  still gets it, so the inner client detaches.
 - **Standalone teru no longer spins a CPU core while idle.** With the default
   config (layout saving off) the main loop polled with a zero timeout forever,
   starting 100 ms after launch, and used about 90% of a core.
