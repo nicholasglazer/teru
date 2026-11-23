@@ -26,6 +26,9 @@ const Multiplexer = @This();
 panes: std.ArrayList(Pane),
 layout_engine: LayoutEngine,
 active_workspace: u8,
+/// The workspace switchWorkspace last left, for $mod+Escape / $mod+`
+/// (workspace_toggle_last). Null until the first real switch.
+prev_workspace: ?u8 = null,
 allocator: Allocator,
 scrollback: ?Scrollback,
 next_pane_id: u64,
@@ -415,11 +418,21 @@ pub fn focusPaneId(self: *Multiplexer, id: u64) void {
 
 /// Switch to a workspace by index (0-8).
 pub fn switchWorkspace(self: *Multiplexer, idx: u8) void {
+    const before = self.active_workspace;
     self.layout_engine.switchWorkspace(idx);
     self.active_workspace = self.layout_engine.active_workspace;
+    if (self.active_workspace != before) self.prev_workspace = before;
     // Clear attention on the workspace we're switching to
     self.layout_engine.workspaces[self.active_workspace].attention = false;
     self.markDirty();
+}
+
+/// Switch back to the workspace last switched away from (xmonad toggleWS).
+/// Returns false when there has been no switch yet.
+pub fn toggleLastWorkspace(self: *Multiplexer) bool {
+    const prev = self.prev_workspace orelse return false;
+    self.switchWorkspace(prev);
+    return true;
 }
 
 /// Cycle the layout of the active workspace.
@@ -782,6 +795,22 @@ test "Multiplexer switchWorkspace" {
 
     // Out of range does nothing
     mux.switchWorkspace(99);
+    try t.expectEqual(@as(u8, 3), mux.active_workspace);
+}
+
+test "Multiplexer toggleLastWorkspace flips between the last two" {
+    var mux = Multiplexer.init(t.allocator);
+    defer mux.deinit();
+
+    // Nothing to go back to yet.
+    try t.expect(!mux.toggleLastWorkspace());
+    try t.expectEqual(@as(u8, 0), mux.active_workspace);
+
+    mux.switchWorkspace(3);
+    mux.switchWorkspace(3); // same workspace: keeps prev
+    try t.expect(mux.toggleLastWorkspace());
+    try t.expectEqual(@as(u8, 0), mux.active_workspace);
+    try t.expect(mux.toggleLastWorkspace());
     try t.expectEqual(@as(u8, 3), mux.active_workspace);
 }
 

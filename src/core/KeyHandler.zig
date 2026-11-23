@@ -269,6 +269,7 @@ pub fn executeAction(action: KB.Action, mux: *Multiplexer) MuxAction {
             if (action.workspaceIndex()) |ws| mux.switchWorkspace(ws);
             return .panes_changed;
         },
+        .workspace_toggle_last => if (mux.toggleLastWorkspace()) .panes_changed else .none,
         .pane_move_to_1, .pane_move_to_2, .pane_move_to_3,
         .pane_move_to_4, .pane_move_to_5, .pane_move_to_6,
         .pane_move_to_7, .pane_move_to_8, .pane_move_to_9,
@@ -461,4 +462,31 @@ test "Alt+Shift+Space reaches layout_reset in the default keybinds" {
     kb.loadDefaults();
     const mods = platformMods(kc.ALT_MASK | kc.SHIFT_MASK, false);
     try std.testing.expectEqual(KB.Action.layout_reset, kb.lookup(.normal, mods, ' ').?);
+}
+
+test "Alt+Tab, Alt+Shift+Tab and Alt+Escape reach the default keybinds" {
+    const ks = @import("../input/keysyms.zig");
+    var kb = KB.Keybinds{ .mod_key = KB.Mods.ALT };
+    kb.loadDefaults();
+    const alt = platformMods(kc.ALT_MASK, false);
+    const alt_shift = platformMods(kc.ALT_MASK | kc.SHIFT_MASK, false);
+    try std.testing.expectEqual(KB.Action.pane_focus_next, kb.lookup(.normal, alt, ks.bindChar(ks.Tab)).?);
+    // xkb reports Shift+Tab as ISO_Left_Tab.
+    try std.testing.expectEqual(KB.Action.pane_focus_prev, kb.lookup(.normal, alt_shift, ks.bindChar(ks.ISO_Left_Tab)).?);
+    try std.testing.expectEqual(KB.Action.workspace_toggle_last, kb.lookup(.normal, alt, ks.bindChar(ks.Escape)).?);
+    // Unmodified Tab and Escape match nothing, so they still go to the program.
+    try std.testing.expect(kb.lookup(.normal, platformMods(0, false), ks.bindChar(ks.Tab)) == null);
+    try std.testing.expect(kb.lookup(.normal, platformMods(0, false), ks.bindChar(ks.Escape)) == null);
+    try std.testing.expect(kb.lookup(.normal, platformMods(kc.SHIFT_MASK, false), ks.bindChar(ks.ISO_Left_Tab)) == null);
+    // Esc after the prefix leaves prefix mode instead of being sent on.
+    try std.testing.expectEqual(KB.Action.mode_normal, kb.lookup(.prefix, platformMods(0, false), ks.bindChar(ks.Escape)).?);
+}
+
+test "executeAction workspace_toggle_last returns to the previous workspace" {
+    var mux = Multiplexer.init(std.testing.allocator);
+    defer mux.deinit();
+    try std.testing.expect(executeAction(.workspace_toggle_last, &mux) == .none);
+    mux.switchWorkspace(4);
+    try std.testing.expect(executeAction(.workspace_toggle_last, &mux) == .panes_changed);
+    try std.testing.expectEqual(@as(u8, 0), mux.active_workspace);
 }

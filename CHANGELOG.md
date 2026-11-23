@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- **Alt+Tab, Alt+Shift+Tab, Alt+Escape and Alt+` work in a teru window.**
+  The first three never reached the keybinding table, and the last-workspace
+  toggle (Alt+Escape, Alt+`) was not implemented outside teruwm. Esc after
+  the prefix now leaves prefix mode instead of being sent to the program.
 - **Alt+Shift+Space resets the layout in a teru window.** It opened the
   leader menu, which only Alt+Space should open.
 - **Ctrl+\\ detaches a teru window attached to a session** (`teru -n NAME`),

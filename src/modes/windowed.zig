@@ -848,7 +848,10 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                             // escape hatch for local control while focused on a nested
                             // session.
                             if (!prefix.awaiting and !ralt_held and (key.modifiers & 8) != 0) {
-                                const fwd_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else if (keysym == ks.Return) '\r' else 0;
+                                // Same key characters the binding lookup below uses, so an
+                                // Alt chord the local table would take (Alt+Tab, Alt+Escape)
+                                // goes to the nested teru instead.
+                                const fwd_char: u8 = ks.bindChar(keysym);
                                 if (fwd_char != 0) {
                                     if (mux.getActivePaneMut()) |pane| {
                                         // Only forward while the pane is actually showing the
@@ -899,9 +902,12 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                 }
                             }
 
-                            // Global shortcuts: Alt+key (workspace, focus, zoom, split)
+                            // Global shortcuts: Alt+key (workspace, focus, zoom, split).
+                            // bindChar folds Tab, Shift+Tab, Escape and Return to the
+                            // ASCII the table stores; a key with no binding still goes
+                            // to the program below.
                             {
-                                const ks_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else if (keysym == ks.Return) '\r' else 0;
+                                const ks_char: u8 = ks.bindChar(keysym);
                                 const kb_mode: @import("../config/Keybinds.zig").Mode = if (prefix.awaiting) .prefix else .normal;
                                 if (leader_kb orelse KeyHandler.lookupConfigAction(&config.keybinds, kb_mode, key.modifiers, ks_char, ralt_held)) |kb_action| {
                                     if (prefix.awaiting) prefix.reset();
