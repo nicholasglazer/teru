@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- **Alt+Shift+Space resets the layout in a teru window.** It opened the
+  leader menu, which only Alt+Space should open.
 - **Ctrl+\\ detaches a teru window attached to a session** (`teru -n NAME`),
   as it already did in the SSH client. Before, it sent SIGQUIT to the
   program in the focused pane. Without a session it still sends SIGQUIT.

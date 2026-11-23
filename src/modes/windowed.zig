@@ -873,7 +873,6 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                             var leader_kb: ?@import("../config/Keybinds.zig").Action = null;
                             {
                                 const lead_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else if (keysym == ks.Escape) 0x1b else 0;
-                                const alt_down = (key.modifiers & 8) != 0 and !ralt_held;
                                 if (leader.active) {
                                     if (lead_char == 0) continue; // non-char key → swallow
                                     const shifted = (key.modifiers & ks.SHIFT_MASK) != 0;
@@ -893,7 +892,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                             leader_kb = a;
                                         },
                                     }
-                                } else if (!prefix.awaiting and alt_down and lead_char == ' ') {
+                                } else if (!prefix.awaiting and KeyHandler.isLeaderChord(key.modifiers, ralt_held, lead_char)) {
                                     leader.activate();
                                     force_redraw = true;
                                     continue;

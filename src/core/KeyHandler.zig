@@ -218,6 +218,13 @@ pub fn isDetachKey(key_bytes: []const u8, modifiers: u32, attached: bool) bool {
         key_bytes.len == 1 and key_bytes[0] == 0x1c;
 }
 
+/// The leader / which-key chord in the windowed terminal: Alt+Space with no
+/// other modifier. Shift, Ctrl and RAlt variants are separate bindings
+/// (Alt+Shift+Space is layout_reset), so they must not open the leader.
+pub fn isLeaderChord(modifiers: u32, ralt: bool, key_char: u8) bool {
+    return key_char == ' ' and platformMods(modifiers, ralt).eql(KB.Mods.ALT);
+}
+
 /// Execute a keybind Action's mux side effects (focus, swap, resize, etc).
 /// Returns a MuxAction for things main.zig must handle (split, zoom, mode change).
 pub fn executeAction(action: KB.Action, mux: *Multiplexer) MuxAction {
@@ -437,4 +444,21 @@ test "isDetachKey: Ctrl+\\ detaches only when attached to a daemon" {
     try std.testing.expect(!isDetachKey("\\", 0, true));
     try std.testing.expect(!isDetachKey("\x1b\x1c", kc.CTRL_MASK, true));
     try std.testing.expect(!isDetachKey("", kc.CTRL_MASK, true));
+}
+
+test "isLeaderChord: exactly Alt+Space" {
+    try std.testing.expect(isLeaderChord(kc.ALT_MASK, false, ' '));
+    // Alt+Shift+Space is layout_reset, not the leader.
+    try std.testing.expect(!isLeaderChord(kc.ALT_MASK | kc.SHIFT_MASK, false, ' '));
+    try std.testing.expect(!isLeaderChord(kc.ALT_MASK | kc.CTRL_MASK, false, ' '));
+    try std.testing.expect(!isLeaderChord(kc.ALT_MASK, true, ' ')); // RAlt
+    try std.testing.expect(!isLeaderChord(0, false, ' '));
+    try std.testing.expect(!isLeaderChord(kc.ALT_MASK, false, 'a'));
+}
+
+test "Alt+Shift+Space reaches layout_reset in the default keybinds" {
+    var kb = KB.Keybinds{ .mod_key = KB.Mods.ALT };
+    kb.loadDefaults();
+    const mods = platformMods(kc.ALT_MASK | kc.SHIFT_MASK, false);
+    try std.testing.expectEqual(KB.Action.layout_reset, kb.lookup(.normal, mods, ' ').?);
 }
