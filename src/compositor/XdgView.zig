@@ -284,11 +284,26 @@ const FloatPlacement = enum { tiled, center, top_right };
 ///     app_id, no title, and no parent; tiling them hands them a whole tile. No
 ///     real application window omits its app_id, so an empty app_id is a safe
 ///     notification/splash signal.
+///   - a known notification daemon → float TOP-RIGHT. teruwm has no
+///     layer-shell, so dunst falls back to an ordinary xdg toplevel for each
+///     popup; tiled, every notification took a tile.
 ///   - otherwise → TILED like a normal application window.
 fn floatPlacement(has_parent: bool, app_id: []const u8) FloatPlacement {
     if (has_parent) return .center;
     if (app_id.len == 0) return .top_right;
+    if (isNotificationDaemon(app_id)) return .top_right;
     return .tiled;
+}
+
+/// app_ids that notification daemons give their popup toplevels when the
+/// compositor offers no layer-shell (read from the daemons' binaries).
+const notification_daemon_app_ids = [_][]const u8{ "org.knopwob.dunst", "dunst" };
+
+fn isNotificationDaemon(app_id: []const u8) bool {
+    for (notification_daemon_app_ids) |known| {
+        if (std.ascii.eqlIgnoreCase(app_id, known)) return true;
+    }
+    return false;
 }
 
 /// Place a floating node in the TOP-RIGHT corner at its natural size, just below
@@ -319,6 +334,9 @@ test "floatPlacement: dialogs center, no-app_id notifications top-right, apps ti
     try std.testing.expectEqual(FloatPlacement.tiled, floatPlacement(false, "vivaldi-stable"));
     try std.testing.expectEqual(FloatPlacement.tiled, floatPlacement(false, "vlc"));
     try std.testing.expectEqual(FloatPlacement.tiled, floatPlacement(false, "foot"));
+    try std.testing.expectEqual(FloatPlacement.top_right, floatPlacement(false, "org.knopwob.dunst"));
+    try std.testing.expectEqual(FloatPlacement.top_right, floatPlacement(false, "Dunst"));
+    try std.testing.expectEqual(FloatPlacement.tiled, floatPlacement(false, "dunstify-gui"));
 }
 
 fn handleFtlActivate(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
