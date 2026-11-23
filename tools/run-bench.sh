@@ -102,7 +102,7 @@ printf "  startup p50:     %s ms\n" "$p50"
 printf "  startup p95:     %s ms\n" "$p95"
 printf "  startup p99:     %s ms\n" "$p99"
 echo
-echo "VT throughput (MB/s, median — parse / parse+render):"
+echo "VT throughput (MiB/s, median — parse / parse+render):"
 echo "$throughput" | python3 -c "
 import json, sys
 for r in json.load(sys.stdin):

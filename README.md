@@ -123,8 +123,8 @@ Numbers measured on a Core Ultra 9 185H with ReleaseFast. Full methodology, dist
 | `teru` binary size | 1.4 MB |
 | `teruwm` binary size | 1.2 MB |
 | `teru --help` startup (p50) | 0.73 ms |
-| VtParser throughput, `dense_cells` | 401 MB/s |
-| Full pipeline (parse + render), `dense_cells` | 391 MB/s |
+| VtParser throughput, `dense_cells` | 401 MiB/s |
+| Full pipeline (parse + render), `dense_cells` | 391 MiB/s |
 
 Single-number marketing claims are explicitly avoided — see the BENCHMARKS doc for why and
 what's not measured.
