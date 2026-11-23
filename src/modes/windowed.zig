@@ -1030,6 +1030,15 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
 
                             if (len == 0) continue;
 
+                            // Ctrl+\ detaches a window attached to a daemon
+                            // session, like the TUI client. Without a daemon it
+                            // falls through and reaches the program as SIGQUIT.
+                            if (KeyHandler.isDetachKey(key_buf[0..len], key.modifiers, daemon_fd != null)) {
+                                prefix.reset();
+                                running = false;
+                                continue;
+                            }
+
                             if (mux.getScrollOffset() > 0 or mux.getScrollPixel() > 0) {
                                 const exits_scroll = if (len == 1)
                                     key_buf[0] >= 0x20 or

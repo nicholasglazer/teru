@@ -124,6 +124,11 @@ Inside an attached session (the over-SSH TUI client):
   workspace, `Ctrl+B d` detaches).
 - **Ctrl-\\** — detach immediately (leaves everything running).
 
+A window attached to a session (`teru -n NAME` on a desktop) detaches on
+**Ctrl-\\** too, as it does on `Ctrl+Space d`. In a window that is not attached to a
+session there is nothing to detach from, so Ctrl-\\ reaches the program as
+usual (the terminal turns it into SIGQUIT).
+
 See [KEYBINDINGS.md](KEYBINDINGS.md#remote--tui-session-teru--n-over-ssh) for the
 full remote keymap.
 

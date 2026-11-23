@@ -264,6 +264,7 @@ for legibility, a max of `0` means no maximum).
 | `$mod+/` | Enter search mode in scrollback |
 | `$mod+V` | Enter vi / copy / scroll mode |
 | `Ctrl+Space` | Enter prefix mode (next key is a prefix command) |
+| `Ctrl+\` | Detach (teru, only in a window attached to a `teru -n NAME` session; otherwise the program gets it as SIGQUIT) |
 
 ## Prefix commands (`Ctrl+Space`, then …)
 

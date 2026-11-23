@@ -208,6 +208,16 @@ pub fn lookupConfigAction(
     return keybinds.lookup(mode, mods, key_char);
 }
 
+/// Ctrl+\ (FS, 0x1C) in a window attached to a daemon session detaches it,
+/// the same key the TUI client treats as detach (TuiInput.feed). A window
+/// with no daemon has nothing to detach from, so the byte goes to the program
+/// and the tty turns it into SIGQUIT as in any other terminal. Alt+Ctrl+\ is
+/// not detach: the TUI client reads it as ESC+FS and forwards it.
+pub fn isDetachKey(key_bytes: []const u8, modifiers: u32, attached: bool) bool {
+    return attached and modifiers & kc.ALT_MASK == 0 and
+        key_bytes.len == 1 and key_bytes[0] == 0x1c;
+}
+
 /// Execute a keybind Action's mux side effects (focus, swap, resize, etc).
 /// Returns a MuxAction for things main.zig must handle (split, zoom, mode change).
 pub fn executeAction(action: KB.Action, mux: *Multiplexer) MuxAction {
@@ -414,4 +424,17 @@ test "handleGlobalKey RAlt+m marks master, Alt+m focuses" {
     defer mux.deinit();
     try std.testing.expect(handleGlobalKey(0, kc.ALT_MASK, 'm', true, true, &mux).? == .panes_changed);
     try std.testing.expect(handleGlobalKey(0, kc.ALT_MASK, 'm', true, false, &mux).? == .panes_changed);
+}
+
+test "isDetachKey: Ctrl+\\ detaches only when attached to a daemon" {
+    // Attached window: FS (Ctrl+\) detaches.
+    try std.testing.expect(isDetachKey("\x1c", kc.CTRL_MASK, true));
+    // No daemon: FS goes to the program (SIGQUIT), never swallowed.
+    try std.testing.expect(!isDetachKey("\x1c", kc.CTRL_MASK, false));
+    // Alt+Ctrl+\ is forwarded, as in the TUI client.
+    try std.testing.expect(!isDetachKey("\x1c", kc.CTRL_MASK | kc.ALT_MASK, true));
+    // Other keys, and FS inside a longer sequence, are not detach.
+    try std.testing.expect(!isDetachKey("\\", 0, true));
+    try std.testing.expect(!isDetachKey("\x1b\x1c", kc.CTRL_MASK, true));
+    try std.testing.expect(!isDetachKey("", kc.CTRL_MASK, true));
 }

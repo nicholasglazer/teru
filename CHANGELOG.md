@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- **Ctrl+\\ detaches a teru window attached to a session** (`teru -n NAME`),
+  as it already did in the SSH client. Before, it sent SIGQUIT to the
+  program in the focused pane. Without a session it still sends SIGQUIT.
 - **Standalone teru no longer spins a CPU core while idle.** With the default
   config (layout saving off) the main loop polled with a zero timeout forever,
   starting 100 ms after launch, and used about 90% of a core.
