@@ -66,16 +66,19 @@ pub const setenv = if (builtin.os.tag == .windows) struct {
 pub var cli_no_bar: bool = false;
 pub var cli_exec_argv_buf: [64]?[*:0]const u8 = @splat(null);
 pub var cli_exec_argv: ?[*:null]const ?[*:0]const u8 = null;
+/// -f or -e: a one-off window that must not overwrite the saved layout.
+pub var cli_one_off: bool = false;
 
 // ── Plain `teru` startup ──────────────────────────────────────
 
 /// How plain `teru` (no -n, --daemon, --attach or --raw, with a display)
 /// starts. `persist_session` attaches to the "default" daemon and
-/// `restore_layout` reopens the saved layout; -f/--fresh skips both.
+/// `restore_layout` reopens the saved layout. A one-off launch (-f/--fresh,
+/// or -e CMD, which asks for one pane running CMD) skips both.
 pub const Startup = enum { fresh, persistent, restore };
 
-pub fn plainStartup(fresh_flag: bool, persist_session: bool, restore_layout: bool) Startup {
-    if (fresh_flag) return .fresh;
+pub fn plainStartup(one_off: bool, persist_session: bool, restore_layout: bool) Startup {
+    if (one_off) return .fresh;
     if (persist_session) return .persistent;
     if (restore_layout) return .restore;
     return .fresh;
@@ -90,6 +93,27 @@ test "plainStartup: -f overrides both persistence options" {
     try std.testing.expectEqual(Startup.fresh, plainStartup(true, false, true));
     try std.testing.expectEqual(Startup.fresh, plainStartup(true, true, false));
     try std.testing.expectEqual(Startup.fresh, plainStartup(true, true, true));
+}
+
+/// Whether a window writes sessions/default.bin. Only a plain local window
+/// does: a window attached to a daemon leaves saving to the daemon (which
+/// writes its own NAME.bin), and a one-off launch (-f, -e) must not replace
+/// the layout the next plain launch restores.
+pub fn layoutSaveEnabled(restore_layout: bool, persist_session: bool, attached: bool, one_off: bool) bool {
+    return (restore_layout or persist_session) and !attached and !one_off;
+}
+
+test "layoutSaveEnabled: only a plain local window saves the layout" {
+    try std.testing.expect(layoutSaveEnabled(true, false, false, false));
+    try std.testing.expect(layoutSaveEnabled(false, true, false, false));
+    // Neither option set: nothing to save.
+    try std.testing.expect(!layoutSaveEnabled(false, false, false, false));
+    // -f / -e keep the saved layout for the next plain launch.
+    try std.testing.expect(!layoutSaveEnabled(true, false, false, true));
+    try std.testing.expect(!layoutSaveEnabled(true, true, false, true));
+    // Attached to a daemon (-n NAME, persist_session): the daemon saves.
+    try std.testing.expect(!layoutSaveEnabled(true, false, true, false));
+    try std.testing.expect(!layoutSaveEnabled(true, true, true, false));
 }
 
 // ── stdout helpers ────────────────────────────────────────────

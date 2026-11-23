@@ -14,7 +14,9 @@
   was saved on exit but never restored, and `persist_session` never attached
   to the daemon. `teru -f` / `--fresh`, listed in `--help`, was not parsed.
   Plain `teru` now restores the layout or attaches as configured, and `-f`
-  starts fresh for that launch. Unknown-key warnings print once per launch.
+  starts fresh for that launch. `-f` and `-e CMD` windows do not overwrite
+  the saved layout, and a window attached to a daemon leaves saving to the
+  daemon. Unknown-key warnings print once per launch.
 - **`dynamic_title` in teru.conf works.** The key was documented but never
   read, so `dynamic_title = false` had no effect and programs always set the
   window title. It is now read, and a live config reload applies it.

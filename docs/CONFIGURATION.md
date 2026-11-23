@@ -297,7 +297,7 @@ teruwm's touchpad zoom speed, `zoom_units_per_step`, is set in `~/.config/teruwm
 | `prefix_key` | string | `ctrl+space` | Prefix key for multiplexer commands. Accepts `ctrl+a` through `ctrl+z`, `ctrl+space`, or raw integer 0-31 |
 | `prefix_timeout_ms` | integer | `500` | Milliseconds to wait for a command after pressing the prefix key |
 | `alt_workspace_switch` | boolean | `true` | Enable Alt+1-9 workspace switch and Alt+Shift+1-9 move pane |
-| `restore_layout` | boolean | `false` | Save layout on exit, restore on launch (fresh shells, no daemon) |
+| `restore_layout` | boolean | `false` | Save the layout as it changes, restore it on launch (fresh shells, no daemon) |
 | `persist_session` | boolean | `false` | Keep processes alive between window closes (auto-daemon) |
 | `show_status_bar` | boolean | `true` | Show the status bar at the bottom of the window. Toggle at runtime with `Alt+B` |
 
@@ -327,7 +327,7 @@ These two options serve different use cases:
 
 Both options save to `$XDG_STATE_HOME/teru/sessions/`. You can enable both simultaneously -- `persist_session` takes priority when a daemon is running, `restore_layout` serves as fallback when no daemon is found.
 
-Both apply to a plain `teru` launch with a display. `teru -f` (`--fresh`) skips them for one launch: a new window with one shell, nothing restored and no daemon. The layout is still saved on exit, so the next plain launch restores it.
+Both apply to a plain `teru` launch with a display. `teru -f` (`--fresh`) skips them for one launch: a new window with one shell, nothing restored and no daemon. `teru -e CMD` does the same, with one pane running `CMD`. Neither writes `default.bin`, so the next plain launch restores the layout saved before them. A window attached to a daemon (`teru -n NAME`, or `persist_session`) does not write `default.bin` either; the daemon saves its own session. If two plain windows are open, the one that changed its layout last is what gets restored.
 
 Named sessions (`teru -n NAME`) always get full daemon persistence regardless of these settings.
 

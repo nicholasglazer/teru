@@ -78,7 +78,8 @@ pub fn main(init: std.process.Init) !void {
                 \\  -n, --name <name>       Connect to (or start) named session
                 \\  -t, --template <name>   Apply template (.tsess) on first start
                 \\  -f, --fresh             Start fresh: ignore restore_layout and
-                \\                          persist_session for this launch
+                \\                          persist_session for this launch, and keep
+                \\                          the saved layout (-e CMD does the same)
                 \\  -l, --list              List active sessions
                 \\  -v, --version           Show version
                 \\  -h, --help              Show this help
@@ -228,9 +229,11 @@ pub fn main(init: std.process.Init) !void {
         return raw_mode.run(allocator, io);
     }
 
-    // restore_layout / persist_session apply to plain `teru` only; -f skips
-    // them. The windowed mode loads the config again (and warns about it).
-    const startup: common.Startup = if (fresh) .fresh else blk: {
+    // restore_layout / persist_session apply to plain `teru` only. -f, and
+    // -e CMD (one pane running CMD), skip them and leave the saved layout
+    // alone. The windowed mode loads the config again (and warns about it).
+    common.cli_one_off = fresh or common.cli_exec_argv != null;
+    const startup: common.Startup = if (common.cli_one_off) .fresh else blk: {
         var cfg = Config.loadQuiet(allocator, io) catch break :blk .fresh;
         defer cfg.deinit();
         break :blk common.plainStartup(false, cfg.persist_session, cfg.restore_layout);

@@ -447,6 +447,8 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                 mux.switchWorkspace(@intCast(wi));
                 for (0..ws_panes) |_| {
                     const pid = try mux.spawnPane(grid_rows, grid_cols);
+                    // exec_argv (-e) is for the first pane only.
+                    mux.spawn_config.exec_argv = null;
                     if (mux.getPaneById(pid)) |pane| {
                         _ = try graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.childPid(), .workspace = @intCast(wi) });
                     }
@@ -1374,7 +1376,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
         }
 
         // Layout/session save: debounced 100ms after last mutation.
-        if ((config.restore_layout or config.persist_session) and mux.persist_dirty) {
+        if (common.layoutSaveEnabled(config.restore_layout, config.persist_session, daemon_fd != null, common.cli_one_off) and mux.persist_dirty) {
             const elapsed = compat.monotonicNow() - mux.persist_dirty_since;
             if (elapsed >= common.PERSIST_DEBOUNCE_NS) {
                 mux.persist_dirty = false;
@@ -1716,7 +1718,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                 config.cursor_blink and window_focused,
                 frame_cap_deadline,
                 pending_render,
-                config.restore_layout or config.persist_session,
+                common.layoutSaveEnabled(config.restore_layout, config.persist_session, daemon_fd != null, common.cli_one_off),
                 mux.persist_dirty,
                 mux.persist_dirty_since,
                 500,
@@ -1735,7 +1737,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
         }
     }
 
-    if (config.restore_layout or config.persist_session) {
+    if (common.layoutSaveEnabled(config.restore_layout, config.persist_session, daemon_fd != null, common.cli_one_off)) {
         common.persistSave(&mux, &graph, allocator, io);
     }
 }
