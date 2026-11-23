@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **`dynamic_title` in teru.conf works.** The key was documented but never
+  read, so `dynamic_title = false` had no effect and programs always set the
+  window title. It is now read, and a live config reload applies it.
+- **Unknown teru.conf keys are reported.** Each one logs a warning with the
+  file, line and key, instead of being dropped without a word; the rest of
+  the file still loads. `zoom_units_per_step` was documented as a teru.conf
+  key but only teruwm reads it, from `~/.config/teruwm/config`; the docs now
+  list it there.
 - **PageUp and PageDown reach programs in a teru window.** teru took them
   for scrollback, so less, vim and htop never got them. Scrollback is now on
   Shift+PageUp and Shift+PageDown, and on the alternate screen those go to

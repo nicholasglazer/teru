@@ -238,6 +238,9 @@ workspace_layout_counts: [10]u8 = @splat(0),
 keybinds: Keybinds.Keybinds = .{},
 keybinds_loaded: bool = false, // true once any [keybinds.*] section is parsed
 
+// Lines whose key teru does not know (each one is logged as a warning).
+unknown_keys: u32 = 0,
+
 // Leader / which-key menu (`[leader]` / `[leader.NAME]`). Shared parser; the
 // TUI client materializes it into the live tree (or falls back to MuxLeader).
 leader: LeaderDefs.Defs = .{},
@@ -270,7 +273,7 @@ pub fn load(allocator: Allocator, io: Io) !Config {
     defer allocator.free(content);
     const n = file.readPositionalAll(io, content, 0) catch return config;
 
-    config.parseWithDepth(allocator, content[0..n], io, 0);
+    config.parseWithDepth(allocator, content[0..n], io, 0, path);
 
     // Load external theme file if theme was set and not a built-in
     if (config.theme) |name| {
@@ -426,17 +429,20 @@ pub fn colorScheme(self: *const Config) ColorScheme {
 // ── Parsing ───────────────────────────────────────────────────────
 
 fn parse(self: *Config, allocator: Allocator, content: []const u8) void {
-    self.parseWithDepth(allocator, content, null, 0);
+    self.parseWithDepth(allocator, content, null, 0, "teru.conf");
 }
 
-fn parseWithDepth(self: *Config, allocator: Allocator, content: []const u8, io: ?Io, depth: u8) void {
+/// `source` names the file in warnings (teru.conf or an included path).
+fn parseWithDepth(self: *Config, allocator: Allocator, content: []const u8, io: ?Io, depth: u8, source: []const u8) void {
     if (depth > 4) return; // prevent infinite include cycles
 
     var current_section: ?[]const u8 = null;
     var keybind_mode: ?Keybinds.Mode = null; // non-null when inside [keybinds.*]
     var leader_idx: ?u8 = null; // non-null when inside [leader] / [leader.NAME]
     var line_iter = std.mem.splitScalar(u8, content, '\n');
+    var line_no: usize = 0;
     while (line_iter.next()) |raw_line| {
+        line_no += 1;
         const line = std.mem.trim(u8, raw_line, &std.ascii.whitespace);
 
         // Skip empty lines and comments
@@ -505,7 +511,12 @@ fn parseWithDepth(self: *Config, allocator: Allocator, content: []const u8, io: 
             continue;
         }
 
-        self.applyField(allocator, current_section, key, value);
+        if (!self.applyField(allocator, current_section, key, value)) {
+            // A warning, not an error: a config written for another teru
+            // version keeps loading, but a typo no longer vanishes silently.
+            self.unknown_keys +|= 1;
+            std.log.scoped(.config).warn("{s}:{d}: unknown key '{s}', ignored", .{ source, line_no, key });
+        }
     }
 }
 
@@ -529,18 +540,20 @@ fn loadInclude(self: *Config, allocator: Allocator, io: Io, path: []const u8, de
     defer allocator.free(content);
     const n = file.readPositionalAll(io, content, 0) catch return;
 
-    self.parseWithDepth(allocator, content[0..n], io, depth);
+    self.parseWithDepth(allocator, content[0..n], io, depth, full_path);
 }
 
-fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []const u8, value: []const u8) void {
+/// Apply one `key = value` line. Returns false when the key is not a teru.conf
+/// key (so the caller can warn); a known key with a value that does not parse
+/// returns true and leaves the field at its current value.
+fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []const u8, value: []const u8) bool {
     // Delegate workspace section keys
     if (section) |sec| {
         if (std.mem.startsWith(u8, sec, "workspace.")) {
             const idx_str = sec["workspace.".len..];
-            const ws_idx_1 = std.fmt.parseInt(usize, idx_str, 10) catch return;
-            if (ws_idx_1 < 1 or ws_idx_1 > 9) return;
-            self.applyWorkspaceField(allocator, ws_idx_1 - 1, key, value);
-            return;
+            const ws_idx_1 = std.fmt.parseInt(usize, idx_str, 10) catch return false;
+            if (ws_idx_1 < 1 or ws_idx_1 > 9) return false;
+            return self.applyWorkspaceField(allocator, ws_idx_1 - 1, key, value);
         }
     }
 
@@ -548,7 +561,7 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         // Clamp to the renderer minimum (FontAtlas.min_font_size == 6). A
         // config `font_size = 0` would otherwise reach FontAtlas as a 0 cell
         // size and divide-by-zero at startup before the user can fix it.
-        self.font_size = @max(@as(u16, 6), std.fmt.parseInt(u16, value, 10) catch return);
+        self.font_size = @max(@as(u16, 6), std.fmt.parseInt(u16, value, 10) catch return true);
     } else if (std.mem.eql(u8, key, "font_path") or std.mem.eql(u8, key, "font")) {
         // Accepts a full path OR a bare font name/filename (resolved against
         // the system font dirs by FontAtlas). `font` is the friendlier alias.
@@ -562,31 +575,31 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
     } else if (std.mem.eql(u8, key, "shell")) {
         self.setString(allocator, &self.shell, value);
     } else if (std.mem.eql(u8, key, "bg")) {
-        self.bg = parseHexColor(value) orelse return;
+        self.bg = parseHexColor(value) orelse return true;
     } else if (std.mem.eql(u8, key, "fg")) {
-        self.fg = parseHexColor(value) orelse return;
+        self.fg = parseHexColor(value) orelse return true;
     } else if (std.mem.eql(u8, key, "cursor_color")) {
-        self.cursor_color = parseHexColor(value) orelse return;
+        self.cursor_color = parseHexColor(value) orelse return true;
     } else if (std.mem.eql(u8, key, "selection_bg")) {
-        self.selection_bg = parseHexColor(value) orelse return;
+        self.selection_bg = parseHexColor(value) orelse return true;
     } else if (std.mem.eql(u8, key, "border_active")) {
-        self.border_active = parseHexColor(value) orelse return;
+        self.border_active = parseHexColor(value) orelse return true;
     } else if (std.mem.eql(u8, key, "border_inactive")) {
-        self.border_inactive = parseHexColor(value) orelse return;
+        self.border_inactive = parseHexColor(value) orelse return true;
     } else if (std.mem.eql(u8, key, "attention_color")) {
-        self.attention_color = parseHexColor(value) orelse return;
+        self.attention_color = parseHexColor(value) orelse return true;
     } else if (std.mem.eql(u8, key, "scrollback_lines")) {
-        self.scrollback_lines = @min(std.fmt.parseInt(u32, value, 10) catch return, 1_000_000);
+        self.scrollback_lines = @min(std.fmt.parseInt(u32, value, 10) catch return true, 1_000_000);
     } else if (std.mem.eql(u8, key, "tab_width")) {
         // Documented in CONFIGURATION.md but was never parsed (silently stuck at
         // the default 8). Clamp to a sane 1..16.
-        self.tab_width = @max(1, @min(std.fmt.parseInt(u8, value, 10) catch return, 16));
+        self.tab_width = @max(1, @min(std.fmt.parseInt(u8, value, 10) catch return true, 16));
     } else if (std.mem.eql(u8, key, "prefix_key")) {
-        self.prefix_key = parsePrefixKey(value) orelse return;
+        self.prefix_key = parsePrefixKey(value) orelse return true;
     } else if (std.mem.eql(u8, key, "initial_width")) {
-        self.initial_width = std.fmt.parseInt(u32, value, 10) catch return;
+        self.initial_width = std.fmt.parseInt(u32, value, 10) catch return true;
     } else if (std.mem.eql(u8, key, "initial_height")) {
-        self.initial_height = std.fmt.parseInt(u32, value, 10) catch return;
+        self.initial_height = std.fmt.parseInt(u32, value, 10) catch return true;
     } else if (std.mem.eql(u8, key, "hook_on_spawn")) {
         self.setString(allocator, &self.hook_on_spawn, value);
     } else if (std.mem.eql(u8, key, "hook_on_close")) {
@@ -596,31 +609,33 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
     } else if (std.mem.eql(u8, key, "hook_on_session_save")) {
         self.setString(allocator, &self.hook_on_session_save, value);
     } else if (std.mem.eql(u8, key, "agent_in_band")) {
-        self.agent_in_band = parseBool(value) orelse return;
+        self.agent_in_band = parseBool(value) orelse return true;
     } else if (std.mem.eql(u8, key, "padding")) {
-        self.padding = std.fmt.parseInt(u32, value, 10) catch return;
+        self.padding = std.fmt.parseInt(u32, value, 10) catch return true;
     } else if (std.mem.eql(u8, key, "opacity")) {
-        self.opacity = parseFloat(value) orelse return;
+        self.opacity = parseFloat(value) orelse return true;
     } else if (std.mem.eql(u8, key, "cursor_shape")) {
-        self.cursor_shape = parseCursorShape(value) orelse return;
+        self.cursor_shape = parseCursorShape(value) orelse return true;
     } else if (std.mem.eql(u8, key, "cursor_blink")) {
-        self.cursor_blink = parseBool(value) orelse return;
+        self.cursor_blink = parseBool(value) orelse return true;
     } else if (std.mem.eql(u8, key, "bold_is_bright")) {
-        self.bold_is_bright = parseBool(value) orelse return;
+        self.bold_is_bright = parseBool(value) orelse return true;
     } else if (std.mem.eql(u8, key, "term")) {
         self.setString(allocator, &self.term, value);
     } else if (std.mem.eql(u8, key, "scroll_speed")) {
-        self.scroll_speed = std.fmt.parseInt(u32, value, 10) catch return;
+        self.scroll_speed = std.fmt.parseInt(u32, value, 10) catch return true;
     } else if (std.mem.eql(u8, key, "touchpad_scroll_invert")) {
-        self.touchpad_scroll_invert = parseBool(value) orelse return;
+        self.touchpad_scroll_invert = parseBool(value) orelse return true;
     } else if (std.mem.eql(u8, key, "alt_scroll_zoom")) {
-        self.alt_scroll_zoom = parseBool(value) orelse return;
+        self.alt_scroll_zoom = parseBool(value) orelse return true;
     } else if (std.mem.eql(u8, key, "copy_on_select")) {
-        self.copy_on_select = parseBool(value) orelse return;
+        self.copy_on_select = parseBool(value) orelse return true;
+    } else if (std.mem.eql(u8, key, "dynamic_title")) {
+        self.dynamic_title = parseBool(value) orelse return true;
     } else if (std.mem.eql(u8, key, "bell")) {
-        self.bell = parseBell(value) orelse return;
+        self.bell = parseBell(value) orelse return true;
     } else if (std.mem.eql(u8, key, "alt_workspace_switch")) {
-        self.alt_workspace_switch = parseBool(value) orelse return;
+        self.alt_workspace_switch = parseBool(value) orelse return true;
     } else if (std.mem.eql(u8, key, "mod")) {
         // Set the primary modifier key: mod = alt | super | ctrl+alt
         const Mods = @import("Keybinds.zig").Mods;
@@ -635,21 +650,21 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         self.keybinds.loadDefaults();
         self.keybinds.loadTerminalZoomDefaults();
     } else if (std.mem.eql(u8, key, "mouse_hide_when_typing")) {
-        self.mouse_hide_when_typing = parseBool(value) orelse return;
+        self.mouse_hide_when_typing = parseBool(value) orelse return true;
     } else if (std.mem.eql(u8, key, "restore_layout")) {
-        self.restore_layout = parseBool(value) orelse return;
+        self.restore_layout = parseBool(value) orelse return true;
     } else if (std.mem.eql(u8, key, "persist_session")) {
-        self.persist_session = parseBool(value) orelse return;
+        self.persist_session = parseBool(value) orelse return true;
     } else if (std.mem.eql(u8, key, "word_delimiters")) {
         self.setString(allocator, &self.word_delimiters, value);
     } else if (std.mem.eql(u8, key, "show_status_bar")) {
-        self.show_status_bar = parseBool(value) orelse return;
+        self.show_status_bar = parseBool(value) orelse return true;
     } else if (std.mem.eql(u8, key, "tui_pane_gap")) {
-        self.tui_pane_gap = std.fmt.parseInt(u16, value, 10) catch return;
+        self.tui_pane_gap = std.fmt.parseInt(u16, value, 10) catch return true;
     } else if (std.mem.eql(u8, key, "tui_nested_bar")) {
-        self.tui_nested_bar = parseBool(value) orelse return;
+        self.tui_nested_bar = parseBool(value) orelse return true;
     } else if (std.mem.eql(u8, key, "tui_pane_border")) {
-        self.tui_pane_border = PaneBorder.parse(value) orelse return;
+        self.tui_pane_border = PaneBorder.parse(value) orelse return true;
     } else if (std.mem.eql(u8, key, "bar_left")) {
         self.setString(allocator, &self.bar_left, value);
     } else if (std.mem.eql(u8, key, "bar_center")) {
@@ -657,9 +672,9 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
     } else if (std.mem.eql(u8, key, "bar_right")) {
         self.setString(allocator, &self.bar_right, value);
     } else if (std.mem.eql(u8, key, "prefix_timeout_ms")) {
-        self.prefix_timeout_ms = std.fmt.parseInt(u32, value, 10) catch return;
+        self.prefix_timeout_ms = std.fmt.parseInt(u32, value, 10) catch return true;
     } else if (std.mem.eql(u8, key, "notification_duration_ms")) {
-        self.notification_duration_ms = std.fmt.parseInt(u32, value, 10) catch return;
+        self.notification_duration_ms = std.fmt.parseInt(u32, value, 10) catch return true;
     } else if (std.mem.eql(u8, key, "theme")) {
         self.setString(allocator, &self.theme, value);
         // Apply theme colors immediately — subsequent color keys override
@@ -675,15 +690,19 @@ fn applyField(self: *Config, allocator: Allocator, section: ?[]const u8, key: []
         }
     } else if (key.len >= 6 and key.len <= 7 and std.mem.startsWith(u8, key, "color")) {
         // color0 through color15
-        const idx = std.fmt.parseInt(u8, key[5..], 10) catch return;
-        if (idx > 15) return;
-        self.ansi_colors[idx] = parseHexColor(value) orelse return;
+        const idx = std.fmt.parseInt(u8, key[5..], 10) catch return false;
+        if (idx > 15) return false;
+        self.ansi_colors[idx] = parseHexColor(value) orelse return true;
+    } else {
+        // Unknown: the caller warns and moves on, so a config written for a
+        // newer (or older) teru still loads.
+        return false;
     }
-    // Unknown keys are silently ignored (forward-compatibility)
+    return true;
 }
 
-fn applyWorkspaceField(self: *Config, allocator: Allocator, ws_idx: usize, key: []const u8, value: []const u8) void {
-    if (ws_idx >= 10) return;
+fn applyWorkspaceField(self: *Config, allocator: Allocator, ws_idx: usize, key: []const u8, value: []const u8) bool {
+    if (ws_idx >= 10) return false;
     if (std.mem.eql(u8, key, "layout")) {
         self.workspace_layouts[ws_idx] = parseLayout(value);
     } else if (std.mem.eql(u8, key, "layouts")) {
@@ -694,7 +713,10 @@ fn applyWorkspaceField(self: *Config, allocator: Allocator, ws_idx: usize, key: 
         // Free any previous name
         if (self.workspace_names[ws_idx]) |prev| allocator.free(prev);
         self.workspace_names[ws_idx] = allocator.dupe(u8, value) catch null;
+    } else {
+        return false;
     }
+    return true;
 }
 
 fn setString(self: *Config, allocator: Allocator, field: *?[]const u8, value: []const u8) void {
@@ -941,7 +963,69 @@ test "parse ignores unknown keys" {
     var config = Config{ .allocator = allocator };
     config.parse(allocator, content);
 
+    // Known keys still apply; each unknown one is counted (and logged).
     try std.testing.expectEqual(@as(u16, 12), config.font_size);
+    try std.testing.expectEqual(@as(u32, 2), config.unknown_keys);
+}
+
+test "unknown keys: applyField tells known from unknown" {
+    const allocator = std.testing.allocator;
+    var config = Config{ .allocator = allocator };
+    defer config.deinit();
+
+    // A known key with a bad value is still known (no warning for it here).
+    try std.testing.expect(config.applyField(allocator, null, "font_size", "not_a_number"));
+    try std.testing.expect(config.applyField(allocator, null, "color15", "#112233"));
+    try std.testing.expect(!config.applyField(allocator, null, "color16", "#112233"));
+    try std.testing.expect(!config.applyField(allocator, null, "colorx", "#112233"));
+    try std.testing.expect(!config.applyField(allocator, null, "fontsize", "12"));
+    // [workspace.N]: teru's keys are known; teruwm-only keys and bad indices are not.
+    try std.testing.expect(config.applyField(allocator, "workspace.2", "layout", "grid"));
+    try std.testing.expect(!config.applyField(allocator, "workspace.2", "cwd", "/tmp"));
+    try std.testing.expect(!config.applyField(allocator, "workspace.0", "layout", "grid"));
+    try std.testing.expect(!config.applyField(allocator, "workspace.x", "layout", "grid"));
+}
+
+test "unknown keys are counted but never stop the rest of the file" {
+    const allocator = std.testing.allocator;
+    const content =
+        \\workspace_1_layout = grid
+        \\font_size = 18
+        \\# comment lines and blank lines are not keys
+        \\
+        \\[keybinds.normal]
+        \\alt+q = close_pane
+        \\[workspace.1]
+        \\startup = htop
+        \\name = main
+    ;
+    var config = Config{ .allocator = allocator };
+    config.parse(allocator, content);
+    defer config.deinit();
+
+    try std.testing.expectEqual(@as(u16, 18), config.font_size);
+    try std.testing.expectEqualStrings("main", config.workspace_names[0].?);
+    try std.testing.expectEqual(@as(u32, 2), config.unknown_keys);
+}
+
+test "dynamic_title is parsed" {
+    const allocator = std.testing.allocator;
+    {
+        var config = Config{ .allocator = allocator };
+        defer config.deinit();
+        try std.testing.expect(config.dynamic_title); // default on
+        config.parse(allocator, "dynamic_title = false");
+        try std.testing.expect(!config.dynamic_title);
+        try std.testing.expectEqual(@as(u32, 0), config.unknown_keys);
+        config.parse(allocator, "dynamic_title = true");
+        try std.testing.expect(config.dynamic_title);
+    }
+    {
+        var config = Config{ .allocator = allocator };
+        defer config.deinit();
+        config.parse(allocator, "dynamic_title = maybe"); // bad value keeps the default
+        try std.testing.expect(config.dynamic_title);
+    }
 }
 
 test "parse ignores malformed lines" {

@@ -1426,10 +1426,11 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
             }
         }
 
-        // Window title: update from active pane's VT parser
+        // Window title: update from active pane's VT parser (OSC 0/2),
+        // unless dynamic_title = false keeps it fixed.
         if (mux.getActivePane()) |pane| {
             if (pane.vt.title_changed) {
-                if (pane.vt.title_len > 0) {
+                if (config.dynamic_title and pane.vt.title_len > 0) {
                     win.setTitle(pane.vt.title[0..pane.vt.title_len]);
                 }
                 pane.vt.title_changed = false;
@@ -1472,6 +1473,16 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                     config.restore_layout = new_config.restore_layout;
                     config.persist_session = new_config.persist_session;
                     config.show_status_bar = new_config.show_status_bar;
+                    if (config.dynamic_title != new_config.dynamic_title) {
+                        config.dynamic_title = new_config.dynamic_title;
+                        // Off: back to the fixed title. On: show what the
+                        // focused program last set, if anything.
+                        if (!config.dynamic_title) {
+                            win.setTitle("teru");
+                        } else if (mux.getActivePane()) |pane| {
+                            if (pane.vt.title_len > 0) win.setTitle(pane.vt.title[0..pane.vt.title_len]);
+                        }
+                    }
 
                     // Newly created panes pick up the new history depth.
                     // Existing panes keep theirs: a Scrollback's max_lines is
