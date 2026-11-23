@@ -214,8 +214,15 @@ fn handleMap(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     // handleRequestFullscreen when the user fullscreens a video; only this
     // come-up-fullscreen-on-map shortcut is suppressed for them.
     const aid_for_fs: []const u8 = if (app_id) |aid| std.mem.sliceTo(aid, 0) else "";
-    if (wlr.miozu_xdg_toplevel_requested_fullscreen(view.toplevel) and !appIdSkipsMapFullscreen(aid_for_fs)) {
-        server.enterFullscreen(view.node_id);
+    if (wlr.miozu_xdg_toplevel_requested_fullscreen(view.toplevel)) {
+        if (!appIdSkipsMapFullscreen(aid_for_fs)) {
+            server.enterFullscreen(view.node_id);
+        } else {
+            // handleRequestFullscreen acked the pre-map request, so the
+            // browser believes it is fullscreen while it sits in a tile.
+            // Take the ack back.
+            _ = wlr.wlr_xdg_toplevel_set_fullscreen(view.toplevel, false);
+        }
     }
 }
 
@@ -277,11 +284,26 @@ const FloatPlacement = enum { tiled, center, top_right };
 ///     app_id, no title, and no parent; tiling them hands them a whole tile. No
 ///     real application window omits its app_id, so an empty app_id is a safe
 ///     notification/splash signal.
+///   - a known notification daemon → float TOP-RIGHT. teruwm has no
+///     layer-shell, so dunst falls back to an ordinary xdg toplevel for each
+///     popup; tiled, every notification took a tile.
 ///   - otherwise → TILED like a normal application window.
 fn floatPlacement(has_parent: bool, app_id: []const u8) FloatPlacement {
     if (has_parent) return .center;
     if (app_id.len == 0) return .top_right;
+    if (isNotificationDaemon(app_id)) return .top_right;
     return .tiled;
+}
+
+/// app_ids that notification daemons give their popup toplevels when the
+/// compositor offers no layer-shell (read from the daemons' binaries).
+const notification_daemon_app_ids = [_][]const u8{ "org.knopwob.dunst", "dunst" };
+
+fn isNotificationDaemon(app_id: []const u8) bool {
+    for (notification_daemon_app_ids) |known| {
+        if (std.ascii.eqlIgnoreCase(app_id, known)) return true;
+    }
+    return false;
 }
 
 /// Place a floating node in the TOP-RIGHT corner at its natural size, just below
@@ -312,6 +334,9 @@ test "floatPlacement: dialogs center, no-app_id notifications top-right, apps ti
     try std.testing.expectEqual(FloatPlacement.tiled, floatPlacement(false, "vivaldi-stable"));
     try std.testing.expectEqual(FloatPlacement.tiled, floatPlacement(false, "vlc"));
     try std.testing.expectEqual(FloatPlacement.tiled, floatPlacement(false, "foot"));
+    try std.testing.expectEqual(FloatPlacement.top_right, floatPlacement(false, "org.knopwob.dunst"));
+    try std.testing.expectEqual(FloatPlacement.top_right, floatPlacement(false, "Dunst"));
+    try std.testing.expectEqual(FloatPlacement.tiled, floatPlacement(false, "dunstify-gui"));
 }
 
 fn handleFtlActivate(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
@@ -648,6 +673,12 @@ fn handleRequestFullscreen(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(
     std.log.scoped(.compositor).info("client fullscreen request node={d} want={}", .{ view.node_id, want });
     // Ack: tell the client the fullscreen state it will get on next configure.
     _ = wlr.wlr_xdg_toplevel_set_fullscreen(view.toplevel, want);
+    // Before the first map the node is not registered yet. Acting now hid
+    // every window and both bars around an unmapped surface and bypassed the
+    // browser exception in handleMap, which honours the latched request
+    // itself (appIdSkipsMapFullscreen). The ack above still rides into the
+    // initial configure that mpv and gamescope rely on.
+    if (server.nodes.findById(view.node_id) == null) return;
     if (want) {
         server.focusView(view);
         server.enterFullscreen(view.node_id);

@@ -293,13 +293,14 @@ fn handleFrame(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {
     server.perf.recordFrame(elapsed_us);
 }
 
+/// A nested backend (teruwm in a Wayland or X11 window) asks for a new mode
+/// when the host resizes its window. Commit it, then re-tile: discarding the
+/// request left the output at its first size.
 fn handleRequestState(listener: *wlr.wl_listener, data: ?*anyopaque) callconv(.c) void {
     const output: *Output = @fieldParentPtr("request_state", listener);
-    _ = output;
-    // wlroots 0.18: handle output state change requests (mode, enabled, etc.)
-    // For now, accept all state changes
-    const event: ?*wlr.wlr_output_event_request_state = @ptrCast(@alignCast(data));
-    _ = event;
+    const event: *wlr.wlr_output_event_request_state = @ptrCast(@alignCast(data orelse return));
+    if (wlr.miozu_output_commit_request_state(event) == 0) return;
+    output.server.relayoutOutputs();
 }
 
 fn handleDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callconv(.c) void {

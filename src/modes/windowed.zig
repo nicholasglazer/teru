@@ -81,6 +81,9 @@ fn applyKeyboardConfig(kb: anytype, config: *const Config) void {
 
 const RestoreInfo = common.RestoreInfo;
 
+/// Shortest interval between two painted frames (~60 fps).
+const frame_min_ns: i128 = 16_666_667;
+
 /// Block until any fd we care about becomes readable or the timeout
 /// expires. Replacing the fixed-timer io.sleep cut idle wake rate from
 /// ~60 Hz to whatever events actually demand. poll() returns EINTR on
@@ -117,44 +120,6 @@ fn waitForInput(
     if (watcher_fd) |fd| { if (n < fds.len) { fds[n] = .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }; n += 1; } }
 
     _ = posix.poll(fds[0..n], timeout_ms) catch {};
-}
-
-/// Next scheduled wake deadline in ms. Picks the tightest of:
-///   - the hard idle cap (lets maintenance polls run periodically)
-///   - cursor-blink flip (when enabled + window focused)
-///   - frame-rate cap (when a render is pending but throttled)
-///   - persist debounce (layout save fires after quiescent period)
-/// Prefix-mode timeout is intentionally skipped — its 500 ms default
-/// already matches the hard cap, and PrefixState.timestamp_ns uses
-/// the realtime clock which would mix badly with our monotonic now.
-fn computeIdleTimeoutMs(
-    now_ns: i128,
-    last_blink_ns: i128,
-    blink_enabled: bool,
-    frame_cap_deadline_ns: i128,
-    have_pending_render: bool,
-    persist_dirty: bool,
-    persist_dirty_since_ns: i128,
-    cap_ms: i32,
-) i32 {
-    var t: i32 = cap_ms;
-    const one_ms: i128 = 1_000_000;
-    if (blink_enabled) {
-        const wait = (last_blink_ns + common.CURSOR_BLINK_NS) - now_ns;
-        const wait_ms: i32 = @intCast(@max(@as(i128, 0), @divTrunc(wait, one_ms)));
-        if (wait_ms < t) t = wait_ms;
-    }
-    if (have_pending_render) {
-        const wait = frame_cap_deadline_ns - now_ns;
-        const wait_ms: i32 = @intCast(@max(@as(i128, 0), @divTrunc(wait, one_ms)));
-        if (wait_ms < t) t = wait_ms;
-    }
-    if (persist_dirty) {
-        const wait = (persist_dirty_since_ns + common.PERSIST_DEBOUNCE_NS) - now_ns;
-        const wait_ms: i32 = @intCast(@max(@as(i128, 0), @divTrunc(wait, one_ms)));
-        if (wait_ms < t) t = wait_ms;
-    }
-    return t;
 }
 
 /// Which direction a font-zoom step goes. `.reset` returns to `config.font_size`.
@@ -546,6 +511,8 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                 mux.switchWorkspace(@intCast(wi));
                 for (0..ws_panes) |_| {
                     const pid = try mux.spawnPane(grid_rows, grid_cols);
+                    // exec_argv (-e) is for the first pane only.
+                    mux.spawn_config.exec_argv = null;
                     if (mux.getPaneById(pid)) |pane| {
                         _ = try graph.spawn(.{ .name = "shell", .kind = .shell, .pid = pane.childPid(), .workspace = @intCast(wi) });
                     }
@@ -625,6 +592,9 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
     // sleep path (see waitForInput below).
     var window_focused: bool = true;
     var last_render_ns: i128 = 0;
+    // A frame that was due but held back by the frame cap below. It is
+    // painted when the cap expires; the poll timeout wakes the loop then.
+    var render_deferred = false;
 
     // Search mode state (Feature 9)
     var search_mode = false;
@@ -920,23 +890,26 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                 continue;
                             }
 
-                            // PageUp/Down: scrollback browsing
-                            if (keysym == ks.Page_Up) {
-                                const max_offset = mux.getScrollbackLineCount();
-                                if (max_offset > 0) {
-                                    mux.setScrollOffset(@min(mux.getScrollOffset() + grid_rows, max_offset));
-                                }
-                                var dummy: [32]u8 = undefined;
-                                _ = kb.processKey(key.keycode, &dummy);
-                                continue;
-                            } else if (keysym == ks.Page_Down) {
-                                if (mux.getScrollOffset() > 0) {
-                                    const so = mux.getScrollOffset();
-                                    mux.setScrollOffset(so -| grid_rows);
-                                }
-                                var dummy: [32]u8 = undefined;
-                                _ = kb.processKey(key.keycode, &dummy);
-                                continue;
+                            // Shift+PageUp/Down: scrollback browsing. Plain
+                            // PageUp/Down, and both on the alternate screen, fall
+                            // through to the program as ESC[5~ / ESC[6~.
+                            const in_alt_screen = if (mux.getActivePane()) |p| p.vt.alt_screen else false;
+                            switch (KeyHandler.scrollbackPageKey(keysym, key.modifiers, ralt_held, in_alt_screen)) {
+                                .none => {},
+                                .up => {
+                                    const max_offset = mux.getScrollbackLineCount();
+                                    if (max_offset > 0) {
+                                        mux.setScrollOffset(@min(mux.getScrollOffset() + grid_rows, max_offset));
+                                    }
+                                    continue;
+                                },
+                                .down => {
+                                    if (mux.getScrollOffset() > 0) {
+                                        const so = mux.getScrollOffset();
+                                        mux.setScrollOffset(so -| grid_rows);
+                                    }
+                                    continue;
+                                },
                             }
 
                             // Ctrl+Shift+C/V: copy selection / paste
@@ -978,7 +951,10 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                             // escape hatch for local control while focused on a nested
                             // session.
                             if (!prefix.awaiting and !ralt_held and !option_types and (key.modifiers & 8) != 0) {
-                                const fwd_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else if (keysym == ks.Return) '\r' else 0;
+                                // Same key characters the binding lookup below uses, so an
+                                // Alt chord the local table would take (Alt+Tab, Alt+Escape)
+                                // goes to the nested teru instead.
+                                const fwd_char: u8 = ks.bindChar(keysym);
                                 if (fwd_char != 0) {
                                     if (mux.getActivePaneMut()) |pane| {
                                         // Only forward while the pane is actually showing the
@@ -1003,7 +979,6 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                             var leader_kb: ?@import("../config/Keybinds.zig").Action = null;
                             {
                                 const lead_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else if (keysym == ks.Escape) 0x1b else 0;
-                                const alt_down = (key.modifiers & 8) != 0 and !ralt_held and !option_types;
                                 if (leader.active) {
                                     if (lead_char == 0) continue; // non-char key → swallow
                                     const shifted = (key.modifiers & ks.SHIFT_MASK) != 0;
@@ -1023,16 +998,19 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                             leader_kb = a;
                                         },
                                     }
-                                } else if (!prefix.awaiting and alt_down and lead_char == ' ') {
+                                } else if (!prefix.awaiting and !option_types and KeyHandler.isLeaderChord(key.modifiers, ralt_held, lead_char)) {
                                     leader.activate();
                                     force_redraw = true;
                                     continue;
                                 }
                             }
 
-                            // Global shortcuts: Alt+key (workspace, focus, zoom, split)
+                            // Global shortcuts: Alt+key (workspace, focus, zoom, split).
+                            // bindChar folds Tab, Shift+Tab, Escape and Return to the
+                            // ASCII the table stores; a key with no binding still goes
+                            // to the program below.
                             {
-                                const ks_char: u8 = if (keysym > 0x1f and keysym < 0x80) @intCast(keysym) else if (keysym == ks.Return) '\r' else 0;
+                                const ks_char: u8 = ks.bindChar(keysym);
                                 const kb_mode: @import("../config/Keybinds.zig").Mode = if (prefix.awaiting) .prefix else .normal;
                                 const bound = if (option_types and !prefix.awaiting) null else KeyHandler.lookupConfigAction(&config.keybinds, kb_mode, key.modifiers, ks_char, ralt_held);
                                 if (leader_kb orelse bound) |kb_action| {
@@ -1178,6 +1156,21 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                             } else kb.processKey(key.keycode, &key_buf);
 
                             if (len == 0) continue;
+
+                            // Ctrl+\ detaches a window attached to a daemon
+                            // session, like the TUI client. Without a daemon it
+                            // falls through and reaches the program as SIGQUIT.
+                            // A nested teru in the focused pane gets the byte, so
+                            // the innermost client detaches.
+                            const nested_pane = if (mux.getActivePane()) |pane|
+                                pane.vt.nested_alt_forward and pane.vt.alt_screen
+                            else
+                                false;
+                            if (KeyHandler.isDetachKey(key_buf[0..len], key.modifiers, daemon_fd != null, nested_pane)) {
+                                prefix.reset();
+                                running = false;
+                                continue;
+                            }
 
                             if (mux.getScrollOffset() > 0 or mux.getScrollPixel() > 0) {
                                 const exits_scroll = if (len == 1)
@@ -1503,7 +1496,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
         }
 
         // Layout/session save: debounced 100ms after last mutation.
-        if ((config.restore_layout or config.persist_session) and mux.persist_dirty) {
+        if (common.layoutSaveEnabled(config.restore_layout, config.persist_session, daemon_fd != null, common.cli_one_off) and mux.persist_dirty) {
             const elapsed = compat.monotonicNow() - mux.persist_dirty_since;
             if (elapsed >= common.PERSIST_DEBOUNCE_NS) {
                 mux.persist_dirty = false;
@@ -1561,10 +1554,11 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
             }
         }
 
-        // Window title: update from active pane's VT parser
+        // Window title: update from active pane's VT parser (OSC 0/2),
+        // unless dynamic_title = false keeps it fixed.
         if (mux.getActivePane()) |pane| {
             if (pane.vt.title_changed) {
-                if (pane.vt.title_len > 0) {
+                if (config.dynamic_title and pane.vt.title_len > 0) {
                     win.setTitle(pane.vt.title[0..pane.vt.title_len]);
                 }
                 pane.vt.title_changed = false;
@@ -1631,6 +1625,16 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                     config.restore_layout = new_config.restore_layout;
                     config.persist_session = new_config.persist_session;
                     config.show_status_bar = new_config.show_status_bar;
+                    if (config.dynamic_title != new_config.dynamic_title) {
+                        config.dynamic_title = new_config.dynamic_title;
+                        // Off: back to the fixed title. On: show what the
+                        // focused program last set, if anything.
+                        if (!config.dynamic_title) {
+                            win.setTitle("teru");
+                        } else if (mux.getActivePane()) |pane| {
+                            if (pane.vt.title_len > 0) win.setTitle(pane.vt.title[0..pane.vt.title_len]);
+                        }
+                    }
 
                     // Newly created panes pick up the new history depth.
                     // Existing panes keep theirs: a Scrollback's max_lines is
@@ -1659,7 +1663,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
         }
 
         // Check if any pane's grid is dirty
-        var any_dirty = had_output or force_redraw;
+        var any_dirty = had_output or force_redraw or render_deferred;
         force_redraw = false;
         if (!any_dirty) {
             for (mux.panes.items) |*pane| {
@@ -1703,7 +1707,14 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
             }
         }
 
-        if (any_dirty and !sync_active) {
+        // Frame cap: a stream of PTY output (cat, a build log) otherwise
+        // repaints and presents the whole window after every read, over a
+        // thousand times a second. The first frame after a quiet spell is
+        // never delayed; later ones wait out the rest of the frame interval.
+        const frame_due = compat.monotonicNow() - last_render_ns >= frame_min_ns;
+        render_deferred = any_dirty and !sync_active and !frame_due;
+
+        if (any_dirty and !sync_active and frame_due) {
             // Bell handling (configurable: visual or none)
             if (config.bell == .visual) {
                 for (mux.panes.items) |*pane| {
@@ -1839,19 +1850,19 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
         // not a regression.
         if (comptime builtin.os.tag == .linux) {
             const now_ns = compat.monotonicNow();
-            const frame_min_ns: i128 = 16_666_667; // ~60 fps
             const frame_cap_deadline = last_render_ns + frame_min_ns;
             var any_grid_dirty = false;
             for (mux.panes.items) |*pane| {
                 if (pane.grid.dirty) { any_grid_dirty = true; break; }
             }
-            const pending_render = any_grid_dirty and (frame_cap_deadline > now_ns);
-            const timeout_ms = computeIdleTimeoutMs(
+            const pending_render = (any_grid_dirty or render_deferred) and (frame_cap_deadline > now_ns);
+            const timeout_ms = common.computeIdleTimeoutMs(
                 now_ns,
                 last_blink_time,
                 config.cursor_blink and window_focused,
                 frame_cap_deadline,
                 pending_render,
+                common.layoutSaveEnabled(config.restore_layout, config.persist_session, daemon_fd != null, common.cli_one_off),
                 mux.persist_dirty,
                 mux.persist_dirty_since,
                 500,
@@ -1870,7 +1881,7 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
         }
     }
 
-    if (config.restore_layout or config.persist_session) {
+    if (common.layoutSaveEnabled(config.restore_layout, config.persist_session, daemon_fd != null, common.cli_one_off)) {
         common.persistSave(&mux, &graph, allocator, io);
     }
 }

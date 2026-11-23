@@ -1167,13 +1167,9 @@ pub fn deinit(self: *Server) void {
     // sources at this point would be a UAF on the freed event loop. Its
     // cancel runs from main.zig's own defer, before display destroy.
 
-    // Free every InhibitorTracker before wl_display_destroy fires
-    // inhibitor destroy signals on what would then be stale state.
-    // Each tracker unhooks its own listener + drops itself.
-    for (self.inhibitor_trackers.items) |tracker| {
-        wlr.wl_list_remove(&tracker.destroy_listener.link);
-        self.zig_allocator.destroy(tracker);
-    }
+    // Inhibitor trackers free themselves when their inhibitor is destroyed
+    // (wl_display_destroy_clients), and detachGlobalListeners frees any that
+    // are left, so only the array remains.
     self.inhibitor_trackers.deinit(self.zig_allocator);
 
     // Free the deferred scene-destroy queue's backing array. Do NOT destroy
@@ -1188,36 +1184,17 @@ pub fn deinit(self: *Server) void {
     // socket files, and frees the heap allocation — all loop-independent.
     if (self.wm_mcp) |mcp| mcp.deinit(self.zig_allocator);
 
-    // Remove every Server-owned wl_listener. wlroots allocates each
-    // listener's list node in-place inside the signal it's attached
-    // to; leaking these means the signal keeps a dangling pointer
-    // into freed Server memory on the next tick.
-    //
-    // Listeners without a live link (link.next == null) were never
-    // registered (optional protocol paths: xwayland, xdg-activation,
-    // xdg-decoration).
-    // new_output / new_input listen on the *backend's* signals, which
-    // releaseSeat() destroyed before deinit ran (main.zig defer order:
-    // releaseSeat → wl_display_destroy → deinit). Removing them here would
-    // walk an already-freed wl_signal list → use-after-free. releaseSeat
-    // detaches them itself, immediately before wlr_backend_destroy.
-    safeRemoveListener(&self.new_xdg_toplevel);
-    safeRemoveListener(&self.xdg_activate);
-    safeRemoveListener(&self.new_xdg_decoration);
+    // Only the wlr_cursor listeners are removed here: the cursor is never
+    // destroyed, so its signals are still valid memory. Every listener on a
+    // signal owned by a wlroots global (xdg-shell, the seat, the protocol
+    // managers) or by the backend was detached before wl_display_destroy
+    // freed that global: see detachGlobalListeners, releaseSeat and
+    // destroyXwayland. Removing them here wrote into freed chunks.
     safeRemoveListener(&self.cursor_motion);
     safeRemoveListener(&self.cursor_motion_absolute);
     safeRemoveListener(&self.cursor_button);
     safeRemoveListener(&self.cursor_axis);
     safeRemoveListener(&self.cursor_frame);
-    safeRemoveListener(&self.request_set_cursor);
-    safeRemoveListener(&self.request_set_shape);
-    safeRemoveListener(&self.new_xwayland_surface);
-    safeRemoveListener(&self.new_inhibitor);
-    safeRemoveListener(&self.output_power_set_mode);
-    safeRemoveListener(&self.new_virtual_keyboard);
-    safeRemoveListener(&self.new_virtual_pointer);
-    safeRemoveListener(&self.output_manager_apply);
-    safeRemoveListener(&self.output_manager_test);
 
     // Our ArrayList collections. The *Output / *Keyboard
     // items themselves are owned by wlroots' destroy-chain when the
@@ -1228,6 +1205,40 @@ pub fn deinit(self: *Server) void {
     self.nodes.deinitIndex(self.zig_allocator);
 
     wlr.xkb_context_unref(self.xkb_ctx);
+}
+
+/// Detach every listener that hangs off a signal inside a wlroots global.
+/// wl_display_destroy frees those globals from its destroy hook without
+/// unlinking foreign listeners, so this must run after
+/// wl_display_destroy_clients and before wl_display_destroy (a main.zig
+/// defer). Listeners without a live link (link.next == null) were never
+/// registered (optional protocols) or are already detached; libwayland's
+/// wl_list_remove nulls the link, so a second call is harmless.
+pub fn detachGlobalListeners(self: *Server) void {
+    safeRemoveListener(&self.new_xdg_toplevel);
+    safeRemoveListener(&self.xdg_activate);
+    safeRemoveListener(&self.new_xdg_decoration);
+    safeRemoveListener(&self.request_set_cursor);
+    safeRemoveListener(&self.request_set_selection);
+    safeRemoveListener(&self.request_start_drag);
+    safeRemoveListener(&self.start_drag);
+    safeRemoveListener(&self.request_set_primary_selection);
+    safeRemoveListener(&self.request_set_shape);
+    safeRemoveListener(&self.new_pointer_constraint);
+    safeRemoveListener(&self.new_xwayland_surface);
+    safeRemoveListener(&self.new_inhibitor);
+    safeRemoveListener(&self.output_power_set_mode);
+    safeRemoveListener(&self.new_virtual_keyboard);
+    safeRemoveListener(&self.new_virtual_pointer);
+    safeRemoveListener(&self.output_manager_apply);
+    safeRemoveListener(&self.output_manager_test);
+
+    // A tracker still listed belongs to an inhibitor that is still alive.
+    for (self.inhibitor_trackers.items) |tracker| {
+        wlr.wl_list_remove(&tracker.destroy_listener.link);
+        self.zig_allocator.destroy(tracker);
+    }
+    self.inhibitor_trackers.clearRetainingCapacity();
 }
 
 fn safeRemoveListener(listener: *wlr.wl_listener) void {
@@ -1244,6 +1255,8 @@ fn safeRemoveListener(listener: *wlr.wl_listener) void {
 /// hot-restart path (ServerRestart) so both reclaim :0 cleanly.
 pub fn destroyXwayland(self: *Server) void {
     if (self.xwayland) |xwl| {
+        // The listener lives in the wlr_xwayland being freed.
+        safeRemoveListener(&self.new_xwayland_surface);
         wlr.wlr_xwayland_destroy(xwl);
         self.xwayland = null;
     }
@@ -1526,6 +1539,15 @@ pub fn arrangeworkspace(self: *Server, ws_index: u8) void {
 }
 pub fn arrangeWorkspaceSmooth(self: *Server, ws_index: u8) void {
     Layout.arrangeWorkspaceSmooth(self, ws_index);
+}
+
+/// Re-tile the workspace each output shows after an output's mode, scale or
+/// position changed (wlr-randr, kanshi, a resized nested window). The bars
+/// keep their width until a restart or refont; resizing them is separate.
+pub fn relayoutOutputs(self: *Server) void {
+    for (self.outputs.items) |o| self.arrangeworkspace(o.workspace);
+    self.recomputeVisibility();
+    self.scheduleRender();
 }
 
 /// Focus a view — activate its toplevel and send keyboard focus.

@@ -57,6 +57,12 @@ struct wl_signal *miozu_output_request_state(struct wlr_output *o) {
     return &o->events.request_state;
 }
 
+/* Commit the state a nested backend asks for (window resized by the host
+ * compositor), as tinywl does. Returns 1 on success. */
+int miozu_output_commit_request_state(struct wlr_output_event_request_state *ev) {
+    return wlr_output_commit_state(ev->output, ev->state) ? 1 : 0;
+}
+
 struct wl_signal *miozu_output_destroy(struct wlr_output *o) {
     return &o->events.destroy;
 }

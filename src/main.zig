@@ -17,6 +17,7 @@ const compat = @import("compat.zig");
 const render = @import("render/render.zig");
 const McpBridge = @import("agent/McpBridge.zig");
 const Daemon = @import("server/daemon.zig");
+const Config = @import("config/Config.zig");
 
 // Env-gated logging (TERU_LOG=debug|info|warn|err). Routes all std.log through
 // the shared logFn; TERU_LOG=debug captures the full MCP trace.
@@ -53,6 +54,7 @@ pub fn main(init: std.process.Init) !void {
     var session_name: ?[]const u8 = null; // -n NAME: persistent named session
     var template_name: ?[]const u8 = null; // -t NAME: apply template on start
     var list_sessions = false;
+    var fresh = false; // -f: ignore restore_layout / persist_session this once
     var wm_class_override: ?[]const u8 = null;
 
     while (args_iter.next()) |arg| {
@@ -66,7 +68,8 @@ pub fn main(init: std.process.Init) !void {
                 \\teru — AI-first terminal emulator
                 \\
                 \\Usage:
-                \\  teru                          Fresh terminal (scratchpad)
+                \\  teru                          New terminal (restores the saved layout
+                \\                                if restore_layout or persist_session is set)
                 \\  teru -n <name>                Persistent named session
                 \\  teru -n <name> -t <template>  Start session from template
                 \\  teru -l                       List active sessions
@@ -74,7 +77,9 @@ pub fn main(init: std.process.Init) !void {
                 \\Options:
                 \\  -n, --name <name>       Connect to (or start) named session
                 \\  -t, --template <name>   Apply template (.tsess) on first start
-                \\  -f, --fresh             Force fresh start (ignore saved layout)
+                \\  -f, --fresh             Start fresh: ignore restore_layout and
+                \\                          persist_session for this launch, and keep
+                \\                          the saved layout (-e CMD does the same)
                 \\  -l, --list              List active sessions
                 \\  -v, --version           Show version
                 \\  -h, --help              Show this help
@@ -84,19 +89,23 @@ pub fn main(init: std.process.Init) !void {
                 \\  --daemon <name>         Start headless daemon (server use)
                 \\  --mcp-server            MCP stdio proxy (alias: --mcp-bridge, --mcp-stdio)
                 \\  --target <teru|teruwm>  Target for --mcp-server (default: teru)
-                \\  --class <name>          Set WM_CLASS
+                \\  --class <name>          Set WM_CLASS / Wayland app_id
                 \\
                 \\Templates:
                 \\  Searched in: ~/.config/teru/templates/, then ./examples/
                 \\  Export current session: teru_session_save via MCP
                 \\
-                \\Keybindings:
-                \\  Alt+Enter   New pane              Alt+X       Close pane
-                \\  Alt+J/K     Focus next/prev       Alt+Z       Zoom pane
-                \\  Alt+1-9,0   Switch workspace      Alt+Space   Cycle layout
-                \\  Alt+V       Vi/copy mode          Alt+D       Detach
-                \\  Alt+B       Toggle status bar     Alt+\       Reset zoom
-                \\  RAlt+J/K    Swap pane              RAlt+H/L   Resize
+                \\Keybindings in a window (defaults; Ctrl+Space is the prefix key;
+                \\over SSH the prefix is Ctrl+B, see docs/KEYBINDINGS.md):
+                \\  Alt+C          New pane           Ctrl+Space x      Close pane
+                \\  Alt+J/K        Focus next/prev    Alt+Shift+J/K     Swap with next/prev
+                \\  Alt+H/L        Resize             Alt+Z             Zoom pane
+                \\  Alt+1-9,0      Switch workspace   Alt+Shift+1-9,0   Move pane there
+                \\  Alt+Space      Leader menu        Ctrl+Space Space  Cycle layout
+                \\  Alt+V          Scroll/copy mode   Alt+- / Alt+\     Font smaller / reset
+                \\  Ctrl+Space d   Detach             Ctrl+\            Detach
+                \\  (detach needs a session: teru -n NAME, or persist_session = true;
+                \\   elsewhere Ctrl+\ is SIGQUIT; a nested teru in the pane gets it)
                 \\
                 \\
             );
@@ -123,6 +132,7 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--list") or std.mem.eql(u8, arg, "-l")) { list_sessions = true; continue; }
+        if (std.mem.eql(u8, arg, "--fresh") or std.mem.eql(u8, arg, "-f")) { fresh = true; continue; }
         if (std.mem.eql(u8, arg, "--daemon")) { daemon_session = args_iter.next(); continue; }
         if (std.mem.eql(u8, arg, "--session")) { session_name = args_iter.next(); continue; }
         if (std.mem.eql(u8, arg, "--name") or std.mem.eql(u8, arg, "-n")) { session_name = args_iter.next(); continue; }
@@ -218,5 +228,19 @@ pub fn main(init: std.process.Init) !void {
     if (tier == .tty or mode_raw) {
         return raw_mode.run(allocator, io);
     }
-    return windowed_mode.run(allocator, io, null, wm_class_override);
+
+    // restore_layout / persist_session apply to plain `teru` only. -f, and
+    // -e CMD (one pane running CMD), skip them and leave the saved layout
+    // alone. The windowed mode loads the config again (and warns about it).
+    common.cli_one_off = fresh or common.cli_exec_argv != null;
+    const startup: common.Startup = if (common.cli_one_off) .fresh else blk: {
+        var cfg = Config.loadQuiet(allocator, io) catch break :blk .fresh;
+        defer cfg.deinit();
+        break :blk common.plainStartup(false, cfg.persist_session, cfg.restore_layout);
+    };
+    return switch (startup) {
+        .persistent => daemon_mode.runPersistent(allocator, io, wm_class_override),
+        .restore => daemon_mode.runRestore(allocator, io, wm_class_override),
+        .fresh => windowed_mode.run(allocator, io, null, wm_class_override),
+    };
 }

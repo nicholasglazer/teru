@@ -97,6 +97,9 @@ pub fn getSocketPath(self: *const HookListener) []const u8 {
 
 // ── Poll (called from main event loop) ─────────────────────────────
 
+/// Longest one hook request may block the event loop, whatever the progress.
+const read_deadline_ns: i128 = 250 * std.time.ns_per_ms;
+
 /// True once `data` holds a complete HTTP request: headers terminated by a
 /// blank line, plus a body of at least Content-Length bytes (0 if absent).
 fn requestComplete(data: []const u8) bool {
@@ -110,12 +113,16 @@ fn requestComplete(data: []const u8) bool {
             var j = i + 15;
             while (j < hdrs.len and (hdrs[j] == ' ' or hdrs[j] == '\t')) j += 1;
             while (j < hdrs.len and hdrs[j] >= '0' and hdrs[j] <= '9') : (j += 1) {
-                content_length = content_length * 10 + (hdrs[j] - '0');
+                // Saturating: a 20-digit Content-Length overflowed usize and
+                // panicked in ReleaseSafe, taking every pane down with it.
+                content_length = content_length *| 10 +| (hdrs[j] - '0');
             }
             break;
         }
     }
-    return data.len >= body_start + content_length;
+    // A body that cannot fit the receive buffer never arrives; stop waiting.
+    if (content_length > RECV_BUF_SIZE) return true;
+    return data.len >= body_start +| content_length;
 }
 
 /// Accept and process one pending connection. Non-blocking.
@@ -132,8 +139,14 @@ pub fn poll(self: *HookListener) void {
     // request adds no latency), else wait briefly for the next segment.
     var buf: [RECV_BUF_SIZE]u8 = undefined;
     var total: usize = 0;
+    // Absolute cap on how long one request may hold the windowed event loop.
+    // The 200 ms wait below restarts after every segment, so without it a
+    // client sending a byte at a time held the loop for many minutes.
+    const deadline = compat.monotonicNow() + read_deadline_ns;
     while (total < buf.len) {
         if (total > 0 and requestComplete(buf[0..total])) break;
+        const now = compat.monotonicNow();
+        if (now >= deadline) break;
         const n_raw = posix.system.read(client_fd, @ptrCast(buf[total..].ptr), buf.len - total);
         if (n_raw > 0) {
             total += @intCast(n_raw);
@@ -147,8 +160,9 @@ pub fn poll(self: *HookListener) void {
                 // Unix-socket feature; on Windows just proceed with what we have.
                 if (builtin.os.tag == .windows) break;
                 var pfd = [_]posix.pollfd{.{ .fd = client_fd, .events = posix.POLL.IN, .revents = 0 }};
-                const pr = posix.poll(&pfd, 200) catch break;
-                if (pr == 0) break; // 200ms with no more data — proceed with what we have
+                const left_ms: i32 = @intCast(@min(200, @divTrunc(deadline - now, std.time.ns_per_ms) + 1));
+                const pr = posix.poll(&pfd, left_ms) catch break;
+                if (pr == 0) break; // no more data in time — proceed with what we have
             },
             else => break,
         }
@@ -223,3 +237,9 @@ fn extractHttpBody(data: []const u8) ?[]const u8 {
     return null;
 }
 
+
+test "requestComplete survives a Content-Length that overflows usize" {
+    try std.testing.expect(requestComplete("POST / HTTP/1.1\r\nContent-Length: 99999999999999999999999\r\n\r\n{}"));
+    try std.testing.expect(!requestComplete("POST / HTTP/1.1\r\nContent-Length: 10\r\n\r\n{}"));
+    try std.testing.expect(requestComplete("POST / HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}"));
+}

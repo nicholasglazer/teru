@@ -31,9 +31,6 @@ pub const version = build_options.version;
 pub const DEFAULT_ROWS: u16 = 24;
 pub const DEFAULT_COLS: u16 = 80;
 
-pub const MASTER_RATIO_MIN: f32 = 0.15;
-pub const MASTER_RATIO_MAX: f32 = 0.85;
-
 pub const DOUBLE_CLICK_NS: i128 = 300_000_000; // 300 ms
 pub const CURSOR_BLINK_NS: i128 = 530_000_000; // 530 ms on/off
 pub const PERSIST_DEBOUNCE_NS: i128 = 100_000_000; // 100 ms
@@ -69,6 +66,55 @@ pub const setenv = if (builtin.os.tag == .windows) struct {
 pub var cli_no_bar: bool = false;
 pub var cli_exec_argv_buf: [64]?[*:0]const u8 = @splat(null);
 pub var cli_exec_argv: ?[*:null]const ?[*:0]const u8 = null;
+/// -f or -e: a one-off window that must not overwrite the saved layout.
+pub var cli_one_off: bool = false;
+
+// ── Plain `teru` startup ──────────────────────────────────────
+
+/// How plain `teru` (no -n, --daemon, --attach or --raw, with a display)
+/// starts. `persist_session` attaches to the "default" daemon and
+/// `restore_layout` reopens the saved layout. A one-off launch (-f/--fresh,
+/// or -e CMD, which asks for one pane running CMD) skips both.
+pub const Startup = enum { fresh, persistent, restore };
+
+pub fn plainStartup(one_off: bool, persist_session: bool, restore_layout: bool) Startup {
+    if (one_off) return .fresh;
+    if (persist_session) return .persistent;
+    if (restore_layout) return .restore;
+    return .fresh;
+}
+
+test "plainStartup: -f overrides both persistence options" {
+    try std.testing.expectEqual(Startup.fresh, plainStartup(false, false, false));
+    try std.testing.expectEqual(Startup.restore, plainStartup(false, false, true));
+    try std.testing.expectEqual(Startup.persistent, plainStartup(false, true, false));
+    // persist_session wins; runPersistent falls back to the layout itself.
+    try std.testing.expectEqual(Startup.persistent, plainStartup(false, true, true));
+    try std.testing.expectEqual(Startup.fresh, plainStartup(true, false, true));
+    try std.testing.expectEqual(Startup.fresh, plainStartup(true, true, false));
+    try std.testing.expectEqual(Startup.fresh, plainStartup(true, true, true));
+}
+
+/// Whether a window writes sessions/default.bin. Only a plain local window
+/// does: a window attached to a daemon leaves saving to the daemon (which
+/// writes its own NAME.bin), and a one-off launch (-f, -e) must not replace
+/// the layout the next plain launch restores.
+pub fn layoutSaveEnabled(restore_layout: bool, persist_session: bool, attached: bool, one_off: bool) bool {
+    return (restore_layout or persist_session) and !attached and !one_off;
+}
+
+test "layoutSaveEnabled: only a plain local window saves the layout" {
+    try std.testing.expect(layoutSaveEnabled(true, false, false, false));
+    try std.testing.expect(layoutSaveEnabled(false, true, false, false));
+    // Neither option set: nothing to save.
+    try std.testing.expect(!layoutSaveEnabled(false, false, false, false));
+    // -f / -e keep the saved layout for the next plain launch.
+    try std.testing.expect(!layoutSaveEnabled(true, false, false, true));
+    try std.testing.expect(!layoutSaveEnabled(true, true, false, true));
+    // Attached to a daemon (-n NAME, persist_session): the daemon saves.
+    try std.testing.expect(!layoutSaveEnabled(true, false, true, false));
+    try std.testing.expect(!layoutSaveEnabled(true, true, true, false));
+}
 
 // ── stdout helpers ────────────────────────────────────────────
 
@@ -79,6 +125,51 @@ pub fn out(msg: []const u8) void {
 pub fn outFmt(buf: []u8, comptime fmt: []const u8, args: anytype) void {
     const msg = std.fmt.bufPrint(buf, fmt, args) catch return;
     out(msg);
+}
+
+/// Next scheduled wake deadline in ms. Picks the tightest of:
+///   - the hard idle cap (lets maintenance polls run periodically)
+///   - cursor-blink flip (when enabled + window focused)
+///   - frame-rate cap (when a render is pending but throttled)
+///   - persist debounce (layout save fires after quiescent period,
+///     only when `restore_layout` or `persist_session` is on)
+/// Prefix-mode timeout is intentionally skipped — its 500 ms default
+/// already matches the hard cap, and PrefixState.timestamp_ns uses
+/// the realtime clock which would mix badly with our monotonic now.
+pub fn computeIdleTimeoutMs(
+    now_ns: i128,
+    last_blink_ns: i128,
+    blink_enabled: bool,
+    frame_cap_deadline_ns: i128,
+    have_pending_render: bool,
+    persist_enabled: bool,
+    persist_dirty: bool,
+    persist_dirty_since_ns: i128,
+    cap_ms: i32,
+) i32 {
+    var t: i32 = cap_ms;
+    const one_ms: i128 = 1_000_000;
+    if (blink_enabled) {
+        const wait = (last_blink_ns + CURSOR_BLINK_NS) - now_ns;
+        const wait_ms: i32 = @intCast(@max(@as(i128, 0), @divTrunc(wait, one_ms)));
+        if (wait_ms < t) t = wait_ms;
+    }
+    if (have_pending_render) {
+        // Round up: truncating left a sub-millisecond remainder as poll(0),
+        // and the loop spun until the frame came due.
+        const wait = @max(@as(i128, 0), frame_cap_deadline_ns - now_ns);
+        const wait_ms: i32 = @intCast(@min(@as(i128, cap_ms), @divTrunc(wait + one_ms - 1, one_ms)));
+        if (wait_ms < t) t = wait_ms;
+    }
+    // The debounced layout save runs only when persistence is on, and only
+    // that save clears `persist_dirty`. Counting the flag without the gate
+    // kept the timeout at 0 forever and spun a whole core while idle.
+    if (persist_enabled and persist_dirty) {
+        const wait = (persist_dirty_since_ns + PERSIST_DEBOUNCE_NS) - now_ns;
+        const wait_ms: i32 = @intCast(@max(@as(i128, 0), @divTrunc(wait, one_ms)));
+        if (wait_ms < t) t = wait_ms;
+    }
+    return t;
 }
 
 // ── Session restore info ──────────────────────────────────────
@@ -313,15 +404,17 @@ pub fn loadHooks(config: *const Config, hooks: *Hooks) void {
 
 // ── Agent lifecycle helpers ───────────────────────────────────
 
-/// Assign an agent node to a workspace matching its group name.
+/// Record an agent graph node under a workspace matching its group name.
 /// Uses a simple hash of the group name to pick workspace 1-8.
+///
+/// Only the process graph is updated. `node_id` is a ProcessGraph id, not a
+/// pane id, so it must never go into a layout workspace: that added a phantom
+/// tile for every OSC 9999 agent:start (which any program output can send),
+/// could collide with a real pane id, and nothing ever removed it.
 pub fn autoAssignAgentWorkspace(mux: *Multiplexer, node_id: u64, group: []const u8) void {
     var hash: u32 = 0;
     for (group) |c| hash = hash *% 31 +% c;
     const ws: u8 = @truncate((hash % 8) + 1);
-
-    const ws_engine = &mux.layout_engine.workspaces[ws];
-    ws_engine.addNode(mux.allocator, node_id) catch return;
 
     if (mux.graph) |g| g.moveToWorkspace(node_id, ws);
 }
@@ -436,7 +529,7 @@ pub fn parseDaemonStateSync(daemon_fd: posix.fd_t, mux: *Multiplexer, payload: [
             // the layout the daemon just told us (grid → master-stack on 4 panes).
             ws.layout_pinned = true;
             ws.active_node = if (active_pane_id != 0) active_pane_id else null;
-            ws.master_ratio = @as(f32, @floatFromInt(ratio_x100)) / 100.0;
+            ws.master_ratio = LE.Workspace.clampRatio(@as(f32, @floatFromInt(ratio_x100)) / 100.0, ws.master_ratio);
         }
     }
 
@@ -763,6 +856,42 @@ test "parseDaemonStateSync: ws_idx >= 10 → skipped safely without panic" {
     try testing.expectEqual(@as(usize, 1), mux.panes.items.len);
 
     // No workspace should have the pane (all workspaces should be empty)
+    for (&mux.layout_engine.workspaces) |*ws| {
+        try testing.expectEqual(@as(usize, 0), ws.node_ids.items.len);
+    }
+}
+
+test "computeIdleTimeoutMs: an unsaved layout with persistence off does not spin" {
+    const now: i128 = 10 * std.time.ns_per_s;
+    const since = now - 5 * std.time.ns_per_s; // dirty for 5 s, long past the debounce
+    // Persistence off (the default): the flag is never cleared, so it must not count.
+    try std.testing.expectEqual(@as(i32, 500), computeIdleTimeoutMs(now, 0, false, 0, false, false, true, since, 500));
+    // Persistence on: the overdue save wakes the loop at once.
+    try std.testing.expectEqual(@as(i32, 0), computeIdleTimeoutMs(now, 0, false, 0, false, true, true, since, 500));
+    // A throttled frame wakes the loop at the frame deadline.
+    try std.testing.expectEqual(@as(i32, 17), computeIdleTimeoutMs(now, 0, false, now + 16_666_667, true, false, false, 0, 500));
+}
+
+test "computeIdleTimeoutMs: the frame-cap wait rounds up, so the loop never polls with 0 early" {
+    const now: i128 = 10 * std.time.ns_per_s;
+    // Less than a millisecond before the deadline: wait 1 ms, not poll(0).
+    try std.testing.expectEqual(@as(i32, 1), computeIdleTimeoutMs(now, 0, false, now + 400_000, true, false, false, 0, 500));
+    try std.testing.expectEqual(@as(i32, 1), computeIdleTimeoutMs(now, 0, false, now + 1, true, false, false, 0, 500));
+    // Exactly on a millisecond boundary: no extra millisecond.
+    try std.testing.expectEqual(@as(i32, 2), computeIdleTimeoutMs(now, 0, false, now + 2_000_000, true, false, false, 0, 500));
+    // Due or overdue: render now.
+    try std.testing.expectEqual(@as(i32, 0), computeIdleTimeoutMs(now, 0, false, now, true, false, false, 0, 500));
+    try std.testing.expectEqual(@as(i32, 0), computeIdleTimeoutMs(now, 0, false, now - 3_000_000, true, false, false, 0, 500));
+    // A far deadline is still bounded by the cap.
+    try std.testing.expectEqual(@as(i32, 500), computeIdleTimeoutMs(now, 0, false, now + 9 * std.time.ns_per_s, true, false, false, 0, 500));
+}
+
+test "autoAssignAgentWorkspace never adds graph ids to the layout" {
+    const testing = std.testing;
+    var mux = Multiplexer.init(testing.allocator);
+    defer mux.deinit();
+    var i: u64 = 1;
+    while (i <= 20) : (i += 1) autoAssignAgentWorkspace(&mux, i, "group-x");
     for (&mux.layout_engine.workspaces) |*ws| {
         try testing.expectEqual(@as(usize, 0), ws.node_ids.items.len);
     }

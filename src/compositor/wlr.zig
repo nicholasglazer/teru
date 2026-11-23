@@ -485,6 +485,7 @@ pub extern "c" fn miozu_backend_new_input(backend: *wlr_backend) callconv(.c) *w
 // Output signals & fields
 pub extern "c" fn miozu_output_frame(output: *wlr_output) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_output_request_state(output: *wlr_output) callconv(.c) *wl_signal;
+pub extern "c" fn miozu_output_commit_request_state(event: *wlr_output_event_request_state) callconv(.c) c_int;
 pub extern "c" fn miozu_output_destroy(output: *wlr_output) callconv(.c) *wl_signal;
 pub extern "c" fn miozu_output_width(output: *wlr_output) callconv(.c) c_int;
 pub extern "c" fn miozu_output_refresh_mhz(output: *wlr_output) callconv(.c) c_int;

@@ -25,16 +25,9 @@ package() {
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 
-    # Desktop entry
-    install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/teru.desktop" << EOF
-[Desktop Entry]
-Name=teru
-Comment=AI-first terminal emulator
-Exec=teru
-Icon=utilities-terminal
-Terminal=false
-Type=Application
-Categories=System;TerminalEmulator;
-Keywords=terminal;multiplexer;ai;zig;
-EOF
+    install -Dm755 zig-out/bin/teruwmctl "$pkgdir/usr/bin/teruwmctl"
+    install -Dm644 pkg/teru.desktop "$pkgdir/usr/share/applications/teru.desktop"
+    # systemd user unit for the session daemon; point it at the packaged binary.
+    sed 's|%h/.local/bin/teru|/usr/bin/teru|' pkg/teru.service |
+        install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/user/teru.service"
 }

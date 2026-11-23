@@ -287,6 +287,13 @@ pub const RowMeta = struct {
 };
 
 cells: []Cell,
+/// Allocation the main screen's `cells` slides through: twice the screen.
+/// A full-screen scroll moves the `cells` window down one row instead of
+/// copying every row up, and copies the screen back to the start only
+/// when the window reaches the end, so scrolling costs about one row of
+/// copying per line instead of the whole screen. Empty when `cells` is a
+/// plain allocation (grids built without `init`, zero-sized grids).
+cells_backing: []Cell = &.{},
 rows: u16,
 cols: u16,
 cursor_row: u16 = 0,
@@ -321,8 +328,9 @@ pen_hyperlink_id: u8 = 0,
 /// VtParser mirrors its mode bit here on DECSET/DECRST 7.
 auto_wrap: bool = true,
 
-/// Hyperlink URI table. Index 0 is unused (means "no link").
-/// Slots are reused when a link is closed (OSC 8;; with empty URI).
+/// Hyperlink URI table. Index 0 is unused (means "no link"). Cells hold the
+/// slot index; `openHyperlink` reuses the slot of an identical URI and clears
+/// a slot's cells before it gives the slot to a different URI.
 hyperlinks: [256]HyperlinkEntry = @splat(.{}),
 hyperlink_next_id: u8 = 1,
 
@@ -352,7 +360,9 @@ row_meta: []RowMeta = &.{},
 
 pub fn init(allocator: std.mem.Allocator, rows: u16, cols: u16) !Grid {
     const total = @as(usize, rows) * @as(usize, cols);
-    const cells = try allocator.alloc(Cell, total);
+    const backing = try allocator.alloc(Cell, total * 2);
+    errdefer allocator.free(backing);
+    const cells = backing[0..total];
     for (cells) |*c| c.* = Cell.blank();
 
     const meta = try allocator.alloc(RowMeta, rows);
@@ -360,6 +370,7 @@ pub fn init(allocator: std.mem.Allocator, rows: u16, cols: u16) !Grid {
 
     return .{
         .cells = cells,
+        .cells_backing = backing,
         .rows = rows,
         .cols = cols,
         .scroll_bottom = rows -| 1,
@@ -369,14 +380,70 @@ pub fn init(allocator: std.mem.Allocator, rows: u16, cols: u16) !Grid {
 }
 
 pub fn deinit(self: *Grid, allocator: std.mem.Allocator) void {
-    allocator.free(self.cells);
+    if (!self.isWindow(self.cells)) allocator.free(self.cells);
     if (self.row_meta.len > 0) allocator.free(self.row_meta);
     self.row_meta = &.{};
     if (self.alt_cells) |alt| {
-        allocator.free(alt);
+        if (!self.isWindow(alt)) allocator.free(alt);
         self.alt_cells = null;
     }
+    allocator.free(self.cells_backing);
+    self.cells_backing = &.{};
     self.cells = &.{};
+}
+
+/// True when `buf` is the main-screen window inside `cells_backing`.
+/// `cells` and `alt_cells` swap on alt-screen switches, so either may be it.
+fn isWindow(self: *const Grid, buf: []const Cell) bool {
+    if (self.cells_backing.len == 0 or buf.len == 0) return false;
+    const start = @intFromPtr(self.cells_backing.ptr);
+    const p = @intFromPtr(buf.ptr);
+    return p >= start and p < start + self.cells_backing.len * @sizeOf(Cell);
+}
+
+/// Scroll a full-screen window up one row without copying the screen:
+/// move `cells` one row further into `cells_backing`. At the end of the
+/// backing, copy rows 1.. back to its start (once per `rows` lines).
+/// The caller has already captured the top row and clears the new bottom row.
+fn slideWindowUp(self: *Grid) void {
+    const total = self.cells.len;
+    const w: usize = self.cols;
+    const off = (@intFromPtr(self.cells.ptr) - @intFromPtr(self.cells_backing.ptr)) / @sizeOf(Cell);
+    if (off + w + total <= self.cells_backing.len) {
+        self.cells = self.cells_backing[off + w ..][0..total];
+    } else {
+        std.mem.copyForwards(Cell, self.cells_backing[0 .. total - w], self.cells[w..]);
+        self.cells = self.cells_backing[0..total];
+    }
+}
+
+/// Slot for an OSC 8 link to `uri`. An identical URI that is still in the
+/// table gets its old slot back. Otherwise the next slot is taken round-robin,
+/// and cells on either screen that still point at it lose the link first, so
+/// a click never opens a newer, different URI (`ls --hyperlink` in a large
+/// directory). That scan runs at most once per 255 new URIs.
+pub fn openHyperlink(self: *Grid, uri: []const u8) u8 {
+    const stored = uri[0..@min(uri.len, @as(usize, 256))];
+    for (self.hyperlinks[1..], 1..) |*e, i| {
+        if (e.active and std.mem.eql(u8, e.uri[0..e.uri_len], stored)) return @intCast(i);
+    }
+    const id = self.hyperlink_next_id;
+    const entry = &self.hyperlinks[id];
+    if (entry.active) {
+        for (self.cells) |*c| {
+            if (c.hyperlink_id == id) c.hyperlink_id = 0;
+        }
+        if (self.alt_cells) |alt| for (alt) |*c| {
+            if (c.hyperlink_id == id) c.hyperlink_id = 0;
+        };
+        self.markAllDirty();
+    }
+    @memcpy(entry.uri[0..stored.len], stored);
+    entry.uri_len = @intCast(stored.len);
+    entry.active = true;
+    self.hyperlink_next_id +%= 1;
+    if (self.hyperlink_next_id == 0) self.hyperlink_next_id = 1;
+    return id;
 }
 
 /// Return a pointer to the cell at (row, col). Clamps to grid bounds.
@@ -621,8 +688,9 @@ pub fn widePartner(self: *const Grid, row: u16, col: u16) ?u16 {
 /// margin; a double-width glyph never straddles the margin. Zero-width
 /// codepoints (combining marks) take no column and are dropped (a Cell holds a
 /// single codepoint), keeping column counting in lockstep with the host.
-pub fn write(self: *Grid, char: u21) void {
-    const cw: u16 = displayWidth(char);
+pub fn write(self: *Grid, char_in: u21) void {
+    var char = char_in;
+    var cw: u16 = displayWidth(char);
 
     if (cw == 0) {
         // Combining mark / joiner / variation selector: occupies no column.
@@ -631,6 +699,14 @@ pub fn write(self: *Grid, char: u21) void {
     }
 
     const wrap_col: u16 = @intCast(self.getRightMargin());
+    // A wide glyph that cannot fit between the margins at all (a one-column
+    // pane, or a one-column DECSLRM region) becomes U+FFFD. Otherwise the
+    // cursor would land past the right edge and the next ECH/DCH/ICH would
+    // underflow its column arithmetic.
+    if (cw > wrap_col -| @as(u16, @intCast(self.getLeftMargin()))) {
+        char = 0xFFFD;
+        cw = 1;
+    }
     if (@as(u32, self.cursor_col) + cw > wrap_col) {
         if (self.auto_wrap) {
             // Wrap the whole glyph to the next line (never split a wide glyph).
@@ -681,11 +757,14 @@ pub fn write(self: *Grid, char: u21) void {
     self.markRowDirty(self.cursor_row);
 }
 
-/// Move the cursor down one row. If at the scroll region bottom, scroll up.
+/// Move the cursor down one row. On the scroll region's bottom row, scroll
+/// the region up instead. Below the region the cursor moves down to the last
+/// screen row and never scrolls (xterm), so a status line drawn under a
+/// DECSTBM region does not scroll the region.
 pub fn cursorDown(self: *Grid) void {
-    if (self.cursor_row >= self.scroll_bottom) {
+    if (self.cursor_row == self.scroll_bottom) {
         self.scrollUp();
-    } else {
+    } else if (self.cursor_row + 1 < self.rows) {
         self.cursor_row += 1;
     }
 }
@@ -711,6 +790,58 @@ pub fn scrollUp(self: *Grid) void {
     self.scrollUpN(1);
 }
 
+/// Encode one row as SGR + UTF-8 text and append it to the scrollback, if
+/// there is one. Shared by scrolling and by a resize that drops rows off the
+/// top of the main screen. Best-effort: OOM drops the line.
+fn pushRowToScrollback(self: *Grid, row_cells: []const Cell) void {
+    const sb = self.scrollback orelse return;
+    var line_buf: [4096]u8 = undefined;
+    var len: usize = 0;
+    var prev_fg: Color = .default;
+    var prev_bg: Color = .default;
+    var prev_attrs: Attrs = .{};
+
+    for (row_cells) |*cell| {
+        // Emit attribute reset + re-apply when attrs change
+        const attrs_changed = @as(u8, @bitCast(cell.attrs)) != @as(u8, @bitCast(prev_attrs));
+        if (attrs_changed) {
+            // Reset all attrs, then re-apply active ones
+            if (len + 4 <= line_buf.len) {
+                @memcpy(line_buf[len..][0..4], "\x1b[0m");
+                len += 4;
+            }
+            len = encodeAttrs(&line_buf, len, cell.attrs);
+            // After reset, fg/bg need re-emitting
+            if (!colorEql(cell.fg, .default))
+                len = encodeSgrColor(&line_buf, len, cell.fg, false);
+            if (!colorEql(cell.bg, .default))
+                len = encodeSgrColor(&line_buf, len, cell.bg, true);
+            prev_fg = cell.fg;
+            prev_bg = cell.bg;
+            prev_attrs = cell.attrs;
+        } else {
+            if (!colorEql(cell.fg, prev_fg)) {
+                len = encodeSgrColor(&line_buf, len, cell.fg, false);
+                prev_fg = cell.fg;
+            }
+            if (!colorEql(cell.bg, prev_bg)) {
+                len = encodeSgrColor(&line_buf, len, cell.bg, true);
+                prev_bg = cell.bg;
+            }
+        }
+
+        // Encode character as UTF-8 (not just ASCII)
+        if (cell.char >= 32) {
+            len = encodeUtf8(&line_buf, len, cell.char);
+        }
+    }
+    // Trim trailing spaces (but not SGR sequences)
+    while (len > 0 and line_buf[len - 1] == ' ') {
+        len -= 1;
+    }
+    _ = sb.pushLine(line_buf[0..len], self) catch null;
+}
+
 /// Scroll the scroll region up by n lines.
 pub fn scrollUpN(self: *Grid, n: u16) void {
     const top: usize = self.scroll_top;
@@ -727,57 +858,10 @@ pub fn scrollUpN(self: *Grid, n: u16) void {
         const lm_check = self.getLeftMargin();
         const rm_check = self.getRightMargin();
         const is_margin_scroll = self.margins_enabled and (lm_check > 0 or rm_check < w);
-        if (self.scrollback != null and !is_margin_scroll and !self.on_alt_screen) {
-            if (self.scrollback) |sb| {
-            var line_buf: [4096]u8 = undefined;
-            var len: usize = 0;
-            var prev_fg: Color = .default;
-            var prev_bg: Color = .default;
-            var prev_attrs: Attrs = .{};
-
-            for (0..w) |col| {
-                const cell = self.cellAtConst(@intCast(top), @intCast(col));
-
-                // Emit attribute reset + re-apply when attrs change
-                const attrs_changed = @as(u8, @bitCast(cell.attrs)) != @as(u8, @bitCast(prev_attrs));
-                if (attrs_changed) {
-                    // Reset all attrs, then re-apply active ones
-                    if (len + 4 <= line_buf.len) {
-                        @memcpy(line_buf[len..][0..4], "\x1b[0m");
-                        len += 4;
-                    }
-                    len = encodeAttrs(&line_buf, len, cell.attrs);
-                    // After reset, fg/bg need re-emitting
-                    if (!colorEql(cell.fg, .default))
-                        len = encodeSgrColor(&line_buf, len, cell.fg, false);
-                    if (!colorEql(cell.bg, .default))
-                        len = encodeSgrColor(&line_buf, len, cell.bg, true);
-                    prev_fg = cell.fg;
-                    prev_bg = cell.bg;
-                    prev_attrs = cell.attrs;
-                } else {
-                    if (!colorEql(cell.fg, prev_fg)) {
-                        len = encodeSgrColor(&line_buf, len, cell.fg, false);
-                        prev_fg = cell.fg;
-                    }
-                    if (!colorEql(cell.bg, prev_bg)) {
-                        len = encodeSgrColor(&line_buf, len, cell.bg, true);
-                        prev_bg = cell.bg;
-                    }
-                }
-
-                // Encode character as UTF-8 (not just ASCII)
-                if (cell.char >= 32) {
-                    len = encodeUtf8(&line_buf, len, cell.char);
-                }
-            }
-            // Trim trailing spaces (but not SGR sequences)
-            while (len > 0 and line_buf[len - 1] == ' ') {
-                len -= 1;
-            }
-            // Scrollback capture is best-effort: OOM just drops the line
-            _ = sb.pushLine(line_buf[0..len], self) catch null;
-            }
+        // Margin scrolls are left out, and so is a region that does not
+        // start at the top row: lines leaving it are not leaving the screen.
+        if (!is_margin_scroll and !self.on_alt_screen and top == 0) {
+            self.pushRowToScrollback(self.cells[top * w ..][0..w]);
         }
 
         const lm = self.getLeftMargin();
@@ -793,7 +877,11 @@ pub fn scrollUpN(self: *Grid, n: u16) void {
             }
             // Clear only margin columns in bottom row
             const clear_start = bottom * w + lm;
-            for (self.cells[clear_start..][0..span]) |*c| c.* = Cell.blank();
+            for (self.cells[clear_start..][0..span]) |*c| c.* = self.erased();
+        } else if (top == 0 and bottom + 1 == self.rows and self.isWindow(self.cells)) {
+            // Whole screen scrolls: slide the window instead of copying.
+            self.slideWindowUp();
+            self.clearRow(@intCast(bottom));
         } else {
             // Full-width scroll (fast path)
             var row = top;
@@ -843,7 +931,7 @@ pub fn scrollDownN(self: *Grid, n: u16) void {
             }
             // Clear only margin columns in top row
             const clear_start = top * w + lm;
-            for (self.cells[clear_start..][0..span]) |*c| c.* = Cell.blank();
+            for (self.cells[clear_start..][0..span]) |*c| c.* = self.erased();
         } else {
             // Full-width scroll (fast path)
             var row = bottom;
@@ -867,11 +955,20 @@ pub fn scrollDownN(self: *Grid, n: u16) void {
     self.markAllDirty();
 }
 
-/// Clear a single row to blank cells.
+/// The cell an erase leaves behind. teru exports TERM=xterm-256color, which
+/// declares `bce` (back-color erase): erased, inserted and scrolled-in cells
+/// take the current background color, and nothing else from the pen (xterm).
+/// Resize and alt-screen setup use `Cell.blank()` instead.
+pub inline fn erased(self: *const Grid) Cell {
+    return .{ .bg = self.pen_bg };
+}
+
+/// Clear a single row to erased cells.
 fn clearRow(self: *Grid, row: u16) void {
     const start: usize = @as(usize, row) * @as(usize, self.cols);
     const end = start + @as(usize, self.cols);
-    for (self.cells[start..end]) |*c| c.* = Cell.blank();
+    const e = self.erased();
+    for (self.cells[start..end]) |*c| c.* = e;
 }
 
 /// Clear an entire line (0 = cursor to end, 1 = start to cursor, 2 = whole line).
@@ -884,14 +981,14 @@ pub fn clearLine(self: *Grid, row: u16, mode: u8) void {
         0 => {
             // Cursor to end of line
             const start = row_start + @as(usize, @min(self.cursor_col, self.cols));
-            for (self.cells[start..row_start + w]) |*c| c.* = Cell.blank();
+            for (self.cells[start..row_start + w]) |*c| c.* = self.erased();
         },
         1 => {
             // Start of line to cursor (inclusive). Widen before +1: cursor_col
             // can equal cols after a deferred wrap, and at a large width the u16
             // `cursor_col + 1` traps before @min clamps it.
             const end = row_start + @min(@as(usize, self.cursor_col) + 1, @as(usize, self.cols));
-            for (self.cells[row_start..end]) |*c| c.* = Cell.blank();
+            for (self.cells[row_start..end]) |*c| c.* = self.erased();
         },
         2 => {
             // Whole line
@@ -923,39 +1020,94 @@ pub fn clearScreen(self: *Grid, mode: u8) void {
         },
         2, 3 => {
             // Whole screen
-            for (self.cells) |*c| c.* = Cell.blank();
+            for (self.cells) |*c| c.* = self.erased();
         },
         else => {},
     }
     self.markAllDirty();
 }
 
-/// Resize the grid, preserving content where possible.
-pub fn resize(self: *Grid, allocator: std.mem.Allocator, new_rows: u16, new_cols: u16) !void {
-    const new_total = @as(usize, new_rows) * @as(usize, new_cols);
-    const new_cells = try allocator.alloc(Cell, new_total);
-    for (new_cells) |*c| c.* = Cell.blank();
-
-    // Copy overlapping region
-    const copy_rows = @min(self.rows, new_rows);
-    const copy_cols = @min(self.cols, new_cols);
-
+/// Copy the overlap of an old screen buffer into a new one (already blank),
+/// starting at old row `shift`.
+fn copyScreen(dst: []Cell, src: []const Cell, old_rows: u16, old_cols: u16, new_rows: u16, new_cols: u16, shift: u16) void {
+    const rows_avail: usize = old_rows -| shift;
+    const copy_rows = @min(rows_avail, @as(usize, new_rows));
+    const copy_cols: usize = @min(old_cols, new_cols);
     var r: usize = 0;
     while (r < copy_rows) : (r += 1) {
-        const old_start = r * @as(usize, self.cols);
+        const old_start = (r + shift) * @as(usize, old_cols);
         const new_start = r * @as(usize, new_cols);
-        @memcpy(new_cells[new_start..][0..copy_cols], self.cells[old_start..][0..copy_cols]);
+        @memcpy(dst[new_start..][0..copy_cols], src[old_start..][0..copy_cols]);
+    }
+}
+
+/// Resize the grid, preserving content where possible.
+///
+/// When the main screen loses rows, the rows above the cursor go first (into
+/// scrollback), so the cursor line and the newest output stay visible, as in
+/// xterm and kitty. The inactive buffer is resized too, not blanked: while an
+/// alt-screen program runs it holds the shell's main screen. Everything is
+/// allocated before anything is freed, so an OOM leaves the grid unchanged.
+pub fn resize(self: *Grid, allocator: std.mem.Allocator, new_rows: u16, new_cols: u16) !void {
+    const new_total = @as(usize, new_rows) * @as(usize, new_cols);
+    // Only one of `cells` / `alt_cells` can be the main-screen window.
+    const cells_was_window = self.isWindow(self.cells);
+    const alt_was_window = if (self.alt_cells) |alt| self.isWindow(alt) else false;
+
+    const new_alloc = try allocator.alloc(Cell, if (cells_was_window) new_total * 2 else new_total);
+    errdefer allocator.free(new_alloc);
+    const new_alt_alloc: ?[]Cell = if (self.alt_cells != null)
+        try allocator.alloc(Cell, if (alt_was_window) new_total * 2 else new_total)
+    else
+        null;
+    errdefer if (new_alt_alloc) |a| allocator.free(a);
+    const new_meta = try allocator.alloc(RowMeta, new_rows);
+    // Nothing below can fail.
+
+    // Rows the main screen drops off its top to keep its cursor line visible.
+    const main_cursor_row = if (self.on_alt_screen) self.alt_saved_cursor_row else self.cursor_row;
+    const shift: u16 = if (new_rows < self.rows)
+        (@min(main_cursor_row, self.rows -| 1) + 1) -| new_rows
+    else
+        0;
+
+    // The dropped rows go to scrollback only from the active main screen:
+    // the keyframe encoder reads the active buffer.
+    if (!self.on_alt_screen and shift > 0) {
+        var r: usize = 0;
+        while (r < shift) : (r += 1) {
+            self.pushRowToScrollback(self.cells[r * @as(usize, self.cols) ..][0..self.cols]);
+        }
     }
 
-    allocator.free(self.cells);
-    self.cells = new_cells;
+    const new_cells = new_alloc[0..new_total];
+    for (new_cells) |*c| c.* = Cell.blank();
+    copyScreen(new_cells, self.cells, self.rows, self.cols, new_rows, new_cols, if (self.on_alt_screen) 0 else shift);
 
-    // Resize row_meta, preserving existing marks
-    const new_meta = try allocator.alloc(RowMeta, new_rows);
+    var new_alt: ?[]Cell = null;
+    if (new_alt_alloc) |a| {
+        const buf = a[0..new_total];
+        for (buf) |*c| c.* = Cell.blank();
+        copyScreen(buf, self.alt_cells.?, self.rows, self.cols, new_rows, new_cols, if (self.on_alt_screen) shift else 0);
+        new_alt = buf;
+    }
+
+    // Free the old buffers. The window, if any, is freed through its backing.
+    if (cells_was_window or alt_was_window) allocator.free(self.cells_backing);
+    if (!cells_was_window) allocator.free(self.cells);
+    if (self.alt_cells) |old_alt| {
+        if (!alt_was_window) allocator.free(old_alt);
+    }
+    self.cells_backing = if (cells_was_window) new_alloc else if (alt_was_window) new_alt_alloc.? else self.cells_backing;
+    self.cells = new_cells;
+    self.alt_cells = new_alt;
+
+    // Resize row_meta, shifted with the main screen, preserving existing marks
     for (new_meta) |*m| m.* = .{};
-    const copy_meta = @min(self.row_meta.len, @as(usize, new_rows));
+    const meta_avail = self.row_meta.len -| shift;
+    const copy_meta = @min(meta_avail, @as(usize, new_rows));
     if (copy_meta > 0) {
-        @memcpy(new_meta[0..copy_meta], self.row_meta[0..copy_meta]);
+        @memcpy(new_meta[0..copy_meta], self.row_meta[shift..][0..copy_meta]);
     }
     if (self.row_meta.len > 0) allocator.free(self.row_meta);
     self.row_meta = new_meta;
@@ -971,19 +1123,17 @@ pub fn resize(self: *Grid, allocator: std.mem.Allocator, new_rows: u16, new_cols
         self.margins_enabled = false;
     }
 
-    // Resize the inactive alt buffer if it exists.
-    // Content in the inactive buffer is not preserved on resize — this
-    // matches behavior of most terminals (xterm, Alacritty, Kitty).
-    if (self.alt_cells) |old_alt| {
-        allocator.free(old_alt);
-        const alt_cells = try allocator.alloc(Cell, new_total);
-        for (alt_cells) |*c| c.* = Cell.blank();
-        self.alt_cells = alt_cells;
+    // Move the cursors with the main screen's content, then clamp.
+    if (self.on_alt_screen) {
+        self.alt_saved_cursor_row -|= shift;
+    } else {
+        self.cursor_row -|= shift;
+        self.saved_cursor_row -|= shift;
     }
-
-    // Clamp cursor
     self.cursor_row = @min(self.cursor_row, new_rows -| 1);
     self.cursor_col = @min(self.cursor_col, new_cols -| 1);
+    self.alt_saved_cursor_row = @min(self.alt_saved_cursor_row, new_rows -| 1);
+    self.alt_saved_cursor_col = @min(self.alt_saved_cursor_col, new_cols -| 1);
     self.markAllDirty();
 }
 
@@ -1164,7 +1314,7 @@ pub fn insertLines(self: *Grid, n: u16) void {
             }
             // Clear only margin columns at cursor_row
             const clear_start = @as(usize, self.cursor_row) * w + lm;
-            for (self.cells[clear_start..][0..span]) |*c| c.* = Cell.blank();
+            for (self.cells[clear_start..][0..span]) |*c| c.* = self.erased();
         } else {
             // Full-width: shift entire rows
             var row: usize = self.scroll_bottom;
@@ -1212,7 +1362,7 @@ pub fn deleteLines(self: *Grid, n: u16) void {
             }
             // Clear only margin columns at scroll_bottom
             const clear_start = @as(usize, self.scroll_bottom) * w + lm;
-            for (self.cells[clear_start..][0..span]) |*c| c.* = Cell.blank();
+            for (self.cells[clear_start..][0..span]) |*c| c.* = self.erased();
         } else {
             // Full-width: shift entire rows
             var row: usize = self.cursor_row;
@@ -1234,7 +1384,7 @@ pub fn deleteLines(self: *Grid, n: u16) void {
 /// Blank cells appear at the right edge (or right margin when margins active).
 pub fn deleteChars(self: *Grid, n: u16) void {
     const row: usize = self.cursor_row;
-    const col: usize = self.cursor_col;
+    const col: usize = @min(self.cursor_col, self.cols);
     const w: usize = self.cols;
     const lm = self.getLeftMargin();
     const rm = self.getRightMargin();
@@ -1261,7 +1411,7 @@ pub fn deleteChars(self: *Grid, n: u16) void {
     }
     // Blank the rightmost cells within the bounded region
     const blank_start = row_start + right_edge - count;
-    for (self.cells[blank_start..row_start + right_edge]) |*c| c.* = Cell.blank();
+    for (self.cells[blank_start..row_start + right_edge]) |*c| c.* = self.erased();
     self.markRowDirty(self.cursor_row);
 }
 
@@ -1269,7 +1419,7 @@ pub fn deleteChars(self: *Grid, n: u16) void {
 /// Characters pushed past the right edge (or right margin) are lost.
 pub fn insertBlanks(self: *Grid, n: u16) void {
     const row: usize = self.cursor_row;
-    const col: usize = self.cursor_col;
+    const col: usize = @min(self.cursor_col, self.cols);
     const w: usize = self.cols;
     const lm = self.getLeftMargin();
     const rm = self.getRightMargin();
@@ -1294,7 +1444,7 @@ pub fn insertBlanks(self: *Grid, n: u16) void {
         }
     }
     // Blank the inserted cells
-    for (self.cells[row_start + col ..][0..count]) |*c| c.* = Cell.blank();
+    for (self.cells[row_start + col ..][0..count]) |*c| c.* = self.erased();
     self.markRowDirty(self.cursor_row);
 }
 
@@ -1302,12 +1452,12 @@ pub fn insertBlanks(self: *Grid, n: u16) void {
 /// ECH — erase characters. Per VT510, NOT bounded by left/right margins.
 pub fn eraseChars(self: *Grid, n: u16) void {
     const row: usize = self.cursor_row;
-    const col: usize = self.cursor_col;
+    const col: usize = @min(self.cursor_col, self.cols);
     const w: usize = self.cols;
     const count: usize = @min(n, w - col);
     const row_start = row * w;
 
-    for (self.cells[row_start + col ..][0..count]) |*c| c.* = Cell.blank();
+    for (self.cells[row_start + col ..][0..count]) |*c| c.* = self.erased();
     self.markRowDirty(self.cursor_row);
 }
 
@@ -1435,6 +1585,40 @@ test "scrollUp shifts content up" {
     try std.testing.expectEqual(@as(u21, 'B'), grid.cellAtConst(0, 0).char);
     try std.testing.expectEqual(@as(u21, 'C'), grid.cellAtConst(1, 0).char);
     try std.testing.expectEqual(@as(u21, ' '), grid.cellAtConst(2, 0).char); // cleared
+}
+
+test "full-screen scrolls keep content across the window wrapping back" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 3, 2);
+    defer grid.deinit(allocator);
+
+    // Write one numbered line per scroll; the window wraps every 3 lines,
+    // so 20 scrolls cross the end of the backing several times.
+    var n: u21 = 0;
+    while (n < 20) : (n += 1) {
+        grid.cellAt(2, 0).char = 'a' + n;
+        grid.cellAt(2, 1).char = 'A' + n;
+        grid.scrollUp();
+        try std.testing.expectEqual(@as(u21, 'a' + n), grid.cellAtConst(1, 0).char);
+        try std.testing.expectEqual(@as(u21, 'A' + n), grid.cellAtConst(1, 1).char);
+        try std.testing.expectEqual(@as(u21, ' '), grid.cellAtConst(2, 0).char);
+        if (n > 0) try std.testing.expectEqual(@as(u21, 'a' + n - 1), grid.cellAtConst(0, 0).char);
+    }
+
+    // Alt screen round trip keeps the main screen, wherever its window is.
+    try grid.switchToAltScreen(allocator);
+    grid.scrollUp();
+    grid.switchToMainScreen();
+    try std.testing.expectEqual(@as(u21, 'a' + 19), grid.cellAtConst(1, 0).char);
+
+    // Resizing on either screen must not leak or double-free the backing.
+    try grid.resize(allocator, 4, 3);
+    try std.testing.expectEqual(@as(u21, 'a' + 19), grid.cellAtConst(1, 0).char);
+    try grid.switchToAltScreen(allocator);
+    try grid.resize(allocator, 2, 2);
+    grid.switchToMainScreen();
+    grid.scrollUp();
+    grid.scrollUp();
 }
 
 test "scrollDown shifts content down" {
@@ -1971,4 +2155,81 @@ test "markRowDirty preserves the external all-dirty sentinel" {
     grid.markRowDirty(7);
     try std.testing.expectEqual(@as(u16, 4), grid.dirty_row_min);
     try std.testing.expectEqual(@as(u16, 7), grid.dirty_row_max);
+}
+
+// ── Review fixes (2026-11-22) ────────────────────────────────────
+
+fn writeRow(grid: *Grid, row: u16, text: []const u8) void {
+    grid.cursor_row = row;
+    grid.cursor_col = 0;
+    for (text) |ch| grid.write(ch);
+}
+
+test "shrinking rows keeps the cursor line and pushes the top to scrollback" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 10, 12);
+    defer grid.deinit(allocator);
+    var sb = Scrollback.init(allocator, .{ .keyframe_interval = 1000 });
+    defer sb.deinit();
+    grid.scrollback = &sb;
+
+    var buf: [4]u8 = undefined;
+    var r: u16 = 0;
+    while (r < 9) : (r += 1) writeRow(&grid, r, std.fmt.bufPrint(&buf, "L{d}", .{r}) catch unreachable);
+    writeRow(&grid, 9, "$ prompt");
+    grid.saved_cursor_row = 7;
+
+    try grid.resize(allocator, 5, 12);
+    // Rows L5..L8 and the prompt remain; the cursor stays on the prompt.
+    try std.testing.expectEqual(@as(u21, 'L'), grid.cellAtConst(0, 0).char);
+    try std.testing.expectEqual(@as(u21, '5'), grid.cellAtConst(0, 1).char);
+    try std.testing.expectEqual(@as(u21, '$'), grid.cellAtConst(4, 0).char);
+    try std.testing.expectEqual(@as(u16, 4), grid.cursor_row);
+    try std.testing.expectEqual(@as(u16, 2), grid.saved_cursor_row);
+    // L0..L4 went to scrollback, newest last.
+    try std.testing.expectEqual(@as(usize, 5), sb.lineCount());
+    try std.testing.expectEqualStrings("L4", sb.getLineByOffset(0).?);
+    try std.testing.expectEqualStrings("L0", sb.getLineByOffset(4).?);
+}
+
+test "resize during the alt screen keeps the main screen" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 6, 20);
+    defer grid.deinit(allocator);
+
+    writeRow(&grid, 0, "SHELL");
+    writeRow(&grid, 1, "$ ");
+    try grid.switchToAltScreen(allocator);
+    writeRow(&grid, 0, "vim");
+    try grid.resize(allocator, 5, 22);
+    grid.switchToMainScreen();
+    try std.testing.expectEqual(@as(u21, 'S'), grid.cellAtConst(0, 0).char);
+    try std.testing.expectEqual(@as(u21, '$'), grid.cellAtConst(1, 0).char);
+    try std.testing.expectEqual(@as(u16, 1), grid.cursor_row);
+
+    // Shrinking below the main cursor shifts the main screen, not the alt one.
+    try grid.switchToAltScreen(allocator);
+    writeRow(&grid, 0, "top");
+    try grid.resize(allocator, 1, 22);
+    try std.testing.expectEqual(@as(u21, 't'), grid.cellAtConst(0, 0).char);
+    grid.switchToMainScreen();
+    try std.testing.expectEqual(@as(u21, '$'), grid.cellAtConst(0, 0).char);
+    try std.testing.expectEqual(@as(u16, 0), grid.cursor_row);
+}
+
+test "lines leaving a scroll region below the top row stay out of scrollback" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 6, 10);
+    defer grid.deinit(allocator);
+    var sb = Scrollback.init(allocator, .{ .keyframe_interval = 1000 });
+    defer sb.deinit();
+    grid.scrollback = &sb;
+
+    grid.scroll_top = 2;
+    grid.scroll_bottom = 4;
+    grid.scrollUp();
+    try std.testing.expectEqual(@as(usize, 0), sb.lineCount());
+    grid.scroll_top = 0;
+    grid.scrollUp();
+    try std.testing.expectEqual(@as(usize, 1), sb.lineCount());
 }

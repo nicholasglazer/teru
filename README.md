@@ -51,7 +51,8 @@ human with a keyboard for.
   containers, on machines with no GPU driver loaded. [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 - **Process graph.** Every pane, every agent, every child process is a node in a DAG the MCP
   can query. OSC 9999 lets any process self-declare as an AI agent.
-- **Single statically-linked binary per platform.** No Python, no Node, no Electron.
+- **Single self-contained binary per platform.** No Python, no Node, no Electron. It links
+  only system libraries: libc, plus xcb, xkbcommon and wayland-client on Linux.
 
 ## Install
 
@@ -123,8 +124,8 @@ Numbers measured on a Core Ultra 9 185H with ReleaseFast. Full methodology, dist
 | `teru` binary size | 1.4 MB |
 | `teruwm` binary size | 1.2 MB |
 | `teru --help` startup (p50) | 0.73 ms |
-| VtParser throughput, `dense_cells` | 401 MB/s |
-| Full pipeline (parse + render), `dense_cells` | 391 MB/s |
+| VtParser throughput, `dense_cells` | 401 MiB/s |
+| Full pipeline (parse + render), `dense_cells` | 391 MiB/s |
 
 Single-number marketing claims are explicitly avoided — see the BENCHMARKS doc for why and
 what's not measured.

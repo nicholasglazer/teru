@@ -142,6 +142,8 @@ pub fn addSurface(self: *Node, allocator: std.mem.Allocator, id: u64, ws: u8, to
     self.app_id_len[slot] = 0;
     self.urgent[slot] = false;
     self.scratchpad_name_len[slot] = 0;
+    self.scratch_frac_set[slot] = false;
+    self.scratch_frac[slot] = @splat(0);
     self.by_id.put(allocator, id, slot) catch {};
     self.count += 1;
     return slot;
@@ -165,6 +167,8 @@ pub fn addTerminal(self: *Node, allocator: std.mem.Allocator, id: u64, ws: u8) ?
     self.app_id_len[slot] = 0;
     self.urgent[slot] = false;
     self.scratchpad_name_len[slot] = 0;
+    self.scratch_frac_set[slot] = false;
+    self.scratch_frac[slot] = @splat(0);
     self.by_id.put(allocator, id, slot) catch {};
     self.count += 1;
     return slot;
@@ -202,6 +206,8 @@ pub fn remove(self: *Node, id: u64) bool {
     self.app_id_len[i] = 0;
     self.urgent[i] = false;
     self.scratchpad_name_len[i] = 0;
+    self.scratch_frac_set[i] = false;
+    self.scratch_frac[i] = @splat(0);
     _ = self.by_id.remove(id);
     self.count -= 1;
     return true;
@@ -692,4 +698,21 @@ test "urgent — per-ws count stays coherent under mark/clear/move/remove" {
     // it to 1 and flips the predicate.
     try std.testing.expect(reg.markUrgent(c));
     try std.testing.expect(reg.anyUrgentOnWorkspace(5));
+}
+
+test "a reused slot does not inherit a dead scratchpad's placement" {
+    var reg = Node{};
+    defer reg.deinitIndex(std.testing.allocator);
+    const s1 = reg.addTerminal(std.testing.allocator, 100, 0).?;
+    reg.scratch_frac[s1] = .{ 0.1, 0.2, 0.3, 0.4 };
+    reg.scratch_frac_set[s1] = true;
+    try std.testing.expect(reg.remove(100));
+    try std.testing.expect(!reg.scratch_frac_set[s1]);
+
+    // Set again and reuse the slot without a remove in between going through.
+    reg.scratch_frac_set[s1] = true;
+    const s2 = reg.addTerminal(std.testing.allocator, 200, 0).?;
+    try std.testing.expectEqual(s1, s2);
+    try std.testing.expect(!reg.scratch_frac_set[s2]);
+    try std.testing.expectEqual(@as(f32, 0), reg.scratch_frac[s2][0]);
 }

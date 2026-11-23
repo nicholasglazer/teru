@@ -152,12 +152,13 @@ fn forwardToTeru(sock_path: []const u8, line: []const u8, out: []u8) ?[]const u8
 }
 
 /// Forward one line-JSON request to teruwm's HTTP-framed socket.
-/// Reuses `forward.forwardRequest` (the same code teru's in-process
-/// MCP uses to forward `teruwm_*` tools to the compositor). Each
+/// Uses the same forward code as teru's in-process MCP, but with the
+/// standalone timeout: this process blocks nothing else, and slow teruwm
+/// tools must not be reported as "not running". Each
 /// request opens + closes its own connection — teruwm sends
 /// `Connection: close` so keeping a pool buys nothing.
 fn forwardToTeruwm(line: []const u8, out: []u8) ?[]const u8 {
-    return forward.forwardRequest(line, out);
+    return forward.forwardRequestStandalone(line, out);
 }
 
 // ── stdin reading ────────────────────────────────────────────────
@@ -253,6 +254,10 @@ const write_tool_names = [_][]const u8{
     "teru_focus_pane",
     "teru_swap_pane",
     "teru_move_pane",
+    // These two write files: a session template (overwriting one of the
+    // same name) and a PNG under /tmp, ~/Pictures or the config dir.
+    "teru_session_save",
+    "teru_screenshot",
 };
 
 fn isBlockedToolCall(line: []const u8) bool {
@@ -360,6 +365,11 @@ fn filterToolsList(resp: []const u8, out: []u8) ?[]const u8 {
 test "isBlockedToolCall matches write tools" {
     const line = "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"teru_send_input\",\"arguments\":{\"pane_id\":1,\"text\":\"x\"}},\"id\":1}";
     try std.testing.expect(isBlockedToolCall(line));
+}
+
+test "isBlockedToolCall blocks the tools that write files" {
+    try std.testing.expect(isBlockedToolCall("{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"teru_session_save\",\"arguments\":{\"name\":\"x\"}},\"id\":1}"));
+    try std.testing.expect(isBlockedToolCall("{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"teru_screenshot\",\"arguments\":{}},\"id\":1}"));
 }
 
 test "isBlockedToolCall passes read tools" {

@@ -124,6 +124,13 @@ Inside an attached session (the over-SSH TUI client):
   workspace, `Ctrl+B d` detaches).
 - **Ctrl-\\** — detach immediately (leaves everything running).
 
+A window attached to a session (`teru -n NAME` on a desktop, or a plain `teru`
+with `persist_session = true`) detaches on **Ctrl-\\** too, as it does on
+`Ctrl+Space d`. In a window that is not attached to a session there is nothing
+to detach from, so Ctrl-\\ reaches the program as usual (the terminal turns it
+into SIGQUIT). When the focused pane runs a nested teru (below), the window
+passes Ctrl-\\ to it, so the innermost client detaches.
+
 See [KEYBINDINGS.md](KEYBINDINGS.md#remote--tui-session-teru--n-over-ssh) for the
 full remote keymap.
 
@@ -167,6 +174,7 @@ remote with the `Ctrl+A` prefix instead.
 | `teru --daemon NAME` | start a headless daemon in the foreground (no attach) |
 | `teru --daemon NAME -t TMPL` | …with a template |
 | `teru -l` / `teru --list` | list active sessions |
+| `teru -f` / `teru --fresh` | plain `teru`, ignoring `restore_layout` and `persist_session` for this launch and leaving the saved layout alone (`teru -e CMD` does the same) |
 | `Ctrl-\\` | detach the current client |
 
 ## Diagnostics

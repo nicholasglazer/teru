@@ -12,6 +12,7 @@ const Multiplexer = @import("Multiplexer.zig");
 const ProcessGraph = @import("../graph/ProcessGraph.zig");
 const Hooks = @import("../config/Hooks.zig");
 const compat = @import("../compat.zig");
+const keysyms = @import("../input/keysyms.zig");
 
 // ── Prefix key state ─────────────────────────────────────────────
 
@@ -211,6 +212,44 @@ pub fn lookupConfigAction(
     return keybinds.lookup(mode, mods, key_char);
 }
 
+/// Ctrl+\ (FS, 0x1C) in a window attached to a daemon session detaches it,
+/// the same key the TUI client treats as detach (TuiInput.feed). A window
+/// with no daemon has nothing to detach from, so the byte goes to the program
+/// and the tty turns it into SIGQUIT as in any other terminal. Alt+Ctrl+\ is
+/// not detach: the TUI client reads it as ESC+FS and forwards it.
+/// `nested` is true while the focused pane shows a nested teru client (it
+/// announced itself with OSC 9998;1 and is on the alternate screen): the
+/// byte then goes to that client, so the innermost session detaches, as it
+/// did before the outer window took the key.
+pub fn isDetachKey(key_bytes: []const u8, modifiers: u32, attached: bool, nested: bool) bool {
+    return attached and !nested and modifiers & kc.ALT_MASK == 0 and
+        key_bytes.len == 1 and key_bytes[0] == 0x1c;
+}
+
+/// The leader / which-key chord in the windowed terminal: Alt+Space with no
+/// other modifier. Shift, Ctrl and RAlt variants are separate bindings
+/// (Alt+Shift+Space is layout_reset), so they must not open the leader.
+pub fn isLeaderChord(modifiers: u32, ralt: bool, key_char: u8) bool {
+    return key_char == ' ' and platformMods(modifiers, ralt).eql(KB.Mods.ALT);
+}
+
+pub const ScrollPage = enum { none, up, down };
+
+/// Shift+PageUp / Shift+PageDown page through the scrollback. Plain
+/// PageUp/PageDown, and any other modifier set, go to the program (less, vim
+/// and htop use them). On the alternate screen there is no teru scrollback to
+/// show, as with the mouse wheel, so Shift+PageUp/PageDown go to the program
+/// there too. Mouse tracking does not change keyboard routing.
+pub fn scrollbackPageKey(keysym: u32, modifiers: u32, ralt: bool, alt_screen: bool) ScrollPage {
+    if (alt_screen) return .none;
+    if (!platformMods(modifiers, ralt).eql(KB.Mods.SHIFT)) return .none;
+    return switch (keysym) {
+        keysyms.Page_Up => .up,
+        keysyms.Page_Down => .down,
+        else => .none,
+    };
+}
+
 /// Execute a keybind Action's mux side effects (focus, swap, resize, etc).
 /// Returns a MuxAction for things main.zig must handle (split, zoom, mode change).
 pub fn executeAction(action: KB.Action, mux: *Multiplexer) MuxAction {
@@ -255,6 +294,7 @@ pub fn executeAction(action: KB.Action, mux: *Multiplexer) MuxAction {
             if (action.workspaceIndex()) |ws| mux.switchWorkspace(ws);
             return .panes_changed;
         },
+        .workspace_toggle_last => if (mux.toggleLastWorkspace()) .panes_changed else .none,
         .pane_move_to_1, .pane_move_to_2, .pane_move_to_3,
         .pane_move_to_4, .pane_move_to_5, .pane_move_to_6,
         .pane_move_to_7, .pane_move_to_8, .pane_move_to_9,
@@ -417,4 +457,127 @@ test "handleGlobalKey RAlt+m marks master, Alt+m focuses" {
     defer mux.deinit();
     try std.testing.expect(handleGlobalKey(0, kc.ALT_MASK, 'm', true, true, &mux).? == .panes_changed);
     try std.testing.expect(handleGlobalKey(0, kc.ALT_MASK, 'm', true, false, &mux).? == .panes_changed);
+}
+
+test "isDetachKey: Ctrl+\\ detaches only when attached to a daemon" {
+    // Attached window: FS (Ctrl+\) detaches.
+    try std.testing.expect(isDetachKey("\x1c", kc.CTRL_MASK, true, false));
+    // No daemon: FS goes to the program (SIGQUIT), never swallowed.
+    try std.testing.expect(!isDetachKey("\x1c", kc.CTRL_MASK, false, false));
+    // A nested teru in the focused pane gets FS, so the inner client detaches.
+    try std.testing.expect(!isDetachKey("\x1c", kc.CTRL_MASK, true, true));
+    try std.testing.expect(!isDetachKey("\x1c", kc.CTRL_MASK, false, true));
+    // Alt+Ctrl+\ is forwarded, as in the TUI client.
+    try std.testing.expect(!isDetachKey("\x1c", kc.CTRL_MASK | kc.ALT_MASK, true, false));
+    // Other keys, and FS inside a longer sequence, are not detach.
+    try std.testing.expect(!isDetachKey("\\", 0, true, false));
+    try std.testing.expect(!isDetachKey("\x1b\x1c", kc.CTRL_MASK, true, false));
+    try std.testing.expect(!isDetachKey("", kc.CTRL_MASK, true, false));
+}
+
+test "isLeaderChord: exactly Alt+Space" {
+    try std.testing.expect(isLeaderChord(kc.ALT_MASK, false, ' '));
+    // Alt+Shift+Space is layout_reset, not the leader.
+    try std.testing.expect(!isLeaderChord(kc.ALT_MASK | kc.SHIFT_MASK, false, ' '));
+    try std.testing.expect(!isLeaderChord(kc.ALT_MASK | kc.CTRL_MASK, false, ' '));
+    try std.testing.expect(!isLeaderChord(kc.ALT_MASK, true, ' ')); // RAlt
+    try std.testing.expect(!isLeaderChord(0, false, ' '));
+    try std.testing.expect(!isLeaderChord(kc.ALT_MASK, false, 'a'));
+}
+
+test "Alt+Shift+Space reaches layout_reset in the default keybinds" {
+    var kb = KB.Keybinds{ .mod_key = KB.Mods.ALT };
+    kb.loadDefaults();
+    const mods = platformMods(kc.ALT_MASK | kc.SHIFT_MASK, false);
+    try std.testing.expectEqual(KB.Action.layout_reset, kb.lookup(.normal, mods, ' ').?);
+}
+
+test "Alt+Tab, Alt+Shift+Tab and Alt+Escape reach the default keybinds" {
+    const ks = keysyms;
+    var kb = KB.Keybinds{ .mod_key = KB.Mods.ALT };
+    kb.loadDefaults();
+    const alt = platformMods(kc.ALT_MASK, false);
+    const alt_shift = platformMods(kc.ALT_MASK | kc.SHIFT_MASK, false);
+    try std.testing.expectEqual(KB.Action.pane_focus_next, kb.lookup(.normal, alt, ks.bindChar(ks.Tab)).?);
+    // xkb reports Shift+Tab as ISO_Left_Tab.
+    try std.testing.expectEqual(KB.Action.pane_focus_prev, kb.lookup(.normal, alt_shift, ks.bindChar(ks.ISO_Left_Tab)).?);
+    try std.testing.expectEqual(KB.Action.workspace_toggle_last, kb.lookup(.normal, alt, ks.bindChar(ks.Escape)).?);
+    // Unmodified Tab and Escape match nothing, so they still go to the program.
+    try std.testing.expect(kb.lookup(.normal, platformMods(0, false), ks.bindChar(ks.Tab)) == null);
+    try std.testing.expect(kb.lookup(.normal, platformMods(0, false), ks.bindChar(ks.Escape)) == null);
+    try std.testing.expect(kb.lookup(.normal, platformMods(kc.SHIFT_MASK, false), ks.bindChar(ks.ISO_Left_Tab)) == null);
+    // Esc after the prefix leaves prefix mode instead of being sent on.
+    try std.testing.expectEqual(KB.Action.mode_normal, kb.lookup(.prefix, platformMods(0, false), ks.bindChar(ks.Escape)).?);
+}
+
+test "executeAction workspace_toggle_last returns to the previous workspace" {
+    var mux = Multiplexer.init(std.testing.allocator);
+    defer mux.deinit();
+    try std.testing.expect(executeAction(.workspace_toggle_last, &mux) == .none);
+    mux.switchWorkspace(4);
+    try std.testing.expect(executeAction(.workspace_toggle_last, &mux) == .panes_changed);
+    try std.testing.expectEqual(@as(u8, 0), mux.active_workspace);
+}
+
+test "scrollbackPageKey: Shift+PageUp/Down scroll, plain PageUp/Down go to the program" {
+    const ks = keysyms;
+    const S = kc.SHIFT_MASK;
+    try std.testing.expectEqual(ScrollPage.up, scrollbackPageKey(ks.Page_Up, S, false, false));
+    try std.testing.expectEqual(ScrollPage.down, scrollbackPageKey(ks.Page_Down, S, false, false));
+    // Plain keys belong to the program.
+    try std.testing.expectEqual(ScrollPage.none, scrollbackPageKey(ks.Page_Up, 0, false, false));
+    try std.testing.expectEqual(ScrollPage.none, scrollbackPageKey(ks.Page_Down, 0, false, false));
+    // Other modifier sets are not the scrollback chord.
+    try std.testing.expectEqual(ScrollPage.none, scrollbackPageKey(ks.Page_Up, S | kc.CTRL_MASK, false, false));
+    try std.testing.expectEqual(ScrollPage.none, scrollbackPageKey(ks.Page_Up, S | kc.ALT_MASK, false, false));
+    // Alternate screen (less, vim, htop): no scrollback, the program gets it.
+    try std.testing.expectEqual(ScrollPage.none, scrollbackPageKey(ks.Page_Up, S, false, true));
+    try std.testing.expectEqual(ScrollPage.none, scrollbackPageKey(ks.Page_Down, S, false, true));
+    // Other keys never scroll.
+    try std.testing.expectEqual(ScrollPage.none, scrollbackPageKey(ks.Up, S, false, false));
+}
+
+test "teru --help keybindings match the default table" {
+    // Every chord `teru --help` lists, as the windowed terminal looks it up
+    // (KeyHandler.lookupConfigAction on the defaults). Keep main.zig's list
+    // and this test in step.
+    var kb: KB.Keybinds = .{};
+    kb.loadDefaults();
+    kb.loadTerminalZoomDefaults();
+    const A = kc.ALT_MASK;
+    const S = kc.SHIFT_MASK;
+    const Case = struct { mode: KB.Mode, mods: u32, key: u8, want: KB.Action };
+    const cases = [_]Case{
+        .{ .mode = .normal, .mods = A, .key = 'c', .want = .split_vertical },
+        .{ .mode = .prefix, .mods = 0, .key = 'x', .want = .pane_close },
+        .{ .mode = .normal, .mods = A, .key = 'j', .want = .pane_focus_next },
+        .{ .mode = .normal, .mods = A, .key = 'k', .want = .pane_focus_prev },
+        .{ .mode = .normal, .mods = A | S, .key = 'J', .want = .pane_swap_next },
+        .{ .mode = .normal, .mods = A | S, .key = 'K', .want = .pane_swap_prev },
+        .{ .mode = .normal, .mods = A, .key = 'h', .want = .resize_shrink_w },
+        .{ .mode = .normal, .mods = A, .key = 'l', .want = .resize_grow_w },
+        .{ .mode = .normal, .mods = A, .key = 'z', .want = .zoom_toggle },
+        .{ .mode = .normal, .mods = A, .key = '1', .want = .workspace_1 },
+        .{ .mode = .normal, .mods = A, .key = '0', .want = .workspace_0 },
+        .{ .mode = .normal, .mods = A | S, .key = '!', .want = .pane_move_to_1 },
+        .{ .mode = .prefix, .mods = 0, .key = ' ', .want = .layout_cycle },
+        .{ .mode = .normal, .mods = A, .key = 'v', .want = .mode_scroll },
+        .{ .mode = .normal, .mods = A, .key = '-', .want = .zoom_out },
+        .{ .mode = .normal, .mods = A, .key = '\\', .want = .zoom_reset },
+        .{ .mode = .normal, .mods = kc.CTRL_MASK, .key = ' ', .want = .mode_prefix },
+        .{ .mode = .prefix, .mods = 0, .key = 'd', .want = .session_detach },
+    };
+    for (cases) |c| {
+        const got = lookupConfigAction(&kb, c.mode, c.mods, c.key, false) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(c.want, got);
+    }
+    var mux = Multiplexer.init(std.testing.allocator);
+    defer mux.deinit();
+    try std.testing.expectEqual(MuxAction.detach, executeAction(.session_detach, &mux));
+    // Alt+Space opens the leader; Ctrl+\ detaches an attached window.
+    try std.testing.expect(isLeaderChord(A, false, ' '));
+    try std.testing.expect(isDetachKey("\x1c", kc.CTRL_MASK, true, false));
+    // Alt+D is the launcher in the shared table, which teru does not have:
+    // it is not detach, so --help must not say so.
+    try std.testing.expect(lookupConfigAction(&kb, .normal, A, 'd', false).? != .session_detach);
 }

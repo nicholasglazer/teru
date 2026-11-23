@@ -24,10 +24,10 @@ We follow the best practices argued for in:
 
 | Metric | Rationale |
 |---|---|
-| vtebench-payload throughput (MB/s) | Industry standard since 2019; directly comparable with kitty/alacritty/foot/ghostty's published numbers. |
+| vtebench-payload throughput (MiB/s) | Industry standard since 2019; comparable with kitty/alacritty/foot/ghostty's published numbers once the units match (theirs are often MB/s; 1 MiB/s = 1.049 MB/s). |
 | Parse-only vs parse+render split | Isolates `VtParser` cost from `SoftwareRenderer` cost so we can see which one a given payload stresses. |
 | p50/p95/p99 over N=30 samples | Means and maxes are misleading — tail latency is the honest perf story. |
-| Binary size (ReleaseFast, stripped) | A competitive compositor in < 7 MB is a concrete claim users can verify. |
+| Binary size (ReleaseFast, stripped) | A competitive compositor in < 7 MiB is a concrete claim users can verify. |
 | Startup time (`teru --help`) | Cold-path exec; includes fork/exec overhead. Sets a floor. |
 
 **What we do NOT measure** (and why):
@@ -67,17 +67,25 @@ bash tools/run-bench.sh
 ```
 
 The orchestrator writes `bench-results/<timestamp>.json`. Every number
-below is from the snapshot at `2026-04-12_161849.json`.
+below is from the snapshot taken at 2026-04-12 16:18:49, saved in the
+repository as `bench-results/2026-04-12_sample.json`.
+
+Units are binary: 1 KiB = 1,024 bytes and 1 MiB = 1,048,576 bytes, so
+throughput is MiB/s (`tools/bench.zig` divides by 1024 × 1024).
 
 ## Binary size
 
 | Binary | Release | Debug |
 |---|---:|---:|
-| `teru` (terminal) | **6.60 MB** | ~22 MB |
-| `teruwm` (compositor) | **5.58 MB** | ~37 MB |
+| `teru` (terminal) | **6.60 MiB** | ~22 MiB |
+| `teruwm` (compositor) | **5.58 MiB** | ~37 MiB |
 
-For reference: Alacritty 0.14 ships a ~11 MB binary, kitty ships as a
-Python package + C extensions, Ghostty 1.x is ~25 MB.
+The release sizes are from the snapshot (6,924,040 and 5,851,880
+bytes); the debug sizes are rough and not in it.
+
+For reference (sizes as each project reports them): Alacritty 0.14
+ships a ~11 MB binary, kitty ships as a Python package + C extensions,
+Ghostty 1.x is ~25 MB.
 
 ## Startup time
 
@@ -103,19 +111,19 @@ iteration; the p95/p99 columns show the full distribution.
 
 ### Parse-only (VtParser + Grid, no rendering)
 
-| Payload | Bytes | p50 latency | p95 | p99 | **MB/s** |
+| Payload | Size | p50 latency | p95 | p99 | **MiB/s** |
 |---|---:|---:|---:|---:|---:|
-| dense_cells          | 7,020 KB | 16.7 ms | 16.8 ms | 16.8 ms | **401.3** |
-| cursor_motion        | 2,412 KB |  5.7 ms | 11.2 ms | 11.5 ms | **396.1** |
-| scrolling_fullscreen |     5 KB | 0.02 ms | 0.02 ms | 0.02 ms | **258.6** |
-| light_cells          |   260 KB |  1.0 ms |  1.0 ms |  1.0 ms | **254.2** |
-| sync_medium_cells    |   186 KB |  1.1 ms |  1.2 ms |  1.2 ms | **158.1** |
-| medium_cells         |   178 KB |  1.1 ms |  1.2 ms |  1.2 ms | **154.0** |
-| unicode              |   138 KB |  0.9 ms |  1.0 ms |  1.0 ms | **140.1** |
+| dense_cells          | 6,855.5 KiB | 16.7 ms | 16.8 ms | 16.8 ms | **401.3** |
+| cursor_motion        | 2,356.2 KiB |  5.8 ms |  5.9 ms |  5.9 ms | **396.1** |
+| scrolling_fullscreen |     5.1 KiB | 0.02 ms | 0.02 ms | 0.02 ms | **258.6** |
+| light_cells          |   254.0 KiB |  1.0 ms |  1.0 ms |  1.0 ms | **254.2** |
+| sync_medium_cells    |   181.8 KiB |  1.1 ms |  1.2 ms |  1.2 ms | **158.1** |
+| medium_cells         |   174.6 KiB |  1.1 ms |  1.2 ms |  1.2 ms | **154.0** |
+| unicode              |   135.1 KiB |  0.9 ms |  1.0 ms |  1.0 ms | **140.1** |
 
 ### Full pipeline (parse + render)
 
-| Payload | **MB/s (render)** | Δ vs parse-only |
+| Payload | **MiB/s (render)** | Δ vs parse-only |
 |---|---:|---:|
 | dense_cells          | **390.6** | −2.7 % |
 | cursor_motion        | **372.7** | −5.9 % |
@@ -138,14 +146,14 @@ render dominates.
 Published numbers from each project's own benchmark pages. These
 aren't run on our hardware — they're cited with links so you can
 audit them. vtebench's `dense_cells` payload under kitty on a Ryzen
-7 PRO 5850U is 121.8 MB/s; our number on a Core Ultra 9 185H is
-390.6 MB/s (full pipeline). The CPUs differ, so don't read this as a
-4× win — read it as "we're in the right ballpark for a
-CPU-bound SIMD renderer."
+7 PRO 5850U is 121.8 MB/s as kitty reports it; our number on a Core
+Ultra 9 185H is 390.6 MiB/s, which is 409.6 MB/s (full pipeline). The
+CPUs differ, so don't read this as a 3.4× win — read it as "we're in
+the right ballpark for a CPU-bound SIMD renderer."
 
 | Terminal | Source | Notes |
 |---|---|---|
-| kitty 0.33 | [kitty perf page](https://sw.kovidgoyal.net/kitty/performance/) | Ryzen 7 PRO 5850U; avg across 4 payloads 134.55 MB/s |
+| kitty 0.33 | [kitty perf page](https://sw.kovidgoyal.net/kitty/performance/) | Ryzen 7 PRO 5850U; avg across 4 payloads 134.55 MB/s (kitty's figure and unit) |
 | alacritty | [termbenchbot](https://github.com/alacritty/termbenchbot) | Runs vtebench on every commit; public CI history |
 | foot | [foot perf](https://codeberg.org/dnkl/foot/wiki/Performance) | Wayland-only; dense_cells published |
 | ghostty | [ghostty #4837](https://github.com/ghostty-org/ghostty/discussions/4837) | Author's own discussion of vtebench limits |

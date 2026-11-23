@@ -15,6 +15,19 @@ const max_layouts = types.max_layouts;
 
 const Workspace = @This();
 
+/// The master and split ratio range. Every resize path (keybinds and border
+/// drags in teru and teruwm) and every restore (teru.conf, .tsess, the binary
+/// session file, the daemon's state sync) keeps a ratio inside it.
+pub const ratio_min: f32 = 0.15;
+pub const ratio_max: f32 = 0.85;
+
+/// `r` clamped into ratio_min..ratio_max. NaN, which std.math.clamp would
+/// pass through, gives `fallback`.
+pub fn clampRatio(r: f32, fallback: f32) f32 {
+    if (std.math.isNan(r)) return fallback;
+    return std.math.clamp(r, ratio_min, ratio_max);
+}
+
 // ── Fields ─────────────────────────────────────────────────────
 
 name: []const u8,
@@ -664,12 +677,12 @@ fn findBorderRecursive(
     }
 }
 
-/// Set the ratio on a split node, clamped to [0.15, 0.85].
+/// Set the ratio on a split node, clamped to [ratio_min, ratio_max].
 pub fn resizeSplit(self: *Workspace, node_idx: u16, new_ratio: f32) void {
     if (node_idx >= self.split_node_count) return;
     switch (self.split_nodes[node_idx]) {
         .split => |*s| {
-            s.ratio = std.math.clamp(new_ratio, 0.15, 0.85);
+            s.ratio = clampRatio(new_ratio, s.ratio);
         },
         .leaf => {},
     }
@@ -1208,4 +1221,12 @@ test "autoSelect still adapts for a workspace the user never touched" {
     try t.expectEqual(Layout.master_stack, ws.layout);
     for (3..6) |i| try ws.addNode(a, @intCast(i));
     try t.expectEqual(Layout.grid, ws.layout);
+}
+
+test "clampRatio keeps the shared range and replaces NaN" {
+    try t.expectEqual(ratio_min, clampRatio(-1.0, 0.6));
+    try t.expectEqual(ratio_max, clampRatio(0.95, 0.6));
+    try t.expectEqual(@as(f32, 0.4), clampRatio(0.4, 0.6));
+    try t.expectEqual(@as(f32, 0.6), clampRatio(std.math.nan(f32), 0.6));
+    try t.expectEqual(ratio_max, clampRatio(std.math.inf(f32), 0.6));
 }

@@ -800,13 +800,13 @@ pub fn executeAction(server: *Server, action: KBAction) bool {
         },
         .resize_shrink_w => {
             const ws = server.layout_engine.getActiveWorkspace();
-            ws.master_ratio = @max(0.1, ws.master_ratio - 0.05);
+            ws.master_ratio = teru.Workspace.clampRatio(ws.master_ratio - 0.05, ws.master_ratio);
             server.arrangeworkspace(server.layout_engine.active_workspace);
             return true;
         },
         .resize_grow_w => {
             const ws = server.layout_engine.getActiveWorkspace();
-            ws.master_ratio = @min(0.9, ws.master_ratio + 0.05);
+            ws.master_ratio = teru.Workspace.clampRatio(ws.master_ratio + 0.05, ws.master_ratio);
             server.arrangeworkspace(server.layout_engine.active_workspace);
             return true;
         },

@@ -8,6 +8,7 @@ pub const Return: u32 = 0xff0d;
 pub const Escape: u32 = 0xff1b;
 pub const BackSpace: u32 = 0xff08;
 pub const Tab: u32 = 0xff09;
+pub const ISO_Left_Tab: u32 = 0xfe20; // xkb's keysym for Shift+Tab
 pub const Delete: u32 = 0xffff;
 pub const Home: u32 = 0xff50;
 pub const End: u32 = 0xff57;
@@ -94,6 +95,36 @@ pub fn escapeForKeysym(keysym: u32, app_cursor: bool) []const u8 {
         F12 => "\x1b[24~",
         else => "",
     };
+}
+
+/// The key character the keybinding table is looked up with (Keybinds stores
+/// ASCII: Mod+Tab on 0x09, Mod+Escape on 0x1b). Printable ASCII keysyms are
+/// their own character; Return, Tab, Shift+Tab (ISO_Left_Tab), Escape and
+/// BackSpace fold to their control codes, as teruwm's ServerInput.foldKeysym
+/// does. 0 means the key has no binding character.
+pub fn bindChar(keysym: u32) u8 {
+    if (keysym > 0x1f and keysym < 0x7f) return @intCast(keysym);
+    return switch (keysym) {
+        Return => '\r',
+        Tab, ISO_Left_Tab => '\t',
+        Escape => 0x1b,
+        BackSpace => 0x7f,
+        else => 0,
+    };
+}
+
+test "bindChar folds control keysyms to the ASCII the keybinds store" {
+    const std = @import("std");
+    try std.testing.expectEqual(@as(u8, '\t'), bindChar(Tab));
+    try std.testing.expectEqual(@as(u8, '\t'), bindChar(ISO_Left_Tab));
+    try std.testing.expectEqual(@as(u8, 0x1b), bindChar(Escape));
+    try std.testing.expectEqual(@as(u8, '\r'), bindChar(Return));
+    try std.testing.expectEqual(@as(u8, 0x7f), bindChar(BackSpace));
+    try std.testing.expectEqual(@as(u8, 'a'), bindChar('a'));
+    try std.testing.expectEqual(@as(u8, ' '), bindChar(' '));
+    try std.testing.expectEqual(@as(u8, 0), bindChar(Page_Up));
+    try std.testing.expectEqual(@as(u8, 0), bindChar(0x7f)); // DEL is not printable
+    try std.testing.expectEqual(@as(u8, 0), bindChar(0xe9)); // Latin-1 é
 }
 
 test "keysym values match XKB spec" {

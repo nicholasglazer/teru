@@ -4,7 +4,7 @@ teru reads `~/.config/teru/teru.conf` on startup. All settings are optional -- d
 
 ## Config Format
 
-Simple `key = value` pairs. Lines starting with `#` are comments. Sections use `[section]` headers. Unknown keys are silently ignored.
+Simple `key = value` pairs. Lines starting with `#` are comments. Sections use `[section]` headers. A key teru does not know is skipped with one warning on stderr naming the file, line and key (`[warn] (config) teru.conf:12: unknown key 'fontsize', ignored`); the rest of the file still loads.
 
 ### Include
 
@@ -252,7 +252,7 @@ theme = dracula
 | `tab_width` | integer | `8` | Tab stop width in columns |
 | `bell` | `visual` or `none` | `visual` | Bell behavior. `visual` flashes the framebuffer, `none` disables |
 | `copy_on_select` | bool | `true` | Automatically copy selected text to clipboard |
-| `dynamic_title` | bool | `true` | Allow programs to set the window title via OSC sequences |
+| `dynamic_title` | bool | `true` | Allow programs to set the window title via OSC 0/2. With `false` the window keeps the title `teru` (the status bar still shows the pane's title) |
 | `macos_option_as_alt` | `none`, `left`, `right` or `both` | `none` | macOS only. Which Option keys send ESC+key (Meta, for readline and Emacs) instead of typing the character macOS puts on them (Option+E then E types é; on many layouts Option types `@ [ ] { }`). teru's Alt bindings work either way, except on an Option key that is not Meta and whose character in your layout is ASCII (`@` on German Option+L): that key types the character. Option with Return, Backspace or Tab always sends ESC first. `true` means `both`, `false` means `none` |
 
 ```conf
@@ -282,13 +282,14 @@ cursor_blink = true
 |--------|------|---------|-------------|
 | `scroll_speed` | integer | `3` | Scroll wheel speed multiplier (pixels per scroll event) |
 | `alt_scroll_zoom` | bool | `true` | `Alt`+scroll wheel resizes the font (zoom) instead of scrolling scrollback. Set `false` to free the gesture for the focused app. Also honoured by teruwm. |
-| `zoom_units_per_step` | integer | `24` | (teruwm) Touchpad axis travel per one font-size step during `Alt`+scroll zoom. Higher = slower/calmer zoom. Mouse-wheel notches are always one step each (this only affects continuous/touchpad zoom). |
+
 
 ```conf
 scroll_speed = 5
 alt_scroll_zoom = true
-zoom_units_per_step = 32   # calmer touchpad zoom
 ```
+
+teruwm's touchpad zoom speed, `zoom_units_per_step`, is set in `~/.config/teruwm/config`, not here (see [Global Keys](#global-keys)).
 
 ### Keybindings
 
@@ -297,7 +298,7 @@ zoom_units_per_step = 32   # calmer touchpad zoom
 | `prefix_key` | string | `ctrl+space` | Prefix key for multiplexer commands. Accepts `ctrl+a` through `ctrl+z`, `ctrl+space`, or raw integer 0-31 |
 | `prefix_timeout_ms` | integer | `500` | Milliseconds to wait for a command after pressing the prefix key |
 | `alt_workspace_switch` | boolean | `true` | Enable Alt+1-9 workspace switch and Alt+Shift+1-9 move pane |
-| `restore_layout` | boolean | `false` | Save layout on exit, restore on launch (fresh shells, no daemon) |
+| `restore_layout` | boolean | `false` | Save the layout as it changes, restore it on launch (fresh shells, no daemon) |
 | `persist_session` | boolean | `false` | Keep processes alive between window closes (auto-daemon) |
 | `show_status_bar` | boolean | `true` | Show the status bar at the bottom of the window. Toggle at runtime with `Alt+B` |
 
@@ -326,6 +327,8 @@ These two options serve different use cases:
 - Use this if you want tmux-style session persistence without thinking about it.
 
 Both options save to `$XDG_STATE_HOME/teru/sessions/`. You can enable both simultaneously -- `persist_session` takes priority when a daemon is running, `restore_layout` serves as fallback when no daemon is found.
+
+Both apply to a plain `teru` launch with a display. `teru -f` (`--fresh`) skips them for one launch: a new window with one shell, nothing restored and no daemon. `teru -e CMD` does the same, with one pane running `CMD`. Neither writes `default.bin`, so the next plain launch restores the layout saved before them. A window attached to a daemon (`teru -n NAME`, or `persist_session`) does not write `default.bin` either; the daemon saves its own session. If two plain windows are open, the one that changed its layout last is what gets restored.
 
 Named sessions (`teru -n NAME`) always get full daemon persistence regardless of these settings.
 
@@ -368,8 +371,7 @@ Default prefix: `Ctrl+Space`
 | `Alt+\` | Reset zoom (restore config font size) |
 | `Ctrl+Shift+C` | Copy selection |
 | `Ctrl+Shift+V` | Paste from clipboard |
-| `Shift+PageUp/Down` | Scroll through scrollback |
-| `PageUp/Down` | Scroll through scrollback |
+| `Shift+PageUp/Down` | Scroll through scrollback (plain `PageUp/Down` go to the program) |
 
 ### Window
 
@@ -585,6 +587,7 @@ These keys are set above any section header.
 | `disable_while_typing` | bool | `true` | libinput disable-while-typing: suppress touchpad input briefly after each keystroke so a palm can't move the cursor mid-type. This is the usual cause of a touchpad that feels "dead for a second" right after typing — most noticeable after unplugging an external mouse. Set `false` for zero input latency at the cost of palm rejection. Applied when a pointer device connects, so restart teruwm (`Mod+'`) to apply a change |
 | `flat_pointer_accel` | bool | `false` | Use libinput's **flat** pointer-acceleration profile instead of the default **adaptive** one. Adaptive applies a very small multiplier at low speeds, so slow travel produces almost no cursor motion and then jumps once you move faster — it reads as "the pointer is dead for a moment", and is pronounced on hidpi panels. Flat is a constant 1:1 multiplier with no speed curve, which costs you low-speed precision and high-speed reach. Applies to every pointer device. Applied when a pointer device connects, so restart teruwm (`Mod+'`) to apply a change |
 | `pointer_accel_speed` | float −1.0–1.0 | `0.0` | libinput pointer speed, normalised. `0.0` is libinput's neutral point; positive is faster, negative slower. Applies to every pointer device, under whichever profile `flat_pointer_accel` selects. Applied when a pointer device connects, so restart teruwm (`Mod+'`) to apply a change |
+| `zoom_units_per_step` | integer | `24` | Touchpad axis travel per one font-size step during `Alt`+scroll zoom over a terminal pane. Higher = slower/calmer zoom. Mouse-wheel notches are always one step each (this only affects continuous/touchpad zoom). `0` is ignored |
 | `smooth_scroll` | bool | `true` | Glide a wheel notch over a few frames instead of jumping instantly. Scrollback renders on line boundaries, so the glide steps line-by-line. Set `false` for an instant jump |
 | `scroll_to_bottom_on_input` | bool | `true` | Snap the scrollback view back to the live bottom when you **type or paste** into a pane (standard terminal behaviour). Set `false` to keep the scrolled-back position and type "blindly" while reading history |
 | `max_render_fps` | u32 | `60` | Cap how often a **visible** pane re-uploads its buffer to the GPU while it's churning from PTY output (build logs, `cat`, a streaming AI agent). The CPU render is always cheap (dirty rows only), but each paint presents full-buffer GPU damage, so on a high-refresh panel streaming output drives one whole-pane re-upload per vsync (e.g. 165/s at 165 Hz) — enough to saturate the single-threaded compositor loop and drop frames. Capping the paint rate gives the loop headroom: `60` cuts a 165 Hz panel's uploads by ~64% while staying visually smooth for streaming text; `30` saves more power at a slightly steppier passive repaint (and is the better pick on a 60 Hz panel). Recent keyboard input, scrolling, and active selection always bypass the cap, so typing/echo and smooth scroll stay at full vsync. `0` disables the cap |

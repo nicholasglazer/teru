@@ -204,7 +204,10 @@ pub fn exitFullscreen(self: *Server) void {
     // Re-tile (respects bar height again)
     const ws = self.layout_engine.active_workspace;
     self.arrangeworkspace(ws);
-    if (self.bar) |b| _ = b.render(self);
+    if (self.bar) |b| {
+        b.dirty = true; // Bar.render skipped every paint while fullscreen
+        _ = b.render(self);
+    }
 
     // enterFullscreen raised the target to the scene top; if it is tiled it
     // must drop back beneath floats/scratchpads (click routing prefers
@@ -460,6 +463,9 @@ pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
 
     clearFocusRefs(self, tp.node_id);
 
+    // The pane's own workspace, which may be visible on another output.
+    const own_ws: ?u8 = if (self.nodes.findById(tp.node_id)) |s| self.nodes.workspace[s] else null;
+
     // Remove from node registry and tiling engine
     _ = self.nodes.remove(tp.node_id);
     for (&self.layout_engine.workspaces) |*ws| {
@@ -504,6 +510,7 @@ pub fn handleTerminalExit(self: *Server, tp: *TerminalPane) void {
     // focus null until the user manually refocuses. Re-seat active_node
     // on a survivor first so focus follows the exit.
     const aws_idx = self.layout_engine.active_workspace;
+    if (own_ws) |w| if (w < 10 and w != aws_idx) self.arrangeworkspace(w);
     self.arrangeworkspace(aws_idx);
     const aws = &self.layout_engine.workspaces[aws_idx];
     if (aws.active_node == null and aws.node_ids.items.len > 0) {

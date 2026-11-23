@@ -178,12 +178,13 @@ pub fn handleInhibitorDestroy(listener: *wlr.wl_listener, _: ?*anyopaque) callco
     const tracker: *InhibitorTracker = @fieldParentPtr("destroy_listener", listener);
     const server = tracker.server;
 
-    // Server.deinit already freed us — skip to avoid dereferencing
-    // torn-down wlr_idle_notifier during wl_display_destroy.
-    if (server.shutting_down) return;
-
+    // At quit, wl_display_destroy_clients fires this for every inhibitor a
+    // client still holds, and wlroots frees the inhibitor right after. The
+    // Server is alive until its deinit, which runs last, so always unlink and
+    // free the tracker here; leaving it linked made deinit write into the
+    // freed inhibitor. Only the idle-notifier refresh is skipped then.
     server.idle_inhibitor_count -|= 1;
-    refreshIdleInhibited(server);
+    if (!server.shutting_down) refreshIdleInhibited(server);
 
     for (server.inhibitor_trackers.items, 0..) |t, i| {
         if (t == tracker) {
@@ -262,6 +263,9 @@ pub fn handleOutputManagerApply(listener: *wlr.wl_listener, data: ?*anyopaque) c
     if (ok) {
         wlr.miozu_output_config_send_succeeded(cfg);
         server.pushOutputManagerState();
+        // A new mode, scale or position changes the tiling area; without
+        // this, panes kept their old geometry, partly off-screen.
+        server.relayoutOutputs();
     } else {
         wlr.miozu_output_config_send_failed(cfg);
     }

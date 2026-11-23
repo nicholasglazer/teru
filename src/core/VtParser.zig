@@ -28,6 +28,7 @@ pub const State = enum {
     csi_entry, // saw ESC[
     csi_param, // collecting params
     csi_intermediate, // saw intermediate byte (0x20-0x2F)
+    csi_ignore, // malformed CSI: consume up to its final byte, dispatch nothing
     osc_string, // saw ESC], collecting until BEL/ST
     dcs_passthrough, // saw ESC P, ignore until ST (ESC \)
     dcs_st_esc, // saw ESC inside DCS body — only ESC \\ terminates, anything else resumes DCS passthrough
@@ -191,7 +192,9 @@ pub fn feed(self: *VtParser, data: []const u8) void {
         // Fast-path: when in ground state, scan ahead for the next byte
         // that needs special handling (ESC or any C0 control char < 0x20).
         // All bytes 0x20..0xFF are printable and can be batched into the grid.
-        if (self.state == .ground) {
+        // The batch paths store bytes as they are, so DEC Special Graphics
+        // (ESC ( 0) takes the per-byte path, which maps them through acsMap.
+        if (self.state == .ground and !self.g0_line_drawing) {
             const remaining = data[i..];
             const special = findNextSpecial(remaining);
 
@@ -423,6 +426,7 @@ fn processByte(self: *VtParser, byte: u8) void {
         .csi_entry => self.handleCsiEntry(byte),
         .csi_param => self.handleCsiParam(byte),
         .csi_intermediate => self.handleCsiIntermediate(byte),
+        .csi_ignore => self.handleCsiIgnore(byte),
         .osc_string => self.handleOscString(byte),
         .dcs_passthrough => {
             // DCS: silently consume until ST (ESC \) or BEL. An embedded
@@ -566,17 +570,35 @@ fn acsMap(byte: u8) u21 {
     return switch (byte) {
         '`' => 0x25C6, // ◆ diamond
         'a' => 0x2592, // ▒ checkerboard
+        'b' => 0x2409, // ␉ HT symbol
+        'c' => 0x240C, // ␌ FF symbol
+        'd' => 0x240D, // ␍ CR symbol
+        'e' => 0x240A, // ␊ LF symbol
+        'f' => 0x00B0, // ° degree
+        'g' => 0x00B1, // ± plus/minus
+        'h' => 0x2424, // ␤ NL symbol
+        'i' => 0x240B, // ␋ VT symbol
         'j' => 0x2518, // ┘ lower-right corner
         'k' => 0x2510, // ┐ upper-right corner
         'l' => 0x250C, // ┌ upper-left corner
         'm' => 0x2514, // └ lower-left corner
         'n' => 0x253C, // ┼ crossing
+        'o' => 0x23BA, // ⎺ scan line 1
+        'p' => 0x23BB, // ⎻ scan line 3
         'q' => 0x2500, // ─ horizontal line
+        'r' => 0x23BC, // ⎼ scan line 7
+        's' => 0x23BD, // ⎽ scan line 9
         't' => 0x251C, // ├ left tee
         'u' => 0x2524, // ┤ right tee
         'v' => 0x2534, // ┴ bottom tee
         'w' => 0x252C, // ┬ top tee
         'x' => 0x2502, // │ vertical line
+        'y' => 0x2264, // ≤
+        'z' => 0x2265, // ≥
+        '{' => 0x03C0, // π
+        '|' => 0x2260, // ≠
+        '}' => 0x00A3, // £
+        '~' => 0x00B7, // · centered dot
         else => byte, // pass through unchanged
     };
 }
@@ -599,18 +621,14 @@ fn handleEscape(self: *VtParser, byte: u8) void {
             self.grid.restoreCursor();
             self.state = .ground;
         },
-        'D' => { // IND: index (move cursor down, scroll if needed)
-            if (self.grid.cursor_row >= self.grid.scroll_bottom) {
-                self.grid.scrollUp();
-            } else {
-                self.grid.cursor_row += 1;
-            }
+        'D' => { // IND: index (down; scrolls only on the region's bottom row)
+            self.grid.cursorDown();
             self.state = .ground;
         },
-        'M' => { // RI: reverse index (move cursor up, scroll if needed)
-            if (self.grid.cursor_row <= self.grid.scroll_top) {
+        'M' => { // RI: reverse index (up; scrolls only on the region's top row)
+            if (self.grid.cursor_row == self.grid.scroll_top) {
                 self.grid.scrollDown();
-            } else {
+            } else if (self.grid.cursor_row > 0) {
                 self.grid.cursor_row -= 1;
             }
             self.state = .ground;
@@ -620,14 +638,7 @@ fn handleEscape(self: *VtParser, byte: u8) void {
             self.state = .ground;
         },
         'c' => { // RIS: full reset
-            self.grid.clearScreen(2);
-            self.grid.cursor_row = 0;
-            self.grid.cursor_col = 0;
-            self.grid.resetPen();
-            self.grid.scroll_top = 0;
-            self.grid.scroll_bottom = self.grid.rows -| 1;
-            self.cursor_visible = true;
-            self.g0_line_drawing = false;
+            self.fullReset();
             self.state = .ground;
         },
         'P' => {
@@ -698,9 +709,30 @@ fn handleCsiEntry(self: *VtParser, byte: u8) void {
             self.dispatchCsi(byte);
             self.state = .ground;
         },
-        else => {
-            self.state = .ground;
-        },
+        else => self.csiOtherByte(byte),
+    }
+}
+
+/// A byte inside a CSI sequence that is neither a parameter, an
+/// intermediate nor a final byte (ECMA-48 / the VT500 state machine): C0
+/// controls run in place without ending the sequence, ESC starts a new
+/// escape sequence, CAN and SUB cancel, DEL is ignored, and anything else
+/// makes the sequence malformed, so the rest of it is swallowed.
+fn csiOtherByte(self: *VtParser, byte: u8) void {
+    switch (byte) {
+        0x1B => self.state = .escape,
+        0x18, 0x1A => self.state = .ground,
+        0x00...0x17, 0x19, 0x1C...0x1F => self.handleGround(byte),
+        0x7F => {},
+        else => self.state = .csi_ignore,
+    }
+}
+
+fn handleCsiIgnore(self: *VtParser, byte: u8) void {
+    switch (byte) {
+        0x40...0x7E => self.state = .ground,
+        0x20...0x3F => {},
+        else => self.csiOtherByte(byte),
     }
 }
 
@@ -739,9 +771,7 @@ fn handleCsiParam(self: *VtParser, byte: u8) void {
             self.dispatchCsi(byte);
             self.state = .ground;
         },
-        else => {
-            self.state = .ground;
-        },
+        else => self.csiOtherByte(byte),
     }
 }
 
@@ -788,9 +818,7 @@ fn handleCsiIntermediate(self: *VtParser, byte: u8) void {
             }
             self.state = .ground;
         },
-        else => {
-            self.state = .ground;
-        },
+        else => self.csiOtherByte(byte),
     }
 }
 
@@ -865,16 +893,7 @@ fn finishOsc(self: *VtParser) void {
                         // End hyperlink
                         self.grid.pen_hyperlink_id = 0;
                     } else {
-                        // Start hyperlink — allocate a slot
-                        const id = self.grid.hyperlink_next_id;
-                        var entry = &self.grid.hyperlinks[id];
-                        const copy_len = @min(uri.len, entry.uri.len);
-                        @memcpy(entry.uri[0..copy_len], uri[0..copy_len]);
-                        entry.uri_len = @intCast(copy_len);
-                        entry.active = true;
-                        self.grid.pen_hyperlink_id = id;
-                        self.grid.hyperlink_next_id +%= 1;
-                        if (self.grid.hyperlink_next_id == 0) self.grid.hyperlink_next_id = 1;
+                        self.grid.pen_hyperlink_id = self.grid.openHyperlink(uri);
                     }
                 }
             },
@@ -1011,11 +1030,65 @@ pub fn forceLeaveAltScreen(self: *VtParser) void {
     self.nested_alt_forward = false;
 }
 
+/// RIS (ESC c): return every mode teru models to its power-on default and
+/// clear the main screen. `reset` and `tput reset` send this to recover from
+/// a crashed TUI, so it must also drop mouse tracking, DECAWM-off, bracketed
+/// paste and an orphaned alt screen. Scrollback and tab width are kept.
+fn fullReset(self: *VtParser) void {
+    self.forceLeaveAltScreen();
+    const g = self.grid;
+    g.resetPen();
+    g.pen_hyperlink_id = 0;
+    g.auto_wrap = true;
+    g.cursor_shape = .block;
+    g.margins_enabled = false;
+    g.left_margin = 0;
+    g.right_margin = 0;
+    g.scroll_top = 0;
+    g.scroll_bottom = g.rows -| 1;
+    g.saved_cursor_row = 0;
+    g.saved_cursor_col = 0;
+    g.clearScreen(2);
+    g.cursor_row = 0;
+    g.cursor_col = 0;
+
+    self.cursor_visible = true;
+    self.g0_line_drawing = false;
+    self.auto_wrap = true;
+    self.app_cursor_keys = false;
+    self.bracketed_paste = false;
+    self.mouse_tracking = .none;
+    self.mouse_sgr = false;
+    self.alt_scroll = false;
+    // Closing an open sync batch must still flush it, as ESC[?2026l would.
+    if (self.sync_output) self.sync_flushed = true;
+    self.sync_output = false;
+    self.utf8_len = 0;
+    self.utf8_expected = 0;
+    self.last_char = ' ';
+}
+
 /// Get CSI param with default value.
 fn getParam(self: *const VtParser, idx: u8, default: u16) u16 {
     if (idx >= self.param_count) return default;
     const v = self.params[idx];
     return if (v == 0) default else v;
+}
+
+/// Row CUU/CPL move to: they stop at the scroll region's top only when the
+/// cursor starts inside or below it; above the region they stop at row 0.
+fn cursorUpTarget(self: *const VtParser, n: u16) u16 {
+    const row = self.grid.cursor_row;
+    const floor = if (row >= self.grid.scroll_top) self.grid.scroll_top else 0;
+    return @max(row -| n, floor);
+}
+
+/// Row CUD/CNL move to: they stop at the scroll region's bottom only when the
+/// cursor starts inside or above it; below the region they stop at the last row.
+fn cursorDownTarget(self: *const VtParser, n: u16) u16 {
+    const row = self.grid.cursor_row;
+    const ceil = if (row <= self.grid.scroll_bottom) self.grid.scroll_bottom else self.grid.rows -| 1;
+    return @min(row +| n, ceil);
 }
 
 fn dispatchCsi(self: *VtParser, final: u8) void {
@@ -1026,15 +1099,10 @@ fn dispatchCsi(self: *VtParser, final: u8) void {
 
     switch (final) {
         'A' => { // CUU — cursor up
-            const n = self.getParam(0, 1);
-            self.grid.cursor_row -|= n;
-            if (self.grid.cursor_row < self.grid.scroll_top) {
-                self.grid.cursor_row = self.grid.scroll_top;
-            }
+            self.grid.cursor_row = self.cursorUpTarget(self.getParam(0, 1));
         },
         'B' => { // CUD — cursor down
-            const n = self.getParam(0, 1);
-            self.grid.cursor_row = @min(self.grid.cursor_row +| n, self.grid.scroll_bottom);
+            self.grid.cursor_row = self.cursorDownTarget(self.getParam(0, 1));
         },
         'C' => { // CUF — cursor forward (stops at right margin if inside margins)
             const n = self.getParam(0, 1);
@@ -1054,16 +1122,11 @@ fn dispatchCsi(self: *VtParser, final: u8) void {
             }
         },
         'E' => { // CNL — cursor next line (goes to left margin)
-            const n = self.getParam(0, 1);
-            self.grid.cursor_row = @min(self.grid.cursor_row +| n, self.grid.scroll_bottom);
+            self.grid.cursor_row = self.cursorDownTarget(self.getParam(0, 1));
             self.grid.cursor_col = @intCast(self.grid.getLeftMargin());
         },
         'F' => { // CPL — cursor previous line (goes to left margin)
-            const n = self.getParam(0, 1);
-            self.grid.cursor_row -|= n;
-            if (self.grid.cursor_row < self.grid.scroll_top) {
-                self.grid.cursor_row = self.grid.scroll_top;
-            }
+            self.grid.cursor_row = self.cursorUpTarget(self.getParam(0, 1));
             self.grid.cursor_col = @intCast(self.grid.getLeftMargin());
         },
         'G' => { // CHA — cursor horizontal absolute (1-based)
@@ -1209,76 +1272,86 @@ fn dispatchCsi(self: *VtParser, final: u8) void {
     }
 }
 
+/// DECSET / DECRST for one mode number. `CSI ? Pm h` and `CSI ? Pm l` apply
+/// every parameter in turn: ncurses enables the mouse with `ESC[?1006;1000h`.
+fn setPrivateMode(self: *VtParser, mode: u16, on: bool) void {
+    if (on) {
+        switch (mode) {
+            1 => self.app_cursor_keys = true, // DECCKM
+            7 => { // DECAWM
+                self.auto_wrap = true;
+                self.grid.auto_wrap = true; // mirror so Grid.write honours it
+            },
+            12 => {}, // Cursor blink — accepted, no visual effect yet
+            25 => self.cursor_visible = true, // show cursor
+            47, 1047, 1049 => { // Alt screen on
+                if (!self.alt_screen) {
+                    // Alloc failure: don't flip alt_screen — otherwise the
+                    // next CSI ?1049l tries to restore from a backup that
+                    // was never taken, corrupting the primary grid.
+                    if (self.grid.switchToAltScreen(self.allocator)) {
+                        self.alt_screen = true;
+                    } else |e| {
+                        std.log.scoped(.vt).err("switchToAltScreen failed: {} — staying on primary", .{e});
+                    }
+                }
+            },
+            1000 => self.mouse_tracking = .normal,
+            1002 => self.mouse_tracking = .button_event,
+            1003 => self.mouse_tracking = .any_event,
+            1006 => self.mouse_sgr = true,
+            1007 => self.alt_scroll = true, // alternate scroll mode
+            2004 => self.bracketed_paste = true,
+            2026 => self.sync_output = true,
+            69 => self.grid.margins_enabled = true, // DECLRMM — enable left/right margins
+            else => {},
+        }
+    } else {
+        switch (mode) {
+            1 => self.app_cursor_keys = false, // DECCKM
+            7 => { // DECAWM
+                self.auto_wrap = false;
+                self.grid.auto_wrap = false; // mirror so Grid.write honours it
+            },
+            12 => {}, // Cursor blink off — accepted
+            25 => self.cursor_visible = false, // hide cursor
+            47, 1047, 1049 => { // Alt screen off
+                if (self.alt_screen) {
+                    self.alt_screen = false;
+                    self.grid.switchToMainScreen();
+                }
+                // A nested teru lives in the alt screen; when it leaves the alt
+                // screen it is no longer driving this pane, so drop its Alt-forward
+                // claim too (belt-and-suspenders alongside the OSC 9998;0 release).
+                self.nested_alt_forward = false;
+            },
+            1000, 1002, 1003 => self.mouse_tracking = .none,
+            1006 => self.mouse_sgr = false,
+            1007 => self.alt_scroll = false, // alternate scroll mode off
+            2004 => self.bracketed_paste = false,
+            69 => { // DECLRMM — disable left/right margins
+                self.grid.margins_enabled = false;
+                self.grid.left_margin = 0;
+                self.grid.right_margin = 0;
+            },
+            2026 => {
+                if (self.sync_output) self.sync_flushed = true;
+                self.sync_output = false;
+                self.grid.dirty = true;
+            },
+            else => {},
+        }
+    }
+}
+
 fn dispatchCsiPrivate(self: *VtParser, final: u8) void {
     const mode = self.getParam(0, 0);
     switch (final) {
-        'h' => { // DECSET
-            switch (mode) {
-                1 => self.app_cursor_keys = true, // DECCKM
-                7 => { // DECAWM
-                    self.auto_wrap = true;
-                    self.grid.auto_wrap = true; // mirror so Grid.write honours it
-                },
-                12 => {}, // Cursor blink — accepted, no visual effect yet
-                25 => self.cursor_visible = true, // show cursor
-                47, 1047, 1049 => { // Alt screen on
-                    if (!self.alt_screen) {
-                        // Alloc failure: don't flip alt_screen — otherwise the
-                        // next CSI ?1049l tries to restore from a backup that
-                        // was never taken, corrupting the primary grid.
-                        if (self.grid.switchToAltScreen(self.allocator)) {
-                            self.alt_screen = true;
-                        } else |e| {
-                            std.log.scoped(.vt).err("switchToAltScreen failed: {} — staying on primary", .{e});
-                        }
-                    }
-                },
-                1000 => self.mouse_tracking = .normal,
-                1002 => self.mouse_tracking = .button_event,
-                1003 => self.mouse_tracking = .any_event,
-                1006 => self.mouse_sgr = true,
-                1007 => self.alt_scroll = true, // alternate scroll mode
-                2004 => self.bracketed_paste = true,
-                2026 => self.sync_output = true,
-                69 => self.grid.margins_enabled = true, // DECLRMM — enable left/right margins
-                else => {},
-            }
-        },
-        'l' => { // DECRST
-            switch (mode) {
-                1 => self.app_cursor_keys = false, // DECCKM
-                7 => { // DECAWM
-                    self.auto_wrap = false;
-                    self.grid.auto_wrap = false; // mirror so Grid.write honours it
-                },
-                12 => {}, // Cursor blink off — accepted
-                25 => self.cursor_visible = false, // hide cursor
-                47, 1047, 1049 => { // Alt screen off
-                    if (self.alt_screen) {
-                        self.alt_screen = false;
-                        self.grid.switchToMainScreen();
-                    }
-                    // A nested teru lives in the alt screen; when it leaves the alt
-                    // screen it is no longer driving this pane, so drop its Alt-forward
-                    // claim too (belt-and-suspenders alongside the OSC 9998;0 release).
-                    self.nested_alt_forward = false;
-                },
-                1000, 1002, 1003 => self.mouse_tracking = .none,
-                1006 => self.mouse_sgr = false,
-                1007 => self.alt_scroll = false, // alternate scroll mode off
-                2004 => self.bracketed_paste = false,
-                69 => { // DECLRMM — disable left/right margins
-                    self.grid.margins_enabled = false;
-                    self.grid.left_margin = 0;
-                    self.grid.right_margin = 0;
-                },
-                2026 => {
-                    if (self.sync_output) self.sync_flushed = true;
-                    self.sync_output = false;
-                    self.grid.dirty = true;
-                },
-                else => {},
-            }
+        'h', 'l' => { // DECSET / DECRST
+            // A bare `CSI ? h` carries one (empty) parameter.
+            const count = @max(@min(self.param_count, MAX_PARAMS), 1);
+            var k: u8 = 0;
+            while (k < count) : (k += 1) self.setPrivateMode(self.params[k], final == 'h');
         },
         'c' => {
             if (self.csi_prefix == '>') {
@@ -3137,4 +3210,181 @@ test "no integer-overflow panic at an extreme terminal width (daemon uncrashable
 
     // Survived — the daemon would have aborted before any of these returned.
     try std.testing.expect(true);
+}
+
+// ── Review fixes (2026-11-22) ────────────────────────────────────
+
+test "DEC line drawing applies to text fed in a batch" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 4, 20);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    parser.feed("\x1b(0lqqk\x1b(Bq");
+    try std.testing.expectEqual(@as(u21, 0x250C), grid.cellAtConst(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 0x2500), grid.cellAtConst(0, 1).char);
+    try std.testing.expectEqual(@as(u21, 0x2510), grid.cellAtConst(0, 3).char);
+    try std.testing.expectEqual(@as(u21, 'q'), grid.cellAtConst(0, 4).char); // back to ASCII
+    // REP repeats the mapped glyph, not the raw byte.
+    parser.feed("\x1b(0x\x1b[2b");
+    try std.testing.expectEqual(@as(u21, 0x2502), grid.cellAtConst(0, 7).char);
+}
+
+test "DECSET and DECRST apply every parameter" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 4, 20);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    parser.feed("\x1b[?1006;1000h"); // ncurses' XM string
+    try std.testing.expectEqual(MouseMode.normal, parser.mouse_tracking);
+    try std.testing.expect(parser.mouse_sgr);
+    parser.feed("\x1b[?1000;1006l");
+    try std.testing.expectEqual(MouseMode.none, parser.mouse_tracking);
+    try std.testing.expect(!parser.mouse_sgr);
+}
+
+test "cursor movement outside the scroll region" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 10, 10);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    parser.feed("\x1b[1;8r"); // region rows 0..7
+    parser.feed("\x1b[3;1HX");
+    // Below the region: CUD goes to the last row, not up into the region.
+    parser.feed("\x1b[9;1H\x1b[B");
+    try std.testing.expectEqual(@as(u16, 9), grid.cursor_row);
+    // LF on the last row, below the region, does not scroll the region.
+    parser.feed("\n");
+    try std.testing.expectEqual(@as(u16, 9), grid.cursor_row);
+    try std.testing.expectEqual(@as(u21, 'X'), grid.cellAtConst(2, 0).char);
+    // IND does the same.
+    parser.feed("\x1bD");
+    try std.testing.expectEqual(@as(u21, 'X'), grid.cellAtConst(2, 0).char);
+    // CUU from below the region stops at the region's top.
+    parser.feed("\x1b[20A");
+    try std.testing.expectEqual(@as(u16, 0), grid.cursor_row);
+
+    parser.feed("\x1b[5;8r"); // region rows 4..7
+    // Above the region: CUU goes to row 0, not down into the region.
+    parser.feed("\x1b[2;1H\x1b[A");
+    try std.testing.expectEqual(@as(u16, 0), grid.cursor_row);
+    // CUD from above the region stops at its bottom.
+    parser.feed("\x1b[20B");
+    try std.testing.expectEqual(@as(u16, 7), grid.cursor_row);
+    // RI on row 0, above the region, neither moves nor scrolls.
+    parser.feed("\x1b[1;1HY\x1b[1;1H\x1bM");
+    try std.testing.expectEqual(@as(u16, 0), grid.cursor_row);
+    try std.testing.expectEqual(@as(u21, 'Y'), grid.cellAtConst(0, 0).char);
+}
+
+test "RIS resets modes and leaves the alt screen" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 5, 20);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    parser.feed("main\x1b[?7l\x1b[?1000h\x1b[?1006h\x1b[?1049h\x1b[?2004h\x1b[?1h\x1b[5 q\x1b[2;4r\x1b[41m");
+    parser.feed("\x1bc");
+    try std.testing.expect(parser.auto_wrap);
+    try std.testing.expect(grid.auto_wrap);
+    try std.testing.expectEqual(MouseMode.none, parser.mouse_tracking);
+    try std.testing.expect(!parser.mouse_sgr);
+    try std.testing.expect(!parser.alt_screen);
+    try std.testing.expect(!grid.on_alt_screen);
+    try std.testing.expect(!parser.bracketed_paste);
+    try std.testing.expect(!parser.app_cursor_keys);
+    try std.testing.expectEqual(Grid.CursorShape.block, grid.cursor_shape);
+    try std.testing.expectEqual(@as(u16, 0), grid.scroll_top);
+    try std.testing.expectEqual(@as(u16, 4), grid.scroll_bottom);
+    try std.testing.expect(std.meta.eql(Grid.Color.default, grid.pen_bg));
+    // The main screen is cleared.
+    try std.testing.expectEqual(@as(u21, ' '), grid.cellAtConst(0, 0).char);
+    try std.testing.expectEqual(@as(u16, 0), grid.cursor_row);
+}
+
+test "OSC 8 slots are reused per URI and scrubbed before reuse" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 4, 20);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    parser.feed("\x1b]8;;file:///first\x07A\x1b]8;;\x07");
+    const first_id = grid.cellAtConst(0, 0).hyperlink_id;
+    try std.testing.expect(first_id != 0);
+    // The same URI again shares the slot.
+    parser.feed("\x1b]8;;file:///first\x07B\x1b]8;;\x07");
+    try std.testing.expectEqual(first_id, grid.cellAtConst(0, 1).hyperlink_id);
+
+    // 255 different URIs wrap the table round onto the first slot.
+    var buf: [64]u8 = undefined;
+    var n: usize = 0;
+    while (n < 255) : (n += 1) {
+        const seq = try std.fmt.bufPrint(&buf, "\x1b]8;;file:///n{d}\x07\x1b]8;;\x07", .{n});
+        parser.feed(seq);
+    }
+    // The old cells no longer point at a slot that now holds another URI.
+    const id = grid.cellAtConst(0, 0).hyperlink_id;
+    if (id != 0) {
+        const e = grid.hyperlinks[id];
+        try std.testing.expectEqualStrings("file:///first", e.uri[0..e.uri_len]);
+    }
+}
+
+test "C0 controls and ESC inside a CSI sequence" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 4, 20);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    // ESC interrupts the CSI and starts a new one: nothing is printed.
+    parser.feed("\x1b[1\x1b[31mX");
+    try std.testing.expectEqual(@as(u21, 'X'), grid.cellAtConst(0, 0).char);
+    try std.testing.expect(std.meta.eql(Grid.Color{ .indexed = 1 }, grid.cellAtConst(0, 0).fg));
+
+    // A C0 control runs in place and the sequence still completes.
+    parser.feed("\x1b[2;\r5HY");
+    try std.testing.expectEqual(@as(u21, 'Y'), grid.cellAtConst(1, 4).char);
+
+    // A malformed sequence is swallowed up to its final byte.
+    parser.feed("\x1b[1;1H\x1b[1?2hZ");
+    try std.testing.expectEqual(@as(u21, 'Z'), grid.cellAtConst(0, 0).char);
+
+    // CAN cancels the sequence.
+    parser.feed("\x1b[1\x18W");
+    try std.testing.expectEqual(@as(u21, 'W'), grid.cellAtConst(0, 1).char);
+}
+
+test "a wide glyph in a one-column grid cannot overrun the edit commands" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 3, 1);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    parser.feed("\xe4\xbd\xa0\x1b[X\x1b[P\x1b[@");
+    try std.testing.expect(grid.cursor_col <= grid.cols);
+
+    // Same with a one-column DECSLRM region on a wide grid.
+    var wide = try Grid.init(allocator, 3, 20);
+    defer wide.deinit(allocator);
+    var p2 = VtParser.init(allocator, &wide);
+    p2.feed("\x1b[?69h\x1b[20;20s\x1b[1;20H\xe4\xbd\xa0\x1b[X\x1b[P\x1b[@");
+    try std.testing.expect(wide.cursor_col <= wide.cols);
+}
+
+test "erase uses the current background (bce)" {
+    const allocator = std.testing.allocator;
+    var grid = try Grid.init(allocator, 4, 10);
+    defer grid.deinit(allocator);
+    var parser = VtParser.init(allocator, &grid);
+
+    parser.feed("\x1b[44m\x1b[2J");
+    try std.testing.expect(std.meta.eql(Grid.Color{ .indexed = 4 }, grid.cellAtConst(3, 9).bg));
+    parser.feed("\x1b[42m\x1b[2;1H\x1b[K");
+    try std.testing.expect(std.meta.eql(Grid.Color{ .indexed = 2 }, grid.cellAtConst(1, 5).bg));
+    // Foreground and attributes are not carried into erased cells.
+    parser.feed("\x1b[1;31m\x1b[3;1H\x1b[K");
+    try std.testing.expect(std.meta.eql(Grid.Color.default, grid.cellAtConst(2, 0).fg));
+    try std.testing.expect(!grid.cellAtConst(2, 0).attrs.bold);
 }

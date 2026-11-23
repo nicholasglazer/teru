@@ -24,8 +24,17 @@ jobs:
           version: 0.17.1
       - name: Install deps
         run: sudo apt-get install -y libxcb1-dev libxcb-shm0-dev libxkbcommon-dev libwayland-dev
+      # Pin the CPU level: a bare `zig build` targets the runner's own CPU,
+      # which varies run to run (AVX2, sometimes AVX-512), and the binary
+      # then dies with SIGILL on machines without those extensions.
       - name: Build
-        run: zig build -Doptimize=ReleaseSafe ${{ matrix.flags }}
+        run: zig build -Doptimize=ReleaseSafe -Dcpu=x86_64_v2 ${{ matrix.flags }}
+      - name: Check for AVX instructions
+        run: |
+          if objdump -d zig-out/bin/teru | grep -qE '%[yz]mm'; then
+            echo "teru uses AVX registers; the -Dcpu pin did not apply" >&2
+            exit 1
+          fi
       - run: strip zig-out/bin/teru
       - name: Package
         run: |

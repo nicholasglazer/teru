@@ -242,6 +242,12 @@ pub fn render(self: *Bar, server: *Server) bool {
         wlr.wlr_scene_buffer_set_buffer_with_damage(li.scene_buffer, li.pixel_buffer, null);
     }
 
+    // While a client is fullscreen the bars' scene nodes are disabled. Do not
+    // paint into buffers nobody sees, and do not fork exec widgets (such as
+    // an nvidia-smi probe) during a game, when power and CPU matter most.
+    // exitFullscreen marks the bar dirty so the first paint after is fresh.
+    if (server.fullscreen_node != null) return launcher_inst != null;
+
     // Refresh cached sysfs/proc data (TTL-gated, non-blocking reads).
     // Must happen before barSignature so value changes trigger re-render.
     const now = teru.compat.monotonicNow();

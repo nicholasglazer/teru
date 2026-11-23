@@ -77,6 +77,12 @@ fn scanFor(out: *[256]u8, prefix: []const u8, exclude_prefix: ?[]const u8) ?[]co
             if (std.mem.startsWith(u8, name, ex)) continue;
         }
         if (!std.mem.endsWith(u8, name, ".sock")) continue;
+        // A crashed or SIGTERM'd teruwm leaves its socket behind. Skip one
+        // whose owner is gone, or every forward fails while readdir happens
+        // to list it before the live compositor's.
+        if (ownerPid(name, prefix)) |pid| {
+            if (!pidAlive(pid)) continue;
+        }
 
         const full = std.fmt.bufPrint(out, "{s}/{s}", .{ dir_path, name }) catch continue;
         return full;
@@ -84,15 +90,68 @@ fn scanFor(out: *[256]u8, prefix: []const u8, exclude_prefix: ?[]const u8) ?[]co
     return null;
 }
 
+/// The PID in `<prefix><PID>.sock`, or null when the name carries none.
+fn ownerPid(name: []const u8, prefix: []const u8) ?i32 {
+    if (name.len <= prefix.len + ".sock".len) return null;
+    const digits = name[prefix.len .. name.len - ".sock".len];
+    return std.fmt.parseInt(i32, digits, 10) catch null;
+}
+
+/// Whether a process with this PID exists (signal 0 probes without sending).
+fn pidAlive(pid: i32) bool {
+    if (pid <= 0) return false;
+    if (std.c.kill(pid, @enumFromInt(0)) == 0) return true;
+    // EPERM: it exists but belongs to someone else.
+    return std.posix.errno(@as(c_int, -1)) == .PERM;
+}
+
+/// Send/receive limit for forwards made from teru's event loop. A hung
+/// teruwm must not freeze every pane, so this stays short.
+pub const event_loop_timeout_ms: u32 = 500;
+
+/// Send/receive limit for the stdio bridge and teruwmctl. They block nothing
+/// else, and some teruwm tools (a full-desktop screenshot on a large or
+/// multi-output setup, session_restore, a debug build) take longer than the
+/// event-loop limit even though they succeed.
+pub const standalone_timeout_ms: u32 = 30_000;
+
+fn timevalFromMs(ms: u32) std.c.timeval {
+    return .{ .sec = @intCast(ms / 1000), .usec = @intCast((ms % 1000) * 1000) };
+}
+
+fn setForwardTimeouts(fd: i32, timeout_ms: u32) void {
+    const tv = timevalFromMs(timeout_ms);
+    _ = std.c.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &tv, @sizeOf(std.c.timeval));
+    _ = std.c.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, &tv, @sizeOf(std.c.timeval));
+}
+
 /// Send a JSON-RPC request body to teruwm's MCP socket, receive the
 /// JSON response, write it into `out`. Returns the response slice or
-/// null on any failure (connection refused, malformed response, etc).
+/// null on any failure (connection refused, malformed response, timeout).
 /// The caller is responsible for retrying or surfacing the error as an
 /// MCP-level failure.
+///
+/// This variant is for teru's event loop and gives up after
+/// `event_loop_timeout_ms`. Standalone callers use `forwardRequestStandalone`.
 pub fn forwardRequest(body: []const u8, out: []u8) ?[]const u8 {
+    return forwardRequestTimeout(body, out, event_loop_timeout_ms);
+}
+
+/// `forwardRequest` for processes that do nothing else while they wait: the
+/// `--mcp-server --target teruwm` stdio bridge and teruwmctl.
+pub fn forwardRequestStandalone(body: []const u8, out: []u8) ?[]const u8 {
+    return forwardRequestTimeout(body, out, standalone_timeout_ms);
+}
+
+fn forwardRequestTimeout(body: []const u8, out: []u8, timeout_ms: u32) ?[]const u8 {
     const sock_path = findTeruwmSocket() orelse return null;
+    return forwardTo(sock_path, body, out, timeout_ms);
+}
+
+fn forwardTo(sock_path: []const u8, body: []const u8, out: []u8, timeout_ms: u32) ?[]const u8 {
     var conn = ipc.connect(sock_path) catch return null;
     defer conn.close();
+    if (builtin.os.tag != .windows) setForwardTimeouts(conn.rawFd(), timeout_ms);
 
     // teruwm speaks HTTP/1.1 + JSON-RPC (same framing since v0.4.18).
     var header_buf: [256]u8 = undefined;
@@ -130,4 +189,69 @@ test "scanRuntimeDir returns null when no teruwm socket exists" {
     // This test is best-effort — if a real teruwm happens to be running
     // on this machine, it'll still find it. Skip in that case.
     _ = scanRuntimeDir();
+}
+
+test "ownerPid reads the PID from a socket name" {
+    try std.testing.expectEqual(@as(?i32, 1234), ownerPid("teruwm-mcp-1234.sock", "teruwm-mcp-"));
+    try std.testing.expectEqual(@as(?i32, 77), ownerPid("teruwm-mcp-events-77.sock", "teruwm-mcp-events-"));
+    try std.testing.expectEqual(@as(?i32, null), ownerPid("teruwm-mcp-x.sock", "teruwm-mcp-"));
+    try std.testing.expectEqual(@as(?i32, null), ownerPid("teruwm-mcp-.sock", "teruwm-mcp-"));
+}
+
+test "pidAlive: this process is alive, an unused PID is not" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    try std.testing.expect(pidAlive(@intCast(std.c.getpid())));
+    try std.testing.expect(!pidAlive(0));
+    try std.testing.expect(!pidAlive(std.math.maxInt(i32)));
+}
+
+test "timevalFromMs splits seconds and microseconds" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = timevalFromMs(500);
+    try std.testing.expectEqual(@as(i64, 0), @as(i64, a.sec));
+    try std.testing.expectEqual(@as(i64, 500_000), @as(i64, a.usec));
+    const b = timevalFromMs(30_000);
+    try std.testing.expectEqual(@as(i64, 30), @as(i64, b.sec));
+    try std.testing.expectEqual(@as(i64, 0), @as(i64, b.usec));
+    const c = timevalFromMs(1_250);
+    try std.testing.expectEqual(@as(i64, 1), @as(i64, c.sec));
+    try std.testing.expectEqual(@as(i64, 250_000), @as(i64, c.usec));
+}
+
+test "standalone callers wait longer than the event loop" {
+    try std.testing.expect(standalone_timeout_ms >= 10 * event_loop_timeout_ms);
+}
+
+fn monoMs() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+}
+
+test "forwardTo gives up on a silent compositor after its own timeout" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    // A listener that never accepts: connect succeeds (backlog), the write
+    // fits the socket buffer, and the read blocks until the timeout.
+    var path_buf: [108]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "/tmp/teru-forward-test-{d}.sock", .{std.c.getpid()});
+    const server = try ipc.listen(path);
+    defer {
+        server.close();
+        var z: [109]u8 = undefined;
+        @memcpy(z[0..path.len], path);
+        z[path.len] = 0;
+        _ = std.c.unlink(@ptrCast(&z));
+    }
+
+    var out: [256]u8 = undefined;
+    const t0 = monoMs();
+    try std.testing.expectEqual(@as(?[]const u8, null), forwardTo(path, "{}", &out, 60));
+    const short = monoMs() - t0;
+
+    const t1 = monoMs();
+    try std.testing.expectEqual(@as(?[]const u8, null), forwardTo(path, "{}", &out, 300));
+    const long = monoMs() - t1;
+
+    try std.testing.expect(short >= 50 and short < 280);
+    try std.testing.expect(long >= 290);
 }

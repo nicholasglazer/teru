@@ -25,9 +25,9 @@ const Rect = LayoutEngine.Rect;
 /// Timing constants
 const DOUBLE_CLICK_NS: i128 = 300_000_000; // 300ms
 
-/// Master ratio clamps for mouse drag resize
-const MASTER_RATIO_MIN: f32 = 0.15;
-const MASTER_RATIO_MAX: f32 = 0.85;
+/// Master ratio clamps for mouse drag resize (shared with every other path)
+const MASTER_RATIO_MIN = Workspace.ratio_min;
+const MASTER_RATIO_MAX = Workspace.ratio_max;
 
 /// Shift modifier mask, resolved per-OS at comptime. Every backend now
 /// reports modifiers in the X11 layout (Shift 1), but keep reading it from
