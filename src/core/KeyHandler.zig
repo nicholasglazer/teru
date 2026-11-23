@@ -12,6 +12,7 @@ const Multiplexer = @import("Multiplexer.zig");
 const ProcessGraph = @import("../graph/ProcessGraph.zig");
 const Hooks = @import("../config/Hooks.zig");
 const compat = @import("../compat.zig");
+const keysyms = @import("../input/keysyms.zig");
 
 // ── Prefix key state ─────────────────────────────────────────────
 
@@ -223,6 +224,23 @@ pub fn isDetachKey(key_bytes: []const u8, modifiers: u32, attached: bool) bool {
 /// (Alt+Shift+Space is layout_reset), so they must not open the leader.
 pub fn isLeaderChord(modifiers: u32, ralt: bool, key_char: u8) bool {
     return key_char == ' ' and platformMods(modifiers, ralt).eql(KB.Mods.ALT);
+}
+
+pub const ScrollPage = enum { none, up, down };
+
+/// Shift+PageUp / Shift+PageDown page through the scrollback. Plain
+/// PageUp/PageDown, and any other modifier set, go to the program (less, vim
+/// and htop use them). On the alternate screen there is no teru scrollback to
+/// show, as with the mouse wheel, so Shift+PageUp/PageDown go to the program
+/// there too. Mouse tracking does not change keyboard routing.
+pub fn scrollbackPageKey(keysym: u32, modifiers: u32, ralt: bool, alt_screen: bool) ScrollPage {
+    if (alt_screen) return .none;
+    if (!platformMods(modifiers, ralt).eql(KB.Mods.SHIFT)) return .none;
+    return switch (keysym) {
+        keysyms.Page_Up => .up,
+        keysyms.Page_Down => .down,
+        else => .none,
+    };
 }
 
 /// Execute a keybind Action's mux side effects (focus, swap, resize, etc).
@@ -465,7 +483,7 @@ test "Alt+Shift+Space reaches layout_reset in the default keybinds" {
 }
 
 test "Alt+Tab, Alt+Shift+Tab and Alt+Escape reach the default keybinds" {
-    const ks = @import("../input/keysyms.zig");
+    const ks = keysyms;
     var kb = KB.Keybinds{ .mod_key = KB.Mods.ALT };
     kb.loadDefaults();
     const alt = platformMods(kc.ALT_MASK, false);
@@ -489,4 +507,22 @@ test "executeAction workspace_toggle_last returns to the previous workspace" {
     mux.switchWorkspace(4);
     try std.testing.expect(executeAction(.workspace_toggle_last, &mux) == .panes_changed);
     try std.testing.expectEqual(@as(u8, 0), mux.active_workspace);
+}
+
+test "scrollbackPageKey: Shift+PageUp/Down scroll, plain PageUp/Down go to the program" {
+    const ks = keysyms;
+    const S = kc.SHIFT_MASK;
+    try std.testing.expectEqual(ScrollPage.up, scrollbackPageKey(ks.Page_Up, S, false, false));
+    try std.testing.expectEqual(ScrollPage.down, scrollbackPageKey(ks.Page_Down, S, false, false));
+    // Plain keys belong to the program.
+    try std.testing.expectEqual(ScrollPage.none, scrollbackPageKey(ks.Page_Up, 0, false, false));
+    try std.testing.expectEqual(ScrollPage.none, scrollbackPageKey(ks.Page_Down, 0, false, false));
+    // Other modifier sets are not the scrollback chord.
+    try std.testing.expectEqual(ScrollPage.none, scrollbackPageKey(ks.Page_Up, S | kc.CTRL_MASK, false, false));
+    try std.testing.expectEqual(ScrollPage.none, scrollbackPageKey(ks.Page_Up, S | kc.ALT_MASK, false, false));
+    // Alternate screen (less, vim, htop): no scrollback, the program gets it.
+    try std.testing.expectEqual(ScrollPage.none, scrollbackPageKey(ks.Page_Up, S, false, true));
+    try std.testing.expectEqual(ScrollPage.none, scrollbackPageKey(ks.Page_Down, S, false, true));
+    // Other keys never scroll.
+    try std.testing.expectEqual(ScrollPage.none, scrollbackPageKey(ks.Up, S, false, false));
 }

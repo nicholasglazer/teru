@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- **PageUp and PageDown reach programs in a teru window.** teru took them
+  for scrollback, so less, vim and htop never got them. Scrollback is now on
+  Shift+PageUp and Shift+PageDown, and on the alternate screen those go to
+  the program too.
 - **Alt+Tab, Alt+Shift+Tab, Alt+Escape and Alt+` work in a teru window.**
   The first three never reached the keybinding table, and the last-workspace
   toggle (Alt+Escape, Alt+`) was not implemented outside teruwm. Esc after

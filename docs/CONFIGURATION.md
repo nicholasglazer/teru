@@ -367,8 +367,7 @@ Default prefix: `Ctrl+Space`
 | `Alt+\` | Reset zoom (restore config font size) |
 | `Ctrl+Shift+C` | Copy selection |
 | `Ctrl+Shift+V` | Paste from clipboard |
-| `Shift+PageUp/Down` | Scroll through scrollback |
-| `PageUp/Down` | Scroll through scrollback |
+| `Shift+PageUp/Down` | Scroll through scrollback (plain `PageUp/Down` go to the program) |
 
 ### Window
 

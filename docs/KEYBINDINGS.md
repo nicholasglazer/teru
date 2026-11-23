@@ -263,6 +263,7 @@ for legibility, a max of `0` means no maximum).
 |-----|--------|
 | `$mod+/` | Enter search mode in scrollback |
 | `$mod+V` | Enter vi / copy / scroll mode |
+| `Shift+PageUp` / `Shift+PageDown` | Scroll the scrollback a page (teru). Plain `PageUp` / `PageDown`, and both on the alternate screen (less, vim, htop), go to the program |
 | `Ctrl+Space` | Enter prefix mode (next key is a prefix command) |
 | `Ctrl+\` | Detach (teru, only in a window attached to a `teru -n NAME` session; otherwise the program gets it as SIGQUIT) |
 

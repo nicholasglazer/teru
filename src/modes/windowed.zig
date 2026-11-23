@@ -784,23 +784,26 @@ fn runImpl(allocator: std.mem.Allocator, io: std.Io, restore: ?RestoreInfo, daem
                                 continue;
                             }
 
-                            // PageUp/Down: scrollback browsing
-                            if (keysym == ks.Page_Up) {
-                                const max_offset = mux.getScrollbackLineCount();
-                                if (max_offset > 0) {
-                                    mux.setScrollOffset(@min(mux.getScrollOffset() + grid_rows, max_offset));
-                                }
-                                var dummy: [32]u8 = undefined;
-                                _ = kb.processKey(key.keycode, &dummy);
-                                continue;
-                            } else if (keysym == ks.Page_Down) {
-                                if (mux.getScrollOffset() > 0) {
-                                    const so = mux.getScrollOffset();
-                                    mux.setScrollOffset(so -| grid_rows);
-                                }
-                                var dummy: [32]u8 = undefined;
-                                _ = kb.processKey(key.keycode, &dummy);
-                                continue;
+                            // Shift+PageUp/Down: scrollback browsing. Plain
+                            // PageUp/Down, and both on the alternate screen, fall
+                            // through to the program as ESC[5~ / ESC[6~.
+                            const in_alt_screen = if (mux.getActivePane()) |p| p.vt.alt_screen else false;
+                            switch (KeyHandler.scrollbackPageKey(keysym, key.modifiers, ralt_held, in_alt_screen)) {
+                                .none => {},
+                                .up => {
+                                    const max_offset = mux.getScrollbackLineCount();
+                                    if (max_offset > 0) {
+                                        mux.setScrollOffset(@min(mux.getScrollOffset() + grid_rows, max_offset));
+                                    }
+                                    continue;
+                                },
+                                .down => {
+                                    if (mux.getScrollOffset() > 0) {
+                                        const so = mux.getScrollOffset();
+                                        mux.setScrollOffset(so -| grid_rows);
+                                    }
+                                    continue;
+                                },
                             }
 
                             // Ctrl+Shift+C/V: copy selection / paste
