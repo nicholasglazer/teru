@@ -17,6 +17,7 @@ const compat = @import("compat.zig");
 const render = @import("render/render.zig");
 const McpBridge = @import("agent/McpBridge.zig");
 const Daemon = @import("server/daemon.zig");
+const Config = @import("config/Config.zig");
 
 // Env-gated logging (TERU_LOG=debug|info|warn|err). Routes all std.log through
 // the shared logFn; TERU_LOG=debug captures the full MCP trace.
@@ -53,6 +54,7 @@ pub fn main(init: std.process.Init) !void {
     var session_name: ?[]const u8 = null; // -n NAME: persistent named session
     var template_name: ?[]const u8 = null; // -t NAME: apply template on start
     var list_sessions = false;
+    var fresh = false; // -f: ignore restore_layout / persist_session this once
     var wm_class_override: ?[]const u8 = null;
 
     while (args_iter.next()) |arg| {
@@ -66,7 +68,8 @@ pub fn main(init: std.process.Init) !void {
                 \\teru — AI-first terminal emulator
                 \\
                 \\Usage:
-                \\  teru                          Fresh terminal (scratchpad)
+                \\  teru                          New terminal (restores the saved layout
+                \\                                if restore_layout or persist_session is set)
                 \\  teru -n <name>                Persistent named session
                 \\  teru -n <name> -t <template>  Start session from template
                 \\  teru -l                       List active sessions
@@ -74,7 +77,8 @@ pub fn main(init: std.process.Init) !void {
                 \\Options:
                 \\  -n, --name <name>       Connect to (or start) named session
                 \\  -t, --template <name>   Apply template (.tsess) on first start
-                \\  -f, --fresh             Force fresh start (ignore saved layout)
+                \\  -f, --fresh             Start fresh: ignore restore_layout and
+                \\                          persist_session for this launch
                 \\  -l, --list              List active sessions
                 \\  -v, --version           Show version
                 \\  -h, --help              Show this help
@@ -123,6 +127,7 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--list") or std.mem.eql(u8, arg, "-l")) { list_sessions = true; continue; }
+        if (std.mem.eql(u8, arg, "--fresh") or std.mem.eql(u8, arg, "-f")) { fresh = true; continue; }
         if (std.mem.eql(u8, arg, "--daemon")) { daemon_session = args_iter.next(); continue; }
         if (std.mem.eql(u8, arg, "--session")) { session_name = args_iter.next(); continue; }
         if (std.mem.eql(u8, arg, "--name") or std.mem.eql(u8, arg, "-n")) { session_name = args_iter.next(); continue; }
@@ -218,5 +223,17 @@ pub fn main(init: std.process.Init) !void {
     if (tier == .tty or mode_raw) {
         return raw_mode.run(allocator, io);
     }
-    return windowed_mode.run(allocator, io, null, wm_class_override);
+
+    // restore_layout / persist_session apply to plain `teru` only; -f skips
+    // them. The windowed mode loads the config again (and warns about it).
+    const startup: common.Startup = if (fresh) .fresh else blk: {
+        var cfg = Config.loadQuiet(allocator, io) catch break :blk .fresh;
+        defer cfg.deinit();
+        break :blk common.plainStartup(false, cfg.persist_session, cfg.restore_layout);
+    };
+    return switch (startup) {
+        .persistent => daemon_mode.runPersistent(allocator, io, wm_class_override),
+        .restore => daemon_mode.runRestore(allocator, io, wm_class_override),
+        .fresh => windowed_mode.run(allocator, io, null, wm_class_override),
+    };
 }

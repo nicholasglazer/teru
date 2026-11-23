@@ -172,6 +172,7 @@ remote with the `Ctrl+A` prefix instead.
 | `teru --daemon NAME` | start a headless daemon in the foreground (no attach) |
 | `teru --daemon NAME -t TMPL` | …with a template |
 | `teru -l` / `teru --list` | list active sessions |
+| `teru -f` / `teru --fresh` | plain `teru`, ignoring `restore_layout` and `persist_session` for this launch |
 | `Ctrl-\\` | detach the current client |
 
 ## Diagnostics

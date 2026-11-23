@@ -67,6 +67,31 @@ pub var cli_no_bar: bool = false;
 pub var cli_exec_argv_buf: [64]?[*:0]const u8 = @splat(null);
 pub var cli_exec_argv: ?[*:null]const ?[*:0]const u8 = null;
 
+// ── Plain `teru` startup ──────────────────────────────────────
+
+/// How plain `teru` (no -n, --daemon, --attach or --raw, with a display)
+/// starts. `persist_session` attaches to the "default" daemon and
+/// `restore_layout` reopens the saved layout; -f/--fresh skips both.
+pub const Startup = enum { fresh, persistent, restore };
+
+pub fn plainStartup(fresh_flag: bool, persist_session: bool, restore_layout: bool) Startup {
+    if (fresh_flag) return .fresh;
+    if (persist_session) return .persistent;
+    if (restore_layout) return .restore;
+    return .fresh;
+}
+
+test "plainStartup: -f overrides both persistence options" {
+    try std.testing.expectEqual(Startup.fresh, plainStartup(false, false, false));
+    try std.testing.expectEqual(Startup.restore, plainStartup(false, false, true));
+    try std.testing.expectEqual(Startup.persistent, plainStartup(false, true, false));
+    // persist_session wins; runPersistent falls back to the layout itself.
+    try std.testing.expectEqual(Startup.persistent, plainStartup(false, true, true));
+    try std.testing.expectEqual(Startup.fresh, plainStartup(true, false, true));
+    try std.testing.expectEqual(Startup.fresh, plainStartup(true, true, false));
+    try std.testing.expectEqual(Startup.fresh, plainStartup(true, true, true));
+}
+
 // ── stdout helpers ────────────────────────────────────────────
 
 pub fn out(msg: []const u8) void {

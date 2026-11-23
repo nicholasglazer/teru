@@ -327,6 +327,8 @@ These two options serve different use cases:
 
 Both options save to `$XDG_STATE_HOME/teru/sessions/`. You can enable both simultaneously -- `persist_session` takes priority when a daemon is running, `restore_layout` serves as fallback when no daemon is found.
 
+Both apply to a plain `teru` launch with a display. `teru -f` (`--fresh`) skips them for one launch: a new window with one shell, nothing restored and no daemon. The layout is still saved on exit, so the next plain launch restores it.
+
 Named sessions (`teru -n NAME`) always get full daemon persistence regardless of these settings.
 
 #### Prefix Key Bindings

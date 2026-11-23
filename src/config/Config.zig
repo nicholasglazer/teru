@@ -238,8 +238,10 @@ workspace_layout_counts: [10]u8 = @splat(0),
 keybinds: Keybinds.Keybinds = .{},
 keybinds_loaded: bool = false, // true once any [keybinds.*] section is parsed
 
-// Lines whose key teru does not know (each one is logged as a warning).
+// Lines whose key teru does not know (each one is logged as a warning
+// unless quiet_unknown_keys is set).
 unknown_keys: u32 = 0,
+quiet_unknown_keys: bool = false,
 
 // Leader / which-key menu (`[leader]` / `[leader.NAME]`). Shared parser; the
 // TUI client materializes it into the live tree (or falls back to MuxLeader).
@@ -252,7 +254,17 @@ allocator: Allocator,
 /// Load configuration from ~/.config/teru/teru.conf.
 /// Returns defaults if the file does not exist.
 pub fn load(allocator: Allocator, io: Io) !Config {
-    var config = Config{ .allocator = allocator };
+    return loadImpl(allocator, io, false);
+}
+
+/// `load` without the unknown-key warnings, for a look at the config ahead of
+/// the load that sets the session up (which warns), so each warning prints once.
+pub fn loadQuiet(allocator: Allocator, io: Io) !Config {
+    return loadImpl(allocator, io, true);
+}
+
+fn loadImpl(allocator: Allocator, io: Io, quiet: bool) !Config {
+    var config = Config{ .allocator = allocator, .quiet_unknown_keys = quiet };
     config.keybinds.loadDefaults();
     config.keybinds.loadTerminalZoomDefaults(); // font zoom — teru only
 
@@ -515,7 +527,7 @@ fn parseWithDepth(self: *Config, allocator: Allocator, content: []const u8, io: 
             // A warning, not an error: a config written for another teru
             // version keeps loading, but a typo no longer vanishes silently.
             self.unknown_keys +|= 1;
-            std.log.scoped(.config).warn("{s}:{d}: unknown key '{s}', ignored", .{ source, line_no, key });
+            if (!self.quiet_unknown_keys) std.log.scoped(.config).warn("{s}:{d}: unknown key '{s}', ignored", .{ source, line_no, key });
         }
     }
 }
@@ -1006,6 +1018,15 @@ test "unknown keys are counted but never stop the rest of the file" {
     try std.testing.expectEqual(@as(u16, 18), config.font_size);
     try std.testing.expectEqualStrings("main", config.workspace_names[0].?);
     try std.testing.expectEqual(@as(u32, 2), config.unknown_keys);
+}
+
+test "quiet_unknown_keys still counts unknown keys" {
+    const allocator = std.testing.allocator;
+    var config = Config{ .allocator = allocator, .quiet_unknown_keys = true };
+    defer config.deinit();
+    config.parse(allocator, "no_such_key = 1\nrestore_layout = true\n");
+    try std.testing.expect(config.restore_layout);
+    try std.testing.expectEqual(@as(u32, 1), config.unknown_keys);
 }
 
 test "dynamic_title is parsed" {
