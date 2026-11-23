@@ -526,3 +526,48 @@ test "scrollbackPageKey: Shift+PageUp/Down scroll, plain PageUp/Down go to the p
     // Other keys never scroll.
     try std.testing.expectEqual(ScrollPage.none, scrollbackPageKey(ks.Up, S, false, false));
 }
+
+test "teru --help keybindings match the default table" {
+    // Every chord `teru --help` lists, as the windowed terminal looks it up
+    // (KeyHandler.lookupConfigAction on the defaults). Keep main.zig's list
+    // and this test in step.
+    var kb: KB.Keybinds = .{};
+    kb.loadDefaults();
+    kb.loadTerminalZoomDefaults();
+    const A = kc.ALT_MASK;
+    const S = kc.SHIFT_MASK;
+    const Case = struct { mode: KB.Mode, mods: u32, key: u8, want: KB.Action };
+    const cases = [_]Case{
+        .{ .mode = .normal, .mods = A, .key = 'c', .want = .split_vertical },
+        .{ .mode = .prefix, .mods = 0, .key = 'x', .want = .pane_close },
+        .{ .mode = .normal, .mods = A, .key = 'j', .want = .pane_focus_next },
+        .{ .mode = .normal, .mods = A, .key = 'k', .want = .pane_focus_prev },
+        .{ .mode = .normal, .mods = A | S, .key = 'J', .want = .pane_swap_next },
+        .{ .mode = .normal, .mods = A | S, .key = 'K', .want = .pane_swap_prev },
+        .{ .mode = .normal, .mods = A, .key = 'h', .want = .resize_shrink_w },
+        .{ .mode = .normal, .mods = A, .key = 'l', .want = .resize_grow_w },
+        .{ .mode = .normal, .mods = A, .key = 'z', .want = .zoom_toggle },
+        .{ .mode = .normal, .mods = A, .key = '1', .want = .workspace_1 },
+        .{ .mode = .normal, .mods = A, .key = '0', .want = .workspace_0 },
+        .{ .mode = .normal, .mods = A | S, .key = '!', .want = .pane_move_to_1 },
+        .{ .mode = .prefix, .mods = 0, .key = ' ', .want = .layout_cycle },
+        .{ .mode = .normal, .mods = A, .key = 'v', .want = .mode_scroll },
+        .{ .mode = .normal, .mods = A, .key = '-', .want = .zoom_out },
+        .{ .mode = .normal, .mods = A, .key = '\\', .want = .zoom_reset },
+        .{ .mode = .normal, .mods = kc.CTRL_MASK, .key = ' ', .want = .mode_prefix },
+        .{ .mode = .prefix, .mods = 0, .key = 'd', .want = .session_detach },
+    };
+    for (cases) |c| {
+        const got = lookupConfigAction(&kb, c.mode, c.mods, c.key, false) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(c.want, got);
+    }
+    var mux = Multiplexer.init(std.testing.allocator);
+    defer mux.deinit();
+    try std.testing.expectEqual(MuxAction.detach, executeAction(.session_detach, &mux));
+    // Alt+Space opens the leader; Ctrl+\ detaches an attached window.
+    try std.testing.expect(isLeaderChord(A, false, ' '));
+    try std.testing.expect(isDetachKey("\x1c", kc.CTRL_MASK, true));
+    // Alt+D is the launcher in the shared table, which teru does not have:
+    // it is not detach, so --help must not say so.
+    try std.testing.expect(lookupConfigAction(&kb, .normal, A, 'd', false).? != .session_detach);
+}

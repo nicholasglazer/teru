@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- **`teru --help` lists keys that work in a window.** It gave Alt+D as
+  detach, which is the launcher key and does nothing in teru, and also listed
+  Alt+Enter, Alt+X, Alt+B and RAlt+J/K/H/L, which do nothing or reach the
+  program, and Alt+Space as cycle layout (it opens the leader). Detach is
+  Ctrl+Space d or Ctrl+\ in a window attached to `teru -n NAME`.
 - **`restore_layout` and `persist_session` take effect again, and `-f` works.**
   Since 0.4.0 a plain `teru` launch never read either option: the layout
   was saved on exit but never restored, and `persist_session` never attached

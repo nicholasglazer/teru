@@ -94,13 +94,16 @@ pub fn main(init: std.process.Init) !void {
                 \\  Searched in: ~/.config/teru/templates/, then ./examples/
                 \\  Export current session: teru_session_save via MCP
                 \\
-                \\Keybindings:
-                \\  Alt+Enter   New pane              Alt+X       Close pane
-                \\  Alt+J/K     Focus next/prev       Alt+Z       Zoom pane
-                \\  Alt+1-9,0   Switch workspace      Alt+Space   Cycle layout
-                \\  Alt+V       Vi/copy mode          Alt+D       Detach
-                \\  Alt+B       Toggle status bar     Alt+\       Reset zoom
-                \\  RAlt+J/K    Swap pane              RAlt+H/L   Resize
+                \\Keybindings in a window (defaults; Ctrl+Space is the prefix key;
+                \\over SSH the prefix is Ctrl+B, see docs/KEYBINDINGS.md):
+                \\  Alt+C          New pane           Ctrl+Space x      Close pane
+                \\  Alt+J/K        Focus next/prev    Alt+Shift+J/K     Swap with next/prev
+                \\  Alt+H/L        Resize             Alt+Z             Zoom pane
+                \\  Alt+1-9,0      Switch workspace   Alt+Shift+1-9,0   Move pane there
+                \\  Alt+Space      Leader menu        Ctrl+Space Space  Cycle layout
+                \\  Alt+V          Scroll/copy mode   Alt+- / Alt+\     Font smaller / reset
+                \\  Ctrl+Space d   Detach             Ctrl+\            Detach
+                \\  (detach needs a session: teru -n NAME; elsewhere Ctrl+\ is SIGQUIT)
                 \\
                 \\
             );
